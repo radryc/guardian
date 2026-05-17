@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Guardian</title>
+  <link rel="icon" type="image/png" href="./guardian.png" />
+  <link rel="stylesheet" href="./main.css" />
+</head>
+<body class="bg-[#060A14] text-[#E5ECF4] font-sans antialiased">
+
+  <!-- Top navigation -->
+  <nav id="topnav" class="fixed inset-x-0 top-0 z-50 h-12 flex items-center gap-0 px-4 bg-[#0D1220] border-b border-white/[0.09]">
+    <a href="/" class="inline-flex items-center gap-2.5 mr-2 pr-4 border-r border-white/[0.09] no-underline">
+      <img src="./guardian.png" alt="Guardian" class="w-6 h-6 shrink-0 object-contain" />
+      <span class="text-sm font-bold text-[#E5ECF4] leading-none">Guardian</span>
+    </a>
+    <div class="flex items-center gap-1 text-[#9BB0CF] text-[13px] ml-1">
+      <span>Local</span>
+      <span class="text-[#566778] text-base leading-none">/</span>
+      <span id="topnavPartition" class="text-[#E5ECF4] font-semibold">Control Center</span>
+    </div>
+    <div class="flex-1"></div>
+    <span id="syncIndicator" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold text-[#9BB0CF] bg-[#151B2B] border border-white/[0.09]">Loading…</span>
+  </nav>
+
+  <div class="app-shell flex min-h-screen pt-12">
+    <!-- Sidebar -->
+    <aside id="sidebar" class="fixed top-12 bottom-0 left-0 w-[220px] flex flex-col bg-[#0D1220] border-r border-white/[0.09]">
+      <nav class="grid gap-0.5 p-2.5 shrink-0">
+        <button class="nav-item active" data-tab-target="overviewPanel">
+          <svg class="w-4 h-4 shrink-0 opacity-85" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="2" y="2" width="7" height="7" rx="1.5"/><rect x="11" y="2" width="7" height="7" rx="1.5"/>
+            <rect x="2" y="11" width="7" height="7" rx="1.5"/><rect x="11" y="11" width="7" height="7" rx="1.5"/>
+          </svg>
+          <span>Applications</span>
+        </button>
+        <button class="nav-item" data-tab-target="topologyPanel">
+          <svg class="w-4 h-4 shrink-0 opacity-85" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="10" cy="4" r="2"/><circle cx="3.5" cy="15.5" r="2"/><circle cx="16.5" cy="15.5" r="2"/>
+            <line x1="10" y1="6" x2="4.5" y2="13.5"/><line x1="10" y1="6" x2="15.5" y2="13.5"/>
+          </svg>
+          <span>Topology</span>
+        </button>
+        <button class="nav-item" data-tab-target="rolloutsPanel">
+          <svg class="w-4 h-4 shrink-0 opacity-85" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M4 10h12"/><path d="M10 4l6 6-6 6"/>
+          </svg>
+          <span>Rollouts</span>
+        </button>
+        <button class="nav-item" data-tab-target="historyPanel">
+          <svg class="w-4 h-4 shrink-0 opacity-85" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="10" cy="10" r="7.5"/><polyline points="10,6 10,10 13,12"/>
+          </svg>
+          <span>History</span>
+        </button>
+      </nav>
+
+      <section id="sidebarPartitionSection" class="flex-1 min-h-0 overflow-y-auto px-2.5 pb-4">
+        <div class="px-0.5 mb-2 text-[10px] font-bold uppercase tracking-[0.1em] text-[#566778]">Partitions</div>
+        <div class="flex gap-1.5 mb-2">
+          <input id="partitionSearch" class="search-input flex-1" type="search" placeholder="Search partitions" />
+          <button id="createPartitionButton" class="btn-ghost">New</button>
+        </div>
+        <div id="partitionList" class="grid gap-1 loading-state text-sm text-[#566778]">Loading partitions…</div>
+      </section>
+
+      <section class="shrink-0 border-t border-white/[0.09] px-2.5 py-3">
+        <div class="px-0.5 mb-2 text-[10px] font-bold uppercase tracking-[0.1em] text-[#566778]">Actions</div>
+        <button id="refreshButton" class="btn-secondary w-full mt-1.5">Refresh</button>
+        <button id="reconcileButton" class="btn-primary w-full mt-1.5">Reconcile now</button>
+      </section>
+    </aside>
+
+    <!-- Main content -->
+    <main id="mainContent" class="ml-[220px] flex-1 min-w-0 bg-[#060A14]">
+      <header class="flex justify-between items-start gap-4 px-6 py-5 pb-4 bg-[#0D1220] border-b border-white/[0.09]">
+        <div>
+          <p id="pageEyebrow" class="text-[10px] font-bold uppercase tracking-[0.1em] text-[#00ADE4] mb-1">Control Center</p>
+          <h1 id="pageTitle" class="text-[22px] font-bold tracking-tight text-[#E5ECF4] mb-1">Control Center</h1>
+          <p id="pageSubtitle" class="text-[13px] text-[#9BB0CF]">Monitor partitions, inspect topology, and review history.</p>
+        </div>
+        <div class="flex gap-2 items-center flex-wrap justify-end shrink-0">
+          <div id="headerContextPills" class="flex gap-1.5 flex-wrap justify-end"></div>
+        </div>
+      </header>
+
+      <!-- Summary stat strip (overview only) -->
+      <section id="summaryGrid" class="grid grid-cols-6 gap-px bg-white/[0.09] border-y border-white/[0.09]">
+        <article class="stat-card"><div class="stat-label">Partitions</div><div class="stat-value" id="summaryPartitions">-</div></article>
+        <article class="stat-card"><div class="stat-label">Intents</div><div class="stat-value" id="summaryIntents">-</div></article>
+        <article class="stat-card"><div class="stat-label">Assets</div><div class="stat-value" id="summaryAssets">-</div></article>
+        <article class="stat-card"><div class="stat-label">Healthy</div><div class="stat-value" id="summaryStable">-</div></article>
+        <article class="stat-card"><div class="stat-label">Attention</div><div class="stat-value" id="summaryAttention">-</div></article>
+        <article class="stat-card"><div class="stat-label">Failed</div><div class="stat-value" id="summaryFailed">-</div></article>
+      </section>
+
+      <!-- App grid (overview only) -->
+      <section id="appGridSection" class="px-6 py-5">
+        <div class="flex items-center gap-2.5 mb-3.5 flex-wrap">
+          <span class="text-[11px] font-bold uppercase tracking-[0.09em] text-[#566778] flex-1">Partitions</span>
+          <div class="flex gap-1.5">
+            <input id="appGridSearch" class="search-input w-44" type="search" placeholder="Filter partitions…" />
+            <button id="overviewCreatePartitionButton" class="btn-ghost">New</button>
+          </div>
+        </div>
+        <div id="appGrid" class="grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-2.5 loading-state text-sm text-[#566778]">Loading partitions…</div>
+      </section>
+
+      <!-- Hero card (overview only) -->
+      <section id="selectedPartitionHero" class="mx-6 mb-0 rounded-lg border border-white/[0.09] bg-[#0D1220] p-5">
+        <div id="heroContent" class="loading-state text-sm text-[#566778]">Select a partition to inspect its current shape.</div>
+      </section>
+
+      <!-- Tab bar -->
+      <div class="flex border-b border-white/[0.09] px-6 mt-5 bg-[#0D1220] sticky top-12 z-10">
+        <button class="tab-button active" data-tab-target="overviewPanel">Overview</button>
+        <button class="tab-button" data-tab-target="topologyPanel">Topology</button>
+        <button class="tab-button" data-tab-target="rolloutsPanel">Rollouts</button>
+        <button class="tab-button" data-tab-target="historyPanel">History</button>
+      </div>
+
+      <!-- ── Overview panel ────────────────────────── -->
+      <section id="overviewPanel" class="panel active px-6 py-5 space-y-5">
+        <article class="card">
+          <div class="card-header">
+            <h2 class="card-title">Needs attention</h2>
+            <p class="text-muted text-[13px]">Failing and drifted assets are grouped here first.</p>
+          </div>
+          <div id="attentionAssetsList" class="loading-state text-sm text-[#566778]">Loading attention view…</div>
+        </article>
+        <div class="overview-map-grid">
+          <article class="card">
+            <div class="card-header">
+              <h2 class="card-title">Intent map</h2>
+              <p class="text-muted text-[13px]">Friendly summaries for each blueprint and its assets.</p>
+            </div>
+            <div id="intentCards" class="loading-state text-sm text-[#566778]">Loading intents…</div>
+          </article>
+          <article class="card">
+            <div class="card-header">
+              <h2 class="card-title">Service health</h2>
+              <p class="text-muted text-[13px]">Operational status for service-like assets. Open details in the intent map for config, ports, and outputs.</p>
+            </div>
+            <div id="serviceHealthCards" class="loading-state text-sm text-[#566778]">Loading services…</div>
+          </article>
+        </div>
+        <article class="card">
+          <div class="card-header">
+            <h2 class="card-title">Recent events</h2>
+            <p class="text-muted text-[13px]">Latest lifecycle changes and deployment actions.</p>
+          </div>
+          <div id="recentEventsList" class="loading-state text-sm text-[#566778]">Loading recent activity…</div>
+        </article>
+      </section>
+
+      <!-- ── Topology panel ────────────────────────── -->
+      <section id="topologyPanel" class="panel hidden">
+        <div class="flex flex-col h-[calc(100vh-10rem)]">
+          <div class="flex items-start justify-between gap-4 px-6 py-4 border-b border-white/[0.09]">
+            <div>
+              <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-[#00ADE4] mb-1">Deployment graph</p>
+              <h2 class="text-lg font-bold text-[#E5ECF4]">Topology</h2>
+              <p class="text-[13px] text-[#9BB0CF]">Inspect intent and asset relationships for the active partition.</p>
+            </div>
+            <div class="flex flex-col gap-2 items-end">
+              <div class="flex items-center gap-1 rounded border border-white/[0.09] bg-[#151B2B] p-0.5" role="group" aria-label="Topology zoom controls">
+                <button id="topologyZoomOut" class="zoom-btn" aria-label="Zoom out">−</button>
+                <span id="topologyZoomValue" class="text-[11px] font-semibold text-[#9BB0CF] px-2 min-w-[40px] text-center">100%</span>
+                <button id="topologyZoomIn" class="zoom-btn" aria-label="Zoom in">+</button>
+                <button id="topologyResetLayout" class="zoom-btn px-3 text-[11px]" aria-label="Reset layout">Reset</button>
+              </div>
+              <div class="flex items-center gap-3 text-[12px] text-[#9BB0CF]">
+                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showContainEdges" type="checkbox" checked class="accent-[#00ADE4]" />Containment</label>
+                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showJoinEdges" type="checkbox" checked class="accent-[#00ADE4]" />Joins</label>
+                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showAssetEdges" type="checkbox" checked class="accent-[#00ADE4]" />Dependencies</label>
+                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showOutputEdges" type="checkbox" checked class="accent-[#00ADE4]" />Output refs</label>
+              </div>
+            </div>
+          </div>
+          <div class="flex flex-1 min-h-0">
+            <div class="flex-1 overflow-auto">
+              <div id="topologyCanvas" class="topology-canvas empty-state text-sm text-[#566778] p-6">
+                Select a partition to visualize its topology.
+              </div>
+            </div>
+            <aside class="w-72 flex flex-col border-l border-white/[0.09] overflow-y-auto">
+              <section class="p-4 border-b border-white/[0.09]">
+                <div class="text-[11px] font-bold uppercase tracking-[0.09em] text-[#566778] mb-3">Legend</div>
+                <div id="topologyLegend"></div>
+              </section>
+              <section class="p-4 flex-1">
+                <div class="text-[11px] font-bold uppercase tracking-[0.09em] text-[#566778] mb-3">Node details</div>
+                <div id="topologyDetails" class="empty-state text-sm text-[#566778]">
+                  Select a node to inspect its status, metadata, and linked details.
+                </div>
+              </section>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Rollouts panel ─────────────────────────── -->
+      <section id="rolloutsPanel" class="panel hidden px-6 py-5">
+        <article class="card">
+          <div class="card-header">
+            <h2 class="card-title">Rollouts</h2>
+            <p class="text-muted text-[13px]">New intents and asset releases archived for the selected partition.</p>
+          </div>
+          <div id="rolloutsTimeline" class="loading-state text-sm text-[#566778]">Loading rollouts…</div>
+        </article>
+      </section>
+
+      <!-- ── History panel ─────────────────────────── -->
+      <section id="historyPanel" class="panel hidden px-6 py-5">
+        <div class="card mb-5">
+          <div class="card-header">
+            <div class="flex flex-wrap items-end gap-3">
+              <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+                <span>Entries per intent</span>
+                <input id="historyLimit" class="search-input w-28" type="number" min="1" step="1" value="10" />
+              </label>
+              <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+                <span>From</span>
+                <input id="historySince" class="search-input w-52" type="datetime-local" />
+              </label>
+              <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+                <span>To</span>
+                <input id="historyUntil" class="search-input w-52" type="datetime-local" />
+              </label>
+              <button id="historyApply" type="button" class="btn btn-primary">Apply</button>
+              <button id="historyReset" type="button" class="btn btn-secondary">Reset</button>
+            </div>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-5">
+          <article class="card">
+            <div class="card-header">
+              <div class="flex items-start justify-between gap-2">
+                <div>
+                  <h2 class="card-title">Deployments</h2>
+                  <p class="text-muted text-[13px]">Push history for intents and assets.</p>
+                </div>
+                <input id="historyFilter" class="search-input w-44" type="search" placeholder="Filter intent or asset" />
+              </div>
+            </div>
+            <div id="deploymentTimeline" class="loading-state text-sm text-[#566778]">Loading deployment history…</div>
+          </article>
+          <article class="card">
+            <div class="card-header">
+              <div class="flex items-start justify-between gap-2">
+                <div>
+                  <h2 class="card-title">State transitions</h2>
+                  <p class="text-muted text-[13px]">Timeline of events, errors, and queue activity.</p>
+                </div>
+                <label class="flex items-center gap-1.5 text-[12px] text-[#9BB0CF] cursor-pointer whitespace-nowrap">
+                  <input id="historyGroupToggle" type="checkbox" checked class="accent-[#00ADE4]" />
+                  Group by type
+                </label>
+              </div>
+            </div>
+            <div id="eventTimeline" class="loading-state text-sm text-[#566778]">Loading event timeline…</div>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toastContainer" class="fixed bottom-5 right-5 z-[200] flex flex-col gap-2 pointer-events-none"></div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>
