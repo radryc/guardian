@@ -1,6 +1,8 @@
 guardianctl quick guide
 ======================
 
+Part of the Strata platform.
+
 What this is
 ------------
 `guardianctl` is the command-line operator for Guardian partitions, intents,
