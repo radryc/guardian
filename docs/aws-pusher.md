@@ -72,7 +72,7 @@ The helper script sets up both.
 Use:
 
 ```bash
-scripts/setup-aws-pusher.sh \
+../monotools/setup-aws-pusher.sh \
   --region eu-west-1 \
   --trusted-principal-arn arn:aws:iam::111122223333:role/guardian-pusher-runtime
 ```
@@ -80,7 +80,7 @@ scripts/setup-aws-pusher.sh \
 Or, for local development:
 
 ```bash
-scripts/setup-aws-pusher.sh \
+../monotools/setup-aws-pusher.sh \
   --profile prod-admin \
   --region eu-west-1 \
   --use-current-caller
