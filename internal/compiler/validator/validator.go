@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reugn/go-quartz/quartz"
 	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
 	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
 	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
@@ -31,8 +32,8 @@ func ValidatePartition(p *partitiondomain.Partition) error {
 		return fmt.Errorf("invalid reconciliation mode %q", p.Spec.Reconciliation.Mode)
 	}
 	if p.Spec.Reconciliation.Interval != "" {
-		if _, err := time.ParseDuration(p.Spec.Reconciliation.Interval); err != nil {
-			return fmt.Errorf("invalid reconciliation interval: %w", err)
+		if err := validateInterval(p.Spec.Reconciliation.Interval); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -100,6 +101,22 @@ func validateTargetPlacement(targetPusher string, placement targetdomain.Placeme
 			strings.TrimSpace(placement.Account) == "" {
 			return fmt.Errorf("target placement is required")
 		}
+	}
+	return nil
+}
+
+// validateInterval accepts either a positive Go duration ("10m", "1h30m") or a
+// quartz cron expression ("0 0/10 * * * ?").
+func validateInterval(s string) error {
+	if _, err := quartz.NewCronTrigger(s); err == nil {
+		return nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("invalid reconciliation interval %q: must be a Go duration or quartz cron expression", s)
+	}
+	if d <= 0 {
+		return fmt.Errorf("reconciliation interval must be positive, got %q", s)
 	}
 	return nil
 }

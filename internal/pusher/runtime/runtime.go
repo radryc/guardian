@@ -54,7 +54,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 		return fmt.Errorf("runtime registry is required")
 	}
 	if r.PollInterval <= 0 {
-		r.PollInterval = time.Second
+		r.PollInterval = 5 * time.Second
 	}
 
 	if err := r.processPending(ctx); err != nil {
