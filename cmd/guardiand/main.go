@@ -35,7 +35,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
-const resultRescanInterval = 15 * time.Second
+const resultRescanInterval = 2 * time.Minute
 
 func main() {
 	var configPath string
@@ -127,10 +127,6 @@ func main() {
 		}()
 	}
 
-	interval, err := time.ParseDuration(cfg.Guardian.ReconcileInterval)
-	if err != nil {
-		log.Fatalf("invalid reconcile interval: %v", err)
-	}
 	dispatcher := dispatcher.NewDispatcher(store, cfg.Guardian.PrincipalID)
 	compliancePublisher := compliance.NewNoop()
 	if cfg.Compliance.S3Bucket != "" {
@@ -162,7 +158,7 @@ func main() {
 		log.Fatalf("invalid stale task timeout: %v", err)
 	}
 	processor := results.NewProcessor(store, dispatcher)
-	recon := reconciler.NewReconcilerWithOptions(store, dispatcher, interval, staleTaskDuration)
+	recon := reconciler.NewReconcilerWithOptions(store, dispatcher, cfg.Guardian.ReconcileInterval, staleTaskDuration)
 	watcher := &watcherpkg.Watcher{}
 	var wg sync.WaitGroup
 

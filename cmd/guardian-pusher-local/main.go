@@ -114,7 +114,7 @@ func main() {
 		PrincipalID:             monofsPrincipalID,
 		Store:                   store,
 		Registry:                reg,
-		PollInterval:            time.Second,
+		PollInterval:            5 * time.Second,
 		UnclaimedTaskRetryDelay: unclaimedTaskRetryDelay,
 	}
 
