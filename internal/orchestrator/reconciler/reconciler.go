@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/reugn/go-quartz/quartz"
 	"github.com/rydzu/ainfra/guardian/internal/compiler/manifest"
 	"github.com/rydzu/ainfra/guardian/internal/compiler/planner"
 	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
@@ -41,49 +42,99 @@ var (
 type Reconciler struct {
 	store          guardianapi.Store
 	dispatcher     *dispatcher.Dispatcher
-	interval       time.Duration
+	intervalStr    string
 	staleTaskAfter time.Duration // tasks older than this are treated as dead and re-queued
 	parallelism    int
 	partitionLocks sync.Map
+
+	// guarded by runMu; only non-nil while Run() is executing
+	runMu                sync.Mutex
+	pool                 *priorityPool
+	scheduler            quartz.Scheduler
+	scheduledFingerprints map[string]string // partition → "intervalStr|jitterPct"
 }
 
+// NewReconciler creates a reconciler using a fixed interval. Suitable for
+// tests, CLI, and UI handlers that call ReconcilePartition/ReconcileAll
+// directly without running the quartz scheduler.
 func NewReconciler(store guardianapi.Store, dispatcher *dispatcher.Dispatcher, interval time.Duration) *Reconciler {
-	return NewReconcilerWithOptions(store, dispatcher, interval, 0)
+	return NewReconcilerWithOptions(store, dispatcher, interval.String(), 0)
 }
 
-func NewReconcilerWithOptions(store guardianapi.Store, dispatcher *dispatcher.Dispatcher, interval, staleTaskAfter time.Duration) *Reconciler {
-	if interval <= 0 {
-		interval = 10 * time.Minute
+// NewReconcilerWithOptions creates a reconciler with a string interval that
+// can be either a Go duration ("10m") or a quartz cron expression
+// ("0 0/10 * * * ?"). Called from the daemon; intervalStr is validated lazily
+// in Run() so that startup errors are reported clearly.
+func NewReconcilerWithOptions(store guardianapi.Store, dispatcher *dispatcher.Dispatcher, intervalStr string, staleTaskAfter time.Duration) *Reconciler {
+	if intervalStr == "" {
+		intervalStr = "10m"
 	}
 	if staleTaskAfter <= 0 {
 		staleTaskAfter = 5 * time.Minute
 	}
 	return &Reconciler{
-		store:          store,
-		dispatcher:     dispatcher,
-		interval:       interval,
-		staleTaskAfter: staleTaskAfter,
-		parallelism:    defaultParallelism(),
+		store:                 store,
+		dispatcher:            dispatcher,
+		intervalStr:           intervalStr,
+		staleTaskAfter:        staleTaskAfter,
+		parallelism:           defaultParallelism(),
+		scheduledFingerprints: make(map[string]string),
 	}
 }
 
 func (r *Reconciler) Run(ctx context.Context) error {
-	log.Printf("reconciler: starting with interval=%s", r.interval)
+	// Validate the default trigger before allocating any resources.
+	if _, err := parseTrigger(r.intervalStr); err != nil {
+		return fmt.Errorf("reconciler: invalid interval: %w", err)
+	}
+
+	sched, err := quartz.NewStdScheduler()
+	if err != nil {
+		return fmt.Errorf("reconciler: create scheduler: %w", err)
+	}
+	pool := newPriorityPool(r.parallelism)
+	pool.start(ctx)
+
+	r.runMu.Lock()
+	r.pool = pool
+	r.scheduler = sched
+	r.scheduledFingerprints = make(map[string]string)
+	r.runMu.Unlock()
+
+	defer func() {
+		sched.Stop()
+		pool.Shutdown()
+		r.runMu.Lock()
+		r.pool = nil
+		r.scheduler = nil
+		r.scheduledFingerprints = make(map[string]string)
+		r.runMu.Unlock()
+	}()
+
+	sched.Start(ctx)
+	log.Printf("reconciler: starting with default interval=%s parallelism=%d", r.intervalStr, r.parallelism)
+
+	// Initial full reconcile (synchronous) so the daemon is current on startup.
 	if err := r.reconcileAll(ctx); err != nil {
 		log.Printf("reconciler: initial reconcile error (will retry): %v", err)
 	}
-	ticker := time.NewTicker(r.interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			if err := r.reconcileAll(ctx); err != nil {
-				log.Printf("reconciler: reconcile cycle error (will retry in %s): %v", r.interval, err)
-			}
-		}
+
+	// Set up per-partition quartz jobs based on current partition configs.
+	if err := r.syncPartitionSchedules(ctx); err != nil {
+		log.Printf("reconciler: initial partition schedule sync error: %v", err)
 	}
+
+	// Discovery job: keep partition jobs in sync as partitions are added/removed.
+	discoveryDetail := quartz.NewJobDetail(
+		&discoveryJob{r: r},
+		quartz.NewJobKey("guardian.discovery"),
+	)
+	if err := sched.ScheduleJob(discoveryDetail, quartz.NewSimpleTrigger(30*time.Second)); err != nil {
+		return fmt.Errorf("reconciler: schedule discovery job: %w", err)
+	}
+
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 // ReconcileAll performs a single full reconcile cycle across all partitions.
@@ -320,6 +371,7 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 	span.SetStatus(codes.Ok, "")
 	log.Printf("reconciler: partition=%s reconcile complete", partitionName)
 	telemetry.EmitInfo(ctx, reconcilerScope, fmt.Sprintf("reconciled partition %s", partitionName))
+	r.updateScheduleFromSpec(partitionName, partitionSpec.Spec.Reconciliation.Interval, partitionSpec.Spec.Reconciliation.JitterPercent)
 	return nil
 }
 
@@ -514,6 +566,163 @@ func (r *Reconciler) partitionNames(ctx context.Context) ([]string, error) {
 func (r *Reconciler) partitionLock(partitionName string) *sync.Mutex {
 	lock, _ := r.partitionLocks.LoadOrStore(partitionName, &sync.Mutex{})
 	return lock.(*sync.Mutex)
+}
+
+// ─── Scheduler management ─────────────────────────────────────────────────────
+
+// syncPartitionSchedules reconciles the quartz job registry against the live
+// partition list: adds jobs for new partitions, updates jobs whose schedule
+// config changed, and removes jobs for deleted partitions.
+func (r *Reconciler) syncPartitionSchedules(ctx context.Context) error {
+	names, err := r.partitionNames(ctx)
+	if err != nil {
+		return err
+	}
+	known := make(map[string]bool, len(names))
+	for _, name := range names {
+		known[name] = true
+		configContent, readErr := r.store.ReadFile(ctx, paths.PartitionConfig(name))
+		if readErr != nil {
+			log.Printf("reconciler: discovery: partition=%s config read error: %v", name, readErr)
+			r.schedulePartitionJob(name, r.intervalStr, 0)
+			continue
+		}
+		partition, parseErr := manifest.ParsePartition(configContent)
+		if parseErr != nil {
+			log.Printf("reconciler: discovery: partition=%s config parse error: %v", name, parseErr)
+			r.schedulePartitionJob(name, r.intervalStr, 0)
+			continue
+		}
+		if partition.Spec.Reconciliation.Mode == "manual" {
+			r.removePartitionJob(name)
+			continue
+		}
+		intervalStr := r.intervalStr
+		if partition.Spec.Reconciliation.Interval != "" {
+			intervalStr = partition.Spec.Reconciliation.Interval
+		}
+		r.schedulePartitionJob(name, intervalStr, partition.Spec.Reconciliation.JitterPercent)
+	}
+
+	// Remove jobs for partitions that no longer exist.
+	r.runMu.Lock()
+	var stale []string
+	for name := range r.scheduledFingerprints {
+		if !known[name] {
+			stale = append(stale, name)
+		}
+	}
+	r.runMu.Unlock()
+	for _, name := range stale {
+		r.removePartitionJob(name)
+		log.Printf("reconciler: discovery: partition=%s removed from schedule (partition deleted)", name)
+	}
+	return nil
+}
+
+// schedulePartitionJob creates or updates the quartz job for a single
+// partition. It is a no-op when the schedule fingerprint has not changed and
+// the job is already registered.
+func (r *Reconciler) schedulePartitionJob(name, effectiveInterval string, jitterPct int) {
+	fingerprint := fmt.Sprintf("%s|%d", effectiveInterval, jitterPct)
+
+	r.runMu.Lock()
+	sched := r.scheduler
+	oldFP := r.scheduledFingerprints[name]
+	r.runMu.Unlock()
+
+	if sched == nil {
+		return
+	}
+
+	jobKey := quartz.NewJobKeyWithGroup(name, "partitions")
+
+	// No-op when fingerprint is unchanged and job is live.
+	if fingerprint == oldFP {
+		if _, err := sched.GetScheduledJob(jobKey); err == nil {
+			return
+		}
+	}
+
+	_ = sched.DeleteJob(jobKey)
+
+	innerTrigger, err := parseTrigger(effectiveInterval)
+	if err != nil {
+		log.Printf("reconciler: partition=%s invalid interval %q, falling back to default %s: %v",
+			name, effectiveInterval, r.intervalStr, err)
+		innerTrigger, _ = parseTrigger(r.intervalStr)
+	}
+
+	// Add an initial offset only for simple (interval-based) triggers. Cron
+	// triggers are wall-clock-anchored so spreading makes no sense for them.
+	var trigger quartz.Trigger = innerTrigger
+	if _, isCron := innerTrigger.(*quartz.CronTrigger); !isCron {
+		if d := intervalDuration(effectiveInterval); d > 0 {
+			if offset := partitionOffset(name, jitterPct, d); offset > 0 {
+				trigger = &offsetTrigger{inner: innerTrigger, offset: offset}
+			}
+		}
+	}
+
+	jobDetail := quartz.NewJobDetail(&partitionJob{name: name, r: r}, jobKey)
+	if err := sched.ScheduleJob(jobDetail, trigger); err != nil {
+		log.Printf("reconciler: partition=%s schedule job error: %v", name, err)
+		return
+	}
+
+	r.runMu.Lock()
+	r.scheduledFingerprints[name] = fingerprint
+	r.runMu.Unlock()
+
+	log.Printf("reconciler: partition=%s scheduled with interval=%s jitter=%d%%", name, effectiveInterval, jitterPct)
+}
+
+// updateScheduleFromSpec is called at the end of each reconcilePartition run
+// to pick up any interval/jitter changes in the partition config.
+func (r *Reconciler) updateScheduleFromSpec(name, specInterval string, jitterPct int) {
+	r.runMu.Lock()
+	pool := r.pool
+	r.runMu.Unlock()
+	if pool == nil {
+		return // not running (CLI / test path)
+	}
+	intervalStr := r.intervalStr
+	if specInterval != "" {
+		intervalStr = specInterval
+	}
+	r.schedulePartitionJob(name, intervalStr, jitterPct)
+}
+
+// removePartitionJob deletes a partition's quartz job and clears its fingerprint.
+func (r *Reconciler) removePartitionJob(name string) {
+	r.runMu.Lock()
+	sched := r.scheduler
+	delete(r.scheduledFingerprints, name)
+	r.runMu.Unlock()
+	if sched != nil {
+		_ = sched.DeleteJob(quartz.NewJobKeyWithGroup(name, "partitions"))
+	}
+}
+
+// partitionJobPriority inspects current intent statuses to assign a dispatch
+// priority: Critical for active rollouts, High for unhealthy intents, Normal
+// otherwise.
+func (r *Reconciler) partitionJobPriority(ctx context.Context, partitionName string) priority {
+	states, err := common.LoadAllIntentStates(ctx, r.store, partitionName)
+	if err != nil {
+		return priorityNormal
+	}
+	result := priorityNormal
+	for _, s := range states {
+		switch s.Status {
+		case statedomain.StatusApplying, statedomain.StatusDestroying:
+			return priorityCritical
+		case statedomain.StatusDrifted, statedomain.StatusDriftedLocked,
+			statedomain.StatusApplyFailed, statedomain.StatusCheckFailed, statedomain.StatusDiffFailed:
+			result = priorityHigh
+		}
+	}
+	return result
 }
 
 func defaultParallelism() int {

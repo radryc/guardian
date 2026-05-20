@@ -133,7 +133,7 @@ func main() {
 		PrincipalID:             monofsPrincipalID,
 		Store:                   store,
 		Registry:                reg,
-		PollInterval:            time.Second,
+		PollInterval:            5 * time.Second,
 		UnclaimedTaskRetryDelay: unclaimedTaskRetryDelay,
 		CanHandle: func(task *taskdomain.Task) bool {
 			return strings.EqualFold(strings.TrimSpace(task.Target.Account), account) &&
