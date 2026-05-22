@@ -35,7 +35,14 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
-const resultRescanInterval = 2 * time.Minute
+const (
+	// fastResultScanInterval is used when active tasks are in flight.
+	// It acts as a tight safety net for missed watch events.
+	fastResultScanInterval = 15 * time.Second
+	// idleResultScanInterval is used when no active tasks are observed.
+	// It keeps costs low during quiet periods.
+	idleResultScanInterval = 2 * time.Minute
+)
 
 func main() {
 	var configPath string
@@ -257,14 +264,22 @@ func main() {
 				continue
 			}
 
-			if err := processLiveResultFiles(ctx, store, processor, pushers, scanReason); err != nil {
+			// Prime the initial scan interval: start fast if tasks are already
+		// in flight (e.g. daemon restart mid-rollout), idle otherwise.
+		initialLive, err := processLiveResultFiles(ctx, store, processor, pushers, scanReason)
+			if err != nil {
 				log.Printf("result-processor: %s scan failed: %v", scanReason, err)
 			}
 			scanReason = "reconnect"
 			// Watch delivery is best-effort in the distributed store. Periodically
 			// rescan active result files so a missed .results event cannot leave an
 			// in-flight task stuck until the stale-task timeout elapses.
-			scanTicker := time.NewTicker(resultRescanInterval)
+			// The interval is adaptive: fast (15s) while tasks are active, slow (2m) when idle.
+			scanInterval := idleResultScanInterval
+			if initialLive > 0 || err != nil {
+				scanInterval = fastResultScanInterval
+			}
+			scanTicker := time.NewTicker(scanInterval)
 
 			for {
 				select {
@@ -272,8 +287,21 @@ func main() {
 					scanTicker.Stop()
 					return ctx.Err()
 				case <-scanTicker.C:
-					if err := processLiveResultFiles(ctx, store, processor, pushers, "periodic"); err != nil {
-						log.Printf("result-processor: periodic scan failed: %v", err)
+					liveCount, scanErr := processLiveResultFiles(ctx, store, processor, pushers, "periodic")
+					if scanErr != nil {
+						log.Printf("result-processor: periodic scan failed: %v", scanErr)
+						// On error we cannot tell whether tasks are active; keep
+						// current interval rather than downgrading to idle.
+						break
+					}
+					newInterval := idleResultScanInterval
+					if liveCount > 0 {
+						newInterval = fastResultScanInterval
+					}
+					if newInterval != scanInterval {
+						scanTicker.Reset(newInterval)
+						scanInterval = newInterval
+						log.Printf("result-processor: scan interval adjusted to %s (live tasks: %d)", scanInterval, liveCount)
 					}
 				case event, ok := <-events:
 					if !ok {
@@ -291,6 +319,13 @@ func main() {
 					}
 					if err := processor.ProcessResult(ctx, &result); err != nil {
 						log.Printf("process result %s: %v", event.LogicalPath, err)
+					}
+					// A result just arrived via watch: tasks are clearly active.
+					// Arm fast scan so any sibling results missed by the watcher
+					// are caught quickly.
+					if scanInterval != fastResultScanInterval {
+						scanTicker.Reset(fastResultScanInterval)
+						scanInterval = fastResultScanInterval
 					}
 				}
 			}
@@ -358,11 +393,11 @@ func resultWatchPrefixes(pushers []string) []string {
 	return prefixes
 }
 
-func processLiveResultFiles(ctx context.Context, store guardianapi.Store, processor *results.Processor, pushers []string, reason string) error {
+func processLiveResultFiles(ctx context.Context, store guardianapi.Store, processor *results.Processor, pushers []string, reason string) (int, error) {
 	liveTaskIDs := make(map[string]bool)
 	partEntries, err := store.ListDir(ctx, paths.PartitionsRoot())
 	if err != nil {
-		return err
+		return 0, err
 	}
 	for _, pe := range partEntries {
 		if !pe.IsDir {
@@ -413,7 +448,7 @@ func processLiveResultFiles(ctx context.Context, store guardianapi.Store, proces
 		}
 	}
 	log.Printf("result-processor: %s scan complete", reason)
-	return nil
+	return len(liveTaskIDs), nil
 }
 
 func resolveHTTPBaseURL(explicit, listen string) string {

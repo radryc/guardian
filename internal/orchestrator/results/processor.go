@@ -264,6 +264,20 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		if err := p.dispatcher.ArchiveDeployment(ctx, rec, manifestContent, result.Logs); err != nil {
 			return fail(err)
 		}
+		if releaseTag := releaseTagFromAssetVersions(rec.AssetVersions); releaseTag != "" {
+			log.Printf(
+				"results: release task=%s op=%s partition=%s intent=%s status=%s release=%s deployment_revision=%s partition_revision=%s pusher=%s",
+				result.TaskID,
+				result.Op,
+				result.Partition,
+				result.Intent,
+				result.Status,
+				releaseTag,
+				state.DeploymentRevision,
+				state.PartitionRevision,
+				result.Pusher,
+			)
+		}
 		if err := p.queueDependents(ctx, state.Partition); err != nil {
 			return fail(err)
 		}
@@ -353,6 +367,24 @@ func (p *Processor) cleanupQueueArtifacts(ctx context.Context, pusher, taskID st
 	if err != nil {
 		telemetry.EmitWarn(ctx, processorScope, fmt.Sprintf("cleanup queue artifacts for %s failed: %v", taskID, err))
 	}
+}
+
+func releaseTagFromAssetVersions(assetVersions map[string]string) string {
+	tag := ""
+	for _, version := range assetVersions {
+		version = strings.TrimSpace(version)
+		if version == "" {
+			continue
+		}
+		if tag == "" {
+			tag = version
+			continue
+		}
+		if tag != version {
+			return ""
+		}
+	}
+	return tag
 }
 
 func (p *Processor) nextTask(ctx context.Context, currentTask *taskdomain.Task, state *statedomain.IntentState, op taskdomain.Operation) (*taskdomain.Task, error) {
