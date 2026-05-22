@@ -2,9 +2,11 @@ package results
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"reflect"
 	"strings"
@@ -81,6 +83,13 @@ spec:
 		ClaimedAt:    finishedAt,
 		LeaseSeconds: 300,
 	})
+	var logBuf bytes.Buffer
+	prevLogWriter := log.Writer()
+	prevLogFlags := log.Flags()
+	log.SetOutput(&logBuf)
+	log.SetFlags(0)
+	defer log.SetOutput(prevLogWriter)
+	defer log.SetFlags(prevLogFlags)
 	if err := processor.ProcessResult(ctx, &taskdomain.TaskResult{
 		APIVersion: "guardian/v1alpha1",
 		Kind:       "TaskResult",
@@ -134,6 +143,12 @@ spec:
 	}
 	if record.AssetVersions["backend"] != "v1.2.3-abc123-20260429" {
 		t.Fatalf("unexpected archive asset versions: %v", record.AssetVersions)
+	}
+	if !strings.Contains(logBuf.String(), "results: release task=task-apply-1 op=APPLY partition=payments intent=api status=Succeeded release=v1.2.3-abc123-20260429") {
+		t.Fatalf("expected release log, got %q", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "deployment_revision="+updatedState.DeploymentRevision) {
+		t.Fatalf("expected deployment revision in release log, got %q", logBuf.String())
 	}
 
 	// Archive index is no longer written by ArchiveDeployment; reads fall back
