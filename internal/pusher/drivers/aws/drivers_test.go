@@ -174,6 +174,180 @@ func TestStageSourceTreeRejectsEmptyDirectory(t *testing.T) {
 	}
 }
 
+func TestAWSDriverApplyDiffWithPrebuiltAssembly(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	backend := NewBackend()
+	backend.SetBootstrapReady("123456789012", "eu-west-1", true)
+	backend.SetStackOutputs("123456789012", "eu-west-1", "guardian-demo-network", map[string]string{
+		"VpcId": "vpc-prebuilt",
+	})
+
+	reg := registry.New()
+	writeFile(t, ctx, store, "/partitions/demo/payloads/aws/network/stack.yaml", []byte(`
+sourceType: cdk-ts
+prebuiltAssemblyDir: /partitions/demo/payloads/aws/network/cdk.out
+stackName: guardian-demo-network
+stackID: NetworkStack
+packageManager: none
+outputMap:
+  vpcId: VpcId
+`))
+	writeFile(t, ctx, store, "/partitions/demo/payloads/aws/network/cdk.out/manifest.json", []byte(`{"version":"1.0"}`))
+	writeFile(t, ctx, store, "/partitions/demo/payloads/aws/network/cdk.out/tree.json", []byte(`{"tree":{}}`))
+	Register(reg, backend, secrets.NewStoreResolver(store))
+
+	runtime := &runtimepkg.Runtime{
+		QueuePath: paths.QueueDir("aws"),
+		WorkerID:  "aws-worker",
+		Store:     store,
+		Registry:  reg,
+		CanHandle: func(task *taskdomain.Task) bool {
+			return task.Target.Account == "123456789012" && task.Target.Region == "eu-west-1"
+		},
+	}
+
+	run := func(id string, op taskdomain.Operation) taskdomain.TaskResult {
+		t.Helper()
+		task := taskdomain.Task{
+			APIVersion:   "guardian/v1alpha1",
+			Kind:         "Task",
+			TaskID:       id,
+			Partition:    "demo",
+			Intent:       "network",
+			Op:           op,
+			TargetPusher: "aws",
+			Target: targetdomain.Placement{
+				Account: "123456789012",
+				Region:  "eu-west-1",
+			},
+			Assets: []taskdomain.AbstractAsset{{
+				Type: "CDKStack",
+				Name: "network",
+				Payload: map[string]string{
+					"aws": "/partitions/demo/payloads/aws/network/stack.yaml",
+				},
+			}},
+		}
+		content, err := json.Marshal(task)
+		if err != nil {
+			t.Fatalf("marshal task: %v", err)
+		}
+		writeFile(t, ctx, store, paths.QueueTask("aws", id), content)
+		if err := runtime.ProcessPending(ctx); err != nil {
+			t.Fatalf("process task: %v", err)
+		}
+		raw, err := store.ReadFile(ctx, paths.QueueResult("aws", id))
+		if err != nil {
+			t.Fatalf("read result: %v", err)
+		}
+		var result taskdomain.TaskResult
+		if err := json.Unmarshal(raw, &result); err != nil {
+			t.Fatalf("unmarshal result: %v", err)
+		}
+		return result
+	}
+
+	check := run("aws-prebuilt-check", taskdomain.OpCheck)
+	if check.Status != taskdomain.ResultSucceeded {
+		t.Fatalf("check status = %q, error = %v", check.Status, check.Error)
+	}
+
+	apply := run("aws-prebuilt-apply", taskdomain.OpApply)
+	if apply.Status != taskdomain.ResultSucceeded {
+		t.Fatalf("apply status = %q, error = %v", apply.Status, apply.Error)
+	}
+	if got := apply.Outputs["network.vpcId"]; got != "vpc-prebuilt" {
+		t.Fatalf("network.vpcId = %q, want %q", got, "vpc-prebuilt")
+	}
+	last := backend.LastRequest()
+	if last.AppCommand != last.WorkspaceDir {
+		t.Fatalf("expected app command to point to staged prebuilt assembly, got app=%q workspace=%q", last.AppCommand, last.WorkspaceDir)
+	}
+	if last.DesiredHash == "" {
+		t.Fatal("expected desired hash in prebuilt mode")
+	}
+	if _, err := os.Stat(last.WorkspaceDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected staged prebuilt assembly cleanup, stat err = %v", err)
+	}
+
+	diff := run("aws-prebuilt-diff", taskdomain.OpDiff)
+	if diff.Status != taskdomain.ResultSucceeded || diff.Drift == nil || diff.Drift.Status != "InSync" {
+		t.Fatalf("diff = %+v", diff)
+	}
+}
+
+func TestAWSDriverPrebuiltAssemblyRequiresManifest(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	backend := NewBackend()
+	backend.SetBootstrapReady("123456789012", "eu-west-1", true)
+
+	reg := registry.New()
+	writeFile(t, ctx, store, "/partitions/demo/payloads/aws/network/stack.yaml", []byte(`
+sourceType: cdk-ts
+prebuiltAssemblyDir: /partitions/demo/payloads/aws/network/cdk.out
+stackName: guardian-demo-network
+stackID: NetworkStack
+packageManager: none
+`))
+	writeFile(t, ctx, store, "/partitions/demo/payloads/aws/network/cdk.out/tree.json", []byte(`{"tree":{}}`))
+	Register(reg, backend, secrets.NewStoreResolver(store))
+
+	runtime := &runtimepkg.Runtime{
+		QueuePath: paths.QueueDir("aws"),
+		WorkerID:  "aws-worker",
+		Store:     store,
+		Registry:  reg,
+		CanHandle: func(task *taskdomain.Task) bool {
+			return task.Target.Account == "123456789012" && task.Target.Region == "eu-west-1"
+		},
+	}
+
+	task := taskdomain.Task{
+		APIVersion:   "guardian/v1alpha1",
+		Kind:         "Task",
+		TaskID:       "aws-prebuilt-missing-manifest",
+		Partition:    "demo",
+		Intent:       "network",
+		Op:           taskdomain.OpCheck,
+		TargetPusher: "aws",
+		Target: targetdomain.Placement{
+			Account: "123456789012",
+			Region:  "eu-west-1",
+		},
+		Assets: []taskdomain.AbstractAsset{{
+			Type: "CDKStack",
+			Name: "network",
+			Payload: map[string]string{
+				"aws": "/partitions/demo/payloads/aws/network/stack.yaml",
+			},
+		}},
+	}
+	content, err := json.Marshal(task)
+	if err != nil {
+		t.Fatalf("marshal task: %v", err)
+	}
+	writeFile(t, ctx, store, paths.QueueTask("aws", task.TaskID), content)
+	if err := runtime.ProcessPending(ctx); err != nil {
+		t.Fatalf("process task: %v", err)
+	}
+	raw, err := store.ReadFile(ctx, paths.QueueResult("aws", task.TaskID))
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	var result taskdomain.TaskResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if result.Status != taskdomain.ResultFailed {
+		t.Fatalf("expected failed result, got %q", result.Status)
+	}
+	if result.Error == nil || *result.Error == "" {
+		t.Fatalf("expected error message in failed result: %+v", result.Error)
+	}
+}
+
 func writeFile(t *testing.T, ctx context.Context, store guardianapi.WriteStore, logicalPath string, content []byte) {
 	t.Helper()
 	if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{

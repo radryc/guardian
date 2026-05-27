@@ -183,22 +183,55 @@ func (d *CDKStackDriver) prepareRequest(ctx context.Context, in registry.AssetIn
 	if !withSource {
 		return req, noopCleanup, nil
 	}
-	workspaceDir, snapshots, cleanup, err := stageSourceTree(ctx, in.Store, payload.SourceDir)
-	if err != nil {
-		return StackRequest{}, noopCleanup, err
+	var (
+		workspaceDir string
+		snapshots    []sourceFileSnapshot
+		cleanup      func()
+	)
+
+	if payload.PrebuiltAssemblyDir != "" {
+		workspaceDir, snapshots, cleanup, err = stageSourceTree(ctx, in.Store, payload.PrebuiltAssemblyDir)
+		if err != nil {
+			return StackRequest{}, noopCleanup, err
+		}
+		if !hasSnapshotPath(snapshots, "manifest.json") {
+			cleanup()
+			return StackRequest{}, noopCleanup, fmt.Errorf("prebuiltAssemblyDir %q must contain manifest.json", payload.PrebuiltAssemblyDir)
+		}
+		req.WorkspaceDir = workspaceDir
+		req.AppCommand = workspaceDir
+	} else {
+		workspaceDir, snapshots, cleanup, err = stageSourceTree(ctx, in.Store, payload.SourceDir)
+		if err != nil {
+			return StackRequest{}, noopCleanup, err
+		}
+		appCommand, appErr := resolveAppCommand(workspaceDir, payload)
+		if appErr != nil {
+			cleanup()
+			return StackRequest{}, noopCleanup, appErr
+		}
+		req.WorkspaceDir = workspaceDir
+		req.AppCommand = appCommand
 	}
-	appCommand, err := resolveAppCommand(workspaceDir, payload)
-	if err != nil {
-		cleanup()
-		return StackRequest{}, noopCleanup, err
-	}
-	req.WorkspaceDir = workspaceDir
-	req.AppCommand = appCommand
+
 	req.DesiredHash = desiredHash(in, payload, contextValues, env, snapshots)
 	req.Tags = driverLabels(in, req.DesiredHash)
 	req.Tags["guardian.account"] = in.Target.Account
 	req.Tags["guardian.region"] = in.Target.Region
 	return req, cleanup, nil
+}
+
+func hasSnapshotPath(snapshots []sourceFileSnapshot, relPath string) bool {
+	needle := path.Clean(strings.TrimSpace(relPath))
+	if needle == "" || needle == "." {
+		return false
+	}
+	for _, snapshot := range snapshots {
+		if path.Clean(snapshot.Path) == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func driverLabels(in registry.AssetInput, hash string) map[string]string {

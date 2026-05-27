@@ -178,6 +178,9 @@ func (b *CLIBackend) UpsertDeployment(deployment Deployment) error {
 	if deployment.Container.ImagePullPolicy != "" {
 		containerSpec["imagePullPolicy"] = deployment.Container.ImagePullPolicy
 	}
+	if probe := deployment.Container.ReadinessProbe; probe != nil {
+		containerSpec["readinessProbe"] = probeSpec(probe)
+	}
 	if r := deployment.Container.Resources; r.CPURequest != "" || r.CPULimit != "" || r.MemoryRequest != "" || r.MemoryLimit != "" {
 		resources := map[string]any{}
 		if req := map[string]string{}; r.CPURequest != "" || r.MemoryRequest != "" {
@@ -630,6 +633,52 @@ func containerSecurityContext(container Container) map[string]any {
 		ctx["capabilities"] = map[string]any{"add": append([]string(nil), container.Capabilities...)}
 	}
 	return ctx
+}
+
+func probeSpec(probe *Probe) map[string]any {
+	if probe == nil {
+		return nil
+	}
+
+	out := map[string]any{}
+	hasHandler := false
+	if probe.TCPSocket != nil && probe.TCPSocket.Port > 0 {
+		out["tcpSocket"] = map[string]any{"port": probe.TCPSocket.Port}
+		hasHandler = true
+	}
+	if probe.HTTPGet != nil && probe.HTTPGet.Port > 0 {
+		httpGet := map[string]any{"port": probe.HTTPGet.Port}
+		if probe.HTTPGet.Path != "" {
+			httpGet["path"] = probe.HTTPGet.Path
+		}
+		if probe.HTTPGet.Scheme != "" {
+			httpGet["scheme"] = probe.HTTPGet.Scheme
+		}
+		out["httpGet"] = httpGet
+		hasHandler = true
+	}
+
+	// Kubernetes requires probes to include at least one handler (tcpSocket/httpGet/exec/grpc).
+	if !hasHandler {
+		return nil
+	}
+
+	if probe.InitialDelaySeconds > 0 {
+		out["initialDelaySeconds"] = probe.InitialDelaySeconds
+	}
+	if probe.PeriodSeconds > 0 {
+		out["periodSeconds"] = probe.PeriodSeconds
+	}
+	if probe.TimeoutSeconds > 0 {
+		out["timeoutSeconds"] = probe.TimeoutSeconds
+	}
+	if probe.SuccessThreshold > 0 {
+		out["successThreshold"] = probe.SuccessThreshold
+	}
+	if probe.FailureThreshold > 0 {
+		out["failureThreshold"] = probe.FailureThreshold
+	}
+	return out
 }
 
 func selectorForLabels(labels map[string]string) map[string]string {

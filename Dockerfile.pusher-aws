@@ -23,9 +23,9 @@ COPY --from=monofs . /src/monofs
 COPY --from=kvs . /src/kvs
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-	-trimpath \
-	-ldflags "-s -w -X github.com/rydzu/ainfra/guardian/internal/buildinfo.Version=${BUILD_VERSION} -X github.com/rydzu/ainfra/guardian/internal/buildinfo.Commit=${BUILD_COMMIT} -X github.com/rydzu/ainfra/guardian/internal/buildinfo.BuildTime=${BUILD_TIME}" \
-	-o /out/guardian-pusher-k8s ./cmd/guardian-pusher-k8s
+  -trimpath \
+  -ldflags "-s -w -X github.com/rydzu/ainfra/guardian/internal/buildinfo.Version=${BUILD_VERSION} -X github.com/rydzu/ainfra/guardian/internal/buildinfo.Commit=${BUILD_COMMIT} -X github.com/rydzu/ainfra/guardian/internal/buildinfo.BuildTime=${BUILD_TIME}" \
+  -o /out/guardian-pusher-aws ./cmd/guardian-pusher-aws
 
 FROM alpine:3.21
 
@@ -33,15 +33,16 @@ ARG BUILD_VERSION=dev
 ARG BUILD_COMMIT=unknown
 ARG BUILD_TIME=unknown
 
-RUN apk add --no-cache ca-certificates kubectl yq
+RUN apk add --no-cache ca-certificates nodejs npm aws-cli yq && \
+  npm install -g aws-cdk
 
 LABEL org.opencontainers.image.version=${BUILD_VERSION}
 LABEL org.opencontainers.image.revision=${BUILD_COMMIT}
 LABEL org.opencontainers.image.created=${BUILD_TIME}
 
-COPY --from=build /out/guardian-pusher-k8s /usr/local/bin/guardian-pusher-k8s
-COPY docker/pusher-k8s-entrypoint.sh /usr/local/bin/pusher-k8s-entrypoint
+COPY --from=build /out/guardian-pusher-aws /usr/local/bin/guardian-pusher-aws
+COPY docker/pusher-aws-entrypoint.sh /usr/local/bin/pusher-aws-entrypoint
 
-RUN chmod +x /usr/local/bin/pusher-k8s-entrypoint
+RUN chmod +x /usr/local/bin/pusher-aws-entrypoint
 
-ENTRYPOINT ["/usr/local/bin/pusher-k8s-entrypoint"]
+ENTRYPOINT ["/usr/local/bin/pusher-aws-entrypoint"]
