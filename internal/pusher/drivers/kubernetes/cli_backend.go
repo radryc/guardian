@@ -639,9 +639,12 @@ func probeSpec(probe *Probe) map[string]any {
 	if probe == nil {
 		return nil
 	}
+
 	out := map[string]any{}
+	hasHandler := false
 	if probe.TCPSocket != nil && probe.TCPSocket.Port > 0 {
 		out["tcpSocket"] = map[string]any{"port": probe.TCPSocket.Port}
+		hasHandler = true
 	}
 	if probe.HTTPGet != nil && probe.HTTPGet.Port > 0 {
 		httpGet := map[string]any{"port": probe.HTTPGet.Port}
@@ -652,7 +655,14 @@ func probeSpec(probe *Probe) map[string]any {
 			httpGet["scheme"] = probe.HTTPGet.Scheme
 		}
 		out["httpGet"] = httpGet
+		hasHandler = true
 	}
+
+	// Kubernetes requires probes to include at least one handler (tcpSocket/httpGet/exec/grpc).
+	if !hasHandler {
+		return nil
+	}
+
 	if probe.InitialDelaySeconds > 0 {
 		out["initialDelaySeconds"] = probe.InitialDelaySeconds
 	}
@@ -667,9 +677,6 @@ func probeSpec(probe *Probe) map[string]any {
 	}
 	if probe.FailureThreshold > 0 {
 		out["failureThreshold"] = probe.FailureThreshold
-	}
-	if len(out) == 0 {
-		return nil
 	}
 	return out
 }
