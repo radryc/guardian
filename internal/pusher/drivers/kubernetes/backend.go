@@ -53,6 +53,26 @@ type ContainerResources struct {
 	MemoryLimit   string
 }
 
+type ProbeTCPSocket struct {
+	Port int `yaml:"port,omitempty" json:"port,omitempty"`
+}
+
+type ProbeHTTPGet struct {
+	Path   string `yaml:"path,omitempty" json:"path,omitempty"`
+	Port   int    `yaml:"port,omitempty" json:"port,omitempty"`
+	Scheme string `yaml:"scheme,omitempty" json:"scheme,omitempty"`
+}
+
+type Probe struct {
+	TCPSocket           *ProbeTCPSocket `yaml:"tcpSocket,omitempty" json:"tcpSocket,omitempty"`
+	HTTPGet             *ProbeHTTPGet   `yaml:"httpGet,omitempty" json:"httpGet,omitempty"`
+	InitialDelaySeconds int             `yaml:"initialDelaySeconds,omitempty" json:"initialDelaySeconds,omitempty"`
+	PeriodSeconds       int             `yaml:"periodSeconds,omitempty" json:"periodSeconds,omitempty"`
+	TimeoutSeconds      int             `yaml:"timeoutSeconds,omitempty" json:"timeoutSeconds,omitempty"`
+	SuccessThreshold    int             `yaml:"successThreshold,omitempty" json:"successThreshold,omitempty"`
+	FailureThreshold    int             `yaml:"failureThreshold,omitempty" json:"failureThreshold,omitempty"`
+}
+
 type Container struct {
 	Name            string
 	Image           string
@@ -63,6 +83,7 @@ type Container struct {
 	Ports           []ServicePort
 	VolumeMounts    []VolumeMount
 	InlineFiles     map[string]string
+	ReadinessProbe  *Probe
 	Privileged      bool
 	Capabilities    []string
 	Resources       ContainerResources
@@ -237,10 +258,27 @@ func cloneContainer(in Container) Container {
 		Ports:           append([]ServicePort(nil), in.Ports...),
 		VolumeMounts:    append([]VolumeMount(nil), in.VolumeMounts...),
 		InlineFiles:     cloneStringMap(in.InlineFiles),
+		ReadinessProbe:  cloneProbe(in.ReadinessProbe),
 		Privileged:      in.Privileged,
 		Capabilities:    append([]string(nil), in.Capabilities...),
 		Resources:       in.Resources,
 	}
+}
+
+func cloneProbe(in *Probe) *Probe {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.TCPSocket != nil {
+		tcp := *in.TCPSocket
+		out.TCPSocket = &tcp
+	}
+	if in.HTTPGet != nil {
+		httpGet := *in.HTTPGet
+		out.HTTPGet = &httpGet
+	}
+	return &out
 }
 
 func cloneService(in Service) Service {

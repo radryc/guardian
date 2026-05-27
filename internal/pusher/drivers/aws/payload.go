@@ -13,15 +13,16 @@ import (
 )
 
 type stackPayload struct {
-	SourceType     string            `yaml:"sourceType,omitempty"`
-	SourceDir      string            `yaml:"sourceDir,omitempty"`
-	AppCommand     string            `yaml:"appCommand,omitempty"`
-	Entrypoint     string            `yaml:"entrypoint,omitempty"`
-	StackName      string            `yaml:"stackName,omitempty"`
-	StackID        string            `yaml:"stackID,omitempty"`
-	PackageManager string            `yaml:"packageManager,omitempty"`
-	Context        map[string]string `yaml:"context,omitempty"`
-	OutputMap      map[string]string `yaml:"outputMap,omitempty"`
+	SourceType          string            `yaml:"sourceType,omitempty"`
+	SourceDir           string            `yaml:"sourceDir,omitempty"`
+	PrebuiltAssemblyDir string            `yaml:"prebuiltAssemblyDir,omitempty"`
+	AppCommand          string            `yaml:"appCommand,omitempty"`
+	Entrypoint          string            `yaml:"entrypoint,omitempty"`
+	StackName           string            `yaml:"stackName,omitempty"`
+	StackID             string            `yaml:"stackID,omitempty"`
+	PackageManager      string            `yaml:"packageManager,omitempty"`
+	Context             map[string]string `yaml:"context,omitempty"`
+	OutputMap           map[string]string `yaml:"outputMap,omitempty"`
 }
 
 func loadStackPayload(ctx context.Context, in registry.AssetInput) (stackPayload, error) {
@@ -41,7 +42,8 @@ func loadStackPayload(ctx context.Context, in registry.AssetInput) (stackPayload
 
 func (p stackPayload) normalized() stackPayload {
 	p.SourceType = strings.TrimSpace(p.SourceType)
-	p.SourceDir = path.Clean(strings.TrimSpace(p.SourceDir))
+	p.SourceDir = cleanLogicalPath(p.SourceDir)
+	p.PrebuiltAssemblyDir = cleanLogicalPath(p.PrebuiltAssemblyDir)
 	p.AppCommand = strings.TrimSpace(p.AppCommand)
 	p.Entrypoint = strings.TrimSpace(p.Entrypoint)
 	p.StackName = strings.TrimSpace(p.StackName)
@@ -52,13 +54,29 @@ func (p stackPayload) normalized() stackPayload {
 	return p
 }
 
+func cleanLogicalPath(input string) string {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return ""
+	}
+	return path.Clean(trimmed)
+}
+
 func (p stackPayload) validate() error {
 	p = p.normalized()
 	if p.SourceType != "cdk-ts" {
 		return fmt.Errorf("property sourceType must be %q", "cdk-ts")
 	}
-	if p.SourceDir == "" || !strings.HasPrefix(p.SourceDir, "/") {
+	hasSourceDir := p.SourceDir != ""
+	hasPrebuiltAssembly := p.PrebuiltAssemblyDir != ""
+	if hasSourceDir == hasPrebuiltAssembly {
+		return fmt.Errorf("exactly one of sourceDir or prebuiltAssemblyDir is required")
+	}
+	if hasSourceDir && !strings.HasPrefix(p.SourceDir, "/") {
 		return fmt.Errorf("property sourceDir must be an absolute logical path")
+	}
+	if hasPrebuiltAssembly && !strings.HasPrefix(p.PrebuiltAssemblyDir, "/") {
+		return fmt.Errorf("property prebuiltAssemblyDir must be an absolute logical path")
 	}
 	if p.StackName == "" {
 		return fmt.Errorf("property stackName is required")

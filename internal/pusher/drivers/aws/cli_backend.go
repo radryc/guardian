@@ -55,6 +55,9 @@ func NewCLIBackend(cdkBinary, stateDir, assumeRoleName, externalID, bootstrapSta
 }
 
 func (b *CLIBackend) Synthesize(ctx context.Context, req StackRequest) error {
+	if req.Manifest.PrebuiltAssemblyDir != "" {
+		return validatePrebuiltAssembly(req.WorkspaceDir)
+	}
 	if err := b.installDependencies(ctx, req); err != nil {
 		return err
 	}
@@ -147,8 +150,14 @@ func (b *CLIBackend) DetectDrift(ctx context.Context, req StackRequest) (StackDr
 }
 
 func (b *CLIBackend) DeployStack(ctx context.Context, req StackRequest) (StackState, error) {
-	if err := b.installDependencies(ctx, req); err != nil {
-		return StackState{}, err
+	if req.Manifest.PrebuiltAssemblyDir != "" {
+		if err := validatePrebuiltAssembly(req.WorkspaceDir); err != nil {
+			return StackState{}, err
+		}
+	} else {
+		if err := b.installDependencies(ctx, req); err != nil {
+			return StackState{}, err
+		}
 	}
 	outputDir, cleanup, err := b.makeAssemblyDir()
 	if err != nil {
@@ -433,6 +442,20 @@ func stackDoesNotExist(err error) bool {
 }
 
 func fileExists(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+func validatePrebuiltAssembly(workspaceDir string) error {
+	if strings.TrimSpace(workspaceDir) == "" {
+		return fmt.Errorf("prebuilt assembly workspace is required")
+	}
+	manifestPath := filepath.Join(workspaceDir, "manifest.json")
+	if !fileExists(manifestPath) {
+		return fmt.Errorf("prebuilt assembly missing manifest.json at %s", manifestPath)
+	}
+	return nil
 }
