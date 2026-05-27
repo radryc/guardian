@@ -9,6 +9,11 @@ Guardian is an asynchronous control plane built around a shared logical store.
 - `guardianctl` writes partition and intent manifests into the store.
 - `guardiand` watches partition config changes and reconciles them into queued tasks.
 - a pusher (`guardian-pusher-local`, `guardian-pusher-docker`, `guardian-pusher-k8s`, or `guardian-pusher-aws`) claims tasks from `/.queues/<pusher>/` and executes Guardian's current pipeline: `DIFF -> CHECK -> APPLY`. `DIFF` computes configuration drift, `CHECK` validates that detected drift can be applied safely, and `APPLY` mutates the target.
+
+Recommended queue scoping:
+
+- AWS: run one pusher per account (default pusher name `aws-<account>`)
+- Kubernetes: run one pusher per cluster (default pusher name `k8s-<cluster>`)
 - `guardiand` result processing consumes those result files, advances intent state, archives successful deployments, writes events, and queues dependent work.
 
 If the UI shows task logs ending with `task completed` but the intent remains `Queued`, `Checking`, or later flips to `TimedOut`, that means the worker finished the task and wrote a result file, but the control plane has not yet advanced state from that result.

@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -39,7 +40,7 @@ func main() {
 	var kubeconfig string
 	var kubeContext string
 	var unclaimedTaskRetryDelay time.Duration
-	flag.StringVar(&pusherName, "pusher-name", "", "pusher name")
+	flag.StringVar(&pusherName, "pusher-name", "", "pusher name (default: k8s-<cluster>)")
 	flag.StringVar(&cluster, "cluster", "", "target cluster handled by this worker")
 	flag.StringVar(&storeDir, "store-dir", "", "filesystem-backed Guardian store")
 	flag.StringVar(&workerID, "worker-id", "", "worker identifier")
@@ -53,9 +54,12 @@ func main() {
 	flag.DurationVar(&unclaimedTaskRetryDelay, "unclaimed-task-retry-delay", 15*time.Second, "minimum delay before retrying a task that could not be claimed; 0 disables backoff")
 	flag.Parse()
 
-	if pusherName == "" || cluster == "" || (storeDir == "" && monofsRouter == "") || (storeDir != "" && monofsRouter != "") {
+	if cluster == "" || (storeDir == "" && monofsRouter == "") || (storeDir != "" && monofsRouter != "") {
 		flag.Usage()
 		os.Exit(2)
+	}
+	if pusherName == "" {
+		pusherName = defaultPusherNameForCluster(cluster)
 	}
 	if workerID == "" {
 		workerID = revisions.NewCorrelationID()
@@ -141,4 +145,26 @@ func main() {
 	if err := runtime.Run(ctx); err != nil && err != context.Canceled {
 		log.Fatal(err)
 	}
+}
+
+var scopeLabelSanitizer = regexp.MustCompile(`[^a-z0-9-]+`)
+
+func scopeLabel(input string) string {
+	value := strings.ToLower(strings.TrimSpace(input))
+	value = strings.ReplaceAll(value, "_", "-")
+	value = strings.ReplaceAll(value, ".", "-")
+	value = scopeLabelSanitizer.ReplaceAllString(value, "-")
+	value = strings.Trim(value, "-")
+	if value == "" {
+		return "default"
+	}
+	return value
+}
+
+func defaultPusherNameForCluster(cluster string) string {
+	name := scopeLabel(cluster)
+	if strings.HasPrefix(name, "k8s-") || strings.HasPrefix(name, "kubernetes-") {
+		return name
+	}
+	return "k8s-" + name
 }

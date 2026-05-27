@@ -290,6 +290,11 @@ servicePorts:
     protocol: TCP
     port: 9090
     targetPort: 9090
+readinessProbe:
+  tcpSocket:
+    port: 8080
+  initialDelaySeconds: 600
+  periodSeconds: 10
 privileged: true
 capabilities:
   - NET_ADMIN
@@ -314,6 +319,12 @@ capabilities:
 	}
 	if deployment.Container.Image != "demo:v2" || deployment.Replicas != 3 || !deployment.Container.Privileged {
 		t.Fatalf("unexpected payload overlay on deployment: %+v", deployment)
+	}
+	if deployment.Container.ReadinessProbe == nil || deployment.Container.ReadinessProbe.InitialDelaySeconds != 600 {
+		t.Fatalf("expected readiness probe initial delay override, got %+v", deployment.Container.ReadinessProbe)
+	}
+	if deployment.Container.ReadinessProbe.TCPSocket == nil || deployment.Container.ReadinessProbe.TCPSocket.Port != 8080 {
+		t.Fatalf("expected readiness probe tcp socket override, got %+v", deployment.Container.ReadinessProbe)
 	}
 	service, ok, err := backend.GetService("platform", "k8s-svc-compute-main-platform-demo-stack-app")
 	if err != nil {
