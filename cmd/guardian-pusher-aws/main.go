@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -41,9 +42,9 @@ func main() {
 	var assumeRoleExternalID string
 	var bootstrapStackName string
 	var unclaimedTaskRetryDelay time.Duration
-	flag.StringVar(&pusherName, "pusher-name", "", "pusher name")
+	flag.StringVar(&pusherName, "pusher-name", "", "pusher name (default: aws-<account>)")
 	flag.StringVar(&account, "account", "", "target account handled by this worker")
-	flag.StringVar(&region, "region", "", "target region handled by this worker")
+	flag.StringVar(&region, "region", "", "optional target region filter handled by this worker (empty = all regions in account)")
 	flag.StringVar(&storeDir, "store-dir", "", "filesystem-backed Guardian store")
 	flag.StringVar(&workerID, "worker-id", "", "worker identifier")
 	flag.StringVar(&monofsRouter, "monofs-router", "", "MonoFS router address")
@@ -58,9 +59,12 @@ func main() {
 	flag.DurationVar(&unclaimedTaskRetryDelay, "unclaimed-task-retry-delay", 15*time.Second, "minimum delay before retrying a task that could not be claimed; 0 disables backoff")
 	flag.Parse()
 
-	if pusherName == "" || account == "" || region == "" || (storeDir == "" && monofsRouter == "") || (storeDir != "" && monofsRouter != "") {
+	if account == "" || (storeDir == "" && monofsRouter == "") || (storeDir != "" && monofsRouter != "") {
 		flag.Usage()
 		os.Exit(2)
+	}
+	if pusherName == "" {
+		pusherName = "aws-" + scopeLabel(account)
 	}
 	if workerID == "" {
 		workerID = revisions.NewCorrelationID()
@@ -136,8 +140,13 @@ func main() {
 		PollInterval:            5 * time.Second,
 		UnclaimedTaskRetryDelay: unclaimedTaskRetryDelay,
 		CanHandle: func(task *taskdomain.Task) bool {
-			return strings.EqualFold(strings.TrimSpace(task.Target.Account), account) &&
-				strings.EqualFold(strings.TrimSpace(task.Target.Region), region)
+			if !strings.EqualFold(strings.TrimSpace(task.Target.Account), account) {
+				return false
+			}
+			if strings.TrimSpace(region) == "" {
+				return true
+			}
+			return strings.EqualFold(strings.TrimSpace(task.Target.Region), region)
 		},
 	}
 
@@ -147,4 +156,18 @@ func main() {
 	if err := runtime.Run(ctx); err != nil && err != context.Canceled {
 		log.Fatal(err)
 	}
+}
+
+var scopeLabelSanitizer = regexp.MustCompile(`[^a-z0-9-]+`)
+
+func scopeLabel(input string) string {
+	value := strings.ToLower(strings.TrimSpace(input))
+	value = strings.ReplaceAll(value, "_", "-")
+	value = strings.ReplaceAll(value, ".", "-")
+	value = scopeLabelSanitizer.ReplaceAllString(value, "-")
+	value = strings.Trim(value, "-")
+	if value == "" {
+		return "default"
+	}
+	return value
 }

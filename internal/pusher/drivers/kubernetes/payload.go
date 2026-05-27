@@ -20,18 +20,19 @@ type configPayload struct {
 }
 
 type workloadPayload struct {
-	Image        string            `yaml:"image,omitempty"`
-	Command      []string          `yaml:"command,omitempty"`
-	Args         []string          `yaml:"args,omitempty"`
-	Env          map[string]string `yaml:"env,omitempty"`
-	Ports        []ServicePort     `yaml:"ports,omitempty"`
-	VolumeMounts []VolumeMount     `yaml:"volumeMounts,omitempty"`
-	InlineFiles  map[string]string `yaml:"inlineFiles,omitempty"`
-	Replicas     *int              `yaml:"replicas,omitempty"`
-	Privileged   *bool             `yaml:"privileged,omitempty"`
-	Capabilities []string          `yaml:"capabilities,omitempty"`
-	ServiceType  string            `yaml:"serviceType,omitempty"`
-	ServicePorts []ServicePort     `yaml:"servicePorts,omitempty"`
+	Image          string            `yaml:"image,omitempty"`
+	Command        []string          `yaml:"command,omitempty"`
+	Args           []string          `yaml:"args,omitempty"`
+	Env            map[string]string `yaml:"env,omitempty"`
+	Ports          []ServicePort     `yaml:"ports,omitempty"`
+	VolumeMounts   []VolumeMount     `yaml:"volumeMounts,omitempty"`
+	InlineFiles    map[string]string `yaml:"inlineFiles,omitempty"`
+	ReadinessProbe *Probe            `yaml:"readinessProbe,omitempty"`
+	Replicas       *int              `yaml:"replicas,omitempty"`
+	Privileged     *bool             `yaml:"privileged,omitempty"`
+	Capabilities   []string          `yaml:"capabilities,omitempty"`
+	ServiceType    string            `yaml:"serviceType,omitempty"`
+	ServicePorts   []ServicePort     `yaml:"servicePorts,omitempty"`
 }
 
 func loadVolumePayload(ctx context.Context, in registry.AssetInput) (volumePayload, error) {
@@ -91,6 +92,9 @@ func applyWorkloadPayload(deployment *Deployment, payload workloadPayload) {
 	}
 	if len(payload.InlineFiles) > 0 {
 		deployment.Container.InlineFiles = cloneStringMap(payload.InlineFiles)
+	}
+	if payload.ReadinessProbe != nil {
+		deployment.Container.ReadinessProbe = cloneProbe(payload.ReadinessProbe)
 	}
 	if payload.Privileged != nil {
 		deployment.Container.Privileged = *payload.Privileged
