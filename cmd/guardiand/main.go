@@ -265,8 +265,8 @@ func main() {
 			}
 
 			// Prime the initial scan interval: start fast if tasks are already
-		// in flight (e.g. daemon restart mid-rollout), idle otherwise.
-		initialLive, err := processLiveResultFiles(ctx, store, processor, pushers, scanReason)
+			// in flight (e.g. daemon restart mid-rollout), idle otherwise.
+			initialLive, err := processLiveResultFiles(ctx, store, processor, pushers, scanReason)
 			if err != nil {
 				log.Printf("result-processor: %s scan failed: %v", scanReason, err)
 			}
