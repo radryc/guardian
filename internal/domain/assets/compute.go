@@ -2,17 +2,19 @@ package assets
 
 import (
 	"fmt"
+	"strings"
 
 	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
 )
 
 type PortSpec struct {
-	Name          string `json:"name,omitempty" yaml:"name,omitempty"`
-	Protocol      string `json:"protocol,omitempty" yaml:"protocol,omitempty"`
-	Port          *int   `json:"port,omitempty" yaml:"port,omitempty"`
-	ContainerPort *int   `json:"containerPort,omitempty" yaml:"containerPort,omitempty"`
-	HostPort      *int   `json:"hostPort,omitempty" yaml:"hostPort,omitempty"`
-	ServicePort   *int   `json:"servicePort,omitempty" yaml:"servicePort,omitempty"`
+	Name            string `json:"name,omitempty" yaml:"name,omitempty"`
+	Protocol        string `json:"protocol,omitempty" yaml:"protocol,omitempty"`
+	Port            *int   `json:"port,omitempty" yaml:"port,omitempty"`
+	ContainerPort   *int   `json:"containerPort,omitempty" yaml:"containerPort,omitempty"`
+	HostPort        *int   `json:"hostPort,omitempty" yaml:"hostPort,omitempty"`
+	ServicePort     *int   `json:"servicePort,omitempty" yaml:"servicePort,omitempty"`
+	DynamicHostname string `json:"dynamicHostname,omitempty" yaml:"dynamicHostname,omitempty"`
 }
 
 type VolumeMountSpec struct {
@@ -103,6 +105,9 @@ func (computeDefinition) Validate(spec any, ctx ValidationContext) error {
 	for idx, port := range typed.Ports {
 		if port.Port == nil && port.ContainerPort == nil {
 			return fmt.Errorf("property ports[%d] requires either port or containerPort", idx)
+		}
+		if strings.TrimSpace(port.DynamicHostname) != "" && port.HostPort != nil {
+			return fmt.Errorf("property ports[%d].hostPort cannot be set when dynamicHostname is used", idx)
 		}
 		if err := optionalPositiveInt(port.Port, fmt.Sprintf("ports[%d].port", idx)); err != nil {
 			return err

@@ -72,6 +72,7 @@ var catalogTemplates = map[string]CatalogTemplate{
 			CatalogHint{Path: "ports[].containerPort", Title: "Container port", Description: "Port exposed inside the workload or container."},
 			CatalogHint{Path: "ports[].hostPort", Title: "Host port", Description: "Host or node port bound directly by the workload."},
 			CatalogHint{Path: "ports[].servicePort", Title: "Service port", Description: "Service-facing port exposed by the surrounding platform."},
+			CatalogHint{Path: "ports[].dynamicHostname", Title: "Dynamic hostname", Description: "Hostname registered through dynamic local routing so the host-facing port does not need to be pinned manually."},
 			CatalogHint{Path: "volumeMounts[].volume", Title: "Mounted volume", Description: "Referenced Volume asset name."},
 			CatalogHint{Path: "volumeMounts[].path", Title: "Volume mount path", Description: "Absolute destination path inside the workload."},
 			CatalogHint{Path: "volumeMounts[].readOnly", Title: "Read-only volume", Description: "Mount the referenced volume as read-only."},
@@ -190,6 +191,24 @@ var catalogTemplates = map[string]CatalogTemplate{
 			CatalogHint{Path: "listeners[].name", Title: "Listener name", Description: "Logical name for this public or internal listener."},
 			CatalogHint{Path: "listeners[].port", Title: "Listener port", Description: "Port exposed by the edge listener."},
 			CatalogHint{Path: "listeners[].protocol", Title: "Listener protocol", Description: "Transport protocol exposed by the listener."},
+		),
+	},
+	assetdomain.TypeDevDNSRoute: {
+		Type:        assetdomain.TypeDevDNSRoute,
+		Title:       "Dev DNS route",
+		Description: "Expose a local developer hostname for a target compute port without pinning a manual localhost port.",
+		Icon:        "🧭",
+		Category:    "Network",
+		Template: map[string]any{
+			"hostname": "doctor.strata",
+			"target":   "query",
+			"portName": "http",
+		},
+		Fields: devDNSRouteCatalogFields(),
+		Hints: hints(devDNSRouteCatalogFields(),
+			CatalogHint{Path: "hostname", Title: "Hostname", Description: "Developer-facing hostname that should resolve through the local dev DNS proxy."},
+			CatalogHint{Path: "target", Title: "Target asset", Description: "Compute asset whose named port should be exposed locally."},
+			CatalogHint{Path: "portName", Title: "Target port name", Description: "Named compute port to forward. Required when the target exposes more than one port."},
 		),
 	},
 	assetdomain.TypeObjectStore: {
@@ -437,7 +456,7 @@ func computeCatalogFields() []CatalogField {
 		{Path: "privileged", Title: "Privileged", Control: "boolean", Description: "Run the workload with elevated privileges when supported."},
 		{Path: "capabilities", Title: "Capabilities", Control: "list", Description: "Extra Linux capabilities granted to the workload."},
 		{Path: "networks", Title: "Networks", Control: "asset-refs", RefTypes: []string{"Network"}, Description: "Network assets attached to this workload."},
-		{Path: "ports", Title: "Ports JSON", Control: "json", Description: "Listener definitions and optional host or service exposure."},
+		{Path: "ports", Title: "Ports JSON", Control: "json", Description: "Listener definitions, optional host or service exposure, and dynamic hostname routing."},
 		{Path: "volumeMounts", Title: "Volume mounts JSON", Control: "json", Description: "Volume assets mounted into the workload filesystem."},
 		{Path: "configMounts", Title: "Config mounts JSON", Control: "json", Description: "Config assets rendered into files inside the workload."},
 		{Path: "hostBindMounts", Title: "Host bind mounts JSON", Control: "json", Description: "Host filesystem paths bound into the workload."},
@@ -496,6 +515,14 @@ func loadBalancerCatalogFields() []CatalogField {
 		{Path: "listeners", Title: "Listeners JSON", Control: "json", Description: "Listener definitions with name, port, and protocol."},
 		{Path: "networks", Title: "Networks", Control: "asset-refs", RefTypes: []string{"Network"}, Description: "Network assets attached to the load balancer."},
 		{Path: "serviceType", Title: "Service type", Control: "select", Options: []string{"LoadBalancer", "NodePort", "ClusterIP"}, Description: "Platform exposure mode used by Kubernetes-like pushers."},
+	}
+}
+
+func devDNSRouteCatalogFields() []CatalogField {
+	return []CatalogField{
+		{Path: "hostname", Title: "Hostname", Control: "text", Placeholder: "doctor.strata", Description: "Developer-facing hostname exposed by the local dev DNS stack."},
+		{Path: "target", Title: "Target compute asset", Control: "asset-ref", RefTypes: []string{"Compute"}, Description: "Compute asset whose named port should be forwarded."},
+		{Path: "portName", Title: "Target port name", Control: "text", Placeholder: "http", Description: "Named compute port to expose. Leave empty only when the target has one port."},
 	}
 }
 
