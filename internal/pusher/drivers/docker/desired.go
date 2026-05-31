@@ -3,6 +3,7 @@ package dockerdriver
 import (
 	"sort"
 	"strconv"
+	"strings"
 
 	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
 	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
@@ -42,7 +43,7 @@ func DesiredContainerForDiff(
 			containerPort = *p.Port
 		}
 		hostPort := 0
-		if p.HostPort != nil {
+		if strings.TrimSpace(p.DynamicHostname) == "" && p.HostPort != nil {
 			hostPort = *p.HostPort
 		}
 		ports = append(ports, PortBinding{

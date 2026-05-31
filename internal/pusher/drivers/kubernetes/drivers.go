@@ -26,6 +26,7 @@ type baseDriver struct {
 type VolumeDriver struct{ baseDriver }
 type ConfigDriver struct{ baseDriver }
 type ComputeDriver struct{ baseDriver }
+type DevDNSRouteDriver struct{ baseDriver }
 type LoadBalancerDriver struct{ baseDriver }
 type ObjectStoreDriver struct{ baseDriver }
 type SQLDatabaseDriver struct {
@@ -48,6 +49,7 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 	reg.Register(&VolumeDriver{base})
 	reg.Register(&ConfigDriver{base})
 	reg.Register(&ComputeDriver{base})
+	reg.Register(&DevDNSRouteDriver{base})
 	reg.Register(&LoadBalancerDriver{base})
 	reg.Register(&ObjectStoreDriver{base})
 	reg.Register(&SQLDatabaseDriver{baseDriver: base, typeName: "Database"})
@@ -58,6 +60,7 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 func (d *VolumeDriver) Type() string                         { return "Volume" }
 func (d *ConfigDriver) Type() string                         { return "Config" }
 func (d *ComputeDriver) Type() string                        { return "Compute" }
+func (d *DevDNSRouteDriver) Type() string                    { return "DevDNSRoute" }
 func (d *LoadBalancerDriver) Type() string                   { return "LoadBalancer" }
 func (d *ObjectStoreDriver) Type() string                    { return "ObjectStore" }
 func (d *SQLDatabaseDriver) Type() string                    { return d.typeName }
@@ -65,6 +68,7 @@ func (d *ObservabilityDriver) Type() string                  { return "Observabi
 func (d *VolumeDriver) Validate(map[string]any) error        { return nil }
 func (d *ConfigDriver) Validate(map[string]any) error        { return nil }
 func (d *ComputeDriver) Validate(map[string]any) error       { return nil }
+func (d *DevDNSRouteDriver) Validate(map[string]any) error   { return nil }
 func (d *LoadBalancerDriver) Validate(map[string]any) error  { return nil }
 func (d *ObjectStoreDriver) Validate(map[string]any) error   { return nil }
 func (d *SQLDatabaseDriver) Validate(map[string]any) error   { return nil }
@@ -354,6 +358,63 @@ func (d *ComputeDriver) Destroy(ctx context.Context, in registry.AssetInput) err
 		return err
 	}
 	return d.backend.DeleteService(namespace(in), serviceName(in, "compute"))
+}
+
+func (d *DevDNSRouteDriver) Check(ctx context.Context, in registry.AssetInput) error {
+	return ctx.Err()
+}
+
+func (d *DevDNSRouteDriver) ObserveState(ctx context.Context, in registry.AssetInput) (*taskdomain.HealthObservation, *taskdomain.ApplyReadiness, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	return &taskdomain.HealthObservation{Status: taskdomain.HealthHealthy, Summary: "devdns route is managed by bootstrap"}, &taskdomain.ApplyReadiness{Status: taskdomain.ApplyReadinessReady, Summary: "devdns route metadata is ready"}, nil
+}
+
+func (d *DevDNSRouteDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdomain.DriftReport, error) {
+	if err := ctx.Err(); err != nil {
+		return taskdomain.DriftReport{}, err
+	}
+	spec, err := decodeDevDNSRoute(in)
+	if err != nil {
+		return taskdomain.DriftReport{}, err
+	}
+	if in.Store == nil {
+		return changedDrift(in.Asset.Name, "devdns route metadata pending"), nil
+	}
+	state, err := orchestratorcommon.LoadIntentState(ctx, in.Store, in.PartitionName, in.IntentName)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return changedDrift(in.Asset.Name, "devdns route metadata pending"), nil
+		}
+		return taskdomain.DriftReport{}, err
+	}
+	if strings.TrimSpace(state.Outputs[in.Asset.Name+".hostname"]) != strings.TrimSpace(spec.Hostname) ||
+		strings.TrimSpace(state.Outputs[in.Asset.Name+".target"]) != strings.TrimSpace(spec.Target) ||
+		strings.TrimSpace(state.Outputs[in.Asset.Name+".portName"]) != strings.TrimSpace(spec.PortName) {
+		return changedDrift(in.Asset.Name, "devdns route metadata differs"), nil
+	}
+	return inSyncDrift(in.Asset.Name, "devdns route metadata is in sync"), nil
+}
+
+func (d *DevDNSRouteDriver) Apply(ctx context.Context, in registry.AssetInput) (registry.AssetResult, error) {
+	if err := ctx.Err(); err != nil {
+		return registry.AssetResult{}, err
+	}
+	spec, err := decodeDevDNSRoute(in)
+	if err != nil {
+		return registry.AssetResult{}, err
+	}
+	return registry.AssetResult{Outputs: map[string]string{
+		"hostname": spec.Hostname,
+		"target":   spec.Target,
+		"portName": spec.PortName,
+		"mode":     "bootstrap",
+	}}, nil
+}
+
+func (d *DevDNSRouteDriver) Destroy(ctx context.Context, in registry.AssetInput) error {
+	return ctx.Err()
 }
 
 func (d *LoadBalancerDriver) Check(ctx context.Context, in registry.AssetInput) error {
@@ -966,6 +1027,18 @@ func decodeLoadBalancer(in registry.AssetInput) (*assetdefs.LoadBalancerSpec, er
 	return spec, nil
 }
 
+func decodeDevDNSRoute(in registry.AssetInput) (*assetdefs.DevDNSRouteSpec, error) {
+	typed, err := driverutil.DecodeAsset(in)
+	if err != nil {
+		return nil, err
+	}
+	spec, ok := typed.(*assetdefs.DevDNSRouteSpec)
+	if !ok {
+		return nil, fmt.Errorf("expected DevDNSRouteSpec, got %T", typed)
+	}
+	return spec, nil
+}
+
 func decodeObjectStore(in registry.AssetInput) (*assetdefs.ObjectStoreSpec, error) {
 	typed, err := driverutil.DecodeAsset(in)
 	if err != nil {
@@ -1204,12 +1277,16 @@ func toServicePorts(ports []assetdefs.PortSpec) []ServicePort {
 		} else if port.Port != nil {
 			servicePort = *port.Port
 		}
+		hostPort := 0
+		if strings.TrimSpace(port.DynamicHostname) == "" {
+			hostPort = intPtrVal(port.HostPort)
+		}
 		out = append(out, ServicePort{
 			Name:       port.Name,
 			Protocol:   firstNonEmpty(port.Protocol, "TCP"),
 			Port:       servicePort,
 			TargetPort: containerPort,
-			HostPort:   intPtrVal(port.HostPort),
+			HostPort:   hostPort,
 		})
 	}
 	return out
