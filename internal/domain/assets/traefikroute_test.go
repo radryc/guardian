@@ -2,20 +2,20 @@ package assets
 
 import "testing"
 
-func TestDevDNSRouteValidateRequiresHostnameAndComputeTarget(t *testing.T) {
-	definition := devDNSRouteDefinition{}
+func TestTraefikRouteValidateRequiresHostnameAndComputeTarget(t *testing.T) {
+	definition := traefikRouteDefinition{}
 	ctx := ValidationContext{AssetTypes: map[string]string{"query": "Compute"}}
-	spec := &DevDNSRouteSpec{Hostname: "doctor.strata", Target: "query", PortName: "http"}
+	spec := &TraefikRouteSpec{Hostname: "doctor.strata", Target: "query", PortName: "http"}
 
 	if err := definition.Validate(spec, ctx); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
 }
 
-func TestDevDNSRouteValidateRejectsUnknownTarget(t *testing.T) {
-	definition := devDNSRouteDefinition{}
+func TestTraefikRouteValidateRejectsUnknownTarget(t *testing.T) {
+	definition := traefikRouteDefinition{}
 	ctx := ValidationContext{AssetTypes: map[string]string{"config": "Config"}}
-	spec := &DevDNSRouteSpec{Hostname: "doctor.strata", Target: "config"}
+	spec := &TraefikRouteSpec{Hostname: "doctor.strata", Target: "config"}
 
 	err := definition.Validate(spec, ctx)
 	if err == nil {
@@ -26,10 +26,10 @@ func TestDevDNSRouteValidateRejectsUnknownTarget(t *testing.T) {
 	}
 }
 
-func TestCatalogForDevDNSRouteIncludesHostnameHint(t *testing.T) {
-	item, ok := CatalogFor("DevDNSRoute")
+func TestCatalogForTraefikRouteIncludesHostnameHint(t *testing.T) {
+	item, ok := CatalogFor("TraefikRoute")
 	if !ok {
-		t.Fatalf("CatalogFor(DevDNSRoute) returned false")
+		t.Fatalf("CatalogFor(TraefikRoute) returned false")
 	}
 	for _, hint := range item.Hints {
 		if hint.Path == "hostname" && hint.Description != "" {

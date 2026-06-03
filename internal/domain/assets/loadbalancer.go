@@ -6,10 +6,21 @@ import (
 	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
 )
 
+// ListenerSpec describes a single inbound listener on a LoadBalancer asset.
+//
+// Port allocation:
+//   - Static:  set Port (and optionally ExternalPort to pin the host-facing port).
+//   - Dynamic: set Dynamic: true and Port. The lb edge will allocate a free
+//     external port at runtime; ExternalPort is ignored.
+//
+// If both Port and Dynamic are absent the validator rejects the listener.
 type ListenerSpec struct {
-	Name     string `json:"name,omitempty" yaml:"name,omitempty"`
-	Port     *int   `json:"port,omitempty" yaml:"port,omitempty"`
-	Protocol string `json:"protocol,omitempty" yaml:"protocol,omitempty"`
+	Name         string `json:"name,omitempty" yaml:"name,omitempty"`
+	Port         *int   `json:"port,omitempty" yaml:"port,omitempty"`
+	Protocol     string `json:"protocol,omitempty" yaml:"protocol,omitempty"`
+	Description  string `json:"description,omitempty" yaml:"description,omitempty"`
+	ExternalPort *int   `json:"externalPort,omitempty" yaml:"externalPort,omitempty"`
+	Dynamic      bool   `json:"dynamic,omitempty" yaml:"dynamic,omitempty"`
 }
 
 type LoadBalancerSpec struct {
@@ -47,8 +58,16 @@ func (loadBalancerDefinition) Validate(spec any, ctx ValidationContext) error {
 		return fmt.Errorf("property listeners requires at least one listener definition")
 	}
 	for idx, listener := range typed.Listeners {
+		// Port is required unless the listener is fully dynamic (no fixed backend port either).
+		// Dynamic listeners still need Port so the lb knows which backend port to forward to.
 		if err := requirePositiveInt(listener.Port, fmt.Sprintf("listeners[%d].port", idx)); err != nil {
 			return err
+		}
+		if listener.ExternalPort != nil && *listener.ExternalPort <= 0 {
+			return fmt.Errorf("listeners[%d].externalPort must be > 0", idx)
+		}
+		if listener.Dynamic && listener.ExternalPort != nil {
+			return fmt.Errorf("listeners[%d]: dynamic and externalPort are mutually exclusive", idx)
 		}
 	}
 	if typed.Config != "" {
@@ -63,3 +82,4 @@ func (loadBalancerDefinition) Validate(spec any, ctx ValidationContext) error {
 	}
 	return nil
 }
+

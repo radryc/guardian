@@ -31,7 +31,7 @@ type VolumeDriver struct{ baseDriver }
 type ConfigDriver struct{ baseDriver }
 type NetworkDriver struct{ baseDriver }
 type ComputeDriver struct{ baseDriver }
-type DevDNSRouteDriver struct{ baseDriver }
+type TraefikRouteDriver struct{ baseDriver }
 type LoadBalancerDriver struct{ baseDriver }
 type ObjectStoreDriver struct{ baseDriver }
 type SQLDatabaseDriver struct {
@@ -69,7 +69,7 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 	reg.Register(&ConfigDriver{base})
 	reg.Register(&NetworkDriver{base})
 	reg.Register(&ComputeDriver{base})
-	reg.Register(&DevDNSRouteDriver{base})
+	reg.Register(&TraefikRouteDriver{base})
 	reg.Register(&LoadBalancerDriver{base})
 	reg.Register(&ObjectStoreDriver{base})
 	reg.Register(&SQLDatabaseDriver{baseDriver: base, typeName: "Database"})
@@ -81,7 +81,7 @@ func (d *VolumeDriver) Type() string                         { return "Volume" }
 func (d *ConfigDriver) Type() string                         { return "Config" }
 func (d *NetworkDriver) Type() string                        { return "Network" }
 func (d *ComputeDriver) Type() string                        { return "Compute" }
-func (d *DevDNSRouteDriver) Type() string                    { return "DevDNSRoute" }
+func (d *TraefikRouteDriver) Type() string                   { return "TraefikRoute" }
 func (d *LoadBalancerDriver) Type() string                   { return "LoadBalancer" }
 func (d *ObjectStoreDriver) Type() string                    { return "ObjectStore" }
 func (d *SQLDatabaseDriver) Type() string                    { return d.typeName }
@@ -90,7 +90,7 @@ func (d *VolumeDriver) Validate(map[string]any) error        { return nil }
 func (d *ConfigDriver) Validate(map[string]any) error        { return nil }
 func (d *NetworkDriver) Validate(map[string]any) error       { return nil }
 func (d *ComputeDriver) Validate(map[string]any) error       { return nil }
-func (d *DevDNSRouteDriver) Validate(map[string]any) error   { return nil }
+func (d *TraefikRouteDriver) Validate(map[string]any) error  { return nil }
 func (d *LoadBalancerDriver) Validate(map[string]any) error  { return nil }
 func (d *ObjectStoreDriver) Validate(map[string]any) error   { return nil }
 func (d *SQLDatabaseDriver) Validate(map[string]any) error   { return nil }
@@ -526,48 +526,48 @@ func (d *ComputeDriver) Destroy(ctx context.Context, in registry.AssetInput) err
 	return nil
 }
 
-func (d *DevDNSRouteDriver) Check(ctx context.Context, in registry.AssetInput) error {
+func (d *TraefikRouteDriver) Check(ctx context.Context, in registry.AssetInput) error {
 	return ctx.Err()
 }
 
-func (d *DevDNSRouteDriver) ObserveState(ctx context.Context, in registry.AssetInput) (*taskdomain.HealthObservation, *taskdomain.ApplyReadiness, error) {
+func (d *TraefikRouteDriver) ObserveState(ctx context.Context, in registry.AssetInput) (*taskdomain.HealthObservation, *taskdomain.ApplyReadiness, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
-	return &taskdomain.HealthObservation{Status: taskdomain.HealthHealthy, Summary: "devdns route is managed by bootstrap"}, readyObservation("devdns route metadata is ready"), nil
+	return &taskdomain.HealthObservation{Status: taskdomain.HealthHealthy, Summary: "Traefik route is managed by bootstrap"}, readyObservation("Traefik route metadata is ready"), nil
 }
 
-func (d *DevDNSRouteDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdomain.DriftReport, error) {
+func (d *TraefikRouteDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdomain.DriftReport, error) {
 	if err := ctx.Err(); err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	spec, err := decodeDevDNSRoute(in)
+	spec, err := decodeTraefikRoute(in)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
 	if in.Store == nil {
-		return changedDrift(in.Asset.Name, "devdns route metadata pending"), nil
+		return changedDrift(in.Asset.Name, "Traefik route metadata pending"), nil
 	}
 	state, err := orchestratorcommon.LoadIntentState(ctx, in.Store, in.PartitionName, in.IntentName)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return changedDrift(in.Asset.Name, "devdns route metadata pending"), nil
+			return changedDrift(in.Asset.Name, "Traefik route metadata pending"), nil
 		}
 		return taskdomain.DriftReport{}, err
 	}
 	if strings.TrimSpace(state.Outputs[in.Asset.Name+".hostname"]) != strings.TrimSpace(spec.Hostname) ||
 		strings.TrimSpace(state.Outputs[in.Asset.Name+".target"]) != strings.TrimSpace(spec.Target) ||
 		strings.TrimSpace(state.Outputs[in.Asset.Name+".portName"]) != strings.TrimSpace(spec.PortName) {
-		return changedDrift(in.Asset.Name, "devdns route metadata differs"), nil
+		return changedDrift(in.Asset.Name, "Traefik route metadata differs"), nil
 	}
-	return inSyncDrift(in.Asset.Name, "devdns route metadata is in sync"), nil
+	return inSyncDrift(in.Asset.Name, "Traefik route metadata is in sync"), nil
 }
 
-func (d *DevDNSRouteDriver) Apply(ctx context.Context, in registry.AssetInput) (registry.AssetResult, error) {
+func (d *TraefikRouteDriver) Apply(ctx context.Context, in registry.AssetInput) (registry.AssetResult, error) {
 	if err := ctx.Err(); err != nil {
 		return registry.AssetResult{}, err
 	}
-	spec, err := decodeDevDNSRoute(in)
+	spec, err := decodeTraefikRoute(in)
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
@@ -579,7 +579,7 @@ func (d *DevDNSRouteDriver) Apply(ctx context.Context, in registry.AssetInput) (
 	}}, nil
 }
 
-func (d *DevDNSRouteDriver) Destroy(ctx context.Context, in registry.AssetInput) error {
+func (d *TraefikRouteDriver) Destroy(ctx context.Context, in registry.AssetInput) error {
 	return ctx.Err()
 }
 
@@ -623,12 +623,12 @@ func (d *LoadBalancerDriver) Diff(ctx context.Context, in registry.AssetInput) (
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	configContent, err := d.loadBalancerConfig(in, spec)
+	bootstrapConfig, err := d.loadBalancerBootstrap(in, spec)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
 	name := loadBalancerName(in)
-	hash := loadBalancerContainerHash(in, spec, configContent, payload)
+	hash := loadBalancerContainerHash(in, spec, bootstrapConfig, payload)
 	container, ok, err := d.backend.GetContainer(name)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
@@ -655,23 +655,26 @@ func (d *LoadBalancerDriver) Apply(ctx context.Context, in registry.AssetInput) 
 	if err := d.backend.EnsureNetwork(Network{Name: network, Labels: map[string]string{"guardian.cluster": in.Target.Cluster}}); err != nil {
 		return registry.AssetResult{}, err
 	}
-	configContent, err := d.loadBalancerConfig(in, spec)
+	bootstrapConfig, err := d.loadBalancerBootstrap(in, spec)
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
-	hash := loadBalancerContainerHash(in, spec, configContent, payload)
+	hash := loadBalancerContainerHash(in, spec, bootstrapConfig, payload)
 	name := loadBalancerName(in)
+	env := map[string]string{
+		"LB_BOOTSTRAP": bootstrapConfig,
+	}
 	container := Container{
-		Name:        name,
-		Kind:        "LoadBalancer",
-		Image:       "haproxy:2.9",
-		Hash:        hash,
-		Labels:      driverutil.Labels("docker", in, hash),
-		Network:     network,
-		Aliases:     []string{in.Asset.Name, name},
-		Ports:       toLoadBalancerPorts(spec.Listeners),
-		InlineFiles: map[string]string{"haproxy.cfg": configContent},
-		Running:     true,
+		Name:    name,
+		Kind:    "LoadBalancer",
+		Image:   loadBalancerContainerImage(),
+		Hash:    hash,
+		Labels:  driverutil.Labels("docker", in, hash),
+		Network: network,
+		Aliases: []string{in.Asset.Name, name},
+		Env:     env,
+		Ports:   toLoadBalancerPorts(spec.Listeners),
+		Running: true,
 	}
 	applyContainerPayload(&container, payload)
 	d.applyContainerDefaults(&container)
@@ -1129,14 +1132,14 @@ func decodeLoadBalancer(in registry.AssetInput) (*assetdefs.LoadBalancerSpec, er
 	return spec, nil
 }
 
-func decodeDevDNSRoute(in registry.AssetInput) (*assetdefs.DevDNSRouteSpec, error) {
+func decodeTraefikRoute(in registry.AssetInput) (*assetdefs.TraefikRouteSpec, error) {
 	typed, err := driverutil.DecodeAsset(in)
 	if err != nil {
 		return nil, err
 	}
-	spec, ok := typed.(*assetdefs.DevDNSRouteSpec)
+	spec, ok := typed.(*assetdefs.TraefikRouteSpec)
 	if !ok {
-		return nil, fmt.Errorf("expected DevDNSRouteSpec, got %T", typed)
+		return nil, fmt.Errorf("expected TraefikRouteSpec, got %T", typed)
 	}
 	return spec, nil
 }
@@ -1531,6 +1534,13 @@ func toLoadBalancerPorts(listeners []assetdefs.ListenerSpec) []PortBinding {
 	return out
 }
 
+func loadBalancerContainerImage() string {
+	if override := strings.TrimSpace(os.Getenv("GUARDIAN_LB_IMAGE")); override != "" {
+		return override
+	}
+	return "lb:latest"
+}
+
 func firstContainerPort(ports []PortBinding) int {
 	for _, port := range ports {
 		if port.ContainerPort > 0 {
@@ -1564,6 +1574,34 @@ func (d *LoadBalancerDriver) loadBalancerConfig(in registry.AssetInput, spec *as
 		}
 	}
 	return generateHAProxyConfig(in, spec)
+}
+
+func (d *LoadBalancerDriver) loadBalancerBootstrap(in registry.AssetInput, spec *assetdefs.LoadBalancerSpec) (string, error) {
+	entries := make([]string, 0, len(spec.Listeners))
+	for _, listener := range spec.Listeners {
+		if listener.Port == nil {
+			continue
+		}
+		backends := make([]string, 0, len(spec.Targets))
+		for _, target := range spec.Targets {
+			_, typed, err := driverutil.DecodeNamedAsset(in, target)
+			if err != nil {
+				return "", err
+			}
+			compute := typed.(*assetdefs.ComputeSpec)
+			replicas := driverutil.IntValue(compute.Replicas, 1)
+			port := matchComputePort(compute, *listener.Port)
+			for replica := 0; replica < replicas; replica++ {
+				serverName := driverutil.ResourceName("docker-ct", in.Target, in.PartitionName, in.IntentName, target, strconv.Itoa(replica))
+				backends = append(backends, fmt.Sprintf("%s:%d", serverName, port))
+			}
+		}
+		if len(backends) == 0 {
+			continue
+		}
+		entries = append(entries, driverutil.BuildBootstrapEntry(listener, backends))
+	}
+	return strings.Join(entries, ";"), nil
 }
 
 func generateHAProxyConfig(in registry.AssetInput, spec *assetdefs.LoadBalancerSpec) (string, error) {

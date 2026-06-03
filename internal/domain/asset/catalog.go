@@ -9,7 +9,7 @@ const (
 	TypeConfig        = "Config"
 	TypeNetwork       = "Network"
 	TypeLoadBalancer  = "LoadBalancer"
-	TypeDevDNSRoute   = "DevDNSRoute"
+	TypeTraefikRoute  = "TraefikRoute"
 	TypeObjectStore   = "ObjectStore"
 	TypeObservability = "Observability"
 )
@@ -23,7 +23,7 @@ var knownTypes = map[string]struct{}{
 	TypeConfig:        {},
 	TypeNetwork:       {},
 	TypeLoadBalancer:  {},
-	TypeDevDNSRoute:   {},
+	TypeTraefikRoute:  {},
 	TypeObjectStore:   {},
 	TypeObservability: {},
 }
@@ -43,7 +43,7 @@ func KnownTypes() []string {
 		TypeConfig,
 		TypeNetwork,
 		TypeLoadBalancer,
-		TypeDevDNSRoute,
+		TypeTraefikRoute,
 		TypeObjectStore,
 		TypeObservability,
 	}

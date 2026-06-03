@@ -181,22 +181,29 @@ var catalogTemplates = map[string]CatalogTemplate{
 		Template: map[string]any{
 			"targets": []string{},
 			"listeners": []map[string]any{{
-				"name":     "http",
-				"port":     80,
-				"protocol": "TCP",
+				"name":        "http",
+				"port":        8080,
+				"protocol":    "http",
+				"description": "HTTP API",
+				// externalPort: 8080   — set to pin a fixed host port (static)
+				// dynamic: true        — omit externalPort to let lb allocate a free port
 			}},
 		},
+
 		Fields: loadBalancerCatalogFields(),
 		Hints: hints(loadBalancerCatalogFields(),
 			CatalogHint{Path: "listeners[].name", Title: "Listener name", Description: "Logical name for this public or internal listener."},
-			CatalogHint{Path: "listeners[].port", Title: "Listener port", Description: "Port exposed by the edge listener."},
-			CatalogHint{Path: "listeners[].protocol", Title: "Listener protocol", Description: "Transport protocol exposed by the listener."},
+			CatalogHint{Path: "listeners[].port", Title: "Listener port", Description: "Backend port on target compute services to forward to."},
+			CatalogHint{Path: "listeners[].protocol", Title: "Protocol", Description: "Transport protocol (http, grpc, tcp …) shown in lb /services."},
+			CatalogHint{Path: "listeners[].description", Title: "Description", Description: "Human-readable label shown in lb /services (e.g. MonoFS HTTP UI)."},
+			CatalogHint{Path: "listeners[].externalPort", Title: "External port (static)", Description: "Fixed host-facing port. Omit to let the lb allocate a free port dynamically."},
+			CatalogHint{Path: "listeners[].dynamic", Title: "Dynamic allocation", Description: "When true, lb allocates a free external port. Mutually exclusive with externalPort."},
 		),
 	},
-	assetdomain.TypeDevDNSRoute: {
-		Type:        assetdomain.TypeDevDNSRoute,
-		Title:       "Dev DNS route",
-		Description: "Expose a local developer hostname for a target compute port without pinning a manual localhost port.",
+	assetdomain.TypeTraefikRoute: {
+		Type:        assetdomain.TypeTraefikRoute,
+		Title:       "Traefik route",
+		Description: "Expose a local developer hostname for a target compute port through the bootstrap-managed Traefik proxy without pinning a manual localhost port.",
 		Icon:        "🧭",
 		Category:    "Network",
 		Template: map[string]any{
@@ -204,9 +211,9 @@ var catalogTemplates = map[string]CatalogTemplate{
 			"target":   "query",
 			"portName": "http",
 		},
-		Fields: devDNSRouteCatalogFields(),
-		Hints: hints(devDNSRouteCatalogFields(),
-			CatalogHint{Path: "hostname", Title: "Hostname", Description: "Developer-facing hostname that should resolve through the local dev DNS proxy."},
+		Fields: traefikRouteCatalogFields(),
+		Hints: hints(traefikRouteCatalogFields(),
+			CatalogHint{Path: "hostname", Title: "Hostname", Description: "Developer-facing hostname that should resolve through the local Traefik proxy."},
 			CatalogHint{Path: "target", Title: "Target asset", Description: "Compute asset whose named port should be exposed locally."},
 			CatalogHint{Path: "portName", Title: "Target port name", Description: "Named compute port to forward. Required when the target exposes more than one port."},
 		),
@@ -512,15 +519,15 @@ func loadBalancerCatalogFields() []CatalogField {
 	return []CatalogField{
 		{Path: "config", Title: "Config asset", Control: "asset-ref", RefTypes: []string{"Config"}, Description: "Config asset containing proxy, listener, or routing config."},
 		{Path: "targets", Title: "Target compute assets", Control: "asset-refs", RefTypes: []string{"Compute"}, Description: "Compute assets that receive traffic from this edge."},
-		{Path: "listeners", Title: "Listeners JSON", Control: "json", Description: "Listener definitions with name, port, and protocol."},
+		{Path: "listeners", Title: "Listeners JSON", Control: "json", Description: "Listener definitions. Each entry supports: name, port (backend), protocol, description, externalPort (static pin), dynamic (auto-allocate)."},
 		{Path: "networks", Title: "Networks", Control: "asset-refs", RefTypes: []string{"Network"}, Description: "Network assets attached to the load balancer."},
 		{Path: "serviceType", Title: "Service type", Control: "select", Options: []string{"LoadBalancer", "NodePort", "ClusterIP"}, Description: "Platform exposure mode used by Kubernetes-like pushers."},
 	}
 }
 
-func devDNSRouteCatalogFields() []CatalogField {
+func traefikRouteCatalogFields() []CatalogField {
 	return []CatalogField{
-		{Path: "hostname", Title: "Hostname", Control: "text", Placeholder: "doctor.strata", Description: "Developer-facing hostname exposed by the local dev DNS stack."},
+		{Path: "hostname", Title: "Hostname", Control: "text", Placeholder: "doctor.strata", Description: "Developer-facing hostname exposed by the local Traefik stack."},
 		{Path: "target", Title: "Target compute asset", Control: "asset-ref", RefTypes: []string{"Compute"}, Description: "Compute asset whose named port should be forwarded."},
 		{Path: "portName", Title: "Target port name", Control: "text", Placeholder: "http", Description: "Named compute port to expose. Leave empty only when the target has one port."},
 	}
