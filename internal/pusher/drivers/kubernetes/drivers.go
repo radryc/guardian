@@ -333,13 +333,14 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	if len(ports) > 0 {
 		name := serviceName(in, "compute")
 		if err := d.backend.UpsertService(Service{
-			Namespace: namespace(in),
-			Name:      name,
-			Hash:      hash,
-			Type:      firstNonEmpty(payload.ServiceType, "ClusterIP"),
-			Labels:    driverutil.Labels("kubernetes", in, hash),
-			Selector:  map[string]string{"guardian.asset": in.Asset.Name},
-			Ports:     ports,
+			Namespace:   namespace(in),
+			Name:        name,
+			Hash:        hash,
+			Type:        firstNonEmpty(payload.ServiceType, "ClusterIP"),
+			Labels:      driverutil.Labels("kubernetes", in, hash),
+			Annotations: payload.ServiceAnnotations,
+			Selector:    map[string]string{"guardian.asset": in.Asset.Name},
+			Ports:       ports,
 		}); err != nil {
 			return registry.AssetResult{}, err
 		}
