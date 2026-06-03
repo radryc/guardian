@@ -220,10 +220,16 @@ func (b *CLIBackend) UpsertDeployment(deployment Deployment) error {
 				"metadata": map[string]any{
 					"labels": cloneStringMap(deployment.Labels),
 				},
-				"spec": map[string]any{
-					"containers": []map[string]any{containerSpec},
-					"volumes":    volumeItems,
-				},
+				"spec": func() map[string]any {
+					podSpec := map[string]any{
+						"containers": []map[string]any{containerSpec},
+						"volumes":    volumeItems,
+					}
+					if deployment.ServiceAccountName != "" {
+						podSpec["serviceAccountName"] = deployment.ServiceAccountName
+					}
+					return podSpec
+				}(),
 			},
 		},
 	})
@@ -377,14 +383,18 @@ func (b *CLIBackend) UpsertService(service Service) error {
 	if err := b.ensureNamespace(service.Namespace); err != nil {
 		return err
 	}
+	meta := map[string]any{
+		"name":      service.Name,
+		"namespace": service.Namespace,
+		"labels":    cloneStringMap(service.Labels),
+	}
+	if len(service.Annotations) > 0 {
+		meta["annotations"] = cloneStringMap(service.Annotations)
+	}
 	return b.applyManifest(service.Namespace, map[string]any{
 		"apiVersion": "v1",
 		"kind":       "Service",
-		"metadata": map[string]any{
-			"name":      service.Name,
-			"namespace": service.Namespace,
-			"labels":    cloneStringMap(service.Labels),
-		},
+		"metadata":   meta,
 		"spec": map[string]any{
 			"type":     firstNonEmpty(service.Type, "ClusterIP"),
 			"selector": cloneStringMap(service.Selector),
