@@ -504,13 +504,14 @@ func (d *LoadBalancerDriver) Apply(ctx context.Context, in registry.AssetInput) 
 		ports = append([]ServicePort(nil), payload.ServicePorts...)
 	}
 	if err := d.backend.UpsertService(Service{
-		Namespace: namespace(in),
-		Name:      serviceName(in, "lb"),
-		Hash:      hash,
-		Type:      serviceType,
-		Labels:    driverutil.Labels("kubernetes", in, hash),
-		Selector:  map[string]string{"guardian.asset": in.Asset.Name},
-		Ports:     ports,
+		Namespace:   namespace(in),
+		Name:        serviceName(in, "lb"),
+		Hash:        hash,
+		Type:        serviceType,
+		Labels:      driverutil.Labels("kubernetes", in, hash),
+		Annotations: payload.ServiceAnnotations,
+		Selector:    map[string]string{"guardian.asset": in.Asset.Name},
+		Ports:       ports,
 	}); err != nil {
 		return registry.AssetResult{}, err
 	}

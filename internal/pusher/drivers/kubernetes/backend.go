@@ -90,27 +90,29 @@ type Container struct {
 }
 
 type Deployment struct {
-	Namespace         string
-	Name              string
-	Kind              string
-	Hash              string
-	Labels            map[string]string
-	Replicas          int
-	ReadyReplicas     int
-	AvailableReplicas int
-	Container         Container
-	CrashLoopBackOff  bool
-	PodFailureReason  string // non-empty when CrashLoopBackOff is true; names the exact waiting reason
+	Namespace          string
+	Name               string
+	Kind               string
+	Hash               string
+	Labels             map[string]string
+	Replicas           int
+	ReadyReplicas      int
+	AvailableReplicas  int
+	Container          Container
+	CrashLoopBackOff   bool
+	PodFailureReason   string // non-empty when CrashLoopBackOff is true; names the exact waiting reason
+	ServiceAccountName string
 }
 
 type Service struct {
-	Namespace string
-	Name      string
-	Hash      string
-	Type      string
-	Labels    map[string]string
-	Selector  map[string]string
-	Ports     []ServicePort
+	Namespace   string
+	Name        string
+	Hash        string
+	Type        string
+	Labels      map[string]string
+	Annotations map[string]string
+	Selector    map[string]string
+	Ports       []ServicePort
 }
 
 func NewBackend() *Backend {
@@ -235,15 +237,16 @@ func cloneClaim(in PersistentVolumeClaim) PersistentVolumeClaim {
 
 func cloneDeployment(in Deployment) Deployment {
 	return Deployment{
-		Namespace:         in.Namespace,
-		Name:              in.Name,
-		Kind:              in.Kind,
-		Hash:              in.Hash,
-		Labels:            cloneStringMap(in.Labels),
-		Replicas:          in.Replicas,
-		ReadyReplicas:     in.ReadyReplicas,
-		AvailableReplicas: in.AvailableReplicas,
-		Container:         cloneContainer(in.Container),
+		Namespace:          in.Namespace,
+		Name:               in.Name,
+		Kind:               in.Kind,
+		Hash:               in.Hash,
+		Labels:             cloneStringMap(in.Labels),
+		Replicas:           in.Replicas,
+		ReadyReplicas:      in.ReadyReplicas,
+		AvailableReplicas:  in.AvailableReplicas,
+		Container:          cloneContainer(in.Container),
+		ServiceAccountName: in.ServiceAccountName,
 	}
 }
 
@@ -283,13 +286,14 @@ func cloneProbe(in *Probe) *Probe {
 
 func cloneService(in Service) Service {
 	return Service{
-		Namespace: in.Namespace,
-		Name:      in.Name,
-		Hash:      in.Hash,
-		Type:      in.Type,
-		Labels:    cloneStringMap(in.Labels),
-		Selector:  cloneStringMap(in.Selector),
-		Ports:     append([]ServicePort(nil), in.Ports...),
+		Namespace:   in.Namespace,
+		Name:        in.Name,
+		Hash:        in.Hash,
+		Type:        in.Type,
+		Labels:      cloneStringMap(in.Labels),
+		Annotations: cloneStringMap(in.Annotations),
+		Selector:    cloneStringMap(in.Selector),
+		Ports:       append([]ServicePort(nil), in.Ports...),
 	}
 }
 
