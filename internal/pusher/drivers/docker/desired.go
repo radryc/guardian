@@ -92,6 +92,7 @@ func DesiredContainerForDiff(
 		HostBindMounts:    hostBindMounts,
 		Privileged:        driverutil.BoolValue(spec.Privileged),
 		Capabilities:      caps,
+		ShmSize:           spec.ShmSize,
 		Running:           true,
 		CPULimit:          cpuLimit,
 		MemoryLimit:       memLimit,

@@ -64,6 +64,7 @@ type ComputeSpec struct {
 	HealthCheck     *HealthCheckSpec    `json:"healthCheck,omitempty" yaml:"healthCheck,omitempty"`
 	Privileged      *bool               `json:"privileged,omitempty" yaml:"privileged,omitempty"`
 	Capabilities    []string            `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	ShmSize         string              `json:"shmSize,omitempty" yaml:"shmSize,omitempty"`
 	Networks        []string            `json:"networks,omitempty" yaml:"networks,omitempty"`
 	Ports           []PortSpec          `json:"ports,omitempty" yaml:"ports,omitempty"`
 	VolumeMounts    []VolumeMountSpec   `json:"volumeMounts,omitempty" yaml:"volumeMounts,omitempty"`

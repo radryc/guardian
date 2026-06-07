@@ -88,6 +88,7 @@ type Container struct {
 	InlineFiles       map[string]string
 	Privileged        bool
 	Capabilities      []string
+	ShmSize           string
 	Running           bool
 	CPULimit          string
 	MemoryLimit       string
