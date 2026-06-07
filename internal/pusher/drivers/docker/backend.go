@@ -89,6 +89,7 @@ type Container struct {
 	Privileged        bool
 	Capabilities      []string
 	ShmSize           string
+	GPUs              string
 	Running           bool
 	CPULimit          string
 	MemoryLimit       string

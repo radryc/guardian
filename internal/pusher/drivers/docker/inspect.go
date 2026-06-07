@@ -105,10 +105,16 @@ type rawContainerInspect struct {
 		Running bool `json:"Running"`
 	} `json:"State"`
 	HostConfig struct {
-		NetworkMode  string   `json:"NetworkMode"`
-		CapAdd       []string `json:"CapAdd"`
-		Privileged   bool     `json:"Privileged"`
-		ShmSize      int64    `json:"ShmSize"`
+		NetworkMode    string   `json:"NetworkMode"`
+		CapAdd         []string `json:"CapAdd"`
+		Privileged     bool     `json:"Privileged"`
+		ShmSize        int64    `json:"ShmSize"`
+		DeviceRequests []struct {
+			Driver       string   `json:"Driver"`
+			Count        int      `json:"Count"`
+			DeviceIDs    []string `json:"DeviceIDs"`
+			Capabilities [][]string `json:"Capabilities"`
+		} `json:"DeviceRequests"`
 		PortBindings map[string][]struct {
 			HostPort string `json:"HostPort"`
 		} `json:"PortBindings"`
@@ -229,6 +235,7 @@ func containerFromRawInspect(r rawContainerInspect) Container {
 		Privileged:     r.HostConfig.Privileged,
 		Capabilities:   caps,
 		ShmSize:        formatShmSize(r.HostConfig.ShmSize),
+		GPUs:           parseDeviceRequests(r.HostConfig.DeviceRequests),
 	}
 }
 
@@ -249,6 +256,28 @@ func formatShmSize(bytes int64) string {
 		return fmt.Sprintf("%dm", mb)
 	}
 	return fmt.Sprintf("%d", bytes)
+}
+
+// parseDeviceRequests converts the DeviceRequests from docker inspect back to
+// the --gpus flag string (e.g. "all" or "device=0,1").
+func parseDeviceRequests(reqs []struct {
+	Driver       string     `json:"Driver"`
+	Count        int        `json:"Count"`
+	DeviceIDs    []string   `json:"DeviceIDs"`
+	Capabilities [][]string `json:"Capabilities"`
+}) string {
+	if len(reqs) == 0 {
+		return ""
+	}
+	for _, req := range reqs {
+		if req.Count == -1 {
+			return "all"
+		}
+		if len(req.DeviceIDs) > 0 {
+			return "device=" + strings.Join(req.DeviceIDs, ",")
+		}
+	}
+	return ""
 }
 
 // parseVolumeInspect decodes `docker volume inspect` JSON into Volume structs.
