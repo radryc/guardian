@@ -1321,6 +1321,8 @@ func buildComputeContainer(in registry.AssetInput, spec *assetdefs.ComputeSpec, 
 		Ports:        toComputePorts(spec.Ports),
 		Privileged:   driverutil.BoolValue(spec.Privileged),
 		Capabilities: append([]string(nil), spec.Capabilities...),
+		ShmSize:      spec.ShmSize,
+		GPUs:         spec.GPUs,
 		Running:      true,
 	}
 	if r := spec.Resources; r != nil {
