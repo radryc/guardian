@@ -181,8 +181,35 @@ func (b *CLIBackend) GetVolume(name string) (Volume, bool, error) {
 }
 
 func (b *CLIBackend) DeleteVolume(name string) error {
+	if err := b.detachManagedContainersFromVolume(name); err != nil {
+		return err
+	}
 	_, err := b.runAllowNotFound("volume", "rm", "-f", name)
 	return err
+}
+
+func (b *CLIBackend) detachManagedContainersFromVolume(volumeName string) error {
+	out, err := b.run("ps", "-aq", "--filter", "volume="+volumeName)
+	if err != nil {
+		return err
+	}
+	ids := strings.Fields(strings.TrimSpace(string(out)))
+	for _, id := range ids {
+		container, ok, err := b.GetContainer(id)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			continue
+		}
+		if !strings.EqualFold(container.Labels["guardian.managed"], "true") {
+			return fmt.Errorf("docker volume %q is in use by unmanaged container %q", volumeName, container.Name)
+		}
+		if err := b.DeleteContainer(container.Name); err != nil {
+			return fmt.Errorf("remove container %q using volume %q: %w", container.Name, volumeName, err)
+		}
+	}
+	return nil
 }
 
 func (b *CLIBackend) UpsertConfig(config Config) error {
