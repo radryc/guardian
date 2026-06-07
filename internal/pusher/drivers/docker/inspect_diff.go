@@ -106,6 +106,9 @@ func DetailedContainerDiff(desired, actual Container) []DiffField {
 			fmt.Sprintf("%v", actual.Privileged),
 		})
 	}
+	if desired.ShmSize != actual.ShmSize {
+		diffs = append(diffs, DiffField{"shmSize", desired.ShmSize, actual.ShmSize})
+	}
 	return diffs
 }
 
@@ -189,6 +192,9 @@ func StructuralContainerDrift(desired, actual Container) (bool, string) {
 	}
 	if desired.Privileged != actual.Privileged {
 		return true, fmt.Sprintf("privileged changed: want %v got %v", desired.Privileged, actual.Privileged)
+	}
+	if desired.ShmSize != actual.ShmSize {
+		return true, fmt.Sprintf("shmSize changed: want %q got %q", desired.ShmSize, actual.ShmSize)
 	}
 	return false, ""
 }

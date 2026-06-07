@@ -315,6 +315,9 @@ func (b *CLIBackend) UpsertContainer(container Container) error {
 	if container.Privileged {
 		args = append(args, "--privileged")
 	}
+	if container.ShmSize != "" {
+		args = append(args, "--shm-size", container.ShmSize)
+	}
 	for _, capability := range container.Capabilities {
 		if capability == "" {
 			continue

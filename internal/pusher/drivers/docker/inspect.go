@@ -108,6 +108,7 @@ type rawContainerInspect struct {
 		NetworkMode  string   `json:"NetworkMode"`
 		CapAdd       []string `json:"CapAdd"`
 		Privileged   bool     `json:"Privileged"`
+		ShmSize      int64    `json:"ShmSize"`
 		PortBindings map[string][]struct {
 			HostPort string `json:"HostPort"`
 		} `json:"PortBindings"`
@@ -227,7 +228,27 @@ func containerFromRawInspect(r rawContainerInspect) Container {
 		HostBindMounts: hostBindMounts,
 		Privileged:     r.HostConfig.Privileged,
 		Capabilities:   caps,
+		ShmSize:        formatShmSize(r.HostConfig.ShmSize),
 	}
+}
+
+// formatShmSize converts a ShmSize in bytes (from docker inspect) to the same
+// human-readable string that docker accepts (e.g. 17179869184 → "16g").
+// Returns empty string for 0 or the default 64 MiB shm that docker always allocates.
+func formatShmSize(bytes int64) string {
+	const dockerDefaultShm = 67108864 // 64 MiB
+	if bytes <= 0 || bytes == dockerDefaultShm {
+		return ""
+	}
+	gb := bytes / (1024 * 1024 * 1024)
+	if gb*1024*1024*1024 == bytes {
+		return fmt.Sprintf("%dg", gb)
+	}
+	mb := bytes / (1024 * 1024)
+	if mb*1024*1024 == bytes {
+		return fmt.Sprintf("%dm", mb)
+	}
+	return fmt.Sprintf("%d", bytes)
 }
 
 // parseVolumeInspect decodes `docker volume inspect` JSON into Volume structs.
