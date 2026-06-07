@@ -93,6 +93,7 @@ func DesiredContainerForDiff(
 		Privileged:        driverutil.BoolValue(spec.Privileged),
 		Capabilities:      caps,
 		ShmSize:           spec.ShmSize,
+		GPUs:              spec.GPUs,
 		Running:           true,
 		CPULimit:          cpuLimit,
 		MemoryLimit:       memLimit,
