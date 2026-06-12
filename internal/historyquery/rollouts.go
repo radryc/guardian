@@ -31,6 +31,7 @@ type RolloutRecord struct {
 	TaskIDs            []string               `json:"taskIDs,omitempty"`
 	Current            bool                   `json:"current,omitempty"`
 	NewIntent          bool                   `json:"newIntent,omitempty"`
+	SelfHealing        bool                   `json:"selfHealing,omitempty"`
 	Summary            string                 `json:"summary"`
 	Assets             []RolloutAsset         `json:"assets"`
 }
@@ -62,6 +63,7 @@ func LoadPartitionRollouts(ctx context.Context, store guardianapi.ReadStore, par
 			return nil, err
 		}
 		grouped := collapseEquivalentRollouts(archives)
+		currentVisible := true
 		for idx, archive := range grouped {
 			if !filter.Match(archive.record.CreatedAt) {
 				continue
@@ -70,11 +72,12 @@ func LoadPartitionRollouts(ctx context.Context, store guardianapi.ReadStore, par
 			if idx+1 < len(grouped) {
 				previous = &grouped[idx+1]
 			}
-			rollout, err := buildRolloutRecord(archive, previous, idx == 0)
+			rollout, err := buildRolloutRecord(archive, previous, currentVisible)
 			if err != nil {
 				return nil, err
 			}
 			rollouts = append(rollouts, rollout)
+			currentVisible = false
 		}
 	}
 	sort.Slice(rollouts, func(i, j int) bool {
@@ -117,7 +120,7 @@ func collapseEquivalentRollouts(archives []archivedRollout) []archivedRollout {
 	}
 	grouped := make([]archivedRollout, 0, len(archives))
 	for _, archive := range archives {
-		if len(grouped) > 0 && rolloutStateEqual(archive, grouped[len(grouped)-1]) {
+		if len(grouped) > 0 && rolloutStateEqual(archive, grouped[len(grouped)-1]) && !hasChangedAssets(archive.record) {
 			continue
 		}
 		grouped = append(grouped, archive)
@@ -126,8 +129,9 @@ func collapseEquivalentRollouts(archives []archivedRollout) []archivedRollout {
 }
 
 func buildRolloutRecord(current archivedRollout, previous *archivedRollout, currentRollout bool) (RolloutRecord, error) {
+	selfHealing := previous != nil && rolloutStateEqual(current, *previous) && hasChangedAssets(current.record)
 	var previousSnapshot *IntentSnapshot
-	if previous != nil {
+	if previous != nil && !selfHealing {
 		previousSnapshot = &IntentSnapshot{
 			Manifest:        previous.intent,
 			AssetVersions:   previous.record.AssetVersions,
@@ -143,8 +147,8 @@ func buildRolloutRecord(current archivedRollout, previous *archivedRollout, curr
 		FallbackVersion: current.record.DeploymentRevision,
 		FallbackTime:    current.record.CreatedAt,
 	}, previousSnapshot)
-	if len(assets) == 0 {
-		assets = fallbackRolloutAssets(current.record, current.intent, previous == nil)
+	if selfHealing || len(assets) == 0 {
+		assets = fallbackRolloutAssets(current.record, current.intent, previous == nil, selfHealing)
 	}
 	return RolloutRecord{
 		Partition:          current.record.Partition,
@@ -155,9 +159,19 @@ func buildRolloutRecord(current archivedRollout, previous *archivedRollout, curr
 		TaskIDs:            append([]string(nil), current.record.TaskIDs...),
 		Current:            currentRollout,
 		NewIntent:          previous == nil,
-		Summary:            SummarizeIntentAssetDiff(previous == nil, assets),
+		SelfHealing:        selfHealing,
+		Summary:            summarizeRollout(previous == nil, selfHealing, assets),
 		Assets:             assets,
 	}, nil
+}
+
+func hasChangedAssets(record historydomain.DeploymentRecord) bool {
+	for _, name := range record.ChangedAssets {
+		if strings.TrimSpace(name) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func loadArchivedIntentManifest(ctx context.Context, store guardianapi.ReadStore, record historydomain.DeploymentRecord) (*intentdomain.Intent, error) {
@@ -191,7 +205,7 @@ func rolloutStateEqual(current, previous archivedRollout) bool {
 	return true
 }
 
-func fallbackRolloutAssets(record historydomain.DeploymentRecord, currentIntent *intentdomain.Intent, newIntent bool) []RolloutAsset {
+func fallbackRolloutAssets(record historydomain.DeploymentRecord, currentIntent *intentdomain.Intent, newIntent bool, selfHealing bool) []RolloutAsset {
 	assets := assetSpecMap(currentIntent)
 	names := append([]string(nil), record.ChangedAssets...)
 	if len(names) == 0 {
@@ -212,6 +226,8 @@ func fallbackRolloutAssets(record historydomain.DeploymentRecord, currentIntent 
 		change := "updated"
 		if newIntent {
 			change = "added"
+		} else if selfHealing {
+			change = "refreshed"
 		}
 		rollouts = append(rollouts, RolloutAsset{
 			Name:    name,
@@ -272,17 +288,20 @@ func listArchivePartitionEntries(ctx context.Context, store guardianapi.ReadStor
 	return entries, nil
 }
 
-func summarizeRollout(newIntent bool, assets []RolloutAsset) string {
+func summarizeRollout(newIntent bool, selfHealing bool, assets []RolloutAsset) string {
 	counts := map[string]int{}
 	for _, asset := range assets {
 		counts[asset.Change]++
 	}
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 4)
 	if counts["added"] > 0 {
 		parts = append(parts, summarizeChangeCount(counts["added"], "added"))
 	}
 	if counts["updated"] > 0 {
 		parts = append(parts, summarizeChangeCount(counts["updated"], "updated"))
+	}
+	if counts["refreshed"] > 0 {
+		parts = append(parts, summarizeChangeCount(counts["refreshed"], "refreshed"))
 	}
 	if counts["removed"] > 0 {
 		parts = append(parts, summarizeChangeCount(counts["removed"], "removed"))
@@ -291,11 +310,16 @@ func summarizeRollout(newIntent bool, assets []RolloutAsset) string {
 		if newIntent {
 			return "Initial rollout archived"
 		}
+		if selfHealing {
+			return "Self-heal archived"
+		}
 		return "Rollout archived"
 	}
 	prefix := "Rollout"
 	if newIntent {
 		prefix = "Initial rollout"
+	} else if selfHealing {
+		prefix = "Self-heal"
 	}
 	return fmt.Sprintf("%s: %s", prefix, strings.Join(parts, ", "))
 }

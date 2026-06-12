@@ -248,6 +248,7 @@ spec:
 	if err != nil {
 		t.Fatalf("Marshal(existing state) error = %v", err)
 	}
+
 	seedRaw(t, ctx, store, paths.IntentState("demo", "api"), existingState)
 
 	if err := recon.ReconcilePartition(ctx, "demo", true); err != nil {
@@ -338,6 +339,170 @@ spec:
 	if state.Status != statedomain.StatusHealthy {
 		t.Fatalf("final state.Status = %q, want %q", state.Status, statedomain.StatusHealthy)
 	}
+}
+
+func TestApplyFailedIntentRequeuesCheckAndLeavesInvalidState(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "test")
+	recon := reconciler.NewReconciler(store, disp, time.Minute)
+
+	seedRaw(t, ctx, store, paths.PartitionConfig("demo"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Partition
+metadata:
+  name: demo
+spec:
+  deletionPolicy: orphan
+  reconciliation:
+    mode: auto
+    interval: 30s
+`))
+	seedRaw(t, ctx, store, paths.IntentManifest("demo", "api"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: api
+spec:
+  intentType: standard
+  targetPusher: local
+  target:
+    cluster: local
+  locked: false
+  assets:
+    - type: Compute
+      name: web
+      properties:
+        image: api:v1
+`))
+
+	seedRaw(t, ctx, store, paths.IntentState("demo", "api"), mustJSON(t, statedomain.IntentState{
+		APIVersion:        "guardian/v1alpha1",
+		Kind:              "IntentState",
+		Partition:         "demo",
+		Intent:            "api",
+		Status:            statedomain.StatusApplyFailed,
+		TargetPusher:      "local",
+		Target:            targetdomain.Placement{Cluster: "local"},
+		IntentVersionID:   "intent-v1",
+		IntentSpecHash:    "spec-hash-v1",
+		PartitionRevision: "part-rev-v1",
+		AssetVersionIDs:   map[string]string{"web": "asset-v1"},
+		Outputs:           map[string]string{},
+		LastError:         pointerTo("previous apply failed"),
+	}))
+
+	if err := recon.ReconcilePartition(ctx, "demo", true); err != nil {
+		t.Fatalf("ReconcilePartition() error = %v", err)
+	}
+
+	state, err := common.LoadIntentState(ctx, store, "demo", "api")
+	if err != nil {
+		t.Fatalf("LoadIntentState(api) error = %v", err)
+	}
+	if got, want := state.Status, statedomain.StatusChecking; got != want {
+		t.Fatalf("state.Status = %q, want %q", got, want)
+	}
+	if state.LastTaskID == "" {
+		t.Fatalf("expected LastTaskID to be set")
+	}
+
+	var task taskdomain.Task
+	if err := loadJSON(ctx, store, paths.QueueTask("local", state.LastTaskID), &task); err != nil {
+		t.Fatalf("load queued task error = %v", err)
+	}
+	if task.Op != taskdomain.OpCheck {
+		t.Fatalf("queued task op = %q, want %q", task.Op, taskdomain.OpCheck)
+	}
+}
+
+func pointerTo(value string) *string {
+	return &value
+}
+
+func TestReconcilePartitionDriftedIdleQueuesCheck(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "test")
+	recon := reconciler.NewReconciler(store, disp, time.Minute)
+
+	seedRaw(t, ctx, store, paths.PartitionConfig("demo"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Partition
+metadata:
+  name: demo
+spec:
+  deletionPolicy: orphan
+  reconciliation:
+    mode: auto
+    interval: 30s
+`))
+	seedRaw(t, ctx, store, paths.IntentManifest("demo", "api"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: api
+spec:
+  intentType: standard
+  targetPusher: local
+  target:
+    cluster: local
+  locked: false
+  assets:
+    - type: Compute
+      name: web
+      properties:
+        image: api:v1
+`))
+
+	seedRaw(t, ctx, store, paths.IntentState("demo", "api"), mustJSON(t, statedomain.IntentState{
+		APIVersion:        "guardian/v1alpha1",
+		Kind:              "IntentState",
+		Partition:         "demo",
+		Intent:            "api",
+		Status:            statedomain.StatusDrifted,
+		TargetPusher:      "local",
+		Target:            targetdomain.Placement{Cluster: "local"},
+		IntentVersionID:   "intent-v1",
+		IntentSpecHash:    "spec-hash-v1",
+		PartitionRevision: "part-rev-v1",
+		AssetVersionIDs:   map[string]string{"web": "asset-v1"},
+		Outputs:           map[string]string{},
+		Drift: &taskdomain.DriftReport{
+			Status:        "Changed",
+			Summary:       "web drift",
+			ChangedAssets: []string{"web"},
+		},
+	}))
+
+	if err := recon.ReconcilePartition(ctx, "demo", true); err != nil {
+		t.Fatalf("ReconcilePartition() error = %v", err)
+	}
+
+	state, err := common.LoadIntentState(ctx, store, "demo", "api")
+	if err != nil {
+		t.Fatalf("LoadIntentState(api) error = %v", err)
+	}
+	if state.LastTaskID == "" {
+		t.Fatalf("expected LastTaskID to be set")
+	}
+
+	var task taskdomain.Task
+	if err := loadJSON(ctx, store, paths.QueueTask("local", state.LastTaskID), &task); err != nil {
+		t.Fatalf("load queued task error = %v", err)
+	}
+	if task.Op != taskdomain.OpCheck {
+		t.Fatalf("queued task op = %q, want %q", task.Op, taskdomain.OpCheck)
+	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	content, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("json marshal error: %v", err)
+	}
+	return content
 }
 
 func seedRaw(t *testing.T, ctx context.Context, store *memory.Store, logicalPath string, data []byte) {
@@ -543,6 +708,90 @@ spec:
 	state, _ = common.LoadIntentState(ctx, store, "lock-demo", "frozen")
 	if state.Status != statedomain.StatusDriftedLocked {
 		t.Fatalf("final status = %q, want DriftedLocked", state.Status)
+	}
+}
+
+// TestReconcileReadonlyPartitionNeverQueuesApply verifies that a partition
+// with mode: readonly detects drift and surfaces DriftedLocked status but
+// never queues CHECK or APPLY tasks.
+func TestReconcileReadonlyPartitionNeverQueuesApply(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "test")
+	recon := reconciler.NewReconciler(store, disp, time.Minute)
+	proc := results.NewProcessor(store, disp)
+
+	seedRaw(t, ctx, store, paths.PartitionConfig("bootstrap"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Partition
+metadata:
+  name: bootstrap
+spec:
+  deletionPolicy: orphan
+  reconciliation:
+    mode: readonly
+    interval: 30s
+`))
+	seedRaw(t, ctx, store, paths.IntentManifest("bootstrap", "monofs"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: monofs
+spec:
+  intentType: standard
+  targetPusher: local
+  target:
+    cluster: local
+  assets:
+    - type: Compute
+      name: svc
+      properties:
+        image: monofs:v1
+`))
+
+	if err := recon.ReconcilePartition(ctx, "bootstrap", true); err != nil {
+		t.Fatalf("ReconcilePartition: %v", err)
+	}
+
+	state, err := common.LoadIntentState(ctx, store, "bootstrap", "monofs")
+	if err != nil {
+		t.Fatalf("LoadIntentState: %v", err)
+	}
+	if state.Status != statedomain.StatusDiffing {
+		t.Fatalf("status after reconcile = %q, want Diffing", state.Status)
+	}
+	if state.PartitionMode != "readonly" {
+		t.Fatalf("PartitionMode = %q, want readonly", state.PartitionMode)
+	}
+
+	// DIFF reports drift; readonly mode must produce DriftedLocked, not queue CHECK.
+	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
+		TaskID:    state.LastTaskID,
+		Op:        taskdomain.OpDiff,
+		Status:    taskdomain.ResultSucceeded,
+		Partition: "bootstrap",
+		Intent:    "monofs",
+		Pusher:    "local",
+		Drift: &taskdomain.DriftReport{
+			Status:        "Changed",
+			Summary:       "image was updated outside guardian",
+			ChangedAssets: []string{"svc"},
+		},
+	}); err != nil {
+		t.Fatalf("ProcessResult(diff): %v", err)
+	}
+
+	state, _ = common.LoadIntentState(ctx, store, "bootstrap", "monofs")
+	if state.Status != statedomain.StatusDriftedLocked {
+		t.Fatalf("final status = %q, want DriftedLocked", state.Status)
+	}
+
+	// Queue must be empty — no CHECK or APPLY task created.
+	entries, _ := store.ListDir(ctx, paths.QueueDir("local"))
+	for _, e := range entries {
+		if !e.IsDir {
+			t.Fatalf("unexpected queue file %q – readonly partition must not queue tasks", e.Name)
+		}
 	}
 }
 

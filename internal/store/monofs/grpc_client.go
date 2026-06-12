@@ -69,6 +69,7 @@ type GRPCClient struct {
 	router      routerClient
 	nodeConns   map[string]*grpc.ClientConn
 	nodeClients map[string]pb.MonoFSClient
+	nodeAddrs   map[string]string
 	lastRefresh time.Time
 	refreshTTL  time.Duration
 
@@ -141,6 +142,7 @@ func NewGRPCClient(ctx context.Context, cfg ClientConfig) (*GRPCClient, error) {
 		router:               pb.NewMonoFSRouterClient(conn),
 		nodeConns:            map[string]*grpc.ClientConn{},
 		nodeClients:          map[string]pb.MonoFSClient{},
+		nodeAddrs:            map[string]string{},
 		refreshTTL:           defaultTopologyRefreshInterval,
 		stopHeartbeat:        make(chan struct{}),
 	}
@@ -181,6 +183,7 @@ func (c *GRPCClient) Close() error {
 			errs = append(errs, fmt.Errorf("close node %s: %w", nodeID, err))
 		}
 	}
+	c.nodeAddrs = nil
 	if c.routerConn != nil {
 		if err := c.routerConn.Close(); err != nil {
 			errs = append(errs, err)
@@ -318,6 +321,7 @@ func (c *GRPCClient) ReadFile(ctx context.Context, mountPath string) ([]byte, er
 		if err != nil {
 			cancel()
 			lastErr = err
+			c.invalidateNodeOnTransportError(node.id, err)
 			continue
 		}
 		content, readErr := readAll(stream)
@@ -326,6 +330,7 @@ func (c *GRPCClient) ReadFile(ctx context.Context, mountPath string) ([]byte, er
 			return content, nil
 		}
 		lastErr = readErr
+		c.invalidateNodeOnTransportError(node.id, readErr)
 	}
 	if lastErr == nil || status.Code(lastErr) == codes.NotFound {
 		return nil, os.ErrNotExist
@@ -349,6 +354,7 @@ func (c *GRPCClient) ListDir(ctx context.Context, mountPath string) ([]guardiana
 		stream, err := node.client.ReadDir(callCtx, &pb.ReadDirRequest{Path: mountPath})
 		if err != nil {
 			cancel()
+			c.invalidateNodeOnTransportError(node.id, err)
 			if status.Code(err) != codes.NotFound {
 				lastErr = err
 			}
@@ -362,6 +368,7 @@ func (c *GRPCClient) ListDir(ctx context.Context, mountPath string) ([]guardiana
 			}
 			if recvErr != nil {
 				lastErr = recvErr
+				c.invalidateNodeOnTransportError(node.id, recvErr)
 				break
 			}
 			name := entry.GetName()
@@ -650,18 +657,37 @@ func (c *GRPCClient) refreshNodes(ctx context.Context) error {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.nodeConns == nil {
+		c.nodeConns = map[string]*grpc.ClientConn{}
+	}
+	if c.nodeClients == nil {
+		c.nodeClients = map[string]pb.MonoFSClient{}
+	}
+	if c.nodeAddrs == nil {
+		c.nodeAddrs = map[string]string{}
+	}
 
 	seen := map[string]struct{}{}
+	connected := 0
+	var connectErr error
 	for _, node := range healthy {
 		nodeID := node.GetNodeId()
+		nodeAddr := node.GetAddress()
 		seen[nodeID] = struct{}{}
 
 		conn := c.nodeConns[nodeID]
-		if conn != nil {
+		if conn != nil && c.nodeAddrs[nodeID] == nodeAddr {
+			connected++
 			continue
 		}
+		if conn != nil {
+			_ = conn.Close()
+			delete(c.nodeConns, nodeID)
+			delete(c.nodeClients, nodeID)
+			delete(c.nodeAddrs, nodeID)
+		}
 		nodeConn, dialErr := grpc.NewClient(
-			node.GetAddress(),
+			nodeAddr,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			grpc.WithDefaultCallOptions(
 				grpc.MaxCallRecvMsgSize(256*1024*1024),
@@ -669,10 +695,13 @@ func (c *GRPCClient) refreshNodes(ctx context.Context) error {
 			),
 		)
 		if dialErr != nil {
-			return fmt.Errorf("connect to monofs node %s: %w", nodeID, dialErr)
+			connectErr = fmt.Errorf("connect to monofs node %s: %w", nodeID, dialErr)
+			continue
 		}
 		c.nodeConns[nodeID] = nodeConn
 		c.nodeClients[nodeID] = pb.NewMonoFSClient(nodeConn)
+		c.nodeAddrs[nodeID] = nodeAddr
+		connected++
 	}
 
 	for nodeID, conn := range c.nodeConns {
@@ -682,9 +711,45 @@ func (c *GRPCClient) refreshNodes(ctx context.Context) error {
 		_ = conn.Close()
 		delete(c.nodeConns, nodeID)
 		delete(c.nodeClients, nodeID)
+		delete(c.nodeAddrs, nodeID)
+	}
+	if connected == 0 {
+		if connectErr != nil {
+			return connectErr
+		}
+		return fmt.Errorf("no healthy monofs nodes available")
 	}
 	c.lastRefresh = time.Now()
 	return nil
+}
+
+func (c *GRPCClient) invalidateNodeOnTransportError(nodeID string, err error) {
+	if nodeID == "" || !isTransportUnavailable(err) {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if conn := c.nodeConns[nodeID]; conn != nil {
+		_ = conn.Close()
+	}
+	delete(c.nodeConns, nodeID)
+	delete(c.nodeClients, nodeID)
+	delete(c.nodeAddrs, nodeID)
+	c.lastRefresh = time.Time{}
+}
+
+func isTransportUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if status.Code(err) == codes.Unavailable {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "error reading server preface") ||
+		strings.Contains(message, "connection reset by peer") ||
+		strings.Contains(message, "transport is closing") ||
+		strings.Contains(message, "unexpected eof")
 }
 
 func (c *GRPCClient) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

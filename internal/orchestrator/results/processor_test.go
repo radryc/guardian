@@ -389,6 +389,48 @@ func TestProcessorDriftedLocked(t *testing.T) {
 	}
 }
 
+// TestProcessorDriftedReadonly verifies that drift on an intent in a readonly
+// partition produces DriftedLocked state without queuing CHECK or APPLY.
+func TestProcessorDriftedReadonly(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "guardiand")
+	proc := NewProcessor(store, disp)
+
+	s := baseState("infra", "monofs", statedomain.StatusDiffing)
+	s.PartitionMode = "readonly"
+	seedIntentState(t, ctx, store, s)
+
+	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
+		TaskID:    "t3",
+		Op:        taskdomain.OpDiff,
+		Status:    taskdomain.ResultSucceeded,
+		Partition: "infra",
+		Intent:    "monofs",
+		Pusher:    "local",
+		Drift: &taskdomain.DriftReport{
+			Status:        "Changed",
+			Summary:       "config drifted",
+			ChangedAssets: []string{"monofs"},
+		},
+	}); err != nil {
+		t.Fatalf("ProcessResult: %v", err)
+	}
+
+	got := loadState(t, ctx, store, "infra", "monofs")
+	if got.Status != statedomain.StatusDriftedLocked {
+		t.Fatalf("status = %q, want DriftedLocked", got.Status)
+	}
+
+	// No CHECK or APPLY task should have been queued.
+	entries, _ := store.ListDir(ctx, paths.QueueDir("local"))
+	for _, e := range entries {
+		if !e.IsDir {
+			t.Fatalf("unexpected queue file %q – tasks must not be queued for readonly partition", e.Name)
+		}
+	}
+}
+
 // TestProcessorApplyFailed verifies that a failed APPLY result marks
 // the intent as ApplyFailed.
 func TestProcessorApplyFailed(t *testing.T) {

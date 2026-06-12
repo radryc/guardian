@@ -2,6 +2,7 @@ package asset
 
 const (
 	TypeCompute       = "Compute"
+	TypeImageBuild    = "ImageBuild"
 	TypeCDKStack      = "CDKStack"
 	TypeDatabase      = "Database"
 	TypeSQLDatabase   = "SQLDatabase"
@@ -16,6 +17,7 @@ const (
 
 var knownTypes = map[string]struct{}{
 	TypeCompute:       {},
+	TypeImageBuild:    {},
 	TypeCDKStack:      {},
 	TypeDatabase:      {},
 	TypeSQLDatabase:   {},
@@ -36,6 +38,7 @@ func IsKnownType(assetType string) bool {
 func KnownTypes() []string {
 	return []string{
 		TypeCompute,
+		TypeImageBuild,
 		TypeCDKStack,
 		TypeDatabase,
 		TypeSQLDatabase,

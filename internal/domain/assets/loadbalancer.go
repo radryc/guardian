@@ -82,4 +82,3 @@ func (loadBalancerDefinition) Validate(spec any, ctx ValidationContext) error {
 	}
 	return nil
 }
-

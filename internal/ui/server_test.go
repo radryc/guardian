@@ -353,6 +353,49 @@ func TestDeriveAssetPresentationUsesAssetObservation(t *testing.T) {
 	}
 }
 
+func TestDeriveAssetPresentationDriftedLockedIncludesObservedCause(t *testing.T) {
+	t.Parallel()
+
+	status, displayStatus, health, summary := deriveAssetPresentation(&statedomain.IntentState{
+		Status: statedomain.StatusDriftedLocked,
+		Drift:  &taskdomain.DriftReport{ChangedAssets: []string{"web"}},
+		AssetObservations: map[string]*taskdomain.AssetObservation{
+			"web": {
+				Health: &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: "kubernetes deployment missing"},
+			},
+		},
+	}, "web", intentTaskRuntime{})
+
+	if status != string(statedomain.StatusDriftedLocked) {
+		t.Fatalf("status = %q, want %q", status, statedomain.StatusDriftedLocked)
+	}
+	if displayStatus != "Locked drift" || health != "attention" {
+		t.Fatalf("presentation = (%q, %q), want (Locked drift, attention)", displayStatus, health)
+	}
+	if summary != "Drift exists but push is locked: kubernetes deployment missing" {
+		t.Fatalf("summary = %q", summary)
+	}
+}
+
+func TestDeriveIntentPresentationDriftedLockedIncludesObservedCause(t *testing.T) {
+	t.Parallel()
+
+	status, displayStatus, health, summary := deriveIntentPresentation(&statedomain.IntentState{
+		Status: statedomain.StatusDriftedLocked,
+		Health: &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: "fetcher-a: kubernetes deployment missing"},
+	}, intentTaskRuntime{})
+
+	if status != string(statedomain.StatusDriftedLocked) {
+		t.Fatalf("status = %q, want %q", status, statedomain.StatusDriftedLocked)
+	}
+	if displayStatus != "Locked drift" || health != "attention" {
+		t.Fatalf("presentation = (%q, %q), want (Locked drift, attention)", displayStatus, health)
+	}
+	if summary != "Drift detected but the intent is locked: fetcher-a: kubernetes deployment missing" {
+		t.Fatalf("summary = %q", summary)
+	}
+}
+
 func TestBuildPartitionHealthUsesIntentHealth(t *testing.T) {
 	t.Parallel()
 
@@ -737,6 +780,9 @@ func TestServerRolloutsExposeNewIntentAndChangedAssets(t *testing.T) {
 	}
 	if got, want := response.Rollouts[0].Assets[0].Change, "added"; got != want {
 		t.Fatalf("first rollout asset change = %q, want %q", got, want)
+	}
+	if response.Rollouts[0].SelfHealing {
+		t.Fatalf("expected updated rollout to not be marked self-healing")
 	}
 	if !response.Rollouts[1].NewIntent {
 		t.Fatalf("expected jobs rollout to be marked as new")

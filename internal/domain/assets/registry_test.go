@@ -26,6 +26,19 @@ func TestDecodeReturnsTypedSpecs(t *testing.T) {
 			wantTyp: "*assets.ComputeSpec",
 		},
 		{
+			name: "image build",
+			spec: assetdomain.Spec{
+				Type: assetdomain.TypeImageBuild,
+				Name: "api-image",
+				Properties: map[string]any{
+					"repository": "demo-api",
+					"registry":   "registry.strata.local:5000",
+					"sourceDir":  "/partitions/demo/payloads/sources/api",
+				},
+			},
+			wantTyp: "*assets.ImageBuildSpec",
+		},
+		{
 			name: "cdk stack",
 			spec: assetdomain.Spec{
 				Type: assetdomain.TypeCDKStack,

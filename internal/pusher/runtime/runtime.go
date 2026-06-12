@@ -241,6 +241,7 @@ func (r *Runtime) processPending(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	pusher := strings.TrimPrefix(strings.TrimPrefix(r.QueuePath, paths.QueueRoot()), "/")
 	activeTaskIDs := make(map[string]struct{}, len(entries))
 	scanAt := time.Now()
 	for _, entry := range entries {
@@ -258,14 +259,26 @@ func (r *Runtime) processPending(ctx context.Context) error {
 			continue
 		}
 		if !claimed {
+			// Task already has a result file and is awaiting control-plane cleanup.
+			// Do not emit a noisy warning in this expected completion window.
+			if completed, err := pathExists(ctx, r.Store, paths.QueueResult(pusher, taskID)); err == nil && completed {
+				r.forgetClaimRetry(taskID)
+				continue
+			}
 			r.scheduleClaimRetry(taskID, scanAt)
 			log.Printf("[Pusher] Task %s was not claimed (maybe locked or not ready).", taskID)
 			continue
 		}
 		r.forgetClaimRetry(taskID)
-		log.Printf("[Pusher] Successfully claimed task %s! Executing...", taskID)
+		log.Printf("[Pusher] Successfully claimed task %s! op=%s partition=%s intent=%s assets=%d Executing...",
+			taskID, t.Op, t.Partition, t.Intent, len(t.Assets))
 		result := r.executeTask(ctx, t)
-		log.Printf("[Pusher] Task %s execution finished. Writing result (status=%v)...", taskID, result.Status)
+		changed := []string{}
+		if result.Drift != nil {
+			changed = result.Drift.ChangedAssets
+		}
+		log.Printf("[Pusher] Task %s execution finished. op=%s partition=%s intent=%s status=%v changed=%v",
+			taskID, t.Op, t.Partition, t.Intent, result.Status, changed)
 		if err := r.writeResult(ctx, result); err != nil {
 			log.Printf("[Pusher] Error writing result for task %s: %v", taskID, err)
 			continue
@@ -446,8 +459,10 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 			}
 			if drift.Status == "Changed" || len(drift.ChangedAssets) > 0 {
 				changedAssets = append(changedAssets, drift.ChangedAssets...)
-				result.Logs = append(result.Logs, logEntry("warn", asset.Name, "drift detected"))
-				telemetry.EmitWarn(assetCtx, runtimeScope, fmt.Sprintf("drift detected for asset %s", asset.Name))
+				msg := fmt.Sprintf("drift detected: %s", drift.Summary)
+				result.Logs = append(result.Logs, logEntry("warn", asset.Name, msg))
+				log.Printf("[Pusher] DRIFT %s/%s asset=%s reason=%q", t.Partition, t.Intent, asset.Name, drift.Summary)
+				telemetry.EmitWarn(assetCtx, runtimeScope, fmt.Sprintf("drift detected for asset %s: %s", asset.Name, drift.Summary))
 			} else {
 				result.Logs = append(result.Logs, logEntry("info", asset.Name, "no drift detected"))
 				telemetry.EmitInfo(assetCtx, runtimeScope, fmt.Sprintf("no drift detected for asset %s", asset.Name))
@@ -472,6 +487,7 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 			}
 			result.Logs = append(result.Logs, logEntry("info", asset.Name, "apply succeeded"))
 			telemetry.EmitInfo(assetCtx, runtimeScope, fmt.Sprintf("apply succeeded for asset %s", asset.Name))
+			result.Logs = append(result.Logs, applied.Logs...)
 			for key, value := range applied.Outputs {
 				if _, exists := outputs[key]; !exists {
 					outputs[key] = value

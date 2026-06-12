@@ -83,7 +83,7 @@ func Default() *Config {
 			UIListenAddress:      "",
 			UIBaseURL:            "",
 			ClientDiscoveryToken: "",
-			StaleTaskAfter:       "5m",
+			StaleTaskAfter:       "30m",
 		},
 		Compliance: ComplianceConfig{},
 		Pushers: []PusherConfig{{

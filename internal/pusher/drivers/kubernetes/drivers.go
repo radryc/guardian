@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
 	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
 	orchestratorcommon "github.com/rydzu/ainfra/guardian/internal/orchestrator/common"
@@ -49,6 +50,7 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 	reg.Register(&VolumeDriver{base})
 	reg.Register(&ConfigDriver{base})
 	reg.Register(&ComputeDriver{base})
+	reg.Register(&ImageBuildDriver{baseDriver: base, backend: NewImageBuildBackend(), defaultRegistry: strings.TrimSpace(os.Getenv("GUARDIAN_IMAGE_BUILD_REGISTRY"))})
 	reg.Register(&TraefikRouteDriver{base})
 	reg.Register(&LoadBalancerDriver{base})
 	reg.Register(&ObjectStoreDriver{base})
@@ -220,7 +222,11 @@ func (d *ComputeDriver) Check(ctx context.Context, in registry.AssetInput) error
 	if err := d.checkReferences(ctx, in); err != nil {
 		return err
 	}
-	deployment, ok, err := d.backend.GetDeployment(namespace(in), workloadName(in, "compute"))
+	spec, err := decodeCompute(in)
+	if err != nil {
+		return err
+	}
+	deployment, ok, err := d.backend.GetDeployment(namespace(in), computeDeploymentName(in, spec))
 	if err != nil {
 		return err
 	}
@@ -263,9 +269,27 @@ func (d *ComputeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskd
 		return taskdomain.DriftReport{}, err
 	}
 	hash := hashWithPayload(computeHash(in, spec), payload)
-	deployment, ok, err := d.backend.GetDeployment(namespace(in), workloadName(in, "compute"))
+	deploymentName := computeDeploymentName(in, spec)
+	serviceName := computeServiceName(in, spec)
+	deployment, ok, err := d.backend.GetDeployment(namespace(in), deploymentName)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
+	}
+	if spec.ObserveExisting {
+		if !ok {
+			return changedDrift(in.Asset.Name, "kubernetes deployment differs"), nil
+		}
+		if len(spec.Ports) > 0 {
+			service, serviceOK, err := d.backend.GetService(namespace(in), serviceName)
+			if err != nil {
+				return taskdomain.DriftReport{}, err
+			}
+			if !serviceOK {
+				return changedDrift(in.Asset.Name, "kubernetes service differs"), nil
+			}
+			_ = service
+		}
+		return inSyncDrift(in.Asset.Name, "kubernetes compute is in sync"), nil
 	}
 	replicas := max(1, driverutil.IntValue(spec.Replicas, 1))
 	if payload.Replicas != nil && *payload.Replicas > 0 {
@@ -275,7 +299,7 @@ func (d *ComputeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskd
 		return changedDrift(in.Asset.Name, "kubernetes deployment differs"), nil
 	}
 	if len(spec.Ports) > 0 {
-		service, ok, err := d.backend.GetService(namespace(in), serviceName(in, "compute"))
+		service, ok, err := d.backend.GetService(namespace(in), serviceName)
 		if err != nil {
 			return taskdomain.DriftReport{}, err
 		}
@@ -294,6 +318,31 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
+	if spec.ObserveExisting {
+		deploymentName := computeDeploymentName(in, spec)
+		deployment, ok, err := d.backend.GetDeployment(namespace(in), deploymentName)
+		if err != nil {
+			return registry.AssetResult{}, err
+		}
+		if !ok {
+			return registry.AssetResult{}, fmt.Errorf("observed deployment %s is missing", deploymentName)
+		}
+		outputs := map[string]string{"id": deploymentName, "image": deployment.Container.Image}
+		if len(spec.Ports) > 0 {
+			svcName := computeServiceName(in, spec)
+			svc, ok, err := d.backend.GetService(namespace(in), svcName)
+			if err != nil {
+				return registry.AssetResult{}, err
+			}
+			if !ok {
+				return registry.AssetResult{}, fmt.Errorf("observed service %s is missing", svcName)
+			}
+			if port := firstServicePort(svc.Ports); port > 0 {
+				outputs["address"] = fmt.Sprintf("%s.%s.svc.cluster.local:%d", svc.Name, namespace(in), port)
+			}
+		}
+		return registry.AssetResult{Outputs: outputs}, nil
+	}
 	payload, err := loadWorkloadPayload(ctx, in)
 	if err != nil {
 		return registry.AssetResult{}, err
@@ -311,7 +360,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	container.Image = spec.Image
 	deployment := Deployment{
 		Namespace:         namespace(in),
-		Name:              workloadName(in, "compute"),
+		Name:              computeDeploymentName(in, spec),
 		Kind:              "Compute",
 		Hash:              hash,
 		Labels:            driverutil.Labels("kubernetes", in, hash),
@@ -325,13 +374,13 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	if err := d.backend.UpsertDeployment(deployment); err != nil {
 		return registry.AssetResult{}, err
 	}
-	outputs := map[string]string{"id": workloadName(in, "compute"), "image": deployment.Container.Image}
+	outputs := map[string]string{"id": computeDeploymentName(in, spec), "image": deployment.Container.Image}
 	ports := toServicePorts(spec.Ports)
 	if len(payload.ServicePorts) > 0 {
 		ports = append([]ServicePort(nil), payload.ServicePorts...)
 	}
 	if len(ports) > 0 {
-		name := serviceName(in, "compute")
+		name := computeServiceName(in, spec)
 		if err := d.backend.UpsertService(Service{
 			Namespace:   namespace(in),
 			Name:        name,
@@ -355,10 +404,17 @@ func (d *ComputeDriver) Destroy(ctx context.Context, in registry.AssetInput) err
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := d.backend.DeleteDeployment(namespace(in), workloadName(in, "compute")); err != nil {
+	spec, err := decodeCompute(in)
+	if err != nil {
 		return err
 	}
-	return d.backend.DeleteService(namespace(in), serviceName(in, "compute"))
+	if spec.ObserveExisting {
+		return nil
+	}
+	if err := d.backend.DeleteDeployment(namespace(in), computeDeploymentName(in, spec)); err != nil {
+		return err
+	}
+	return d.backend.DeleteService(namespace(in), computeServiceName(in, spec))
 }
 
 func (d *TraefikRouteDriver) Check(ctx context.Context, in registry.AssetInput) error {
@@ -880,12 +936,22 @@ func (d *baseDriver) observeComputeHealth(ctx context.Context, in registry.Asset
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	deployment, ok, err := d.backend.GetDeployment(namespace(in), workloadName(in, "compute"))
+	deploymentName := workloadName(in, "compute")
+	serviceLookupName := serviceName(in, "compute")
+	if strings.EqualFold(strings.TrimSpace(in.Asset.Type), assetdomain.TypeCompute) {
+		spec, err := decodeCompute(in)
+		if err != nil {
+			return nil, err
+		}
+		deploymentName = computeDeploymentName(in, spec)
+		serviceLookupName = computeServiceName(in, spec)
+	}
+	deployment, ok, err := d.backend.GetDeployment(namespace(in), deploymentName)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
-		return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: "kubernetes deployment missing"}, nil
+		return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: fmt.Sprintf("kubernetes deployment %s missing", deploymentName)}, nil
 	}
 	if deployment.CrashLoopBackOff {
 		reason := deployment.PodFailureReason
@@ -900,12 +966,12 @@ func (d *baseDriver) observeComputeHealth(ctx context.Context, in registry.Asset
 	if !expectService {
 		return &taskdomain.HealthObservation{Status: taskdomain.HealthHealthy, Summary: "kubernetes workload is ready"}, nil
 	}
-	service, ok, err := d.backend.GetService(namespace(in), serviceName(in, "compute"))
+	service, ok, err := d.backend.GetService(namespace(in), serviceLookupName)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
-		return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: "kubernetes service missing"}, nil
+		return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: fmt.Sprintf("kubernetes service %s missing", serviceLookupName)}, nil
 	}
 	return &taskdomain.HealthObservation{Status: taskdomain.HealthHealthy, Summary: fmt.Sprintf("kubernetes service %s is ready", service.Name)}, nil
 }
@@ -931,7 +997,7 @@ func (d *baseDriver) observeServiceBackedHealth(ctx context.Context, in registry
 		return nil, err
 	}
 	if !ok {
-		return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: "kubernetes deployment missing"}, nil
+		return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: fmt.Sprintf("kubernetes deployment %s missing", deploymentName)}, nil
 	}
 	if deployment.CrashLoopBackOff {
 		reason := deployment.PodFailureReason
@@ -948,7 +1014,7 @@ func (d *baseDriver) observeServiceBackedHealth(ctx context.Context, in registry
 		return nil, err
 	}
 	if !ok {
-		return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: "kubernetes service missing"}, nil
+		return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: fmt.Sprintf("kubernetes service %s missing", svcName)}, nil
 	}
 	if healthySummary == "" {
 		healthySummary = fmt.Sprintf("kubernetes service %s is ready", service.Name)
@@ -1487,8 +1553,28 @@ func workloadName(in registry.AssetInput, suffix string) string {
 	return driverutil.ResourceName("k8s-"+suffix, in.Target, in.PartitionName, in.IntentName, in.Asset.Name)
 }
 
+func computeDeploymentName(in registry.AssetInput, spec *assetdefs.ComputeSpec) string {
+	if spec != nil && spec.ObserveExisting {
+		if explicit := strings.TrimSpace(spec.ExistingDeploymentName); explicit != "" {
+			return explicit
+		}
+		return in.Asset.Name
+	}
+	return workloadName(in, "compute")
+}
+
 func serviceName(in registry.AssetInput, suffix string) string {
 	return driverutil.ResourceName("k8s-svc-"+suffix, in.Target, in.PartitionName, in.IntentName, in.Asset.Name)
+}
+
+func computeServiceName(in registry.AssetInput, spec *assetdefs.ComputeSpec) string {
+	if spec != nil && spec.ObserveExisting {
+		if explicit := strings.TrimSpace(spec.ExistingServiceName); explicit != "" {
+			return explicit
+		}
+		return in.Asset.Name
+	}
+	return serviceName(in, "compute")
 }
 
 func claimName(in registry.AssetInput, assetName string) string {

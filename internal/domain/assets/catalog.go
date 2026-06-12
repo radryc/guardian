@@ -84,6 +84,30 @@ var catalogTemplates = map[string]CatalogTemplate{
 			CatalogHint{Path: "hostBindMounts[].readOnly", Title: "Read-only host bind", Description: "Expose the host path to the workload as read-only."},
 		),
 	},
+	assetdomain.TypeImageBuild: {
+		Type:        assetdomain.TypeImageBuild,
+		Title:       "Image build",
+		Description: "Build and publish an immutable OCI image from a staged source tree.",
+		Icon:        "🏗️",
+		Category:    "Build",
+		Template: map[string]any{
+			"repository": "example-api",
+			"registry":   "registry.strata.local:5000",
+			"sourceDir":  "/partitions/example/payloads/sources/api",
+			"dockerfile": "Dockerfile",
+			"platform":   "linux/amd64",
+		},
+		Fields: imageBuildCatalogFields(),
+		Hints: hints(imageBuildCatalogFields(),
+			CatalogHint{Path: "repository", Title: "Repository name", Description: "Repository/name portion of the pushed image reference, without registry or tag."},
+			CatalogHint{Path: "registry", Title: "Registry host", Description: "Registry host:port used for the published immutable image. Leave empty to let the pusher use its default registry."},
+			CatalogHint{Path: "sourceDir", Title: "Staged source tree", Description: "Absolute Guardian logical path for the staged Docker build context directory."},
+			CatalogHint{Path: "dockerfile", Title: "Dockerfile path", Description: "Path to the Dockerfile relative to sourceDir. Defaults to Dockerfile."},
+			CatalogHint{Path: "target", Title: "Build target", Description: "Optional Dockerfile target stage to build."},
+			CatalogHint{Path: "platform", Title: "Platform", Description: "Optional target platform such as linux/amd64."},
+			CatalogHint{Path: "buildArgs", Title: "Build args", Description: "Docker build arguments passed to the image builder."},
+		),
+	},
 	assetdomain.TypeCDKStack: {
 		Type:        assetdomain.TypeCDKStack,
 		Title:       "AWS CDK stack",
@@ -280,6 +304,18 @@ func Catalog() []CatalogTemplate {
 func CatalogFor(assetType string) (CatalogTemplate, bool) {
 	item, ok := catalogTemplates[assetType]
 	return item, ok
+}
+
+func imageBuildCatalogFields() []CatalogField {
+	return []CatalogField{
+		{Path: "repository", Title: "Repository", Control: "text", Placeholder: "example-api"},
+		{Path: "registry", Title: "Registry", Control: "text", Placeholder: "registry.strata.local:5000"},
+		{Path: "sourceDir", Title: "Source dir", Control: "text", Placeholder: "/partitions/example/payloads/sources/api"},
+		{Path: "dockerfile", Title: "Dockerfile", Control: "text", Placeholder: "Dockerfile"},
+		{Path: "target", Title: "Build target", Control: "text", Placeholder: "runtime"},
+		{Path: "platform", Title: "Platform", Control: "text", Placeholder: "linux/amd64"},
+		{Path: "buildArgs", Title: "Build args JSON", Control: "json"},
+	}
 }
 
 func hints(fields []CatalogField, extra ...CatalogHint) []CatalogHint {

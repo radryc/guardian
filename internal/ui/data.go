@@ -232,6 +232,7 @@ type RolloutView struct {
 	TaskIDs            []string           `json:"taskIDs,omitempty"`
 	Current            bool               `json:"current,omitempty"`
 	NewIntent          bool               `json:"newIntent,omitempty"`
+	SelfHealing        bool               `json:"selfHealing,omitempty"`
 	Summary            string             `json:"summary"`
 	Assets             []RolloutAssetView `json:"assets"`
 }
@@ -1305,6 +1306,7 @@ func buildRolloutView(record historyquery.RolloutRecord) RolloutView {
 		TaskIDs:            append([]string(nil), record.TaskIDs...),
 		Current:            record.Current,
 		NewIntent:          record.NewIntent,
+		SelfHealing:        record.SelfHealing,
 		Summary:            record.Summary,
 		Assets:             assets,
 	}
@@ -1446,8 +1448,14 @@ func deriveIntentPresentation(state *statedomain.IntentState, runtime intentTask
 	case statedomain.StatusDiffFailed, statedomain.StatusCheckFailed, statedomain.StatusApplyFailed:
 		return string(state.Status), "Error", "failing", valueOrDefault(observedFailureSummary(state), valueOrDefault(pointerString(state.LastError), "The last task failed"))
 	case statedomain.StatusDrifted:
+		if _, _, observedSummary, ok := observedIntentHealthPresentation(state); ok {
+			return string(state.Status), "Diff found", "attention", combineDriftSummary("Drift detected and waiting for push", observedSummary)
+		}
 		return string(state.Status), "Diff found", "attention", "Drift detected and waiting for push"
 	case statedomain.StatusDriftedLocked:
+		if _, _, observedSummary, ok := observedIntentHealthPresentation(state); ok {
+			return string(state.Status), "Locked drift", "attention", combineDriftSummary("Drift detected but the intent is locked", observedSummary)
+		}
 		return string(state.Status), "Locked drift", "attention", "Drift detected but the intent is locked"
 	case statedomain.StatusBlocked:
 		return string(state.Status), "Blocked", "attention", "Waiting for joined intents to become healthy"
@@ -1585,6 +1593,9 @@ func deriveAssetPresentation(state *statedomain.IntentState, assetName string, r
 		return string(state.Status), "Error", "failing", valueOrDefault(pointerString(state.LastError), "Last task failed")
 	case statedomain.StatusDrifted:
 		if changed {
+			if _, _, observedSummary, ok := observedAssetHealthPresentation(state, assetName); ok {
+				return string(state.Status), "Diff found", "attention", combineDriftSummary("Live state differs from blueprint", observedSummary)
+			}
 			return string(state.Status), "Diff found", "attention", "Live state differs from blueprint"
 		}
 		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
@@ -1593,6 +1604,9 @@ func deriveAssetPresentation(state *statedomain.IntentState, assetName string, r
 		return string(state.Status), "No diff", "healthy", "No current drift on this asset"
 	case statedomain.StatusDriftedLocked:
 		if changed {
+			if _, _, observedSummary, ok := observedAssetHealthPresentation(state, assetName); ok {
+				return string(state.Status), "Locked drift", "attention", combineDriftSummary("Drift exists but push is locked", observedSummary)
+			}
 			return string(state.Status), "Locked drift", "attention", "Drift exists but push is locked"
 		}
 		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
@@ -1611,6 +1625,18 @@ func deriveAssetPresentation(state *statedomain.IntentState, assetName string, r
 	default:
 		return string(state.Status), humanizeWords(string(state.Status)), "pending", humanizeWords(string(state.Status))
 	}
+}
+
+func combineDriftSummary(base, observed string) string {
+	base = strings.TrimSpace(base)
+	observed = strings.TrimSpace(observed)
+	if observed == "" {
+		return base
+	}
+	if base == "" {
+		return observed
+	}
+	return base + ": " + observed
 }
 
 func assetFacts(spec assetdomain.Spec) (string, []Fact, bool, []string, int) {

@@ -120,10 +120,7 @@ func PreserveStatusDuringRefresh(status statedomain.IntentStatus) bool {
 	switch status {
 	case statedomain.StatusHealthy,
 		statedomain.StatusDrifted,
-		statedomain.StatusDriftedLocked,
-		statedomain.StatusDiffFailed,
-		statedomain.StatusCheckFailed,
-		statedomain.StatusApplyFailed:
+		statedomain.StatusDriftedLocked:
 		return true
 	default:
 		return false

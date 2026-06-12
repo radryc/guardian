@@ -67,6 +67,10 @@ func main() {
 	if flagProvided("reconcile-interval") {
 		cfg.Guardian.ReconcileInterval = reconcileInterval
 	}
+	// Allow env override for stale task timeout without requiring a config file rebuild.
+	if v := strings.TrimSpace(os.Getenv("GUARDIAN_STALE_TASK_AFTER")); v != "" {
+		cfg.Guardian.StaleTaskAfter = v
+	}
 
 	telemetryCfg, err := telemetry.LoadConfig("guardiand", cfg.Guardian.PrincipalID)
 	if err != nil {

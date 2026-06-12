@@ -27,7 +27,7 @@ func ValidatePartition(p *partitiondomain.Partition) error {
 		return fmt.Errorf("invalid deletionPolicy %q", p.Spec.DeletionPolicy)
 	}
 	switch p.Spec.Reconciliation.Mode {
-	case "", "auto", "manual":
+	case "", "auto", "manual", "readonly":
 	default:
 		return fmt.Errorf("invalid reconciliation mode %q", p.Spec.Reconciliation.Mode)
 	}
