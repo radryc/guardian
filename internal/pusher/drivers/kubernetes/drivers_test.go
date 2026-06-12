@@ -225,6 +225,75 @@ func mustJSON(t *testing.T, value any) []byte {
 	return content
 }
 
+func TestKubernetesComputeObserveExistingDiffInSync(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	backend := NewBackend()
+	reg := registry.New()
+	Register(reg, backend, secrets.NewStoreResolver(store))
+	runtime := &runtimepkg.Runtime{
+		QueuePath: paths.QueueDir("k8s"),
+		WorkerID:  "k8s-worker",
+		Store:     store,
+		Registry:  reg,
+		CanHandle: func(t *taskdomain.Task) bool { return t.Target.Cluster == "k8s-main" },
+	}
+
+	if err := backend.UpsertDeployment(Deployment{
+		Namespace: "monofs",
+		Name:      "node-a",
+		Hash:      "bootstrap-hash",
+		Replicas:  1,
+		Container: Container{Image: "monofs-server:latest"},
+	}); err != nil {
+		t.Fatalf("seed deployment: %v", err)
+	}
+
+	task := taskdomain.Task{
+		APIVersion:   "guardian/v1alpha1",
+		Kind:         "Task",
+		TaskID:       "k8s-observe-existing-diff",
+		Partition:    "monofs",
+		Intent:       "monofs-storage",
+		Op:           taskdomain.OpDiff,
+		TargetPusher: "k8s",
+		Target:       targetdomain.Placement{Cluster: "k8s-main", Namespace: "monofs"},
+		Assets: []taskdomain.AbstractAsset{{
+			Type: "Compute",
+			Name: "node-a",
+			Properties: map[string]any{
+				"image":           "monofs-server:latest",
+				"observeExisting": true,
+			},
+		}},
+	}
+	content, err := json.Marshal(task)
+	if err != nil {
+		t.Fatalf("marshal task: %v", err)
+	}
+	if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{
+		Writes:  []guardianapi.PathWrite{{LogicalPath: paths.QueueTask("k8s", task.TaskID), Content: content}},
+		Context: guardianapi.MutationContext{PrincipalID: "guardiand"},
+	}); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+
+	if err := runtime.ProcessPending(ctx); err != nil {
+		t.Fatalf("process task: %v", err)
+	}
+	raw, err := store.ReadFile(ctx, paths.QueueResult("k8s", task.TaskID))
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	var result taskdomain.TaskResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if result.Status != taskdomain.ResultSucceeded || result.Drift == nil || result.Drift.Status != "InSync" {
+		t.Fatalf("diff result = %+v", result)
+	}
+}
+
 func TestKubernetesComputePayloadOverridesAndDrift(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()

@@ -75,6 +75,7 @@ type IntentState struct {
 	AssetObservations  map[string]*taskdomain.AssetObservation `json:"assetObservations,omitempty"`
 	LastTaskID         string                                  `json:"lastTaskID"`
 	LastError          *string                                 `json:"lastError,omitempty"`
+	PartitionMode      string                                  `json:"partitionMode,omitempty"`
 	Timestamps         StateTimestamps                         `json:"timestamps"`
 }
 

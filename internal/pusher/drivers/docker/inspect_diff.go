@@ -205,9 +205,8 @@ func StructuralContainerDrift(desired, actual Container) (bool, string) {
 	return false, ""
 }
 
-// containerPortsMatch compares ports by containerPort+protocol only.
-// Host ports are intentionally excluded: they are allocation details that can
-// change (e.g. port conflict resolution) without structural drift.
+// containerPortsMatch compares only ports that are actually published.
+// Hostless ports are internal-only and should not trigger drift.
 func containerPortsMatch(desired, actual []PortBinding) bool {
 	type portKey struct {
 		port  int
@@ -216,7 +215,7 @@ func containerPortsMatch(desired, actual []PortBinding) bool {
 	toSet := func(ports []PortBinding) map[portKey]struct{} {
 		s := make(map[portKey]struct{}, len(ports))
 		for _, p := range ports {
-			if p.ContainerPort > 0 {
+			if p.ContainerPort > 0 && p.HostPort > 0 {
 				s[portKey{p.ContainerPort, normalizeProto(p.Protocol)}] = struct{}{}
 			}
 		}
@@ -235,12 +234,10 @@ func containerPortsMatch(desired, actual []PortBinding) bool {
 	return true
 }
 
-// envMapsMatch compares two env maps for exact equality (key and value).
-// Secret-ref values must already be resolved in `desired` before calling.
+// envMapsMatch compares desired env keys/values against actual.
+// Extra actual env keys are ignored because runtimes often inject defaults
+// like PATH, HOSTNAME, and HOME.
 func envMapsMatch(desired, actual map[string]string) bool {
-	if len(desired) != len(actual) {
-		return false
-	}
 	for k, dv := range desired {
 		av, ok := actual[k]
 		if !ok || dv != av {

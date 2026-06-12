@@ -82,5 +82,5 @@ func DiffIntentSnapshots(current, previous *IntentSnapshot) []RolloutAsset {
 }
 
 func SummarizeIntentAssetDiff(newIntent bool, assets []RolloutAsset) string {
-	return summarizeRollout(newIntent, assets)
+	return summarizeRollout(newIntent, false, assets)
 }

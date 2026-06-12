@@ -54,23 +54,26 @@ type HostBindMountSpec struct {
 }
 
 type ComputeSpec struct {
-	Image           string              `json:"image" yaml:"image"`
-	ImagePullPolicy string              `json:"imagePullPolicy,omitempty" yaml:"imagePullPolicy,omitempty"`
-	Replicas        *int                `json:"replicas,omitempty" yaml:"replicas,omitempty"`
-	Command         StringList          `json:"command,omitempty" yaml:"command,omitempty"`
-	Args            StringList          `json:"args,omitempty" yaml:"args,omitempty"`
-	Env             map[string]any      `json:"env,omitempty" yaml:"env,omitempty"`
-	Resources       *ResourcesSpec      `json:"resources,omitempty" yaml:"resources,omitempty"`
-	HealthCheck     *HealthCheckSpec    `json:"healthCheck,omitempty" yaml:"healthCheck,omitempty"`
-	Privileged      *bool               `json:"privileged,omitempty" yaml:"privileged,omitempty"`
-	Capabilities    []string            `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
-	ShmSize         string              `json:"shmSize,omitempty" yaml:"shmSize,omitempty"`
-	GPUs            string              `json:"gpus,omitempty" yaml:"gpus,omitempty"`
-	Networks        []string            `json:"networks,omitempty" yaml:"networks,omitempty"`
-	Ports           []PortSpec          `json:"ports,omitempty" yaml:"ports,omitempty"`
-	VolumeMounts    []VolumeMountSpec   `json:"volumeMounts,omitempty" yaml:"volumeMounts,omitempty"`
-	ConfigMounts    []ConfigMountSpec   `json:"configMounts,omitempty" yaml:"configMounts,omitempty"`
-	HostBindMounts  []HostBindMountSpec `json:"hostBindMounts,omitempty" yaml:"hostBindMounts,omitempty"`
+	Image                  string              `json:"image" yaml:"image"`
+	ImagePullPolicy        string              `json:"imagePullPolicy,omitempty" yaml:"imagePullPolicy,omitempty"`
+	ObserveExisting        bool                `json:"observeExisting,omitempty" yaml:"observeExisting,omitempty"`
+	ExistingDeploymentName string              `json:"existingDeploymentName,omitempty" yaml:"existingDeploymentName,omitempty"`
+	ExistingServiceName    string              `json:"existingServiceName,omitempty" yaml:"existingServiceName,omitempty"`
+	Replicas               *int                `json:"replicas,omitempty" yaml:"replicas,omitempty"`
+	Command                StringList          `json:"command,omitempty" yaml:"command,omitempty"`
+	Args                   StringList          `json:"args,omitempty" yaml:"args,omitempty"`
+	Env                    map[string]any      `json:"env,omitempty" yaml:"env,omitempty"`
+	Resources              *ResourcesSpec      `json:"resources,omitempty" yaml:"resources,omitempty"`
+	HealthCheck            *HealthCheckSpec    `json:"healthCheck,omitempty" yaml:"healthCheck,omitempty"`
+	Privileged             *bool               `json:"privileged,omitempty" yaml:"privileged,omitempty"`
+	Capabilities           []string            `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	ShmSize                string              `json:"shmSize,omitempty" yaml:"shmSize,omitempty"`
+	GPUs                   string              `json:"gpus,omitempty" yaml:"gpus,omitempty"`
+	Networks               []string            `json:"networks,omitempty" yaml:"networks,omitempty"`
+	Ports                  []PortSpec          `json:"ports,omitempty" yaml:"ports,omitempty"`
+	VolumeMounts           []VolumeMountSpec   `json:"volumeMounts,omitempty" yaml:"volumeMounts,omitempty"`
+	ConfigMounts           []ConfigMountSpec   `json:"configMounts,omitempty" yaml:"configMounts,omitempty"`
+	HostBindMounts         []HostBindMountSpec `json:"hostBindMounts,omitempty" yaml:"hostBindMounts,omitempty"`
 }
 
 type computeDefinition struct{}
@@ -97,6 +100,12 @@ func (computeDefinition) Validate(spec any, ctx ValidationContext) error {
 		default:
 			return fmt.Errorf("property imagePullPolicy must be one of Always, IfNotPresent, Never")
 		}
+	}
+	if strings.TrimSpace(typed.ExistingDeploymentName) != "" && !typed.ObserveExisting {
+		return fmt.Errorf("property existingDeploymentName requires observeExisting=true")
+	}
+	if strings.TrimSpace(typed.ExistingServiceName) != "" && !typed.ObserveExisting {
+		return fmt.Errorf("property existingServiceName requires observeExisting=true")
 	}
 	if err := optionalPositiveInt(typed.Replicas, "replicas"); err != nil {
 		return err

@@ -16,6 +16,8 @@ type CLIBackend struct {
 	contextName string
 }
 
+const fullHashAnnotation = "guardian.hash.full"
+
 func NewCLIBackend(kubectlBinary, kubeconfig, contextName string) (*CLIBackend, error) {
 	if strings.TrimSpace(kubectlBinary) == "" {
 		kubectlBinary = "kubectl"
@@ -38,6 +40,9 @@ func (b *CLIBackend) UpsertConfigMap(cm ConfigMap) error {
 			"name":      cm.Name,
 			"namespace": cm.Namespace,
 			"labels":    cloneStringMap(cm.Labels),
+			"annotations": map[string]string{
+				fullHashAnnotation: cm.Hash,
+			},
 		},
 		"data": cloneStringMap(cm.Data),
 	})
@@ -50,18 +55,23 @@ func (b *CLIBackend) GetConfigMap(namespace, name string) (ConfigMap, bool, erro
 	}
 	var payload struct {
 		Metadata struct {
-			Name   string            `json:"name"`
-			Labels map[string]string `json:"labels"`
+			Name        string            `json:"name"`
+			Labels      map[string]string `json:"labels"`
+			Annotations map[string]string `json:"annotations"`
 		} `json:"metadata"`
 		Data map[string]string `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return ConfigMap{}, false, fmt.Errorf("decode configmap %s/%s: %w", namespace, name, err)
 	}
+	hash := payload.Metadata.Annotations[fullHashAnnotation]
+	if hash == "" {
+		hash = payload.Metadata.Labels["guardian.hash"]
+	}
 	return ConfigMap{
 		Namespace: namespace,
 		Name:      payload.Metadata.Name,
-		Hash:      payload.Metadata.Labels["guardian.hash"],
+		Hash:      hash,
 		Labels:    cloneStringMap(payload.Metadata.Labels),
 		Data:      cloneStringMap(payload.Data),
 	}, true, nil
@@ -93,6 +103,9 @@ func (b *CLIBackend) UpsertClaim(claim PersistentVolumeClaim) error {
 			"name":      claim.Name,
 			"namespace": claim.Namespace,
 			"labels":    cloneStringMap(claim.Labels),
+			"annotations": map[string]string{
+				fullHashAnnotation: claim.Hash,
+			},
 		},
 		"spec": spec,
 	})
@@ -105,8 +118,9 @@ func (b *CLIBackend) GetClaim(namespace, name string) (PersistentVolumeClaim, bo
 	}
 	var payload struct {
 		Metadata struct {
-			Name   string            `json:"name"`
-			Labels map[string]string `json:"labels"`
+			Name        string            `json:"name"`
+			Labels      map[string]string `json:"labels"`
+			Annotations map[string]string `json:"annotations"`
 		} `json:"metadata"`
 		Spec struct {
 			AccessModes      []string `json:"accessModes"`
@@ -123,10 +137,14 @@ func (b *CLIBackend) GetClaim(namespace, name string) (PersistentVolumeClaim, bo
 	if len(payload.Spec.AccessModes) > 0 {
 		accessMode = payload.Spec.AccessModes[0]
 	}
+	hash := payload.Metadata.Annotations[fullHashAnnotation]
+	if hash == "" {
+		hash = payload.Metadata.Labels["guardian.hash"]
+	}
 	return PersistentVolumeClaim{
 		Namespace:    namespace,
 		Name:         payload.Metadata.Name,
-		Hash:         payload.Metadata.Labels["guardian.hash"],
+		Hash:         hash,
 		Labels:       cloneStringMap(payload.Metadata.Labels),
 		Size:         payload.Spec.Resources.Requests["storage"],
 		AccessMode:   accessMode,
@@ -210,6 +228,9 @@ func (b *CLIBackend) UpsertDeployment(deployment Deployment) error {
 			"name":      deployment.Name,
 			"namespace": deployment.Namespace,
 			"labels":    cloneStringMap(deployment.Labels),
+			"annotations": map[string]string{
+				fullHashAnnotation: deployment.Hash,
+			},
 		},
 		"spec": map[string]any{
 			"replicas": replicas,
@@ -247,8 +268,9 @@ func (b *CLIBackend) GetDeployment(namespace, name string) (Deployment, bool, er
 	}
 	var payload struct {
 		Metadata struct {
-			Name   string            `json:"name"`
-			Labels map[string]string `json:"labels"`
+			Name        string            `json:"name"`
+			Labels      map[string]string `json:"labels"`
+			Annotations map[string]string `json:"annotations"`
 		} `json:"metadata"`
 		Spec struct {
 			Replicas *int `json:"replicas"`
@@ -285,10 +307,14 @@ func (b *CLIBackend) GetDeployment(namespace, name string) (Deployment, bool, er
 	if payload.Status.ReadyReplicas < replicas {
 		podFailureReason = b.podsTerminalFailure(namespace, labels)
 	}
+	hash := payload.Metadata.Annotations[fullHashAnnotation]
+	if hash == "" {
+		hash = payload.Metadata.Labels["guardian.hash"]
+	}
 	return Deployment{
 		Namespace:         namespace,
 		Name:              payload.Metadata.Name,
-		Hash:              payload.Metadata.Labels["guardian.hash"],
+		Hash:              hash,
 		Labels:            labels,
 		Replicas:          replicas,
 		ReadyReplicas:     payload.Status.ReadyReplicas,
@@ -383,13 +409,16 @@ func (b *CLIBackend) UpsertService(service Service) error {
 	if err := b.ensureNamespace(service.Namespace); err != nil {
 		return err
 	}
-	meta := map[string]any{
-		"name":      service.Name,
-		"namespace": service.Namespace,
-		"labels":    cloneStringMap(service.Labels),
+	annotations := cloneStringMap(service.Annotations)
+	if annotations == nil {
+		annotations = map[string]string{}
 	}
-	if len(service.Annotations) > 0 {
-		meta["annotations"] = cloneStringMap(service.Annotations)
+	annotations[fullHashAnnotation] = service.Hash
+	meta := map[string]any{
+		"name":        service.Name,
+		"namespace":   service.Namespace,
+		"labels":      cloneStringMap(service.Labels),
+		"annotations": annotations,
 	}
 	return b.applyManifest(service.Namespace, map[string]any{
 		"apiVersion": "v1",
@@ -410,8 +439,9 @@ func (b *CLIBackend) GetService(namespace, name string) (Service, bool, error) {
 	}
 	var payload struct {
 		Metadata struct {
-			Name   string            `json:"name"`
-			Labels map[string]string `json:"labels"`
+			Name        string            `json:"name"`
+			Labels      map[string]string `json:"labels"`
+			Annotations map[string]string `json:"annotations"`
 		} `json:"metadata"`
 		Spec struct {
 			Type     string            `json:"type"`
@@ -436,14 +466,19 @@ func (b *CLIBackend) GetService(namespace, name string) (Service, bool, error) {
 			TargetPort: parseTargetPort(port.TargetPort, port.Port),
 		})
 	}
+	hash := payload.Metadata.Annotations[fullHashAnnotation]
+	if hash == "" {
+		hash = payload.Metadata.Labels["guardian.hash"]
+	}
 	return Service{
-		Namespace: namespace,
-		Name:      payload.Metadata.Name,
-		Hash:      payload.Metadata.Labels["guardian.hash"],
-		Type:      payload.Spec.Type,
-		Labels:    cloneStringMap(payload.Metadata.Labels),
-		Selector:  cloneStringMap(payload.Spec.Selector),
-		Ports:     ports,
+		Namespace:   namespace,
+		Name:        payload.Metadata.Name,
+		Hash:        hash,
+		Type:        payload.Spec.Type,
+		Labels:      cloneStringMap(payload.Metadata.Labels),
+		Annotations: cloneStringMap(payload.Metadata.Annotations),
+		Selector:    cloneStringMap(payload.Spec.Selector),
+		Ports:       ports,
 	}, true, nil
 }
 

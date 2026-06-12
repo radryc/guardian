@@ -119,6 +119,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		if err := p.dispatcher.QueueTask(ctx, next); err != nil {
 			return fail(err)
 		}
+		log.Printf("results: queued apply task=%s from check task=%s partition=%s intent=%s pusher=%s", next.TaskID, result.TaskID, state.Partition, state.Intent, state.TargetPusher)
 		if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
 			return fail(err)
 		}
@@ -168,14 +169,18 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			telemetry.EmitInfo(ctx, processorScope, fmt.Sprintf("intent %s/%s is healthy", state.Partition, state.Intent))
 			return nil
 		}
-		if state.Locked {
+		if state.Locked || state.PartitionMode == "readonly" {
 			state.Status = statedomain.StatusDriftedLocked
 			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
 				return fail(err)
 			}
 			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
 			span.SetStatus(codes.Ok, "")
-			telemetry.EmitWarn(ctx, processorScope, fmt.Sprintf("intent %s/%s drifted while locked", state.Partition, state.Intent))
+			if state.PartitionMode == "readonly" {
+				telemetry.EmitWarn(ctx, processorScope, fmt.Sprintf("intent %s/%s drifted in readonly partition", state.Partition, state.Intent))
+			} else {
+				telemetry.EmitWarn(ctx, processorScope, fmt.Sprintf("intent %s/%s drifted while locked", state.Partition, state.Intent))
+			}
 			return nil
 		}
 		next, err := p.nextTask(ctx, taskFile, state, taskdomain.OpCheck)

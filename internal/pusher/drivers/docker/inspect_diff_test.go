@@ -333,11 +333,20 @@ func TestStructuralContainerDrift_NetworkChanged(t *testing.T) {
 }
 
 func TestStructuralContainerDrift_PortAdded(t *testing.T) {
-	desired := Container{Image: "img", Running: true, Ports: []PortBinding{{ContainerPort: 8080, Protocol: "TCP"}, {ContainerPort: 9090, Protocol: "TCP"}}}
-	actual := Container{Image: "img", Running: true, Ports: []PortBinding{{ContainerPort: 8080, Protocol: "TCP"}}}
+	desired := Container{Image: "img", Running: true, Ports: []PortBinding{{ContainerPort: 8080, HostPort: 80, Protocol: "TCP"}, {ContainerPort: 9090, HostPort: 90, Protocol: "TCP"}}}
+	actual := Container{Image: "img", Running: true, Ports: []PortBinding{{ContainerPort: 8080, HostPort: 80, Protocol: "TCP"}}}
 	drifted, _ := StructuralContainerDrift(desired, actual)
 	if !drifted {
 		t.Errorf("expected drift for added port")
+	}
+}
+
+func TestStructuralContainerDrift_HostlessPortsIgnored(t *testing.T) {
+	desired := Container{Image: "img", Running: true, Ports: []PortBinding{{ContainerPort: 7860, Protocol: "TCP"}, {ContainerPort: 7861, Protocol: "TCP"}}}
+	actual := Container{Image: "img", Running: true}
+	drifted, _ := StructuralContainerDrift(desired, actual)
+	if drifted {
+		t.Errorf("hostless ports should not be structural drift")
 	}
 }
 
@@ -366,6 +375,15 @@ func TestStructuralContainerDrift_EnvKeyAdded(t *testing.T) {
 	drifted, _ := StructuralContainerDrift(desired, actual)
 	if !drifted {
 		t.Errorf("expected drift for env key added")
+	}
+}
+
+func TestStructuralContainerDrift_EnvExtraActualKey_NotDrift(t *testing.T) {
+	desired := Container{Image: "img", Running: true, Env: map[string]string{"A": "1"}}
+	actual := Container{Image: "img", Running: true, Env: map[string]string{"A": "1", "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}}
+	drifted, _ := StructuralContainerDrift(desired, actual)
+	if drifted {
+		t.Errorf("extra runtime env keys should not be structural drift")
 	}
 }
 
@@ -462,8 +480,8 @@ func TestComputeDiff_DetectsStoppedContainer(t *testing.T) {
 		c.Running = false
 		_ = b.UpsertContainer(c)
 	})
-	if diff.Drift == nil || diff.Drift.Status != "InSync" {
-		t.Errorf("expected stopped container to remain structurally in sync, got %+v", diff.Drift)
+	if diff.Drift == nil || diff.Drift.Status == "InSync" {
+		t.Errorf("expected Drifted for stopped container, got %+v", diff.Drift)
 	}
 	if diff.AssetObservations == nil || diff.AssetObservations["svc"] == nil {
 		t.Fatalf("expected svc asset observation, got %+v", diff.AssetObservations)
@@ -491,7 +509,14 @@ func TestComputeDiff_DetectsEnvDrift(t *testing.T) {
 }
 
 func TestComputeDiff_DetectsPortDrift(t *testing.T) {
-	assets := baseComputeAssets("demo:v1")
+	assets := []taskdomain.AbstractAsset{{
+		Type: "Compute",
+		Name: "svc",
+		Properties: map[string]any{
+			"image": "demo:v1",
+			"ports": []any{map[string]any{"containerPort": 8080, "hostPort": 18080}},
+		},
+	}}
 	diff := applyThenDiff(t, assets, func(b *Backend) {
 		name := computeContainerNameForTest("local", "p", "i", "svc", 0)
 		c, ok, _ := b.GetContainer(name)
@@ -527,6 +552,71 @@ func TestComputeDiff_DetectsCapabilityDrift(t *testing.T) {
 	})
 	if diff.Drift == nil || diff.Drift.Status == "InSync" {
 		t.Errorf("expected Drifted for capability removal, got %+v", diff.Drift)
+	}
+}
+
+func TestVolumeDiff_HashOnlyChange_NotDrift(t *testing.T) {
+	assets := []taskdomain.AbstractAsset{{
+		Type: "Volume",
+		Name: "vol",
+		Properties: map[string]any{
+			"size":       "10Gi",
+			"accessMode": "ReadWriteOnce",
+			"ephemeral":  false,
+		},
+	}}
+	diff := applyThenDiff(t, assets, func(b *Backend) {
+		name := driverutil.ResourceName("docker-vol", targetdomain.Placement{Cluster: "local"}, "p", "i", "vol")
+		v, ok, _ := b.GetVolume(name)
+		if !ok {
+			return
+		}
+		v.Hash = "manually-changed"
+		if v.Labels == nil {
+			v.Labels = map[string]string{}
+		}
+		v.Labels["guardian.hash"] = "manually-changed"
+		_ = b.UpsertVolume(v)
+	})
+	if diff.Drift == nil || diff.Drift.Status != "InSync" {
+		t.Errorf("expected InSync when only volume hash changed, got %+v", diff.Drift)
+	}
+}
+
+func TestLoadBalancerDiff_HashOnlyChange_NotDrift(t *testing.T) {
+	assets := []taskdomain.AbstractAsset{
+		{
+			Type: "Compute",
+			Name: "svc",
+			Properties: map[string]any{
+				"image": "demo:v1",
+				"ports": []any{map[string]any{"containerPort": 8080}},
+			},
+		},
+		{
+			Type: "LoadBalancer",
+			Name: "edge",
+			Properties: map[string]any{
+				"listeners": []any{map[string]any{"name": "http", "port": 3400, "protocol": "TCP"}},
+				"targets":   []any{"svc"},
+			},
+		},
+	}
+	diff := applyThenDiff(t, assets, func(b *Backend) {
+		name := driverutil.ResourceName("docker-lb", targetdomain.Placement{Cluster: "local"}, "p", "i", "edge")
+		c, ok, _ := b.GetContainer(name)
+		if !ok {
+			return
+		}
+		c.Hash = "manually-changed"
+		if c.Labels == nil {
+			c.Labels = map[string]string{}
+		}
+		c.Labels["guardian.hash"] = "manually-changed"
+		_ = b.UpsertContainer(c)
+	})
+	if diff.Drift == nil || diff.Drift.Status != "InSync" {
+		t.Errorf("expected InSync when only load balancer hash changed, got %+v", diff.Drift)
 	}
 }
 

@@ -19,6 +19,10 @@ import { renderTopology, renderTopologyLegend } from "./topology";
 
 // ── Bootstrap ────────────────────────────────────────
 const state: AppState = createState();
+const REFRESH_BASE_MS = 20_000;
+const REFRESH_FAST_MS = 4_000;
+const REFRESH_HIDDEN_MS = 60_000;
+const FAST_REFRESH_BURST_MS = 60_000;
 
 document.addEventListener("DOMContentLoaded", () => {
   hydrateStateFromLocation();
@@ -29,9 +33,65 @@ document.addEventListener("DOMContentLoaded", () => {
 async function bootstrap(): Promise<void> {
   activatePanel(state.activePanel);
   await refreshOverview();
-  state.refreshTimer = window.setInterval(() => {
-    refreshOverview(state.activePanel !== "historyPanel").catch(() => {});
-  }, 20_000);
+  scheduleNextOverviewRefresh();
+}
+
+function scheduleNextOverviewRefresh(): void {
+  if (state.refreshTimer !== undefined) {
+    window.clearTimeout(state.refreshTimer);
+  }
+  state.refreshTimer = window.setTimeout(async () => {
+    try {
+      await refreshOverview(state.activePanel !== "historyPanel");
+    } catch {
+      // Keep polling after transient fetch errors.
+    } finally {
+      scheduleNextOverviewRefresh();
+    }
+  }, nextOverviewRefreshDelayMs());
+}
+
+function nextOverviewRefreshDelayMs(): number {
+  if (document.hidden) {
+    return REFRESH_HIDDEN_MS;
+  }
+  if (Date.now() < state.fastRefreshUntil || hasActivePartitionTransitions()) {
+    return REFRESH_FAST_MS;
+  }
+  return REFRESH_BASE_MS;
+}
+
+function hasActivePartitionTransitions(): boolean {
+  const detail = state.detail;
+  if (!detail) {
+    return false;
+  }
+  if (String(detail?.health?.status ?? "").toLowerCase() === "pending") {
+    return true;
+  }
+  const intents = Array.isArray(detail?.intents) ? detail.intents : [];
+  for (const intent of intents) {
+    switch (String(intent?.status ?? "")) {
+      case "Checking":
+      case "Diffing":
+      case "Applying":
+      case "Destroying":
+      case "Ready":
+      case "Blocked":
+        return true;
+      default:
+        break;
+    }
+  }
+  const services = Array.isArray(detail?.health?.services) ? detail.health.services : [];
+  return services.some((svc: any) => svc?.taskActive === true);
+}
+
+function armFastRefreshBurst(durationMs = FAST_REFRESH_BURST_MS): void {
+  const until = Date.now() + durationMs;
+  if (until > state.fastRefreshUntil) {
+    state.fastRefreshUntil = until;
+  }
 }
 
 // ── Overview ─────────────────────────────────────────
@@ -65,12 +125,14 @@ async function refreshOverview(loadSelected = true): Promise<void> {
 
 async function selectPartition(name: string, announce = true): Promise<void> {
   if (!name) return;
+  armFastRefreshBurst();
   const samePartition = state.selectedPartition === name;
   state.selectedPartition = name;
   state.activityDrawer = { intentName: "", data: null, loading: false, error: "" };
   if (!samePartition) {
     state.expandedAssetKey = "";
     state.expandedRolloutKeys = {};
+    state.diagnosticDetails = {};
     state.history = null;
     state.historyLoading = false;
     state.historyError = "";
@@ -327,11 +389,15 @@ function renderPartitionList(): void {
   container.className = "grid gap-1";
   container.innerHTML = partitions.map((item: any) => {
     const active = item.name === state.selectedPartition;
+    const diagnostic = joinDiagnosticLines([
+      item.errors?.join("\n"),
+      item.lastDisplayStatus ? `Last known status: ${item.lastDisplayStatus}` : "",
+    ]);
     return `
       <button class="partition-list-item ${active ? "active" : ""}" data-partition="${escapeAttr(item.name)}">
         <div class="partition-list-title">
           <strong>${escapeHtml(item.name)}</strong>
-          ${renderBadge(item.health, item.displayStatus)}
+          ${renderBadge(item.health, item.displayStatus, `${item.name} status`, diagnostic, `partition:${item.name}`)}
         </div>
         <div class="partition-list-meta">
           <span>${item.intentCount ?? 0} intents</span>
@@ -470,34 +536,40 @@ function renderAttentionAssets(): void {
     return;
   }
   container.className = "attention-asset-list";
-  const flaggedHtml = flagged.map(({ intent, asset }: any) => `
+  const flaggedHtml = flagged.map(({ intent, asset }: any) => {
+    const displaySummary = assetSummaryForDisplay(asset);
+    return `
     <article class="attention-asset-card attention-asset-card-${escapeAttr(asset.health)}">
       <div class="attention-asset-card-header">
         <div>
           <h3>${escapeHtml(asset.name)}</h3>
           <div class="muted">${escapeHtml(intent.name)} · ${escapeHtml(assetTitle(asset.type))}</div>
         </div>
-        ${renderBadge(asset.health, asset.displayStatus)}
+        ${renderBadge(asset.health, asset.displayStatus, `${intent.name} / ${asset.name}`, asset.summary, `asset:${state.selectedPartition}:${intent.name}:${asset.name}`)}
       </div>
-      <p class="muted mt-1">${escapeHtml(asset.summary ?? "")}</p>
+      <p class="muted mt-1">${escapeHtml(displaySummary)}</p>
       <div class="pill-row mt-2">
         <span class="pill">${escapeHtml(intent.targetSummary ?? "Unassigned")}</span>
         ${(asset.quickFacts ?? []).slice(0, 3).map((f: any) => `<span class="${f.label === "Release" ? "pill pill-release" : "pill"}">${escapeHtml(`${f.label}: ${f.value}`)}</span>`).join("")}
       </div>
     </article>
-  `).join("");
+  `;
+  }).join("");
   const pendingHtml = pending.length ? `
     <div class="progressing-asset-list mt-2">
       <div class="progressing-assets-header">Progressing — awaiting first reconcile (${pending.length})</div>
-      ${pending.map(({ intent, asset }: any) => `
+      ${pending.map(({ intent, asset }: any) => {
+        const displaySummary = assetSummaryForDisplay(asset);
+        return `
         <div class="progressing-asset-item">
           <div>
             <div>${escapeHtml(asset.name)}</div>
-            <div class="muted">${escapeHtml(intent.name)} · ${escapeHtml(assetTitle(asset.type))}</div>
+            <div class="muted">${escapeHtml(intent.name)} · ${escapeHtml(assetTitle(asset.type))}${displaySummary ? ` · ${escapeHtml(displaySummary)}` : ""}</div>
           </div>
-          ${renderBadge(asset.health, asset.displayStatus)}
+          ${renderBadge(asset.health, asset.displayStatus, `${intent.name} / ${asset.name}`, asset.summary, `asset:${state.selectedPartition}:${intent.name}:${asset.name}`)}
         </div>
-      `).join("")}
+      `;
+      }).join("")}
     </div>
   ` : "";
   container.innerHTML = flaggedHtml + pendingHtml;
@@ -519,6 +591,19 @@ function collectPendingAssets(): any[] {
     .flatMap((intent: any) => (intent.assets ?? []).map((asset: any) => ({ intent, asset })))
     .filter(({ asset }: any) => asset?.health === "pending")
     .sort((a: any, b: any) => a.intent.name !== b.intent.name ? a.intent.name.localeCompare(b.intent.name) : a.asset.name.localeCompare(b.asset.name));
+}
+
+function assetSummaryForDisplay(asset: any): string {
+  const summary = String(asset?.summary ?? "").trim();
+  const observed = String(asset?.observedHealth?.summary ?? "").trim();
+  const status = String(asset?.status ?? "");
+  if ((status === "Drifted" || status === "DriftedLocked") && observed) {
+    if (summary.includes(observed)) {
+      return summary;
+    }
+    return summary ? `${summary}: ${observed}` : observed;
+  }
+  return summary;
 }
 
 function attentionSeverityRank(status: string): number {
@@ -550,6 +635,7 @@ function renderIntentCards(): void {
         </div>
         <div class="asset-grid">
           ${group.assets.map((asset: any) => {
+            const displaySummary = assetSummaryForDisplay(asset);
             const assetKey = makeAssetKey(intent.name, asset.name);
             const expanded = state.expandedAssetKey === assetKey;
             const cat = assetCategory(asset.type);
@@ -584,9 +670,9 @@ function renderIntentCards(): void {
                       <span class="asset-chip-category">${escapeHtml(cat)}</span>
                     </div>
                   </div>
-                  ${renderBadge(asset.health, asset.displayStatus)}
+                  ${renderBadge(asset.health, asset.displayStatus, `${intent.name} / ${asset.name}`, asset.summary, `asset:${state.selectedPartition}:${intent.name}:${asset.name}`)}
                 </div>
-                ${asset.summary ? `<div class="muted mt-1">${escapeHtml(asset.summary)}</div>` : ""}
+                ${displaySummary ? `<div class="muted mt-1">${escapeHtml(displaySummary)}</div>` : ""}
                 ${quickFacts ? `<div class="fact-row">${quickFacts}</div>` : ""}
                 <div class="asset-chip-toggle-row">
                   <span class="asset-chip-toggle-copy">${expanded ? "Hide full asset details" : "Show image, mounts, outputs, and manifest details"}</span>
@@ -614,7 +700,7 @@ function renderIntentCards(): void {
             <h3>${escapeHtml(intent.name)}</h3>
             <div class="muted">${escapeHtml(intent.summary ?? "")}</div>
             <div class="pill-row mt-2">
-              ${renderBadge(intent.health, intent.displayStatus)}
+              ${renderBadge(intent.health, intent.displayStatus, `${intent.name} intent`, intent.summary, `intent:${state.selectedPartition}:${intent.name}`)}
               <span class="pill">${escapeHtml(intent.targetSummary ?? "Unassigned")}</span>
               ${(intent.joined ?? []).map((j: string) => `<span class="pill">joins ${escapeHtml(j)}</span>`).join("")}
               ${catSummary.map((g: any) => `<span class="pill">${escapeHtml(`${g.category} ${g.count}`)}</span>`).join("")}
@@ -771,7 +857,7 @@ function renderServiceHealth(): void {
           <h3>${escapeHtml(svc.asset)}</h3>
           <div class="muted">${escapeHtml(svc.intent)} · ${escapeHtml(assetTitle(svc.type))}</div>
         </div>
-        ${renderBadge(svc.status, svc.displayStatus)}
+        ${renderBadge(svc.status, svc.displayStatus, `${svc.intent} / ${svc.asset}`, svc.summary, `service:${state.selectedPartition}:${svc.intent}:${svc.asset}`)}
       </div>
       <p class="service-card-note">${escapeHtml(serviceHealthNote(svc))}</p>
       <div class="service-health-meta">
@@ -1041,7 +1127,7 @@ function renderEventCard(item: any): string {
           <h3>${escapeHtml(item.title ?? "Event")} ${countPill}</h3>
           ${showMsg ? `<div class="muted">${escapeHtml(item.message)}</div>` : ""}
         </div>
-        ${renderBadge(item.status, item.displayStatus)}
+        ${renderBadge(item.status, item.displayStatus, item.title ?? "Event", item.message ?? "")}
       </div>
       <div class="timeline-meta">
         <span>${formatDateTime(item.timestamp)}</span>
@@ -1178,7 +1264,7 @@ function renderTopologyDetailsPanel(): void {
         </div>
       </div>
       <div class="pill-row mb-2">
-        ${renderBadge(selectedNode.health ?? selectedNode.status, selectedNode.displayStatus ?? humanize(selectedNode.kind))}
+        ${renderBadge(selectedNode.health ?? selectedNode.status, selectedNode.displayStatus ?? humanize(selectedNode.kind), selectedNode.label, selectedNode.description, `topology:${state.selectedPartition}:${selectedNode.id}`)}
         <span class="pill">${escapeHtml(humanize(selectedNode.kind))}</span>
         ${selectedNode.assetType ? `<span class="pill">${escapeHtml(assetTitle(selectedNode.assetType))}</span>` : ""}
       </div>
@@ -1233,7 +1319,7 @@ function renderPageChrome(): void {
 
   if (activePanel === "overviewPanel" && detail) {
     subtitle = `${detail.partition.manifest.spec?.deletionPolicy ?? "orphan"} policy · ${detail.partition.manifest.spec?.reconciliation?.mode ?? "manual"} reconcile · ${detail.intents.length} intents`;
-    pills = `${renderBadge(detail.health?.status, detail.health?.displayStatus ?? "Selected")} <span class="pill">${detail.topology?.nodes?.length ?? 0} nodes</span>`;
+    pills = `${renderBadge(detail.health?.status, detail.health?.displayStatus ?? "Selected", `${detail.partition.manifest.metadata.name} health`, detail.health?.summary, `partition-health:${detail.partition.manifest.metadata.name}`)} <span class="pill">${detail.topology?.nodes?.length ?? 0} nodes</span>`;
   }
   if (activePanel === "topologyPanel") {
     subtitle = detail ? `Topology for ${detail.partition.manifest.metadata.name}.` : "Select a partition to inspect its graph.";
@@ -1257,8 +1343,86 @@ function renderPageChrome(): void {
 }
 
 // ── Helpers ───────────────────────────────────────────
-function renderBadge(status: string | undefined, label?: string): string {
-  return `<span class="badge badge-${escapeAttr(status ?? "neutral")}">${escapeHtml(label ?? humanize(status ?? "neutral"))}</span>`;
+function renderBadge(status: string | undefined, label?: string, diagnosticTitle?: string, diagnosticDetail?: string, diagnosticKey?: string): string {
+  const normalized = String(status ?? "neutral").toLowerCase();
+  const display = label ?? humanize(normalized);
+  const detail = resolveDiagnosticDetail(diagnosticKey, normalized, diagnosticDetail);
+  const clickable = (normalized === "failing" || normalized === "attention") && detail.length > 0;
+  if (!clickable) {
+    return `<span class="badge badge-${escapeAttr(normalized)}">${escapeHtml(display)}</span>`;
+  }
+  return `<button type="button" class="badge badge-${escapeAttr(normalized)} badge-clickable" data-diagnostic-title="${escapeAttr((diagnosticTitle ?? display).trim())}" data-diagnostic-detail="${escapeAttr(detail)}" aria-label="Show diagnostic details for ${escapeAttr(display)}">${escapeHtml(display)}</button>`;
+}
+
+function resolveDiagnosticDetail(cacheKey: string | undefined, status: string, detail: string | undefined): string {
+  const key = String(cacheKey ?? "").trim();
+  const nextDetail = String(detail ?? "").trim();
+  if (!key) {
+    return nextDetail;
+  }
+  if (status === "failing" || status === "attention") {
+    if (nextDetail) {
+      state.diagnosticDetails[key] = nextDetail;
+      return nextDetail;
+    }
+    return state.diagnosticDetails[key] ?? "";
+  }
+  delete state.diagnosticDetails[key];
+  return nextDetail;
+}
+
+function joinDiagnosticLines(lines: Array<string | undefined | null>): string {
+  return lines
+    .map((line) => String(line ?? "").trim())
+    .filter((line) => line.length > 0)
+    .join("\n");
+}
+
+function ensureDiagnosticsModal(): HTMLElement {
+  const existing = document.getElementById("diagnosticsModal");
+  if (existing) return existing;
+
+  const overlay = document.createElement("div");
+  overlay.id = "diagnosticsModal";
+  overlay.className = "diagnostics-modal hidden";
+  overlay.innerHTML = `
+    <div class="diagnostics-modal-card" role="dialog" aria-modal="true" aria-labelledby="diagnosticsModalTitle">
+      <div class="diagnostics-modal-header">
+        <h3 id="diagnosticsModalTitle">Status details</h3>
+        <button type="button" class="diagnostics-close" data-diagnostics-close="true" aria-label="Close diagnostics">×</button>
+      </div>
+      <pre id="diagnosticsModalBody" class="diagnostics-modal-body"></pre>
+    </div>
+  `;
+  overlay.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    if (target === overlay || target.closest("[data-diagnostics-close='true']")) {
+      closeDiagnosticsModal();
+    }
+  });
+  document.body.appendChild(overlay);
+  return overlay;
+}
+
+function openDiagnosticsModal(title: string, detail: string): void {
+  const overlay = ensureDiagnosticsModal();
+  const titleEl = overlay.querySelector<HTMLElement>("#diagnosticsModalTitle");
+  const bodyEl = overlay.querySelector<HTMLElement>("#diagnosticsModalBody");
+  if (titleEl) {
+    titleEl.textContent = title.trim() || "Status details";
+  }
+  if (bodyEl) {
+    bodyEl.textContent = detail.trim();
+  }
+  overlay.classList.remove("hidden");
+  document.body.classList.add("diagnostics-open");
+}
+
+function closeDiagnosticsModal(): void {
+  const overlay = document.getElementById("diagnosticsModal");
+  if (!overlay) return;
+  overlay.classList.add("hidden");
+  document.body.classList.remove("diagnostics-open");
 }
 
 function renderProgressingInfo(detail: any): string {
@@ -1542,12 +1706,29 @@ function wireEvents(): void {
     state.topology.nodePositions = {};
     renderTopologyPanel();
   });
+  document.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    const badge = target.closest<HTMLElement>("[data-diagnostic-detail]");
+    if (!badge) return;
+    event.preventDefault();
+    openDiagnosticsModal(
+      badge.dataset.diagnosticTitle ?? "Status details",
+      badge.dataset.diagnosticDetail ?? "No diagnostic details were provided.",
+    );
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeDiagnosticsModal();
+    }
+  });
+  ensureDiagnosticsModal();
 }
 
 async function reconcileSelected(): Promise<void> {
   const partitionName = state.selectedPartition;
   if (!partitionName) { toast("Select a partition first.", "error"); return; }
   await fetchJSON(`/api/partitions/${encodeURIComponent(partitionName)}/reconcile`, { method: "POST" });
+  armFastRefreshBurst();
   toast("Reconciliation requested.", "success");
   await refreshOverview(false);
   await selectPartition(partitionName, false);

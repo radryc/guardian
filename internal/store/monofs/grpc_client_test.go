@@ -2,12 +2,15 @@ package monofs
 
 import (
 	"context"
+	"errors"
 	"io"
 	"testing"
 	"time"
 
 	pb "github.com/radryc/monofs/api/proto"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestRegisterUsesRouterSuccessResponse(t *testing.T) {
@@ -220,6 +223,88 @@ func TestWatchUsesLogicalPrefixes(t *testing.T) {
 	}
 	if got := router.watchReqs[0].GetLogicalPrefixes(); len(got) != 1 || got[0] != "/partitions/shared" {
 		t.Fatalf("LogicalPrefixes = %v, want logical prefixes", got)
+	}
+}
+
+func TestRefreshNodesReplacesConnectionWhenAddressChanges(t *testing.T) {
+	t.Parallel()
+
+	router := &fakeRouterClient{clusterInfoResp: &pb.ClusterInfoResponse{Nodes: []*pb.NodeInfo{{
+		NodeId:  "node-a",
+		Address: "127.0.0.1:19001",
+		Healthy: true,
+	}}}}
+	client := &GRPCClient{
+		rpcTimeout:  time.Second,
+		router:      router,
+		nodeConns:   map[string]*grpc.ClientConn{},
+		nodeClients: map[string]pb.MonoFSClient{},
+		nodeAddrs:   map[string]string{},
+	}
+
+	if err := client.refreshNodes(context.Background()); err != nil {
+		t.Fatalf("refreshNodes() first call error = %v", err)
+	}
+	firstConn := client.nodeConns["node-a"]
+	if firstConn == nil {
+		t.Fatal("expected first connection for node-a")
+	}
+
+	router.clusterInfoResp = &pb.ClusterInfoResponse{Nodes: []*pb.NodeInfo{{
+		NodeId:  "node-a",
+		Address: "127.0.0.1:19002",
+		Healthy: true,
+	}}}
+
+	if err := client.refreshNodes(context.Background()); err != nil {
+		t.Fatalf("refreshNodes() second call error = %v", err)
+	}
+	secondConn := client.nodeConns["node-a"]
+	if secondConn == nil {
+		t.Fatal("expected second connection for node-a")
+	}
+	if firstConn == secondConn {
+		t.Fatal("expected node-a connection to be replaced when address changes")
+	}
+	if got := client.nodeAddrs["node-a"]; got != "127.0.0.1:19002" {
+		t.Fatalf("nodeAddrs[node-a] = %q, want %q", got, "127.0.0.1:19002")
+	}
+}
+
+func TestInvalidateNodeOnTransportErrorClearsStaleCache(t *testing.T) {
+	t.Parallel()
+
+	client := &GRPCClient{
+		nodeConns:   map[string]*grpc.ClientConn{"node-a": nil},
+		nodeClients: map[string]pb.MonoFSClient{"node-a": nil},
+		nodeAddrs:   map[string]string{"node-a": "127.0.0.1:19001"},
+		lastRefresh: time.Now(),
+	}
+
+	client.invalidateNodeOnTransportError("node-a", status.Error(codes.Unavailable, "error reading server preface: EOF"))
+
+	if _, ok := client.nodeClients["node-a"]; ok {
+		t.Fatal("expected node client cache to be cleared")
+	}
+	if _, ok := client.nodeAddrs["node-a"]; ok {
+		t.Fatal("expected node address cache to be cleared")
+	}
+	if !client.lastRefresh.IsZero() {
+		t.Fatal("expected lastRefresh to be reset after transport error")
+	}
+}
+
+func TestIsTransportUnavailable(t *testing.T) {
+	t.Parallel()
+
+	if !isTransportUnavailable(status.Error(codes.Unavailable, "down")) {
+		t.Fatal("expected grpc unavailable to be treated as transport unavailable")
+	}
+	if !isTransportUnavailable(errors.New("error reading server preface: read tcp ...")) {
+		t.Fatal("expected preface read error to be treated as transport unavailable")
+	}
+	if isTransportUnavailable(status.Error(codes.InvalidArgument, "bad request")) {
+		t.Fatal("did not expect invalid argument to be treated as transport unavailable")
 	}
 }
 

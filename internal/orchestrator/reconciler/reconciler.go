@@ -48,9 +48,9 @@ type Reconciler struct {
 	partitionLocks sync.Map
 
 	// guarded by runMu; only non-nil while Run() is executing
-	runMu                sync.Mutex
-	pool                 *priorityPool
-	scheduler            quartz.Scheduler
+	runMu                 sync.Mutex
+	pool                  *priorityPool
+	scheduler             quartz.Scheduler
 	scheduledFingerprints map[string]string // partition → "intervalStr|jitterPct"
 }
 
@@ -311,6 +311,7 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 			}
 		}
 		current.Locked = compiledIntent.Spec.Spec.Locked
+		current.PartitionMode = partitionSpec.Spec.Reconciliation.Mode
 		current.IntentVersionID = compiledIntent.IntentVersionID
 		current.IntentSpecHash = compiledIntent.IntentSpecHash
 		current.PartitionRevision = compiled.PartitionRevision
@@ -342,19 +343,33 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 			continue
 		}
 		if !activeTask {
-			next, err := common.BuildTask(ctx, r.store, current, taskdomain.OpDiff, outputs)
+			nextOp := taskdomain.OpDiff
+			// Recovery path: if we already know the intent is drifted and no task
+			// is active, resume at CHECK instead of repeatedly running DIFF.
+			// Apply/Check failures need the same recovery path once the operator
+			// has corrected the underlying issue and asks Guardian to reconcile again.
+			if current.Status == statedomain.StatusDrifted ||
+				current.Status == statedomain.StatusApplyFailed ||
+				current.Status == statedomain.StatusCheckFailed {
+				nextOp = taskdomain.OpCheck
+			}
+			next, err := common.BuildTask(ctx, r.store, current, nextOp, outputs)
 			if err != nil {
 				log.Printf("reconciler: partition=%s intent=%s build task failed: %v", partitionName, name, err)
 				current.Status = statedomain.StatusBlocked
 				msg := err.Error()
 				current.LastError = &msg
 			} else {
-				log.Printf("reconciler: partition=%s intent=%s queued DIFF task=%s pusher=%s", partitionName, name, next.TaskID, next.TargetPusher)
-				current.Status = common.QueuedStatus(current.Status, taskdomain.OpDiff)
+				log.Printf("reconciler: partition=%s intent=%s queued %s task=%s pusher=%s", partitionName, name, nextOp, next.TaskID, next.TargetPusher)
+				current.Status = common.QueuedStatus(current.Status, nextOp)
 				current.LastTaskID = next.TaskID
 				current.LastError = nil
 				current.Timestamps.LastQueuedAt = next.CreatedAt
-				current.Timestamps.LastDiffAt = next.CreatedAt
+				if nextOp == taskdomain.OpCheck {
+					current.Timestamps.LastCheckAt = next.CreatedAt
+				} else {
+					current.Timestamps.LastDiffAt = next.CreatedAt
+				}
 				if err := r.dispatcher.QueueTask(ctx, next); err != nil {
 					return fail(err)
 				}

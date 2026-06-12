@@ -37,6 +37,7 @@ type AssetInput struct {
 
 type AssetResult struct {
 	Outputs map[string]string
+	Logs    []taskdomain.LogEntry
 }
 
 func New() *Registry {

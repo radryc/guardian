@@ -218,6 +218,98 @@ func TestLoadPartitionRolloutsDefaultsReleaseToDerivedAssetHashLabel(t *testing.
 	}
 }
 
+func TestLoadPartitionRolloutsMarksEquivalentApplyAsSelfHeal(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := memory.New()
+
+	initial := historydomain.DeploymentRecord{
+		APIVersion:         "guardian/v1alpha1",
+		Kind:               "DeploymentRecord",
+		DeploymentRevision: "dep_api_initial",
+		Partition:          "demo",
+		Intent:             "api",
+		AssetVersionIDs:    map[string]string{"config": "asset-config-v1"},
+		AssetVersions:      map[string]string{"config": "config-v1"},
+		ChangedAssets:      []string{"config"},
+		CreatedAt:          time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
+	}
+	selfHeal := historydomain.DeploymentRecord{
+		APIVersion:         "guardian/v1alpha1",
+		Kind:               "DeploymentRecord",
+		DeploymentRevision: "dep_api_selfheal",
+		Partition:          "demo",
+		Intent:             "api",
+		AssetVersionIDs:    map[string]string{"config": "asset-config-v1"},
+		AssetVersions:      map[string]string{"config": "config-v1"},
+		ChangedAssets:      []string{"config"},
+		CreatedAt:          time.Date(2026, 5, 1, 13, 0, 0, 0, time.UTC),
+	}
+	intent := archivedIntent("api", assetdomain.Spec{Name: "config", Type: "Config", Version: "config-v1"})
+	seedArchiveDeployment(t, ctx, store, initial, intent)
+	seedArchiveDeployment(t, ctx, store, selfHeal, intent)
+
+	rollouts, err := LoadPartitionRollouts(ctx, store, "demo", DeploymentFilter{})
+	if err != nil {
+		t.Fatalf("LoadPartitionRollouts() error = %v", err)
+	}
+	if got, want := len(rollouts), 2; got != want {
+		t.Fatalf("rollout count = %d, want %d", got, want)
+	}
+	if !rollouts[0].SelfHealing {
+		t.Fatalf("expected latest deployment to be marked self-healing")
+	}
+	if got, want := rollouts[0].Summary, "Self-heal: 1 asset refreshed"; got != want {
+		t.Fatalf("self-heal summary = %q, want %q", got, want)
+	}
+	if got, want := rollouts[0].Assets[0].Change, "refreshed"; got != want {
+		t.Fatalf("self-heal asset change = %q, want %q", got, want)
+	}
+}
+
+func TestLoadPartitionRolloutsMarksFirstVisibleAsCurrentWhenFiltered(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := memory.New()
+
+	oldRecord := historydomain.DeploymentRecord{
+		APIVersion:         "guardian/v1alpha1",
+		Kind:               "DeploymentRecord",
+		DeploymentRevision: "dep_old",
+		Partition:          "demo",
+		Intent:             "api",
+		AssetVersionIDs:    map[string]string{"config": "asset-config-v1"},
+		AssetVersions:      map[string]string{"config": "config-v1"},
+		CreatedAt:          time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
+	}
+	newRecord := historydomain.DeploymentRecord{
+		APIVersion:         "guardian/v1alpha1",
+		Kind:               "DeploymentRecord",
+		DeploymentRevision: "dep_new",
+		Partition:          "demo",
+		Intent:             "api",
+		AssetVersionIDs:    map[string]string{"config": "asset-config-v2"},
+		AssetVersions:      map[string]string{"config": "config-v2"},
+		CreatedAt:          time.Date(2026, 5, 1, 13, 0, 0, 0, time.UTC),
+	}
+	seedArchiveDeployment(t, ctx, store, oldRecord, archivedIntent("api", assetdomain.Spec{Name: "config", Type: "Config", Version: "config-v1"}))
+	seedArchiveDeployment(t, ctx, store, newRecord, archivedIntent("api", assetdomain.Spec{Name: "config", Type: "Config", Version: "config-v2"}))
+
+	until := time.Date(2026, 5, 1, 12, 30, 0, 0, time.UTC)
+	rollouts, err := LoadPartitionRollouts(ctx, store, "demo", DeploymentFilter{Until: &until})
+	if err != nil {
+		t.Fatalf("LoadPartitionRollouts() error = %v", err)
+	}
+	if got, want := len(rollouts), 1; got != want {
+		t.Fatalf("rollout count = %d, want %d", got, want)
+	}
+	if !rollouts[0].Current {
+		t.Fatalf("expected first visible rollout to be marked current")
+	}
+}
+
 func TestLoadPartitionRolloutsCollapsesEquivalentDeploymentsAndMarksCurrent(t *testing.T) {
 	t.Parallel()
 

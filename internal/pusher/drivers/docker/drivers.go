@@ -69,6 +69,7 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 	reg.Register(&ConfigDriver{base})
 	reg.Register(&NetworkDriver{base})
 	reg.Register(&ComputeDriver{base})
+	reg.Register(&ImageBuildDriver{baseDriver: base, backend: NewImageBuildBackend(), defaultRegistry: strings.TrimSpace(os.Getenv("GUARDIAN_IMAGE_BUILD_REGISTRY"))})
 	reg.Register(&TraefikRouteDriver{base})
 	reg.Register(&LoadBalancerDriver{base})
 	reg.Register(&ObjectStoreDriver{base})
@@ -128,7 +129,6 @@ func (d *VolumeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 		return taskdomain.DriftReport{}, err
 	}
 	name := volumeName(in, in.Asset.Name)
-	hash := hashWithPayload(driverutil.AssetHash(in), payload)
 	current, ok, err := d.backend.GetVolume(name)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
@@ -139,7 +139,7 @@ func (d *VolumeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 	if payload.Ephemeral != nil {
 		ephemeral = *payload.Ephemeral
 	}
-	if !ok || current.Hash != hash || current.Size != size || current.AccessMode != accessMode || current.Ephemeral != ephemeral {
+	if !ok || current.Size != size || current.AccessMode != accessMode || current.Ephemeral != ephemeral {
 		return changedDrift(in.Asset.Name, "docker volume differs"), nil
 	}
 	return inSyncDrift(in.Asset.Name, "docker volume is in sync"), nil
@@ -440,6 +440,9 @@ func (d *ComputeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskd
 		if !ok {
 			return changedDrift(in.Asset.Name, "docker compute container not found"), nil
 		}
+		if !actual.Running {
+			return changedDrift(in.Asset.Name, "docker compute container not running"), nil
+		}
 		// Build the desired Container struct the same way Apply does, then
 		// compare fields structurally. This catches image changes, env drift,
 		// port changes, mount changes, capability changes etc. that a pure
@@ -628,13 +631,16 @@ func (d *LoadBalancerDriver) Diff(ctx context.Context, in registry.AssetInput) (
 		return taskdomain.DriftReport{}, err
 	}
 	name := loadBalancerName(in)
-	hash := loadBalancerContainerHash(in, spec, bootstrapConfig, payload)
-	container, ok, err := d.backend.GetContainer(name)
+	actual, ok, err := d.backend.GetContainer(name)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	if !ok || container.Hash != hash {
+	if !ok {
 		return changedDrift(in.Asset.Name, "docker load balancer differs"), nil
+	}
+	desired := d.buildLoadBalancerContainer(in, spec, payload, bootstrapConfig)
+	if drifted, reason := StructuralContainerDrift(desired, actual); drifted {
+		return changedDrift(in.Asset.Name, "docker load balancer differs: "+reason), nil
 	}
 	return inSyncDrift(in.Asset.Name, "docker load balancer is in sync"), nil
 }
@@ -659,36 +665,40 @@ func (d *LoadBalancerDriver) Apply(ctx context.Context, in registry.AssetInput) 
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
-	hash := loadBalancerContainerHash(in, spec, bootstrapConfig, payload)
-	name := loadBalancerName(in)
-	env := map[string]string{
-		"LB_BOOTSTRAP": bootstrapConfig,
-	}
-	container := Container{
-		Name:    name,
-		Kind:    "LoadBalancer",
-		Image:   loadBalancerContainerImage(),
-		Hash:    hash,
-		Labels:  driverutil.Labels("docker", in, hash),
-		Network: network,
-		Aliases: []string{in.Asset.Name, name},
-		Env:     env,
-		Ports:   toLoadBalancerPorts(spec.Listeners),
-		Running: true,
-	}
-	applyContainerPayload(&container, payload)
-	d.applyContainerDefaults(&container)
+	container := d.buildLoadBalancerContainer(in, spec, payload, bootstrapConfig)
 	if err := d.backend.UpsertContainer(container); err != nil {
 		return registry.AssetResult{}, err
 	}
 	if err := d.connectExtraNetworks(in, spec.Networks, container); err != nil {
 		return registry.AssetResult{}, err
 	}
-	outputs := map[string]string{"id": name}
+	outputs := map[string]string{"id": container.Name}
 	if port := firstContainerPort(container.Ports); port > 0 {
 		outputs["address"] = fmt.Sprintf("%s:%d", in.Asset.Name, port)
 	}
 	return registry.AssetResult{Outputs: outputs}, nil
+}
+
+func (d *LoadBalancerDriver) buildLoadBalancerContainer(in registry.AssetInput, spec *assetdefs.LoadBalancerSpec, payload containerPayload, bootstrapConfig string) Container {
+	hash := loadBalancerContainerHash(in, spec, bootstrapConfig, payload)
+	name := loadBalancerName(in)
+	container := Container{
+		Name:    name,
+		Kind:    "LoadBalancer",
+		Image:   loadBalancerContainerImage(),
+		Hash:    hash,
+		Labels:  driverutil.Labels("docker", in, hash),
+		Network: networkName(in),
+		Aliases: []string{in.Asset.Name, name},
+		Env: map[string]string{
+			"LB_BOOTSTRAP": bootstrapConfig,
+		},
+		Ports:   toLoadBalancerPorts(spec.Listeners),
+		Running: true,
+	}
+	applyContainerPayload(&container, payload)
+	d.applyContainerDefaults(&container)
+	return container
 }
 
 func (d *LoadBalancerDriver) Destroy(ctx context.Context, in registry.AssetInput) error {
