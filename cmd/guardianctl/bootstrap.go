@@ -31,8 +31,8 @@ func devCommands() []bootstrapReg {
 		{Group: "dev", Name: "stop", Cmd: devStopCommand()},
 		{Group: "dev", Name: "destroy", Cmd: devDestroyCommand()},
 		{Group: "dev", Name: "status", Cmd: devStatusCommand()},
-		{Group: "dev", Name: "ports", Cmd: devPortsCommand()},
 		{Group: "dev", Name: "stamp-urls", Cmd: devStampURLsCommand()},
+		{Group: "dev", Name: "configure-registry", Cmd: devConfigureRegistryCommand()},
 	}
 }
 
@@ -121,6 +121,16 @@ func devDeployCommand() *command.Command {
 				}
 			}
 
+			// Configure containerd on kind nodes to pull from monofs-registry
+			ctxName, _ := bootstrap.RunCapture(ctx, "kubectl", "config", "current-context")
+			if strings.HasPrefix(ctxName, "kind-") {
+				fmt.Println("=== configuring containerd for registry ===")
+				if err := bootstrap.ConfigureKindRegistryForContainerd(ctx, strings.TrimPrefix(ctxName, "kind-"),
+					cfg.Guardian.LocalRegistry.Namespace, cfg.Guardian.LocalRegistry.Name, *dryRun); err != nil {
+					fmt.Fprintf(os.Stderr, "  WARNING: containerd registry config failed: %v\n", err)
+				}
+			}
+
 			return nil
 		},
 	}
@@ -198,6 +208,15 @@ func devInitCommand() *command.Command {
 			}
 			if err := waitLBEdgeDeployments(ctx, cfg, *dryRun); err != nil {
 				return err
+			}
+
+			// Configure containerd on kind nodes to pull from monofs-registry
+			if strings.HasPrefix(ctxName, "kind-") {
+				fmt.Println("=== configuring containerd for registry ===")
+				if err := bootstrap.ConfigureKindRegistryForContainerd(ctx, strings.TrimPrefix(ctxName, "kind-"),
+					cfg.Guardian.LocalRegistry.Namespace, cfg.Guardian.LocalRegistry.Name, *dryRun); err != nil {
+					fmt.Fprintf(os.Stderr, "  WARNING: containerd registry config failed: %v\n", err)
+				}
 			}
 
 			fmt.Println("=== deploying guardian ===")
@@ -308,26 +327,6 @@ func devStatusCommand() *command.Command {
 	}
 }
 
-func devPortsCommand() *command.Command {
-	flags := flag.NewFlagSet("dev ports", flag.ContinueOnError)
-	flags.SetOutput(ioDiscard{})
-	dryRun := flags.Bool("dry-run", false, "print command without executing")
-	configPath := flags.String("config", "", "path to bootstrap.yaml (default: auto-detect)")
-
-	return &command.Command{
-		Description: "Start kubectl port-forward for dev services",
-		Flags:       flags,
-		Run: func(ctx context.Context, args []string) error {
-			cfg, err := loadBootstrapConfig(*configPath)
-			if err != nil {
-				return err
-			}
-
-			return bootstrap.StartPortForward(ctx, cfg, *dryRun)
-		},
-	}
-}
-
 func devStampURLsCommand() *command.Command {
 	flags := flag.NewFlagSet("dev stamp-urls", flag.ContinueOnError)
 	flags.SetOutput(ioDiscard{})
@@ -414,6 +413,33 @@ func devStampURLsCommand() *command.Command {
 	}
 }
 
+func devConfigureRegistryCommand() *command.Command {
+	flags := flag.NewFlagSet("dev configure-registry", flag.ContinueOnError)
+	flags.SetOutput(ioDiscard{})
+	dryRun := flags.Bool("dry-run", false, "print commands without executing")
+	configPath := flags.String("config", "", "path to bootstrap.yaml (default: auto-detect)")
+
+	return &command.Command{
+		Description: "Configure containerd on kind nodes to pull from monofs-registry (fixes ImagePullBackOff after release)",
+		Flags:       flags,
+		Run: func(ctx context.Context, args []string) error {
+			cfg, err := loadBootstrapConfig(*configPath)
+			if err != nil {
+				return err
+			}
+
+			ctxName, _ := bootstrap.RunCapture(ctx, "kubectl", "config", "current-context")
+			if !strings.HasPrefix(ctxName, "kind-") {
+				return fmt.Errorf("not a kind cluster context: %s", ctxName)
+			}
+
+			kindClusterName := strings.TrimPrefix(ctxName, "kind-")
+			return bootstrap.ConfigureKindRegistryForContainerd(ctx, kindClusterName,
+				cfg.Guardian.LocalRegistry.Namespace, cfg.Guardian.LocalRegistry.Name, *dryRun)
+		},
+	}
+}
+
 func setupCommand() *command.Command {
 	flags := flag.NewFlagSet("dev setup", flag.ContinueOnError)
 	flags.SetOutput(ioDiscard{})
@@ -451,9 +477,15 @@ func setupCommand() *command.Command {
 					if err := createKindCluster(ctx, *dryRun, *kindWorkers); err != nil {
 						return fmt.Errorf("creating kind cluster: %w", err)
 					}
+					if !*dryRun {
+						ensureDockerNetwork(ctx, "kind", *dryRun)
+					}
 				}
 			} else {
 				fmt.Printf("  kubectl context: %s\n", ctxName)
+				if strings.HasPrefix(ctxName, "kind-") {
+					ensureDockerNetwork(ctx, "kind", *dryRun)
+				}
 			}
 
 			// Generate encryption key
@@ -650,6 +682,11 @@ func waitLBEdgeDeployments(ctx context.Context, cfg *bootstrap.Config, dryRun bo
 func deployGuardianTemplates(ctx context.Context, cfg *bootstrap.Config, env bootstrap.Env, guardianDir string, dryRun bool) error {
 	ns := cfg.Guardian.Namespace
 
+	// Resolve the local registry ClusterIP for hostAliases
+	if env["LOCAL_REGISTRY_HOST_ALIASES"] == "" {
+		env["LOCAL_REGISTRY_HOST_ALIASES"] = bootstrap.ComputeLocalRegistryHostAliases(cfg)
+	}
+
 	fmt.Printf("=== deploying guardian to namespace %s ===\n", ns)
 
 	bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "namespace.yaml"), env, nil, dryRun)
@@ -677,7 +714,7 @@ func deployDockerPusher(ctx context.Context, cfg *bootstrap.Config, dryRun bool)
 	lbNS := cfg.LB.Namespace
 	router := bootstrap.LbEdgeEndpoint(lbNS, "grpc", "9090")
 	if router == "" {
-		router = cfg.Guardian.Monofs.Router
+		router = "127.0.0.1:9090"
 	}
 
 	token := ""
@@ -691,18 +728,20 @@ func deployDockerPusher(ctx context.Context, cfg *bootstrap.Config, dryRun bool)
 	// Remove existing container
 	bootstrap.Run(ctx, dryRun, "docker", "rm", "-f", name)
 
-	return bootstrap.Run(ctx, dryRun, "docker", "run", "-d",
+	args := []string{
+		"run", "-d",
 		"--restart=unless-stopped",
 		"--name", name,
+		"--network", "host",
 		"-v", "/var/run/docker.sock:/var/run/docker.sock",
 		"-e", fmt.Sprintf("GUARDIAN_PUSHER_NAME=%s", cfg.Guardian.Pushers.Docker.Name),
 		"-e", "GUARDIAN_CLUSTER=docker-main",
 		"-e", fmt.Sprintf("GUARDIAN_MONOFS_ROUTER=%s", router),
 		"-e", fmt.Sprintf("GUARDIAN_MONOFS_TOKEN=%s", token),
 		"-e", "GUARDIAN_MONOFS_USE_EXTERNAL_ADDRESSES=true",
-		"-e", "GUARDIAN_ADD_HOSTS=host.docker.internal:host-gateway",
 		image,
-	)
+	}
+	return bootstrap.Run(ctx, dryRun, "docker", args...)
 }
 
 func bootstrapStampURLsSilent(ctx context.Context, cfg *bootstrap.Config, dryRun bool) error {
@@ -759,6 +798,10 @@ func createKindCluster(ctx context.Context, dryRun bool, workers int) error {
 	// Write kind config as YAML
 	config := fmt.Sprintf(`kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+- |-
+  [plugins."io.containerd.grpc.v1.cri".registry]
+    config_path = "/etc/containerd/certs.d"
 nodes:
   - role: control-plane
     extraMounts:
@@ -782,6 +825,9 @@ nodes:
         protocol: TCP
       - containerPort: 15051
         hostPort: 15051
+        protocol: TCP
+      - containerPort: 5000
+        hostPort: 5000
         protocol: TCP
       - containerPort: 18081
         hostPort: 18081
@@ -841,6 +887,22 @@ nodes:
 
 	fmt.Printf("creating kind cluster '%s' with %d workers...\n", clusterName, workers)
 	return bootstrap.Run(ctx, dryRun, "kind", "create", "cluster", "--name", clusterName, "--config", tmpFile)
+}
+
+// ensureDockerNetwork verifies a Docker network exists; creates it if missing.
+func ensureDockerNetwork(ctx context.Context, network string, dryRun bool) {
+	if dryRun {
+		fmt.Printf("  would ensure docker network %s exists\n", network)
+		return
+	}
+	exists, _ := bootstrap.RunCapture(ctx, "docker", "network", "inspect", network)
+	if strings.TrimSpace(exists) != "" {
+		return
+	}
+	fmt.Printf("  creating docker network %s\n", network)
+	if err := bootstrap.Run(ctx, dryRun, "docker", "network", "create", network); err != nil {
+		fmt.Fprintf(os.Stderr, "  WARNING: docker network create %s failed: %v\n", network, err)
+	}
 }
 
 // --- Dev tag management ---

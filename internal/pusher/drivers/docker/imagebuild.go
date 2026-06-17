@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -26,7 +28,14 @@ type ImageBuildDriver struct {
 func (d *ImageBuildDriver) Type() string                  { return "ImageBuild" }
 func (d *ImageBuildDriver) Validate(map[string]any) error { return nil }
 func (d *ImageBuildDriver) Check(ctx context.Context, in registry.AssetInput) error {
-	return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, "docker", "info")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("docker daemon not available: %w\n%s", err, string(out))
+	}
+	return nil
 }
 
 func (d *ImageBuildDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdomain.DriftReport, error) {
@@ -42,6 +51,7 @@ func (d *ImageBuildDriver) Diff(ctx context.Context, in registry.AssetInput) (ta
 	if currentRef == req.ImageRef {
 		return inSyncDrift(in.Asset.Name, "docker image build is in sync"), nil
 	}
+	log.Printf("[ImageBuild] drift asset=%s currentRef=%q desiredRef=%q", in.Asset.Name, currentRef, req.ImageRef)
 	return changedDrift(in.Asset.Name, "docker image build differs"), nil
 }
 
@@ -59,6 +69,19 @@ func (d *ImageBuildDriver) Apply(ctx context.Context, in registry.AssetInput) (r
 		return registry.AssetResult{}, err
 	}
 	defer cleanup()
+
+	outputs := registry.AssetResult{Outputs: map[string]string{
+		"imageRef":   req.ImageRef,
+		"repository": strings.TrimSpace(req.Repository),
+		"registry":   strings.TrimSpace(req.Registry),
+		"tag":        strings.TrimSpace(req.Tag),
+	}}
+
+	if exists, checkErr := d.backend.ImageExists(ctx, req.ImageRef); checkErr == nil && exists {
+		return outputs, nil
+	}
+	log.Printf("[ImageBuild] image=%s asset=%s not-in-registry: proceeding to build (tag=%s repo=%s)", req.ImageRef, in.Asset.Name, req.Tag, req.Repository)
+
 	if spec.StampOnly {
 		currentRef, err := currentImageRef(ctx, in)
 		if err != nil {
@@ -79,12 +102,7 @@ func (d *ImageBuildDriver) Apply(ctx context.Context, in registry.AssetInput) (r
 			return registry.AssetResult{}, err
 		}
 	}
-	return registry.AssetResult{Outputs: map[string]string{
-		"imageRef":   req.ImageRef,
-		"repository": strings.TrimSpace(req.Repository),
-		"registry":   strings.TrimSpace(req.Registry),
-		"tag":        strings.TrimSpace(req.Tag),
-	}}, nil
+	return outputs, nil
 }
 
 func (d *ImageBuildDriver) Destroy(ctx context.Context, in registry.AssetInput) error {

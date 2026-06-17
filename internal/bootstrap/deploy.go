@@ -245,38 +245,69 @@ func DeleteClusterRoleBinding(ctx context.Context, name string, dryRun bool) err
 	return Run(ctx, dryRun, "kubectl", "delete", "clusterrolebinding", name, "--ignore-not-found")
 }
 
-// StartPortForward starts kubectl port-forward in the background.
-func StartPortForward(ctx context.Context, cfg *Config, dryRun bool) error {
-	address := cfg.Guardian.PortForward.Address
-	ports := PortForwardPorts(cfg)
-
-	args := []string{"-n", cfg.LB.Namespace, "port-forward"}
-	if address != "" {
-		args = append(args, "--address", address)
-	}
-	args = append(args, "svc/monofs-external")
-	args = append(args, ports...)
-
-	fmt.Fprintf(os.Stderr, "+ kubectl %s\n", strings.Join(args, " "))
-
-	if dryRun {
-		return nil
+// ConfigureKindRegistryForContainerd configures containerd on each kind node
+// to pull from the monofs-registry service. Writes hosts.toml for both
+// registry.strata.local:5000 (direct strata images) and docker.io (proxied via
+// monofs-registry's pull-through to Docker Hub).
+func ConfigureKindRegistryForContainerd(ctx context.Context, kindClusterName, registryNamespace, registryServiceName string, dryRun bool) error {
+	ctxName := kubectlQuery("config", "current-context")
+	if !strings.HasPrefix(ctxName, "kind-") {
+		return fmt.Errorf("not a kind cluster context: %s", ctxName)
 	}
 
-	cmd := exec.CommandContext(ctx, "kubectl", args...)
-	cmd.Stdin = nil
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
+	if kindClusterName == "" {
+		kindClusterName = strings.TrimPrefix(ctxName, "kind-")
+	}
 
-// StopPortForward sends SIGTERM to a port-forward process.
-func StopPortForward(pid int) error {
-	proc, err := os.FindProcess(pid)
+	clusterIP := KubectlGetServiceIP(registryNamespace, registryServiceName)
+	if clusterIP == "" {
+		return fmt.Errorf("service %s/%s not found or has no ClusterIP", registryNamespace, registryServiceName)
+	}
+
+	nodes, err := RunCapture(ctx, "kind", "get", "nodes", "--name", kindClusterName)
 	if err != nil {
-		return err
+		return fmt.Errorf("listing kind nodes: %w", err)
 	}
-	return proc.Signal(os.Interrupt)
+
+	hostsToml := fmt.Sprintf(`server = "http://%s:5000"
+
+[host."http://%s:5000"]
+  capabilities = ["pull", "resolve"]
+  skip_verify = true
+`, clusterIP, clusterIP)
+
+	registries := []string{"registry.strata.local:5000"}
+
+	for _, node := range strings.Split(nodes, "\n") {
+		node = strings.TrimSpace(node)
+		if node == "" {
+			continue
+		}
+
+		for _, reg := range registries {
+			regDir := "/etc/containerd/certs.d/" + reg
+
+			fmt.Fprintf(os.Stderr, "  configuring containerd on kind node %s for %s -> %s:5000\n", node, reg, clusterIP)
+
+			if dryRun {
+				continue
+			}
+
+			if err := Run(ctx, false, "docker", "exec", node, "mkdir", "-p", regDir); err != nil {
+				return fmt.Errorf("creating certs.d dir on node %s: %w", node, err)
+			}
+
+			cmd := exec.CommandContext(ctx, "docker", "exec", "-i", node, "tee", regDir+"/hosts.toml")
+			cmd.Stdin = strings.NewReader(hostsToml)
+			cmd.Stdout = os.Stderr
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("writing hosts.toml on node %s: %w", node, err)
+			}
+		}
+	}
+
+	return nil
 }
 
 // PatchServiceFinalizer clears finalizers on all services in a namespace.

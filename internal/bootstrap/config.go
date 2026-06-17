@@ -147,11 +147,12 @@ type GuardianLocalRegistry struct {
 }
 
 type GuardianPortForward struct {
-	HTTP    int    `yaml:"http"`
-	GRPC    int    `yaml:"grpc"`
-	UI      int    `yaml:"ui"`
-	Admin   int    `yaml:"admin"`
-	Address string `yaml:"address"`
+	HTTP     int    `yaml:"http"`
+	GRPC     int    `yaml:"grpc"`
+	UI       int    `yaml:"ui"`
+	Admin    int    `yaml:"admin"`
+	Registry int    `yaml:"registry"`
+	Address  string `yaml:"address"`
 }
 
 // Env holds all computed environment variables for template rendering.
@@ -252,11 +253,12 @@ func DefaultConfig() Config {
 				Port:      "5000",
 			},
 			PortForward: GuardianPortForward{
-				HTTP:    8080,
-				GRPC:    9090,
-				UI:      8090,
-				Admin:   18081,
-				Address: "0.0.0.0",
+				HTTP:     8080,
+				GRPC:     9090,
+				UI:       8090,
+				Admin:    18081,
+				Registry: 5000,
+				Address:  "0.0.0.0",
 			},
 		},
 	}
