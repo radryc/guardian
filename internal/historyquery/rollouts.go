@@ -129,7 +129,10 @@ func collapseEquivalentRollouts(archives []archivedRollout) []archivedRollout {
 }
 
 func buildRolloutRecord(current archivedRollout, previous *archivedRollout, currentRollout bool) (RolloutRecord, error) {
-	selfHealing := previous != nil && rolloutStateEqual(current, *previous) && hasChangedAssets(current.record)
+	selfHealing := current.record.SelfHealing
+	if !selfHealing {
+		selfHealing = previous != nil && rolloutStateEqual(current, *previous) && hasChangedAssets(current.record)
+	}
 	var previousSnapshot *IntentSnapshot
 	if previous != nil && !selfHealing {
 		previousSnapshot = &IntentSnapshot{

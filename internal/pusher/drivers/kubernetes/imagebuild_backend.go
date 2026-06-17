@@ -18,6 +18,8 @@ import (
 
 type ImageBuildBackendAPI interface {
 	BuildAndPublish(ctx context.Context, req ImageBuildRequest) (ImageBuildResult, error)
+	LoadAndPush(ctx context.Context, req ImageLoadRequest) (ImageBuildResult, error)
+	StampImage(ctx context.Context, currentRef, newRef string) error
 }
 
 type ImageBuildRequest struct {
@@ -28,6 +30,12 @@ type ImageBuildRequest struct {
 	Platform     string
 	BuildArgs    map[string]string
 	Insecure     bool
+}
+
+type ImageLoadRequest struct {
+	TarPath     string
+	ImageRef    string
+	SourceImage string
 }
 
 type BuildLogEntry struct {
@@ -121,8 +129,8 @@ func (b *ImageBuildBackend) resolveRegistryClusterIP(ctx context.Context, namesp
 		return "", nil
 	}
 	host := strings.SplitN(registryHost, ":", 2)[0]
-	// Try to find a service in the guardian namespace whose ClusterIP serves this hostname.
-	out, err := exec.CommandContext(ctx, b.kubectl, "-n", namespace, "get", "svc",
+	// Try to find a service in any namespace whose ClusterIP serves this hostname.
+	out, err := exec.CommandContext(ctx, b.kubectl, "get", "svc", "-A",
 		"-o", "jsonpath={range .items[*]}{.metadata.name}{\"\\t\"}{.spec.clusterIP}{\"\\n\"}{end}").CombinedOutput()
 	if err != nil {
 		return "", nil // non-fatal — job will just lack the alias
@@ -426,5 +434,170 @@ func createBuildContextArchive(workspaceDir string) (string, func(), error) {
 		return "", func() {}, fmt.Errorf("finalize image build archive")
 	}
 	return archivePath, cleanup, nil
+}
+
+func (b *ImageBuildBackend) StampImage(ctx context.Context, currentRef, newRef string) error {
+	if output, err := exec.CommandContext(ctx, "docker", "tag", currentRef, newRef).CombinedOutput(); err != nil {
+		return fmt.Errorf("docker tag %s -> %s failed: %w\n%s", currentRef, newRef, err, string(output))
+	}
+	if output, err := exec.CommandContext(ctx, "docker", "push", newRef).CombinedOutput(); err != nil {
+		return fmt.Errorf("docker push %s failed: %w\n%s", newRef, err, string(output))
+	}
+	return nil
+}
+
+func (b *ImageBuildBackend) LoadAndPush(ctx context.Context, req ImageLoadRequest) (ImageBuildResult, error) {
+	archivePath, archiveCleanup, err := prepareTarContext(req.TarPath)
+	if err != nil {
+		return ImageBuildResult{}, err
+	}
+	defer archiveCleanup()
+
+	skopeoImage := os.Getenv("GUARDIAN_SKOPEO_IMAGE")
+	if skopeoImage == "" {
+		skopeoImage = "quay.io/skopeo/stable:latest"
+	}
+	namespace := os.Getenv("GUARDIAN_NAMESPACE")
+	if namespace == "" {
+		namespace = "guardian"
+	}
+	registryHost := os.Getenv("GUARDIAN_IMAGE_BUILD_REGISTRY")
+
+	jobName := fmt.Sprintf("guardian-imageload-%d", time.Now().UnixNano())
+
+	registryClusterIP, err := b.resolveRegistryClusterIP(ctx, namespace, registryHost)
+	if err != nil {
+		return ImageBuildResult{}, fmt.Errorf("resolve registry cluster IP: %w", err)
+	}
+
+	jobManifest := b.buildPushJobManifest(jobName, namespace, skopeoImage, registryHost, registryClusterIP, req)
+	if err := b.applyManifest(jobManifest); err != nil {
+		return ImageBuildResult{}, fmt.Errorf("create skopeo job %s: %w", jobName, err)
+	}
+	defer b.deleteJob(namespace, jobName)
+
+	if err := b.waitForPodInit(ctx, namespace, jobName); err != nil {
+		rawLogs, _ := b.jobLogs(namespace, jobName)
+		return ImageBuildResult{}, fmt.Errorf("skopeo job init failed %s: %w\n%s", req.ImageRef, err, rawLogs)
+	}
+	if err := b.copyContextToJob(ctx, namespace, jobName, archivePath); err != nil {
+		return ImageBuildResult{}, fmt.Errorf("copy tar to job %s: %w", jobName, err)
+	}
+
+	var buildLogs []BuildLogEntry
+	logCh := make(chan BuildLogEntry, 256)
+	logDone := make(chan struct{})
+	go func() {
+		defer close(logDone)
+		for entry := range logCh {
+			buildLogs = append(buildLogs, entry)
+		}
+	}()
+
+	buildErr := b.waitForJobStreaming(ctx, namespace, jobName, req.ImageRef, logCh)
+	close(logCh)
+	<-logDone
+
+	if buildErr != nil {
+		rawLogs, _ := b.jobLogs(namespace, jobName)
+		return ImageBuildResult{Logs: buildLogs}, fmt.Errorf("skopeo push %s failed: %w\n%s", req.ImageRef, buildErr, rawLogs)
+	}
+	return ImageBuildResult{ImageRef: req.ImageRef, Logs: buildLogs}, nil
+}
+
+func prepareTarContext(tarPath string) (string, func(), error) {
+	tmpDir, err := os.MkdirTemp("", "guardian-imageload-*")
+	if err != nil {
+		return "", func() {}, fmt.Errorf("create temp dir for tar context: %w", err)
+	}
+	destPath := filepath.Join(tmpDir, "image.tar")
+	src, err := os.Open(tarPath)
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		return "", func() {}, fmt.Errorf("open source tar: %w", err)
+	}
+	defer src.Close()
+	dst, err := os.Create(destPath)
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		return "", func() {}, fmt.Errorf("create dest tar copy: %w", err)
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, src); err != nil {
+		os.RemoveAll(tmpDir)
+		return "", func() {}, fmt.Errorf("copy tar: %w", err)
+	}
+	dst.Close()
+	src.Close()
+
+	archivePath, archiveCleanup, err := createBuildContextArchive(tmpDir)
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		return "", func() {}, err
+	}
+	os.RemoveAll(tmpDir)
+	return archivePath, archiveCleanup, nil
+}
+
+func (b *ImageBuildBackend) buildPushJobManifest(jobName, namespace, skopeoImage, registryHost, registryClusterIP string, req ImageLoadRequest) map[string]any {
+	podSpec := map[string]any{
+		"restartPolicy": "Never",
+		"volumes": []map[string]any{
+			{"name": "context", "emptyDir": map[string]any{}},
+		},
+		"initContainers": []map[string]any{
+			{
+				"name":    "loader",
+				"image":   "busybox:1.36",
+				"command": []string{"sh", "-c", "until [ -f /context/context.tar.gz ]; do sleep 1; done; tar -xzf /context/context.tar.gz -C /context"},
+				"volumeMounts": []map[string]any{
+					{"name": "context", "mountPath": "/context"},
+				},
+			},
+		},
+		"containers": []map[string]any{
+			{
+				"name":  "skopeo",
+				"image": skopeoImage,
+				"command": []string{
+					"skopeo", "copy",
+					"--src-tls-verify=false", "--dest-tls-verify=false",
+					"docker-archive:///context/image.tar",
+					"docker://" + req.ImageRef,
+				},
+				"volumeMounts": []map[string]any{
+					{"name": "context", "mountPath": "/context"},
+				},
+			},
+		},
+	}
+
+	if registryClusterIP != "" && registryHost != "" {
+		host := strings.SplitN(registryHost, ":", 2)[0]
+		podSpec["hostAliases"] = []map[string]any{
+			{
+				"ip":        registryClusterIP,
+				"hostnames": []string{host},
+			},
+		}
+	}
+
+	ttl := int32(600)
+	return map[string]any{
+		"apiVersion": "batch/v1",
+		"kind":       "Job",
+		"metadata": map[string]any{
+			"name":      jobName,
+			"namespace": namespace,
+			"labels":    map[string]string{"guardian.managed": "true", "guardian.role": "imageload"},
+		},
+		"spec": map[string]any{
+			"ttlSecondsAfterFinished": ttl,
+			"backoffLimit":            0,
+			"template": map[string]any{
+				"spec": podSpec,
+			},
+		},
+	}
 }
 

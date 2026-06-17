@@ -143,6 +143,21 @@ func main() {
 	}
 }
 
+func rpcTimeoutFromEnv() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("GUARDIANCTL_RPC_TIMEOUT"))
+	if raw == "" {
+		return 5 * time.Minute
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 5 * time.Minute
+	}
+	if d <= 0 {
+		return 5 * time.Minute
+	}
+	return d
+}
+
 func openStore(ctx context.Context, storeDir, monofsRouter, monofsToken, monofsPrincipalID string, monofsUseExternalAddresses bool) (guardianapi.Store, interface{ Close() error }, error) {
 	if storeDir == "" && monofsRouter == "" {
 		// No store configured — commands that require a store will fail when
@@ -159,6 +174,7 @@ func openStore(ctx context.Context, storeDir, monofsRouter, monofsToken, monofsP
 			Version:              "guardianctl",
 			UseExternalAddresses: monofsUseExternalAddresses,
 			Writable:             true,
+			RPCTimeout:           rpcTimeoutFromEnv(),
 		})
 		if err != nil {
 			return nil, nil, err
@@ -626,6 +642,16 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 		return nil
 	}}))
 
+	reg.Register("store", "tree", storeCommand(func() *command.Command {
+		flags := flag.NewFlagSet("store tree", flag.ContinueOnError)
+		pathFlag := flags.String("path", "", "logical path prefix (required)")
+		recursiveFlag := flags.Bool("recursive", false, "walk subdirectories recursively")
+		return &command.Command{Description: "List files and directories in the store", Flags: flags, Run: func(ctx context.Context, _ []string) error {
+			return storeTree(ctx, store, printer, *pathFlag, *recursiveFlag)
+		}}
+	}()))
+
+
 	reg.Register("partition", "get", storeCommand(func() *command.Command {
 		flags := flag.NewFlagSet("partition get", flag.ContinueOnError)
 		partitionName := flags.String("partition", "", "partition name")
@@ -860,7 +886,64 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 	reg.Register("asset", "catalog", assetCatalogCommand(printer))
 	reg.Register("asset", "describe", assetDescribeCommand(store, printer))
 
+	// Dev commands (no store required — work with kubectl + docker directly)
+	for _, b := range devCommands() {
+		reg.Register(b.Group, b.Name, b.Cmd)
+	}
+
+	// Release and image commands
+	reg.Register("release", "run", releaseCommand(printer))
+	reg.Register("image", "run", imageCommand(printer))
+
 	return reg
+}
+
+func storeTree(ctx context.Context, store guardianapi.Store, printer *output.Printer, prefix string, recursive bool) error {
+	if store == nil {
+		return fmt.Errorf("store not available")
+	}
+	if prefix == "" {
+		return fmt.Errorf("--path is required")
+	}
+	return walkStoreTree(ctx, store, printer, prefix, "", recursive)
+}
+
+func walkStoreTree(ctx context.Context, store guardianapi.Store, printer *output.Printer, prefix, indent string, recursive bool) error {
+	entries, err := store.ListDir(ctx, prefix)
+	if err != nil {
+		return err
+	}
+	for i, entry := range entries {
+		isLast := i == len(entries)-1
+		connector := "├── "
+		childIndent := "│   "
+		if isLast {
+			connector = "└── "
+			childIndent = "    "
+		}
+		sizeStr := ""
+		if !entry.IsDir && entry.Size > 0 {
+			if entry.Size >= 1024*1024 {
+				sizeStr = fmt.Sprintf("  (%dM)", entry.Size/(1024*1024))
+			} else if entry.Size >= 1024 {
+				sizeStr = fmt.Sprintf("  (%dK)", entry.Size/1024)
+			} else {
+				sizeStr = fmt.Sprintf("  (%dB)", entry.Size)
+			}
+		}
+		fmt.Fprintf(printer.Writer, "%s%s%s%s\n", indent, connector, entry.Name, sizeStr)
+		if entry.IsDir && recursive {
+			childPath := prefix
+			if childPath != "/" {
+				childPath += "/"
+			}
+			childPath += entry.Name
+			if err := walkStoreTree(ctx, store, printer, childPath, indent+childIndent, true); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func assetCatalogCommand(printer *output.Printer) *command.Command {

@@ -90,3 +90,36 @@ func walkStoreFiles(ctx context.Context, store guardianapi.ReadStore, logicalDir
 }
 
 func noopCleanup() {}
+
+func StageTarFile(ctx context.Context, store guardianapi.ReadStore, logicalPath string) (string, func(), error) {
+	if store == nil {
+		return "", noopCleanup, fmt.Errorf("read store is required to stage image tar")
+	}
+	cleanPath := path.Clean(strings.TrimSpace(logicalPath))
+	if cleanPath == "." || !strings.HasPrefix(cleanPath, "/") {
+		return "", noopCleanup, fmt.Errorf("imageTar %q must be an absolute logical path", logicalPath)
+	}
+	content, err := store.ReadFile(ctx, cleanPath)
+	if err != nil {
+		return "", noopCleanup, fmt.Errorf("read image tar %s: %w", cleanPath, err)
+	}
+	if len(content) == 0 {
+		return "", noopCleanup, fmt.Errorf("imageTar %q is empty", logicalPath)
+	}
+	tmpFile, err := os.CreateTemp("", "guardian-imagetar-*.tar")
+	if err != nil {
+		return "", noopCleanup, fmt.Errorf("create temp tar file: %w", err)
+	}
+	cleanup := func() {
+		tmpFile.Close()
+		_ = os.Remove(tmpFile.Name())
+	}
+	if _, err := tmpFile.Write(content); err != nil {
+		cleanup()
+		return "", noopCleanup, fmt.Errorf("write tar file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return "", noopCleanup, fmt.Errorf("close tar file: %w", err)
+	}
+	return tmpFile.Name(), cleanup, nil
+}

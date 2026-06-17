@@ -30,6 +30,7 @@ type AssetInput struct {
 	IntentName    string
 	Asset         taskdomain.AbstractAsset
 	Assets        map[string]taskdomain.AbstractAsset
+	AssetVersions map[string]string
 	Target        targetdomain.Placement
 	Store         guardianapi.ReadStore
 	WorkerID      string

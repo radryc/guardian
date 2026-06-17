@@ -235,6 +235,8 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			return nil
 		}
 		preDrift := state.Drift
+		selfHealing := state.LastAppliedSpecHash != "" && state.IntentSpecHash == state.LastAppliedSpecHash
+		state.LastAppliedSpecHash = state.IntentSpecHash
 		state.Status = statedomain.StatusHealthy
 		state.LastError = nil
 		state.Health = cloneHealthObservation(result.Health)
@@ -259,6 +261,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			AssetVersions:      copyStringMap(state.AssetVersions),
 			TaskIDs:            collectTaskIDs(taskFile, result.TaskID),
 			ChangedAssets:      preDriftAssets(preDrift),
+			SelfHealing:        selfHealing,
 			Outputs:            copyStringMap(result.Outputs),
 			CreatedAt:          result.FinishedAt,
 		}

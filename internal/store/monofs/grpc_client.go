@@ -24,6 +24,7 @@ const defaultTopologyRefreshInterval = 5 * time.Second
 
 type routerClient interface {
 	UpsertGuardianPaths(ctx context.Context, in *pb.UpsertGuardianPathsRequest, opts ...grpc.CallOption) (*pb.UpsertGuardianPathsResponse, error)
+	UpsertGuardianPathsStream(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[pb.GuardianPathWriteChunk, pb.UpsertGuardianPathsResponse], error)
 	DeleteGuardianPaths(ctx context.Context, in *pb.DeleteGuardianPathsRequest, opts ...grpc.CallOption) (*pb.DeleteGuardianPathsResponse, error)
 	ListGuardianVersions(ctx context.Context, in *pb.ListGuardianVersionsRequest, opts ...grpc.CallOption) (*pb.ListGuardianVersionsResponse, error)
 	GetGuardianVersion(ctx context.Context, in *pb.GetGuardianVersionRequest, opts ...grpc.CallOption) (*pb.GetGuardianVersionResponse, error)
@@ -117,8 +118,8 @@ func NewGRPCClient(ctx context.Context, cfg ClientConfig) (*GRPCClient, error) {
 		cfg.RouterAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(256*1024*1024),
-			grpc.MaxCallSendMsgSize(256*1024*1024),
+			grpc.MaxCallRecvMsgSize(1024*1024*1024),
+			grpc.MaxCallSendMsgSize(1024*1024*1024),
 		),
 	)
 	if err != nil {
@@ -205,22 +206,52 @@ func (c *GRPCClient) stopHeartbeatLoop() {
 }
 
 func (c *GRPCClient) UpsertPaths(ctx context.Context, token string, writes []guardianapi.PathWrite, mutationCtx guardianapi.MutationContext) (guardianapi.BatchRevision, error) {
-	req := &pb.UpsertGuardianPathsRequest{
-		GuardianToken: token,
-		Context:       toProtoMutationContext(mutationCtx),
-		Writes:        make([]*pb.GuardianPathWrite, 0, len(writes)),
+	callCtx, cancel := c.withTimeout(ctx)
+	defer cancel()
+
+	stream, err := c.router.UpsertGuardianPathsStream(callCtx)
+	if err != nil {
+		return guardianapi.BatchRevision{}, mapRPCError(err)
 	}
-	for _, write := range writes {
-		req.Writes = append(req.Writes, &pb.GuardianPathWrite{
+
+	const maxChunkBytes = 8 * 1024 * 1024
+	const maxChunkFiles = 64
+	var chunk []*pb.GuardianPathWrite
+	var chunkBytes int
+	firstChunk := true
+
+	for i, write := range writes {
+		pw := &pb.GuardianPathWrite{
 			LogicalPath:       write.LogicalPath,
 			Content:           write.Content,
 			ExpectedVersionId: write.ExpectedVersionID,
-		})
+		}
+		chunk = append(chunk, pw)
+		chunkBytes += len(write.Content)
+		isLast := i == len(writes)-1
+
+		if chunkBytes >= maxChunkBytes || len(chunk) >= maxChunkFiles || isLast {
+			msg := &pb.GuardianPathWriteChunk{
+				Writes: chunk,
+				IsLast: isLast,
+			}
+			if firstChunk {
+				msg.GuardianToken = token
+				msg.Context = toProtoMutationContext(mutationCtx)
+				firstChunk = false
+			}
+			if err := stream.Send(msg); err != nil {
+				if _, recvErr := stream.CloseAndRecv(); recvErr != nil {
+					return guardianapi.BatchRevision{}, mapRPCError(recvErr)
+				}
+				return guardianapi.BatchRevision{}, mapRPCError(err)
+			}
+			chunk = nil
+			chunkBytes = 0
+		}
 	}
 
-	callCtx, cancel := c.withTimeout(ctx)
-	defer cancel()
-	resp, err := c.router.UpsertGuardianPaths(callCtx, req)
+	resp, err := stream.CloseAndRecv()
 	if err != nil {
 		return guardianapi.BatchRevision{}, mapRPCError(err)
 	}
@@ -688,11 +719,11 @@ func (c *GRPCClient) refreshNodes(ctx context.Context) error {
 		}
 		nodeConn, dialErr := grpc.NewClient(
 			nodeAddr,
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithDefaultCallOptions(
-				grpc.MaxCallRecvMsgSize(256*1024*1024),
-				grpc.MaxCallSendMsgSize(256*1024*1024),
-			),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(1024*1024*1024),
+			grpc.MaxCallSendMsgSize(1024*1024*1024),
+		),
 		)
 		if dialErr != nil {
 			connectErr = fmt.Errorf("connect to monofs node %s: %w", nodeID, dialErr)

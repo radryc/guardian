@@ -45,32 +45,84 @@ func (d *ImageBuildDriver) Diff(ctx context.Context, in registry.AssetInput) (ta
 }
 
 func (d *ImageBuildDriver) Apply(ctx context.Context, in registry.AssetInput) (registry.AssetResult, error) {
+	decoded, err := driverutil.DecodeAsset(in)
+	if err != nil {
+		return registry.AssetResult{}, err
+	}
+	spec, ok := decoded.(*assetdefs.ImageBuildSpec)
+	if !ok {
+		return registry.AssetResult{}, fmt.Errorf("asset %q is not an ImageBuild", in.Asset.Name)
+	}
 	req, cleanup, err := d.buildRequest(ctx, in)
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
 	defer cleanup()
-	result, err := d.backend.BuildAndPublish(ctx, req.ImageBuildRequest)
-	if err != nil {
-		return registry.AssetResult{}, err
-	}
-	logs := make([]taskdomain.LogEntry, 0, len(result.Logs))
-	for _, l := range result.Logs {
-		logs = append(logs, taskdomain.LogEntry{
-			Timestamp: l.Timestamp,
-			Level:     l.Level,
-			Asset:     in.Asset.Name,
-			Message:   l.Message,
-		})
+	if spec.StampOnly {
+		currentRef, err := currentImageRef(ctx, in)
+		if err != nil {
+			return registry.AssetResult{}, err
+		}
+		if currentRef == "" {
+			return registry.AssetResult{}, fmt.Errorf("stampOnly: no current image ref for %s", in.Asset.Name)
+		}
+		if err := d.backend.StampImage(ctx, currentRef, req.ImageRef); err != nil {
+			return registry.AssetResult{}, err
+		}
+	} else if req.LoadReq != nil {
+		result, err := d.backend.LoadAndPush(ctx, *req.LoadReq)
+		if err != nil {
+			return registry.AssetResult{}, err
+		}
+		logs := make([]taskdomain.LogEntry, 0, len(result.Logs))
+		for _, l := range result.Logs {
+			logs = append(logs, taskdomain.LogEntry{
+				Timestamp: l.Timestamp,
+				Level:     l.Level,
+				Asset:     in.Asset.Name,
+				Message:   l.Message,
+			})
+		}
+		return registry.AssetResult{
+			Outputs: map[string]string{
+				"imageRef":   result.ImageRef,
+				"repository": strings.TrimSpace(req.Repository),
+				"registry":   strings.TrimSpace(req.Registry),
+				"tag":        strings.TrimSpace(req.Tag),
+			},
+			Logs: logs,
+		}, nil
+	} else {
+		result, err := d.backend.BuildAndPublish(ctx, req.ImageBuildRequest)
+		if err != nil {
+			return registry.AssetResult{}, err
+		}
+		logs := make([]taskdomain.LogEntry, 0, len(result.Logs))
+		for _, l := range result.Logs {
+			logs = append(logs, taskdomain.LogEntry{
+				Timestamp: l.Timestamp,
+				Level:     l.Level,
+				Asset:     in.Asset.Name,
+				Message:   l.Message,
+			})
+		}
+		return registry.AssetResult{
+			Outputs: map[string]string{
+				"imageRef":   result.ImageRef,
+				"repository": strings.TrimSpace(req.Repository),
+				"registry":   strings.TrimSpace(req.Registry),
+				"tag":        strings.TrimSpace(req.Tag),
+			},
+			Logs: logs,
+		}, nil
 	}
 	return registry.AssetResult{
 		Outputs: map[string]string{
-			"imageRef":   result.ImageRef,
+			"imageRef":   req.ImageRef,
 			"repository": strings.TrimSpace(req.Repository),
 			"registry":   strings.TrimSpace(req.Registry),
 			"tag":        strings.TrimSpace(req.Tag),
 		},
-		Logs: logs,
 	}, nil
 }
 
@@ -80,6 +132,7 @@ func (d *ImageBuildDriver) Destroy(ctx context.Context, in registry.AssetInput) 
 
 type preparedImageBuildRequest struct {
 	ImageBuildRequest
+	LoadReq    *ImageLoadRequest
 	Repository string
 	Registry   string
 	Tag        string
@@ -94,6 +147,46 @@ func (d *ImageBuildDriver) buildRequest(ctx context.Context, in registry.AssetIn
 	if !ok {
 		return preparedImageBuildRequest{}, func() {}, fmt.Errorf("asset %q is not an ImageBuild", in.Asset.Name)
 	}
+	if strings.TrimSpace(spec.ImageTar) != "" {
+		return d.buildTarRequest(ctx, in, spec)
+	}
+	return d.buildSourceRequest(ctx, in, spec)
+}
+
+func (d *ImageBuildDriver) buildTarRequest(ctx context.Context, in registry.AssetInput, spec *assetdefs.ImageBuildSpec) (preparedImageBuildRequest, func(), error) {
+	tarPath, cleanup, err := imagebuildutil.StageTarFile(ctx, in.Store, spec.ImageTar)
+	if err != nil {
+		return preparedImageBuildRequest{}, func() {}, err
+	}
+	tarContent, err := in.Store.ReadFile(ctx, strings.TrimSpace(spec.ImageTar))
+	if err != nil {
+		cleanup()
+		return preparedImageBuildRequest{}, func() {}, fmt.Errorf("read image tar for hash: %w", err)
+	}
+	registryHost := strings.TrimSpace(spec.Registry)
+	if registryHost == "" {
+		registryHost = strings.TrimSpace(d.defaultRegistry)
+	}
+	if registryHost == "" {
+		cleanup()
+		return preparedImageBuildRequest{}, func() {}, fmt.Errorf("image build asset %q requires registry or GUARDIAN_IMAGE_BUILD_REGISTRY", in.Asset.Name)
+	}
+	tag := "sha256-" + desiredImageTarHash(in, spec, tarContent)[:16]
+	imageRef := registryHost + "/" + strings.TrimSpace(spec.Repository) + ":" + tag
+	return preparedImageBuildRequest{
+		ImageBuildRequest: ImageBuildRequest{ImageRef: imageRef},
+		LoadReq: &ImageLoadRequest{
+			TarPath:     tarPath,
+			ImageRef:    imageRef,
+			SourceImage: strings.TrimSpace(spec.SourceImage),
+		},
+		Repository: strings.TrimSpace(spec.Repository),
+		Registry:   registryHost,
+		Tag:        tag,
+	}, cleanup, nil
+}
+
+func (d *ImageBuildDriver) buildSourceRequest(ctx context.Context, in registry.AssetInput, spec *assetdefs.ImageBuildSpec) (preparedImageBuildRequest, func(), error) {
 	workspaceDir, snapshots, cleanup, err := imagebuildutil.StageSourceTree(ctx, in.Store, spec.SourceDir)
 	if err != nil {
 		return preparedImageBuildRequest{}, cleanup, err
@@ -135,9 +228,10 @@ func (d *ImageBuildDriver) buildRequest(ctx context.Context, in registry.AssetIn
 
 func desiredImageBuildHash(in registry.AssetInput, spec *assetdefs.ImageBuildSpec, snapshots []imagebuildutil.SourceFileSnapshot) string {
 	return digest.MustNormalizedHash(struct {
-		Base      string
-		Spec      assetdefs.ImageBuildSpec
-		Snapshots []imagebuildutil.SourceFileSnapshot
+		Base         string
+		Spec         assetdefs.ImageBuildSpec
+		Snapshots    []imagebuildutil.SourceFileSnapshot
+		AssetVersion string
 	}{
 		Base: driverutil.AssetHash(in),
 		Spec: assetdefs.ImageBuildSpec{
@@ -150,8 +244,35 @@ func desiredImageBuildHash(in registry.AssetInput, spec *assetdefs.ImageBuildSpe
 			BuildArgs:  assetdefs.NormalizeBuildArgs(spec.BuildArgs),
 			Insecure:   spec.Insecure,
 		},
-		Snapshots: snapshots,
+		Snapshots:    snapshots,
+		AssetVersion: assetVersionFromInput(in),
 	})
+}
+
+func desiredImageTarHash(in registry.AssetInput, spec *assetdefs.ImageBuildSpec, tarContent []byte) string {
+	return digest.MustNormalizedHash(struct {
+		Base         string
+		Spec         assetdefs.ImageBuildSpec
+		TarContent   string
+		AssetVersion string
+	}{
+		Base: driverutil.AssetHash(in),
+		Spec: assetdefs.ImageBuildSpec{
+			Repository:  strings.TrimSpace(spec.Repository),
+			Registry:    strings.TrimSpace(spec.Registry),
+			ImageTar:    strings.TrimSpace(spec.ImageTar),
+			SourceImage: strings.TrimSpace(spec.SourceImage),
+		},
+		TarContent:   string(tarContent),
+		AssetVersion: assetVersionFromInput(in),
+	})
+}
+
+func assetVersionFromInput(in registry.AssetInput) string {
+	if in.AssetVersions == nil {
+		return ""
+	}
+	return in.AssetVersions[in.Asset.Name]
 }
 
 func currentImageRef(ctx context.Context, in registry.AssetInput) (string, error) {

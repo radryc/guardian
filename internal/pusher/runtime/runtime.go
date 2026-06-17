@@ -424,6 +424,7 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 			IntentName:    t.Intent,
 			Asset:         asset,
 			Assets:        assetIndex,
+			AssetVersions: t.AssetVersions,
 			Target:        t.Target,
 			Store:         r.Store,
 			WorkerID:      r.WorkerID,
