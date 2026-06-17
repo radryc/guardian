@@ -381,6 +381,25 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 			if err := r.dispatcher.WriteIntentState(ctx, current); err != nil {
 				return fail(err)
 			}
+		} else if oldSpecHash != "" && oldSpecHash != compiledIntent.IntentSpecHash {
+			// Spec changed while task in-flight — cancel old task and queue new one.
+			log.Printf("reconciler: partition=%s intent=%s spec changed while task in-flight, re-queuing", partitionName, name)
+			nextOp := taskdomain.OpDiff
+			next, err := common.BuildTask(ctx, r.store, current, nextOp, outputs)
+			if err != nil {
+				return fail(err)
+			}
+			current.Status = common.QueuedStatus(current.Status, nextOp)
+			current.LastTaskID = next.TaskID
+			current.LastError = nil
+			current.Timestamps.LastQueuedAt = next.CreatedAt
+			current.Timestamps.LastDiffAt = next.CreatedAt
+			if err := r.dispatcher.QueueTask(ctx, next); err != nil {
+				return fail(err)
+			}
+			if err := r.dispatcher.WriteIntentState(ctx, current); err != nil {
+				return fail(err)
+			}
 		}
 		existingStates[name] = current
 		outputs[name] = copyStringMap(current.Outputs)

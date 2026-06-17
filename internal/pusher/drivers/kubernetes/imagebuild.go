@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"net"
 	"strings"
 
 	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
@@ -25,7 +27,18 @@ type ImageBuildDriver struct {
 func (d *ImageBuildDriver) Type() string                  { return "ImageBuild" }
 func (d *ImageBuildDriver) Validate(map[string]any) error { return nil }
 func (d *ImageBuildDriver) Check(ctx context.Context, in registry.AssetInput) error {
-	return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	registryHost := strings.TrimSpace(d.defaultRegistry)
+	if registryHost == "" {
+		return fmt.Errorf("image build registry not configured: set GUARDIAN_IMAGE_BUILD_REGISTRY")
+	}
+	host := strings.SplitN(registryHost, ":", 2)[0]
+	if _, err := net.DefaultResolver.LookupHost(ctx, host); err != nil {
+		return fmt.Errorf("image build registry host %q is not resolvable: %w", host, err)
+	}
+	return nil
 }
 
 func (d *ImageBuildDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdomain.DriftReport, error) {
@@ -41,6 +54,7 @@ func (d *ImageBuildDriver) Diff(ctx context.Context, in registry.AssetInput) (ta
 	if currentRef == req.ImageRef {
 		return inSyncDrift(in.Asset.Name, "kubernetes image build is in sync"), nil
 	}
+	log.Printf("[ImageBuild] drift asset=%s currentRef=%q desiredRef=%q", in.Asset.Name, currentRef, req.ImageRef)
 	return changedDrift(in.Asset.Name, "kubernetes image build differs"), nil
 }
 
@@ -58,6 +72,19 @@ func (d *ImageBuildDriver) Apply(ctx context.Context, in registry.AssetInput) (r
 		return registry.AssetResult{}, err
 	}
 	defer cleanup()
+
+	outputs := registry.AssetResult{Outputs: map[string]string{
+		"imageRef":   req.ImageRef,
+		"repository": strings.TrimSpace(req.Repository),
+		"registry":   strings.TrimSpace(req.Registry),
+		"tag":        strings.TrimSpace(req.Tag),
+	}}
+
+	if exists, checkErr := d.backend.ImageExists(ctx, req.ImageRef); checkErr == nil && exists {
+		return outputs, nil
+	}
+	log.Printf("[ImageBuild] image=%s asset=%s not-in-registry: proceeding to build (tag=%s repo=%s)", req.ImageRef, in.Asset.Name, req.Tag, req.Repository)
+
 	if spec.StampOnly {
 		currentRef, err := currentImageRef(ctx, in)
 		if err != nil {
@@ -83,15 +110,8 @@ func (d *ImageBuildDriver) Apply(ctx context.Context, in registry.AssetInput) (r
 				Message:   l.Message,
 			})
 		}
-		return registry.AssetResult{
-			Outputs: map[string]string{
-				"imageRef":   result.ImageRef,
-				"repository": strings.TrimSpace(req.Repository),
-				"registry":   strings.TrimSpace(req.Registry),
-				"tag":        strings.TrimSpace(req.Tag),
-			},
-			Logs: logs,
-		}, nil
+		outputs.Logs = logs
+		return outputs, nil
 	} else {
 		result, err := d.backend.BuildAndPublish(ctx, req.ImageBuildRequest)
 		if err != nil {
@@ -106,24 +126,10 @@ func (d *ImageBuildDriver) Apply(ctx context.Context, in registry.AssetInput) (r
 				Message:   l.Message,
 			})
 		}
-		return registry.AssetResult{
-			Outputs: map[string]string{
-				"imageRef":   result.ImageRef,
-				"repository": strings.TrimSpace(req.Repository),
-				"registry":   strings.TrimSpace(req.Registry),
-				"tag":        strings.TrimSpace(req.Tag),
-			},
-			Logs: logs,
-		}, nil
+		outputs.Logs = logs
+		return outputs, nil
 	}
-	return registry.AssetResult{
-		Outputs: map[string]string{
-			"imageRef":   req.ImageRef,
-			"repository": strings.TrimSpace(req.Repository),
-			"registry":   strings.TrimSpace(req.Registry),
-			"tag":        strings.TrimSpace(req.Tag),
-		},
-	}, nil
+	return outputs, nil
 }
 
 func (d *ImageBuildDriver) Destroy(ctx context.Context, in registry.AssetInput) error {

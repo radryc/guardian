@@ -321,8 +321,10 @@ func lbNodeBootstrap(cfg *Config) string {
 		cfg.Storage.Namespace, cfg.Storage.Namespace)
 	guardianUI := fmt.Sprintf("guardian-ui@http[Guardian UI]:8090=guardian-ui.%s.svc.cluster.local:%s",
 		cfg.Guardian.Namespace, cfg.Guardian.UIPort)
+	registry := fmt.Sprintf("registry@http[Registry]:5000=%s.%s.svc.cluster.local:5000",
+		cfg.Guardian.LocalRegistry.Name, cfg.Guardian.LocalRegistry.Namespace)
 
-	return monofsGrpc + ";" + monofsHTTP + ";" + guardianUI + ";" + strings.Join(entries, ";")
+	return monofsGrpc + ";" + monofsHTTP + ";" + guardianUI + ";" + registry + ";" + strings.Join(entries, ";")
 }
 
 func lbNodePortsYAML(cfg *Config) string {
@@ -518,13 +520,21 @@ func SetEnvInIntent(path string, envName, value string) error {
 	}
 
 	var docs []map[string]interface{}
-	if err := yaml.Unmarshal(data, &docs); err != nil {
-		// Try single document
+	single := false
+	// Try single document first — yaml.v3 will decode a bare mapping into a slice,
+	// so we check for the list indicator instead.
+	trimmed := strings.TrimLeft(string(data), " \t\r\n")
+	if strings.HasPrefix(trimmed, "-") {
+		if err := yaml.Unmarshal(data, &docs); err != nil {
+			return fmt.Errorf("parsing %s: %w", path, err)
+		}
+	} else {
 		var doc map[string]interface{}
-		if err2 := yaml.Unmarshal(data, &doc); err2 != nil {
-			return fmt.Errorf("parsing %s: %w", path, err2)
+		if err := yaml.Unmarshal(data, &doc); err != nil {
+			return fmt.Errorf("parsing %s: %w", path, err)
 		}
 		docs = []map[string]interface{}{doc}
+		single = true
 	}
 
 	changed := false
@@ -541,7 +551,12 @@ func SetEnvInIntent(path string, envName, value string) error {
 		return nil
 	}
 
-	out, err := yaml.Marshal(docs)
+	var out []byte
+	if single {
+		out, err = yaml.Marshal(docs[0])
+	} else {
+		out, err = yaml.Marshal(docs)
+	}
 	if err != nil {
 		return err
 	}
@@ -676,28 +691,18 @@ func KubectlGetSecretData(namespace, secretName, key string) string {
 	return string(decoded)
 }
 
+func ComputeLocalRegistryHostAliases(cfg *Config) string {
+	clusterIP := KubectlGetServiceIP(cfg.Guardian.LocalRegistry.Namespace, cfg.Guardian.LocalRegistry.Name)
+	if clusterIP == "" {
+		return ""
+	}
+	host := strings.SplitN(cfg.Guardian.LocalRegistry.Host, ":", 2)[0]
+	return fmt.Sprintf("      hostAliases:\n        - ip: %q\n          hostnames:\n            - %q\n", clusterIP, host)
+}
+
 // LbEdgeRegisteredPorts queries the lb-edge registry for registered external ports.
 func LbEdgeRegisteredPorts(adminPort int) []int {
 	url := fmt.Sprintf("http://127.0.0.1:%d/services", adminPort)
-	// TODO: implement HTTP call — for now return empty
 	_ = url
 	return nil
-}
-
-// PortForwardPorts returns all port mappings for kubectl port-forward.
-func PortForwardPorts(cfg *Config) []string {
-	ports := []string{
-		fmt.Sprintf("%d:8080", cfg.Guardian.PortForward.HTTP),
-		fmt.Sprintf("%d:9090", cfg.Guardian.PortForward.GRPC),
-		fmt.Sprintf("%d:%s", cfg.Guardian.PortForward.UI, cfg.Guardian.UIPort),
-		fmt.Sprintf("%d:18081", cfg.Guardian.PortForward.Admin),
-	}
-	for _, name := range cfg.Storage.NodeNames {
-		port := nodeExternalPort(cfg, name)
-		ports = append(ports, fmt.Sprintf("%s:%s", port, port))
-	}
-	for _, port := range cfg.Storage.UserServicePorts {
-		ports = append(ports, fmt.Sprintf("%d:%d", port, port))
-	}
-	return ports
 }

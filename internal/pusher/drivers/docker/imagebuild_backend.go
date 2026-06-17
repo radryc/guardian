@@ -3,14 +3,17 @@ package dockerdriver
 import (
 	"context"
 	"fmt"
+	"log"
 	"os/exec"
 	"sort"
+	"strings"
 )
 
 type ImageBuildBackendAPI interface {
 	BuildAndPublish(ctx context.Context, req ImageBuildRequest) (ImageBuildResult, error)
 	LoadAndPush(ctx context.Context, req ImageLoadRequest) (ImageBuildResult, error)
 	StampImage(ctx context.Context, currentRef, newRef string) error
+	ImageExists(ctx context.Context, imageRef string) (bool, error)
 }
 
 type ImageBuildRequest struct {
@@ -77,6 +80,18 @@ func (b *ImageBuildBackend) LoadAndPush(ctx context.Context, req ImageLoadReques
 		return ImageBuildResult{}, fmt.Errorf("docker push %s failed: %w\n%s", req.ImageRef, err, string(output))
 	}
 	return ImageBuildResult{ImageRef: req.ImageRef}, nil
+}
+
+func (b *ImageBuildBackend) ImageExists(ctx context.Context, imageRef string) (bool, error) {
+	if output, err := exec.CommandContext(ctx, "docker", "manifest", "inspect", imageRef).CombinedOutput(); err != nil {
+		if strings.Contains(string(output), "no such manifest") || strings.Contains(string(output), "manifest unknown") || strings.Contains(string(output), "not found") {
+			log.Printf("[ImageBuild] registry-check image=%s notFound (docker)", imageRef)
+			return false, nil
+		}
+		log.Printf("[ImageBuild] registry-check image=%s dockerError: %v output=%s", imageRef, err, strings.TrimSpace(string(output)))
+		return false, nil
+	}
+	return true, nil
 }
 
 func (b *ImageBuildBackend) StampImage(ctx context.Context, currentRef, newRef string) error {

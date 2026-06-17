@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,7 @@ type ImageBuildBackendAPI interface {
 	BuildAndPublish(ctx context.Context, req ImageBuildRequest) (ImageBuildResult, error)
 	LoadAndPush(ctx context.Context, req ImageLoadRequest) (ImageBuildResult, error)
 	StampImage(ctx context.Context, currentRef, newRef string) error
+	ImageExists(ctx context.Context, imageRef string) (bool, error)
 }
 
 type ImageBuildRequest struct {
@@ -129,20 +131,19 @@ func (b *ImageBuildBackend) resolveRegistryClusterIP(ctx context.Context, namesp
 		return "", nil
 	}
 	host := strings.SplitN(registryHost, ":", 2)[0]
-	// Try to find a service in any namespace whose ClusterIP serves this hostname.
-	out, err := exec.CommandContext(ctx, b.kubectl, "get", "svc", "-A",
-		"-o", "jsonpath={range .items[*]}{.metadata.name}{\"\\t\"}{.spec.clusterIP}{\"\\n\"}{end}").CombinedOutput()
+	out, err := exec.CommandContext(ctx, b.kubectl, "get", "svc", "monofs-registry", "-n", "monofs",
+		"-o", "jsonpath={.spec.clusterIP}").CombinedOutput()
 	if err != nil {
-		return "", nil // non-fatal — job will just lack the alias
+		log.Printf("[ImageBuild] registry-resolve host=%s kubectlError: %v", host, err)
+		return "", nil
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) == 2 && strings.Contains(strings.ToLower(parts[0]), "registry") {
-			return parts[1], nil
-		}
+	ip := strings.TrimSpace(string(out))
+	if ip == "" || ip == "<none>" {
+		log.Printf("[ImageBuild] registry-resolve host=%s notFound: monofs-registry has no ClusterIP", host)
+		return "", nil
 	}
-	_ = host
-	return "", nil
+	log.Printf("[ImageBuild] registry-resolve host=%s found service=monofs-registry clusterIP=%s", host, ip)
+	return ip, nil
 }
 
 func (b *ImageBuildBackend) buildJobManifest(jobName, namespace, kanikoImage, registryHost, registryClusterIP string, req ImageBuildRequest) map[string]any {
@@ -434,6 +435,48 @@ func createBuildContextArchive(workspaceDir string) (string, func(), error) {
 		return "", func() {}, fmt.Errorf("finalize image build archive")
 	}
 	return archivePath, cleanup, nil
+}
+
+func (b *ImageBuildBackend) ImageExists(ctx context.Context, imageRef string) (bool, error) {
+	host, repo, tag, ok := parseImageRef(imageRef)
+	if !ok {
+		log.Printf("[ImageBuild] registry-check image=%s parseFailed: could not parse imageRef", imageRef)
+		return false, nil
+	}
+	url := fmt.Sprintf("http://%s/v2/%s/manifests/%s", host, repo, tag)
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+	if err != nil {
+		log.Printf("[ImageBuild] registry-check image=%s requestError url=%s: %v", imageRef, url, err)
+		return false, nil
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("[ImageBuild] registry-check image=%s httpError url=%s: %v", imageRef, url, err)
+		return false, nil
+	}
+	resp.Body.Close()
+	exists := resp.StatusCode == http.StatusOK
+	if !exists {
+		log.Printf("[ImageBuild] registry-check image=%s notFound status=%d url=%s", imageRef, resp.StatusCode, url)
+	}
+	return exists, nil
+}
+
+func parseImageRef(imageRef string) (host, repo, tag string, ok bool) {
+	ref := strings.TrimSpace(imageRef)
+	colonIdx := strings.LastIndex(ref, ":")
+	if colonIdx < 0 {
+		return "", "", "", false
+	}
+	tag = ref[colonIdx+1:]
+	rest := ref[:colonIdx]
+	slashIdx := strings.Index(rest, "/")
+	if slashIdx < 0 {
+		return "", "", "", false
+	}
+	host = rest[:slashIdx]
+	repo = rest[slashIdx+1:]
+	return host, repo, tag, true
 }
 
 func (b *ImageBuildBackend) StampImage(ctx context.Context, currentRef, newRef string) error {
