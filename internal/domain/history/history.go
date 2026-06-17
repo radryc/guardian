@@ -19,6 +19,7 @@ type DeploymentRecord struct {
 	AssetVersions      map[string]string      `json:"assetVersions,omitempty"`
 	TaskIDs            []string               `json:"taskIDs"`
 	ChangedAssets      []string               `json:"changedAssets,omitempty"`
+	SelfHealing        bool                   `json:"selfHealing,omitempty"`
 	Outputs            map[string]string      `json:"outputs"`
 	CreatedAt          time.Time              `json:"createdAt"`
 }

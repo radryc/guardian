@@ -29,6 +29,7 @@ export interface AppState {
     until: string;
   };
   refreshTimer: number | undefined;
+  rolloutsRefreshTimer: number | undefined;
   fastRefreshUntil: number;
   diagnosticDetails: Record<string, string>;
 }
@@ -65,6 +66,7 @@ export function createState(): AppState {
       until: "",
     },
     refreshTimer: undefined,
+    rolloutsRefreshTimer: undefined,
     fastRefreshUntil: 0,
     diagnosticDetails: {},
   };

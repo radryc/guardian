@@ -23,6 +23,7 @@ const REFRESH_BASE_MS = 20_000;
 const REFRESH_FAST_MS = 4_000;
 const REFRESH_HIDDEN_MS = 60_000;
 const FAST_REFRESH_BURST_MS = 60_000;
+const REFRESH_ROLLOUTS_MS = 60_000;
 
 document.addEventListener("DOMContentLoaded", () => {
   hydrateStateFromLocation();
@@ -34,6 +35,9 @@ async function bootstrap(): Promise<void> {
   activatePanel(state.activePanel);
   await refreshOverview();
   scheduleNextOverviewRefresh();
+  if (state.activePanel === "rolloutsPanel" && state.selectedPartition) {
+    scheduleRolloutsRefresh();
+  }
 }
 
 function scheduleNextOverviewRefresh(): void {
@@ -42,7 +46,7 @@ function scheduleNextOverviewRefresh(): void {
   }
   state.refreshTimer = window.setTimeout(async () => {
     try {
-      await refreshOverview(state.activePanel !== "historyPanel");
+      await refreshOverview(state.activePanel !== "historyPanel" && state.activePanel !== "rolloutsPanel");
     } catch {
       // Keep polling after transient fetch errors.
     } finally {
@@ -91,6 +95,29 @@ function armFastRefreshBurst(durationMs = FAST_REFRESH_BURST_MS): void {
   const until = Date.now() + durationMs;
   if (until > state.fastRefreshUntil) {
     state.fastRefreshUntil = until;
+  }
+}
+
+// ── Rollouts refresh ─────────────────────────────────
+function scheduleRolloutsRefresh(): void {
+  if (state.rolloutsRefreshTimer !== undefined) {
+    window.clearTimeout(state.rolloutsRefreshTimer);
+  }
+  state.rolloutsRefreshTimer = window.setTimeout(async () => {
+    try {
+      await ensureRolloutsLoaded(true);
+    } catch {
+      // Keep polling after transient fetch errors.
+    } finally {
+      scheduleRolloutsRefresh();
+    }
+  }, REFRESH_ROLLOUTS_MS);
+}
+
+function clearRolloutsRefresh(): void {
+  if (state.rolloutsRefreshTimer !== undefined) {
+    window.clearTimeout(state.rolloutsRefreshTimer);
+    state.rolloutsRefreshTimer = undefined;
   }
 }
 
@@ -153,6 +180,7 @@ async function selectPartition(name: string, announce = true): Promise<void> {
   }
   if (state.activePanel === "rolloutsPanel") {
     ensureRolloutsLoaded(samePartition).catch(handleError);
+    scheduleRolloutsRefresh();
   }
 }
 
@@ -180,7 +208,11 @@ function activatePanel(panelId: string): void {
     ensureHistoryLoaded().catch(handleError);
   }
   if (panelId === "rolloutsPanel" && state.selectedPartition) {
-    ensureRolloutsLoaded().catch(handleError);
+    ensureRolloutsLoaded(true).catch(handleError);
+    scheduleRolloutsRefresh();
+  }
+  if (panelId !== "rolloutsPanel") {
+    clearRolloutsRefresh();
   }
 }
 
@@ -1697,6 +1729,10 @@ function wireEvents(): void {
   document.getElementById("historyGroupToggle")?.addEventListener("change", renderHistory);
   document.getElementById("historyApply")?.addEventListener("click", () => applyHistoryFilters().catch(handleError));
   document.getElementById("historyReset")?.addEventListener("click", () => resetHistoryFilters().catch(handleError));
+  document.getElementById("refreshRolloutsButton")?.addEventListener("click", () => {
+    ensureRolloutsLoaded(true).catch(handleError);
+    scheduleRolloutsRefresh();
+  });
   ["showContainEdges","showJoinEdges","showAssetEdges","showOutputEdges"].forEach((id) => {
     document.getElementById(id)?.addEventListener("change", renderTopologyPanel);
   });

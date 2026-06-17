@@ -9,6 +9,8 @@ import (
 
 type ImageBuildBackendAPI interface {
 	BuildAndPublish(ctx context.Context, req ImageBuildRequest) (ImageBuildResult, error)
+	LoadAndPush(ctx context.Context, req ImageLoadRequest) (ImageBuildResult, error)
+	StampImage(ctx context.Context, currentRef, newRef string) error
 }
 
 type ImageBuildRequest struct {
@@ -18,6 +20,12 @@ type ImageBuildRequest struct {
 	Target       string
 	Platform     string
 	BuildArgs    map[string]string
+}
+
+type ImageLoadRequest struct {
+	TarPath     string
+	ImageRef    string
+	SourceImage string
 }
 
 type ImageBuildResult struct {
@@ -56,4 +64,27 @@ func (b *ImageBuildBackend) BuildAndPublish(ctx context.Context, req ImageBuildR
 		return ImageBuildResult{}, fmt.Errorf("docker push %s failed: %w\n%s", req.ImageRef, err, string(output))
 	}
 	return ImageBuildResult{ImageRef: req.ImageRef}, nil
+}
+
+func (b *ImageBuildBackend) LoadAndPush(ctx context.Context, req ImageLoadRequest) (ImageBuildResult, error) {
+	if output, err := exec.CommandContext(ctx, "docker", "load", "-i", req.TarPath).CombinedOutput(); err != nil {
+		return ImageBuildResult{}, fmt.Errorf("docker load failed: %w\n%s", err, string(output))
+	}
+	if output, err := exec.CommandContext(ctx, "docker", "tag", req.SourceImage, req.ImageRef).CombinedOutput(); err != nil {
+		return ImageBuildResult{}, fmt.Errorf("docker tag %s -> %s failed: %w\n%s", req.SourceImage, req.ImageRef, err, string(output))
+	}
+	if output, err := exec.CommandContext(ctx, "docker", "push", req.ImageRef).CombinedOutput(); err != nil {
+		return ImageBuildResult{}, fmt.Errorf("docker push %s failed: %w\n%s", req.ImageRef, err, string(output))
+	}
+	return ImageBuildResult{ImageRef: req.ImageRef}, nil
+}
+
+func (b *ImageBuildBackend) StampImage(ctx context.Context, currentRef, newRef string) error {
+	if output, err := exec.CommandContext(ctx, "docker", "tag", currentRef, newRef).CombinedOutput(); err != nil {
+		return fmt.Errorf("docker tag %s -> %s failed: %w\n%s", currentRef, newRef, err, string(output))
+	}
+	if output, err := exec.CommandContext(ctx, "docker", "push", newRef).CombinedOutput(); err != nil {
+		return fmt.Errorf("docker push %s failed: %w\n%s", newRef, err, string(output))
+	}
+	return nil
 }

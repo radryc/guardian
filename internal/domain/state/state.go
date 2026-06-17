@@ -53,16 +53,17 @@ type PartitionRuntime struct {
 }
 
 type IntentState struct {
-	APIVersion         string                                  `json:"apiVersion"`
-	Kind               string                                  `json:"kind"`
-	Partition          string                                  `json:"partition"`
-	Intent             string                                  `json:"intent"`
-	Status             IntentStatus                            `json:"status"`
-	Locked             bool                                    `json:"locked"`
-	IntentVersionID    string                                  `json:"intentVersionID"`
-	IntentSpecHash     string                                  `json:"intentSpecHash"`
-	PartitionRevision  string                                  `json:"partitionRevision"`
-	DeploymentRevision string                                  `json:"deploymentRevision"`
+	APIVersion           string                                  `json:"apiVersion"`
+	Kind                 string                                  `json:"kind"`
+	Partition            string                                  `json:"partition"`
+	Intent               string                                  `json:"intent"`
+	Status               IntentStatus                            `json:"status"`
+	Locked               bool                                    `json:"locked"`
+	IntentVersionID      string                                  `json:"intentVersionID"`
+	IntentSpecHash       string                                  `json:"intentSpecHash"`
+	LastAppliedSpecHash  string                                  `json:"lastAppliedSpecHash,omitempty"`
+	PartitionRevision    string                                  `json:"partitionRevision"`
+	DeploymentRevision   string                                  `json:"deploymentRevision"`
 	TargetPusher       string                                  `json:"targetPusher"`
 	Target             targetdomain.Placement                  `json:"target,omitempty"`
 	Joins              []string                                `json:"joins"`

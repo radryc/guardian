@@ -312,6 +312,7 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 		}
 		current.Locked = compiledIntent.Spec.Spec.Locked
 		current.PartitionMode = partitionSpec.Spec.Reconciliation.Mode
+		oldSpecHash := current.IntentSpecHash
 		current.IntentVersionID = compiledIntent.IntentVersionID
 		current.IntentSpecHash = compiledIntent.IntentSpecHash
 		current.PartitionRevision = compiled.PartitionRevision
@@ -343,6 +344,7 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 			continue
 		}
 		if !activeTask {
+			specHashChanged := oldSpecHash != "" && oldSpecHash != compiledIntent.IntentSpecHash
 			nextOp := taskdomain.OpDiff
 			// Recovery path: if we already know the intent is drifted and no task
 			// is active, resume at CHECK instead of repeatedly running DIFF.
@@ -360,7 +362,7 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 				msg := err.Error()
 				current.LastError = &msg
 			} else {
-				log.Printf("reconciler: partition=%s intent=%s queued %s task=%s pusher=%s", partitionName, name, nextOp, next.TaskID, next.TargetPusher)
+				log.Printf("reconciler: partition=%s intent=%s queued %s task=%s pusher=%s%s", partitionName, name, nextOp, next.TaskID, next.TargetPusher, rolloutLogSuffix(specHashChanged))
 				current.Status = common.QueuedStatus(current.Status, nextOp)
 				current.LastTaskID = next.TaskID
 				current.LastError = nil
@@ -769,6 +771,13 @@ func normalizedDeletionPolicy(value string) string {
 	default:
 		return "orphan"
 	}
+}
+
+func rolloutLogSuffix(specHashChanged bool) string {
+	if specHashChanged {
+		return " rollout"
+	}
+	return ""
 }
 
 func reconcileInstruments() (metricapi.Int64Counter, metricapi.Int64Counter, metricapi.Float64Histogram) {

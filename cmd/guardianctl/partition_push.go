@@ -385,7 +385,7 @@ func pushPartitionBundle(ctx context.Context, store guardianapi.Store, bundle *l
 
 		currentContent, err := store.ReadFile(ctx, logicalPath)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
+			if errors.Is(err, os.ErrNotExist) || isBlobUnavailableError(err) {
 				writes = append(writes, guardianapi.PathWrite{
 					LogicalPath:       logicalPath,
 					Content:           content,
@@ -547,6 +547,15 @@ func printPartitionPushResult(printer *output.Printer, result *partitionPushResu
 	// (e.g. config.yaml endpoint label) will write a file but produce no asset
 	// diff and therefore no reconcile work.
 	printPartitionRolloutDiff(printer, result.Rollouts)
+}
+
+func isBlobUnavailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "blob not found") ||
+		strings.Contains(msg, "failed to read blob via fetcher")
 }
 
 func coalesceString(value, fallback string) string {

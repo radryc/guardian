@@ -327,6 +327,10 @@ func (f *fakeRouterClient) UpsertGuardianPaths(context.Context, *pb.UpsertGuardi
 	return nil, nil
 }
 
+func (f *fakeRouterClient) UpsertGuardianPathsStream(context.Context, ...grpc.CallOption) (grpc.ClientStreamingClient[pb.GuardianPathWriteChunk, pb.UpsertGuardianPathsResponse], error) {
+	return nil, nil
+}
+
 func (f *fakeRouterClient) DeleteGuardianPaths(context.Context, *pb.DeleteGuardianPathsRequest, ...grpc.CallOption) (*pb.DeleteGuardianPathsResponse, error) {
 	return nil, nil
 }

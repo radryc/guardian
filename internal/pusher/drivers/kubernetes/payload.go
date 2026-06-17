@@ -2,6 +2,7 @@ package kubernetesdriver
 
 import (
 	"context"
+	"strings"
 
 	"github.com/rydzu/ainfra/guardian/internal/pusher/driverutil"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
@@ -69,7 +70,7 @@ func applyWorkloadPayload(deployment *Deployment, payload workloadPayload) {
 	if deployment == nil {
 		return
 	}
-	if payload.Image != "" {
+	if payload.Image != "" && !strings.Contains(payload.Image, "${intent.") {
 		deployment.Container.Image = payload.Image
 	}
 	if len(payload.Command) > 0 {

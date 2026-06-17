@@ -19,6 +19,7 @@ type OpenConfig struct {
 	MountPoint           string
 	UseExternalAddresses bool
 	Writable             bool
+	RPCTimeout           time.Duration
 }
 
 func Open(ctx context.Context, cfg OpenConfig) (guardianapi.Store, *GRPCClient, error) {
@@ -36,6 +37,7 @@ func Open(ctx context.Context, cfg OpenConfig) (guardianapi.Store, *GRPCClient, 
 		MountPoint:           cfg.MountPoint,
 		UseExternalAddresses: cfg.UseExternalAddresses,
 		Writable:             cfg.Writable,
+		RPCTimeout:           cfg.RPCTimeout,
 	})
 	if err != nil {
 		return nil, nil, err
