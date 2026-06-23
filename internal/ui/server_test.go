@@ -369,8 +369,8 @@ func TestDeriveAssetPresentationDriftedLockedIncludesObservedCause(t *testing.T)
 	if status != string(statedomain.StatusDriftedLocked) {
 		t.Fatalf("status = %q, want %q", status, statedomain.StatusDriftedLocked)
 	}
-	if displayStatus != "Locked drift" || health != "attention" {
-		t.Fatalf("presentation = (%q, %q), want (Locked drift, attention)", displayStatus, health)
+	if displayStatus != "Locked drift" || health != "drifted-locked" {
+		t.Fatalf("presentation = (%q, %q), want (Locked drift, drifted-locked)", displayStatus, health)
 	}
 	if summary != "Drift exists but push is locked: kubernetes deployment missing" {
 		t.Fatalf("summary = %q", summary)
@@ -388,8 +388,8 @@ func TestDeriveIntentPresentationDriftedLockedIncludesObservedCause(t *testing.T
 	if status != string(statedomain.StatusDriftedLocked) {
 		t.Fatalf("status = %q, want %q", status, statedomain.StatusDriftedLocked)
 	}
-	if displayStatus != "Locked drift" || health != "attention" {
-		t.Fatalf("presentation = (%q, %q), want (Locked drift, attention)", displayStatus, health)
+	if displayStatus != "Locked drift" || health != "drifted-locked" {
+		t.Fatalf("presentation = (%q, %q), want (Locked drift, drifted-locked)", displayStatus, health)
 	}
 	if summary != "Drift detected but the intent is locked: fetcher-a: kubernetes deployment missing" {
 		t.Fatalf("summary = %q", summary)

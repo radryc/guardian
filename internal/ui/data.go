@@ -921,7 +921,7 @@ func buildPartitionHealth(intents []IntentDocument, partitionState *statedomain.
 	intentFailing := 0
 	for _, intent := range intents {
 		switch intent.Health {
-		case "attention":
+		case "attention", "drifted", "drifted-locked":
 			intentAttention++
 		case "failing":
 			intentFailing++
@@ -949,7 +949,7 @@ func buildPartitionHealth(intents []IntentDocument, partitionState *statedomain.
 			switch asset.Health {
 			case "healthy":
 				health.Healthy++
-			case "attention":
+			case "attention", "drifted", "drifted-locked":
 				health.Attention++
 			case "failing":
 				health.Failing++
@@ -1449,14 +1449,14 @@ func deriveIntentPresentation(state *statedomain.IntentState, runtime intentTask
 		return string(state.Status), "Error", "failing", valueOrDefault(observedFailureSummary(state), valueOrDefault(pointerString(state.LastError), "The last task failed"))
 	case statedomain.StatusDrifted:
 		if _, _, observedSummary, ok := observedIntentHealthPresentation(state); ok {
-			return string(state.Status), "Diff found", "attention", combineDriftSummary("Drift detected and waiting for push", observedSummary)
+			return string(state.Status), "Diff found", "drifted", combineDriftSummary("Drift detected and waiting for push", observedSummary)
 		}
-		return string(state.Status), "Diff found", "attention", "Drift detected and waiting for push"
+		return string(state.Status), "Diff found", "drifted", "Drift detected and waiting for push"
 	case statedomain.StatusDriftedLocked:
 		if _, _, observedSummary, ok := observedIntentHealthPresentation(state); ok {
-			return string(state.Status), "Locked drift", "attention", combineDriftSummary("Drift detected but the intent is locked", observedSummary)
+			return string(state.Status), "Locked drift", "drifted-locked", combineDriftSummary("Drift detected but the intent is locked", observedSummary)
 		}
-		return string(state.Status), "Locked drift", "attention", "Drift detected but the intent is locked"
+		return string(state.Status), "Locked drift", "drifted-locked", "Drift detected but the intent is locked"
 	case statedomain.StatusBlocked:
 		return string(state.Status), "Blocked", "attention", "Waiting for joined intents to become healthy"
 	case statedomain.StatusDestroying:
@@ -1594,9 +1594,9 @@ func deriveAssetPresentation(state *statedomain.IntentState, assetName string, r
 	case statedomain.StatusDrifted:
 		if changed {
 			if _, _, observedSummary, ok := observedAssetHealthPresentation(state, assetName); ok {
-				return string(state.Status), "Diff found", "attention", combineDriftSummary("Live state differs from blueprint", observedSummary)
+				return string(state.Status), "Diff found", "drifted", combineDriftSummary("Live state differs from blueprint", observedSummary)
 			}
-			return string(state.Status), "Diff found", "attention", "Live state differs from blueprint"
+			return string(state.Status), "Diff found", "drifted", "Live state differs from blueprint"
 		}
 		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
 			return string(state.Status), displayStatus, health, summary
@@ -1605,9 +1605,9 @@ func deriveAssetPresentation(state *statedomain.IntentState, assetName string, r
 	case statedomain.StatusDriftedLocked:
 		if changed {
 			if _, _, observedSummary, ok := observedAssetHealthPresentation(state, assetName); ok {
-				return string(state.Status), "Locked drift", "attention", combineDriftSummary("Drift exists but push is locked", observedSummary)
+				return string(state.Status), "Locked drift", "drifted-locked", combineDriftSummary("Drift exists but push is locked", observedSummary)
 			}
-			return string(state.Status), "Locked drift", "attention", "Drift exists but push is locked"
+			return string(state.Status), "Locked drift", "drifted-locked", "Drift exists but push is locked"
 		}
 		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
 			return string(state.Status), displayStatus, health, summary
