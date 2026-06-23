@@ -282,6 +282,8 @@ a { color: #00ADE4; text-decoration: none; }
 .status-dot-failing   { background: #EE5F54; }
 .status-dot-pending   { background: #00ADE4; }
 .status-dot-neutral   { background: #566778; }
+.status-dot-drifted   { background: #FCB519; }
+.status-dot-drifted-locked { background: #F5A623; }
 .status-row { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
 
 /* ── App tile (partition card in overview) ─────────── */
@@ -304,6 +306,8 @@ a { color: #00ADE4; text-decoration: none; }
 .app-tile[data-health="attention"]::before { background: #FCB519; }
 .app-tile[data-health="failing"]::before   { background: #EE5F54; }
 .app-tile[data-health="pending"]::before   { background: #00ADE4; }
+.app-tile[data-health="drifted"]::before   { background: #FCB519; }
+.app-tile[data-health="drifted-locked"]::before { background: #F5A623; }
 .app-tile-body { padding: 12px 14px; flex: 1; }
 .app-tile-name { font-size: 13px; font-weight: 700; color: #E5ECF4; margin-bottom: 4px; }
 .app-tile-labels { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 6px; }
@@ -392,6 +396,8 @@ a { color: #00ADE4; text-decoration: none; }
 .asset-chip-failing   { border-left: 3px solid #EE5F54; }
 .asset-chip-pending   { border-left: 3px solid #00ADE4; }
 .asset-chip-neutral   { border-left: 3px solid #566778; }
+.asset-chip-drifted   { border-left: 3px solid #FCB519; }
+.asset-chip-drifted-locked { border-left: 3px solid #F5A623; }
 .asset-chip-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
 .asset-chip-top > div { flex: 1 1 auto; min-width: 0; }
 .asset-chip-title { font-size: 13px; font-weight: 600; color: #E5ECF4; line-height: 1.2; overflow-wrap: anywhere; }
@@ -528,6 +534,8 @@ a { color: #00ADE4; text-decoration: none; }
 .service-card-failing { border-left-color: #EE5F54; }
 .service-card-pending { border-left-color: #00ADE4; }
 .service-card-neutral { border-left-color: #566778; }
+.service-card-drifted { border-left-color: #FCB519; }
+.service-card-drifted-locked { border-left-color: #F5A623; }
 .service-card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 6px; }
 .service-card-header h3 { font-size: 13px; font-weight: 700; color: #E5ECF4; margin-bottom: 2px; }
 .service-card-note { font-size: 12px; color: #9BB0CF; line-height: 1.45; }
@@ -576,6 +584,8 @@ a { color: #00ADE4; text-decoration: none; }
 .attention-asset-card { background: #1C2438; border: 1px solid rgba(255,255,255,0.07); border-radius: var(--radius-lg); padding: 12px 14px; border-left-width: 3px; }
 .attention-asset-card-failing   { border-left-color: #EE5F54; }
 .attention-asset-card-attention { border-left-color: #FCB519; }
+.attention-asset-card-drifted   { border-left-color: #FCB519; }
+.attention-asset-card-drifted-locked { border-left-color: #F5A623; }
 .attention-asset-card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 4px; }
 .attention-asset-card-header h3 { font-size: 13px; font-weight: 700; color: #E5ECF4; margin-bottom: 1px; }
 .attention-asset-card-actions { margin-top: 8px; }
