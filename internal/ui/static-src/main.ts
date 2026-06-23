@@ -506,7 +506,7 @@ function renderAttentionAssets(): void {
 function collectFlaggedAssets(): any[] {
   return (state.detail?.intents ?? [])
     .flatMap((intent: any) => (intent.assets ?? []).map((asset: any) => ({ intent, asset })))
-    .filter(({ asset }: any) => asset?.health === "failing" || asset?.health === "attention")
+    .filter(({ asset }: any) => asset?.health === "failing" || asset?.health === "attention" || asset?.health === "drifted" || asset?.health === "drifted-locked")
     .sort((a: any, b: any) => {
       const sev = attentionSeverityRank(a.asset.health) - attentionSeverityRank(b.asset.health);
       if (sev !== 0) return sev;
@@ -523,8 +523,10 @@ function collectPendingAssets(): any[] {
 
 function attentionSeverityRank(status: string): number {
   if (status === "failing") return 0;
-  if (status === "attention") return 1;
-  return 2;
+  if (status === "drifted-locked") return 1;
+  if (status === "drifted") return 2;
+  if (status === "attention") return 3;
+  return 4;
 }
 
 // ── Render: intent cards ──────────────────────────────
