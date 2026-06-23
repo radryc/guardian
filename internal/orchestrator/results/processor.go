@@ -103,6 +103,11 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 				TaskID:    result.TaskID,
 				Details:   map[string]string{"op": "CHECK", "error": errMsg},
 			})
+			if state.LastAppliedSpecHash != "" && state.IntentSpecHash != state.LastAppliedSpecHash {
+				if err := p.rollbackIntent(ctx, state, result); err != nil {
+					return fail(err)
+				}
+			}
 			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
 			return nil
 		}
@@ -148,6 +153,11 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 				TaskID:    result.TaskID,
 				Details:   map[string]string{"op": "DIFF", "error": errMsg},
 			})
+			if state.LastAppliedSpecHash != "" && state.IntentSpecHash != state.LastAppliedSpecHash {
+				if err := p.rollbackIntent(ctx, state, result); err != nil {
+					return fail(err)
+				}
+			}
 			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
 			return nil
 		}
@@ -231,6 +241,11 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 				TaskID:    result.TaskID,
 				Details:   map[string]string{"op": "APPLY", "error": errMsg},
 			})
+			if state.LastAppliedSpecHash != "" && state.IntentSpecHash != state.LastAppliedSpecHash {
+				if err := p.rollbackIntent(ctx, state, result); err != nil {
+					return fail(err)
+				}
+			}
 			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
 			return nil
 		}
@@ -465,6 +480,55 @@ func (p *Processor) queueDependents(ctx context.Context, partition string) error
 		states[name] = state
 		outputs[name] = copyStringMap(state.Outputs)
 	}
+	return nil
+}
+
+func (p *Processor) rollbackIntent(ctx context.Context, state *statedomain.IntentState, result *taskdomain.TaskResult) error {
+	if state.DeploymentRevision == "" {
+		return fmt.Errorf("cannot rollback %s/%s: no previous deployment revision", state.Partition, state.Intent)
+	}
+	manifestPath := paths.ArchiveManifest(state.Partition, state.Intent, state.DeploymentRevision)
+	manifestContent, err := p.store.ReadFile(ctx, manifestPath)
+	if err != nil {
+		return fmt.Errorf("rollback %s/%s: read archived manifest: %w", state.Partition, state.Intent, err)
+	}
+	correlationID := revisions.NewCorrelationID()
+	_, err = p.store.UpsertFiles(ctx, guardianapi.MutationBatch{
+		Writes: []guardianapi.PathWrite{
+			{LogicalPath: paths.IntentManifest(state.Partition, state.Intent), Content: manifestContent},
+		},
+		Context: guardianapi.MutationContext{
+			PrincipalID:   "guardiand",
+			Reason:        "automatic rollback due to rollout failure",
+			CorrelationID: correlationID,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("rollback %s/%s: write manifest: %w", state.Partition, state.Intent, err)
+	}
+	state.Status = statedomain.StatusReady
+	state.IntentSpecHash = state.LastAppliedSpecHash
+	state.LastError = nil
+	state.Drift = nil
+	state.Health = nil
+	state.ApplyReadiness = nil
+	state.AssetObservations = nil
+	if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+		return err
+	}
+	_ = p.dispatcher.WriteEvent(ctx, &historydomain.EventRecord{
+		Partition:          state.Partition,
+		Intent:             state.Intent,
+		Type:               "rollback.triggered",
+		Message:            fmt.Sprintf("rolled back to deployment %s", state.DeploymentRevision),
+		TaskID:             result.TaskID,
+		DeploymentRevision: state.DeploymentRevision,
+		CorrelationID:      correlationID,
+		Details: map[string]string{
+			"failed_task_id": result.TaskID,
+		},
+	})
+	log.Printf("results: rolled back %s/%s to deployment %s after %s failure", state.Partition, state.Intent, state.DeploymentRevision, result.Op)
 	return nil
 }
 

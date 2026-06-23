@@ -687,3 +687,302 @@ func loadState(t *testing.T, ctx context.Context, store *memory.Store, partition
 	}
 	return s
 }
+
+func TestProcessorRollbackOnDiffFailureDuringRollout(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "guardiand")
+	proc := NewProcessor(store, disp)
+
+	prevManifest := []byte(`apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: svc
+spec:
+  intentType: standard
+  targetPusher: local
+  target:
+    cluster: local
+  assets:
+    - type: Compute
+      name: web
+      properties:
+        image: nginx:v1
+`)
+	deploymentRev := "deploy-prev-v1"
+	seedRawFile(t, ctx, store, paths.ArchiveManifest("demo", "svc", deploymentRev), prevManifest)
+
+	s := baseState("demo", "svc", statedomain.StatusDiffing)
+	s.IntentSpecHash = "hash-new-version"
+	s.LastAppliedSpecHash = "hash-prev-version"
+	s.DeploymentRevision = deploymentRev
+	s.LastTaskID = "t-rollout-diff"
+	seedIntentState(t, ctx, store, s)
+	seedRawFile(t, ctx, store, paths.IntentManifest("demo", "svc"), []byte("broken manifest"))
+
+	errMsg := "diff execution error"
+	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
+		TaskID:     "t-rollout-diff",
+		Op:         taskdomain.OpDiff,
+		Status:     taskdomain.ResultFailed,
+		Partition:  "demo",
+		Intent:     "svc",
+		Pusher:     "local",
+		Error:      &errMsg,
+		FinishedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("ProcessResult: %v", err)
+	}
+
+	got := loadState(t, ctx, store, "demo", "svc")
+	if got.Status != statedomain.StatusReady {
+		t.Fatalf("status = %q, want Ready", got.Status)
+	}
+	if got.IntentSpecHash != "hash-prev-version" {
+		t.Fatalf("IntentSpecHash = %q, want hash-prev-version", got.IntentSpecHash)
+	}
+	if got.LastError != nil {
+		t.Fatalf("LastError = %v, want nil after rollback", got.LastError)
+	}
+
+	rolledBackManifest, err := store.ReadFile(ctx, paths.IntentManifest("demo", "svc"))
+	if err != nil {
+		t.Fatalf("ReadFile(rolled back manifest): %v", err)
+	}
+	if string(rolledBackManifest) != string(prevManifest) {
+		t.Fatalf("manifest was not rolled back:\n%s", rolledBackManifest)
+	}
+
+	// Verify rollback event was written
+	events, err := store.ListDir(ctx, paths.StateEventsDir("demo"))
+	if err != nil {
+		t.Fatalf("ListDir(events): %v", err)
+	}
+	hasRollbackEvent := false
+	for _, event := range events {
+		raw, _ := store.ReadFile(ctx, paths.EventState("demo", strings.TrimSuffix(event.Name, ".json")))
+		var record historydomain.EventRecord
+		json.Unmarshal(raw, &record)
+		if record.Type == "rollback.triggered" {
+			hasRollbackEvent = true
+			break
+		}
+	}
+	if !hasRollbackEvent {
+		t.Fatalf("expected rollback.triggered event")
+	}
+}
+
+func TestProcessorRollbackOnCheckFailureDuringRollout(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "guardiand")
+	proc := NewProcessor(store, disp)
+
+	prevManifest := []byte(`apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: svc
+spec:
+  intentType: standard
+  targetPusher: local
+  target:
+    cluster: local
+  assets:
+    - type: Compute
+      name: web
+      properties:
+        image: nginx:v1
+`)
+	deploymentRev := "deploy-prev-check"
+	seedRawFile(t, ctx, store, paths.ArchiveManifest("demo", "svc", deploymentRev), prevManifest)
+
+	s := baseState("demo", "svc", statedomain.StatusChecking)
+	s.IntentSpecHash = "hash-new-v2"
+	s.LastAppliedSpecHash = "hash-prev-v1"
+	s.DeploymentRevision = deploymentRev
+	s.LastTaskID = "t-rollout-check"
+	seedIntentState(t, ctx, store, s)
+
+	errMsg := "check validation error"
+	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
+		TaskID:     "t-rollout-check",
+		Op:         taskdomain.OpCheck,
+		Status:     taskdomain.ResultFailed,
+		Partition:  "demo",
+		Intent:     "svc",
+		Pusher:     "local",
+		Error:      &errMsg,
+		FinishedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("ProcessResult: %v", err)
+	}
+
+	got := loadState(t, ctx, store, "demo", "svc")
+	if got.Status != statedomain.StatusReady {
+		t.Fatalf("status = %q, want Ready", got.Status)
+	}
+	if got.IntentSpecHash != "hash-prev-v1" {
+		t.Fatalf("IntentSpecHash = %q, want hash-prev-v1", got.IntentSpecHash)
+	}
+
+	rolledBackManifest, err := store.ReadFile(ctx, paths.IntentManifest("demo", "svc"))
+	if err != nil {
+		t.Fatalf("ReadFile(rolled back manifest): %v", err)
+	}
+	if string(rolledBackManifest) != string(prevManifest) {
+		t.Fatalf("manifest was not rolled back:\n%s", rolledBackManifest)
+	}
+}
+
+func TestProcessorRollbackOnApplyFailureDuringRollout(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "guardiand")
+	proc := NewProcessor(store, disp)
+
+	prevManifest := []byte(`apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: svc
+spec:
+  intentType: standard
+  targetPusher: local
+  target:
+    cluster: local
+  assets:
+    - type: Compute
+      name: web
+      properties:
+        image: nginx:v1
+`)
+	deploymentRev := "deploy-prev-apply"
+	seedRawFile(t, ctx, store, paths.ArchiveManifest("demo", "svc", deploymentRev), prevManifest)
+
+	s := baseState("demo", "svc", statedomain.StatusApplying)
+	s.IntentSpecHash = "hash-new-v3"
+	s.LastAppliedSpecHash = "hash-prev-v1"
+	s.DeploymentRevision = deploymentRev
+	s.LastTaskID = "t-rollout-apply"
+	seedIntentState(t, ctx, store, s)
+
+	errMsg := "apply execution error"
+	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
+		TaskID:     "t-rollout-apply",
+		Op:         taskdomain.OpApply,
+		Status:     taskdomain.ResultFailed,
+		Partition:  "demo",
+		Intent:     "svc",
+		Pusher:     "local",
+		Error:      &errMsg,
+		FinishedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("ProcessResult: %v", err)
+	}
+
+	got := loadState(t, ctx, store, "demo", "svc")
+	if got.Status != statedomain.StatusReady {
+		t.Fatalf("status = %q, want Ready", got.Status)
+	}
+	if got.IntentSpecHash != "hash-prev-v1" {
+		t.Fatalf("IntentSpecHash = %q, want hash-prev-v1", got.IntentSpecHash)
+	}
+
+	rolledBackManifest, err := store.ReadFile(ctx, paths.IntentManifest("demo", "svc"))
+	if err != nil {
+		t.Fatalf("ReadFile(rolled back manifest): %v", err)
+	}
+	if string(rolledBackManifest) != string(prevManifest) {
+		t.Fatalf("manifest was not rolled back:\n%s", rolledBackManifest)
+	}
+}
+
+func TestProcessorNoRollbackOnFailedSteadyState(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "guardiand")
+	proc := NewProcessor(store, disp)
+
+	sameHash := "hash-stable-v1"
+	s := baseState("demo", "svc", statedomain.StatusDiffing)
+	s.IntentSpecHash = sameHash
+	s.LastAppliedSpecHash = sameHash
+	s.DeploymentRevision = "deploy-stable-v1"
+	s.LastTaskID = "t-steady-diff"
+	seedIntentState(t, ctx, store, s)
+
+	currentManifest := []byte(`apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: svc
+spec:
+  intentType: standard
+  targetPusher: local
+  assets: [{type: Compute, name: web}]
+`)
+	seedRawFile(t, ctx, store, paths.IntentManifest("demo", "svc"), currentManifest)
+
+	errMsg := "transient diff error"
+	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
+		TaskID:    "t-steady-diff",
+		Op:        taskdomain.OpDiff,
+		Status:    taskdomain.ResultFailed,
+		Partition: "demo",
+		Intent:    "svc",
+		Pusher:    "local",
+		Error:     &errMsg,
+	}); err != nil {
+		t.Fatalf("ProcessResult: %v", err)
+	}
+
+	got := loadState(t, ctx, store, "demo", "svc")
+	// Steady-state failures should NOT rollback; intent stays in failed state
+	if got.Status != statedomain.StatusDiffFailed {
+		t.Fatalf("status = %q, want DiffFailed (steady state, no rollback)", got.Status)
+	}
+	if got.IntentSpecHash != sameHash {
+		t.Fatalf("IntentSpecHash = %q, want unchanged %q", got.IntentSpecHash, sameHash)
+	}
+	if got.LastError == nil || *got.LastError != errMsg {
+		t.Fatalf("LastError = %v, want %q", got.LastError, errMsg)
+	}
+
+	// Manifest should not have been changed
+	storedManifest, _ := store.ReadFile(ctx, paths.IntentManifest("demo", "svc"))
+	if string(storedManifest) != string(currentManifest) {
+		t.Fatalf("manifest was unexpectedly modified during steady-state failure")
+	}
+}
+
+func TestProcessorNoRollbackWithoutPreviousDeployment(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "guardiand")
+	proc := NewProcessor(store, disp)
+
+	s := baseState("demo", "svc", statedomain.StatusDiffing)
+	s.IntentSpecHash = "hash-first-deploy"
+	s.LastAppliedSpecHash = "" // never previously applied
+	s.DeploymentRevision = ""  // no previous deployment
+	s.LastTaskID = "t-first-diff"
+	seedIntentState(t, ctx, store, s)
+
+	errMsg := "diff error on first deploy"
+	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
+		TaskID:    "t-first-diff",
+		Op:        taskdomain.OpDiff,
+		Status:    taskdomain.ResultFailed,
+		Partition: "demo",
+		Intent:    "svc",
+		Pusher:    "local",
+		Error:     &errMsg,
+	}); err != nil {
+		t.Fatalf("ProcessResult: %v", err)
+	}
+
+	got := loadState(t, ctx, store, "demo", "svc")
+	// First deploy with no previous version: should NOT rollback
+	if got.Status != statedomain.StatusDiffFailed {
+		t.Fatalf("status = %q, want DiffFailed (first deploy, no rollback)", got.Status)
+	}
+}

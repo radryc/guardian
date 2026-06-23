@@ -921,7 +921,7 @@ func buildPartitionHealth(intents []IntentDocument, partitionState *statedomain.
 	intentFailing := 0
 	for _, intent := range intents {
 		switch intent.Health {
-		case "attention":
+		case "attention", "drifted", "drifted-locked":
 			intentAttention++
 		case "failing":
 			intentFailing++
@@ -949,7 +949,7 @@ func buildPartitionHealth(intents []IntentDocument, partitionState *statedomain.
 			switch asset.Health {
 			case "healthy":
 				health.Healthy++
-			case "attention":
+			case "attention", "drifted", "drifted-locked":
 				health.Attention++
 			case "failing":
 				health.Failing++
