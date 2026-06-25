@@ -31,6 +31,7 @@ export interface AppState {
   refreshTimer: number | undefined;
   rolloutsRefreshTimer: number | undefined;
   fastRefreshUntil: number;
+  refreshIntervalMs: number;
   diagnosticDetails: Record<string, string>;
 }
 
@@ -68,6 +69,7 @@ export function createState(): AppState {
     refreshTimer: undefined,
     rolloutsRefreshTimer: undefined,
     fastRefreshUntil: 0,
+    refreshIntervalMs: 20_000,
     diagnosticDetails: {},
   };
 }

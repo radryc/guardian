@@ -114,7 +114,7 @@ spec:
 		before = nil
 	}
 
-	if err := processLiveResultFiles(ctx, store, processor, []string{"local"}, "test"); err != nil {
+	if _, err := processLiveResultFiles(ctx, store, processor, []string{"local"}, "test"); err != nil {
 		t.Fatalf("processLiveResultFiles() error = %v", err)
 	}
 
@@ -194,7 +194,7 @@ spec:
 		FinishedAt: finishedAt,
 	})
 
-	if err := processLiveResultFiles(ctx, store, processor, []string{"local"}, "test"); err != nil {
+	if _, err := processLiveResultFiles(ctx, store, processor, []string{"local"}, "test"); err != nil {
 		t.Fatalf("processLiveResultFiles() error = %v", err)
 	}
 
@@ -283,7 +283,7 @@ spec:
 	})
 
 	store.ResetCounts()
-	if err := processLiveResultFiles(ctx, store, processor, []string{"local"}, "test"); err != nil {
+	if _, err := processLiveResultFiles(ctx, store, processor, []string{"local"}, "test"); err != nil {
 		t.Fatalf("processLiveResultFiles() error = %v", err)
 	}
 	if got := store.ListCount(paths.StateIntentsDir("payments")); got != 0 {

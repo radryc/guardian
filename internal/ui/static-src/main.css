@@ -746,3 +746,38 @@ body.diagnostics-open { overflow: hidden; }
 .toast.success { background: #0D1220; border-color: rgba(0,195,105,0.35); color: #00C369; }
 .toast.error   { background: #0D1220; border-color: rgba(238,95,84,0.35);  color: #EE5F54; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ── Refresh popover ────────────────────────────────── */
+.refresh-popover { transition: opacity 0.12s, visibility 0.12s; }
+.refresh-popover.hidden { opacity: 0; visibility: hidden; display: block !important; }
+
+/* ── Refresh slider ─────────────────────────────────── */
+.refresh-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: rgba(255,255,255,0.12);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+.refresh-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #00ADE4;
+  border: 2px solid #0D1220;
+  cursor: pointer;
+  box-shadow: 0 0 4px rgba(0,173,228,0.3);
+}
+.refresh-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #00ADE4;
+  border: 2px solid #0D1220;
+  cursor: pointer;
+  box-shadow: 0 0 4px rgba(0,173,228,0.3);
+}

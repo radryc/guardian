@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -70,9 +71,9 @@ func (b *ImageBuildBackend) BuildAndPublish(ctx context.Context, req ImageBuildR
 	}
 	defer archiveCleanup()
 
-	kanikoImage := os.Getenv("GUARDIAN_KANIKO_IMAGE")
-	if kanikoImage == "" {
-		kanikoImage = "gcr.io/kaniko-project/executor:v1.24.0"
+	bbImage := os.Getenv("GUARDIAN_BUILDKIT_IMAGE")
+	if bbImage == "" {
+		bbImage = "moby/buildkit:latest"
 	}
 	namespace := os.Getenv("GUARDIAN_NAMESPACE")
 	if namespace == "" {
@@ -80,29 +81,38 @@ func (b *ImageBuildBackend) BuildAndPublish(ctx context.Context, req ImageBuildR
 	}
 	registryHost := os.Getenv("GUARDIAN_IMAGE_BUILD_REGISTRY")
 
-	jobName := fmt.Sprintf("guardian-imagebuild-%d", time.Now().UnixNano())
+	jobName := fmt.Sprintf("guardian-buildkit-%d", time.Now().UnixNano())
 
 	registryClusterIP, err := b.resolveRegistryClusterIP(ctx, namespace, registryHost)
 	if err != nil {
-		return ImageBuildResult{}, fmt.Errorf("resolve registry cluster IP: %w", err)
+		log.Printf("[ImageBuild] warning: cannot resolve registry ClusterIP: %v (build may fail if DNS doesn't resolve %s)", err, registryHost)
 	}
 
-	jobManifest := b.buildJobManifest(jobName, namespace, kanikoImage, registryHost, registryClusterIP, req)
+	buildReq := req
+	if registryClusterIP != "" && registryHost != "" {
+		host := strings.SplitN(registryHost, ":", 2)[0]
+		port := ""
+		if colon := strings.LastIndex(registryHost, ":"); colon >= 0 {
+			port = registryHost[colon:]
+		}
+		buildReq.ImageRef = strings.Replace(req.ImageRef, host+port, registryClusterIP+port, 1)
+		log.Printf("[ImageBuild] using registry ClusterIP %s for build (imageRef=%s)", registryClusterIP+port, buildReq.ImageRef)
+	}
+
+	jobManifest := b.buildBuildKitJob(jobName, namespace, bbImage, registryHost, registryClusterIP, buildReq)
 	if err := b.applyManifest(jobManifest); err != nil {
-		return ImageBuildResult{}, fmt.Errorf("create kaniko job %s: %w", jobName, err)
+		return ImageBuildResult{}, fmt.Errorf("create buildkit job %s: %w", jobName, err)
 	}
 	defer b.deleteJob(namespace, jobName)
 
 	if err := b.waitForPodInit(ctx, namespace, jobName); err != nil {
 		rawLogs, _ := b.jobLogs(namespace, jobName)
-		return ImageBuildResult{}, fmt.Errorf("kaniko job init failed %s: %w\n%s", req.ImageRef, err, rawLogs)
+		return ImageBuildResult{}, fmt.Errorf("buildkit job init failed %s: %w\n%s", req.ImageRef, err, rawLogs)
 	}
-	if err := b.copyContextToJob(ctx, namespace, jobName, archivePath); err != nil {
+	if err := b.copyContextToJob(ctx, namespace, jobName, archivePath, "wait-context"); err != nil {
 		return ImageBuildResult{}, fmt.Errorf("copy build context to job %s: %w", jobName, err)
 	}
 
-	// Stream build logs while waiting. Keeps pusher logs useful and collects
-	// build output to return as Guardian task log entries.
 	var buildLogs []BuildLogEntry
 	logCh := make(chan BuildLogEntry, 256)
 	logDone := make(chan struct{})
@@ -118,10 +128,8 @@ func (b *ImageBuildBackend) BuildAndPublish(ctx context.Context, req ImageBuildR
 	<-logDone
 
 	if buildErr != nil {
-		// Collect final logs in case the job is still around.
 		rawLogs, _ := b.jobLogs(namespace, jobName)
-		// Surface them in the error so Guardian UI shows them.
-		return ImageBuildResult{Logs: buildLogs}, fmt.Errorf("kaniko build %s failed: %w\n%s", req.ImageRef, buildErr, rawLogs)
+		return ImageBuildResult{Logs: buildLogs}, fmt.Errorf("buildkit build %s failed: %w\n%s", req.ImageRef, buildErr, rawLogs)
 	}
 	return ImageBuildResult{ImageRef: req.ImageRef, Logs: buildLogs}, nil
 }
@@ -131,37 +139,47 @@ func (b *ImageBuildBackend) resolveRegistryClusterIP(ctx context.Context, namesp
 		return "", nil
 	}
 	host := strings.SplitN(registryHost, ":", 2)[0]
+
+	// Try kubectl first (monofs-registry service).
 	out, err := exec.CommandContext(ctx, b.kubectl, "get", "svc", "monofs-registry", "-n", "monofs",
 		"-o", "jsonpath={.spec.clusterIP}").CombinedOutput()
-	if err != nil {
-		log.Printf("[ImageBuild] registry-resolve host=%s kubectlError: %v", host, err)
-		return "", nil
+	if err == nil {
+		ip := strings.TrimSpace(string(out))
+		if ip != "" && ip != "<none>" {
+			log.Printf("[ImageBuild] registry-resolve host=%s found via kubectl clusterIP=%s", host, ip)
+			return ip, nil
+		}
 	}
-	ip := strings.TrimSpace(string(out))
-	if ip == "" || ip == "<none>" {
-		log.Printf("[ImageBuild] registry-resolve host=%s notFound: monofs-registry has no ClusterIP", host)
-		return "", nil
+	log.Printf("[ImageBuild] registry-resolve host=%s kubectl failed (err=%v), trying DNS fallback", host, err)
+
+	// Fallback: resolve monofs-registry.monofs.svc.cluster.local via DNS.
+	addrs, lookupErr := net.DefaultResolver.LookupHost(ctx, "monofs-registry.monofs.svc.cluster.local")
+	if lookupErr == nil && len(addrs) > 0 {
+		log.Printf("[ImageBuild] registry-resolve host=%s found via DNS clusterIP=%s", host, addrs[0])
+		return addrs[0], nil
 	}
-	log.Printf("[ImageBuild] registry-resolve host=%s found service=monofs-registry clusterIP=%s", host, ip)
-	return ip, nil
+	log.Printf("[ImageBuild] registry-resolve host=%s DNS fallback also failed: %v", host, lookupErr)
+
+	return "", fmt.Errorf("cannot resolve ClusterIP for %s: kubectl=%v dns=%v", host, err, lookupErr)
 }
 
-func (b *ImageBuildBackend) buildJobManifest(jobName, namespace, kanikoImage, registryHost, registryClusterIP string, req ImageBuildRequest) map[string]any {
-	args := []string{
-		"--context", "tar:///context/context.tar.gz",
-		"--dockerfile", req.Dockerfile,
-		"--destination", req.ImageRef,
-		"--cache=false",
-		"--force",
-		"--insecure",
-		"--skip-tls-verify",
-		"--insecure-pull",
+func (b *ImageBuildBackend) buildBuildKitJob(jobName, namespace, buildkitImage, registryHost, registryClusterIP string, req ImageBuildRequest) map[string]any {
+	// Build buildctl args. BuildKit handles caching via its daemon automatically.
+	// Frontend=dockerfile.v0 enables standard Dockerfile processing.
+	// push=true in the output means BuildKit pushes directly to the registry.
+	buildArgs := []string{
+		"--addr", "tcp://buildkitd." + namespace + ":1234",
+		"build",
+		"--frontend", "dockerfile.v0",
+		"--local", "context=/context",
+		"--local", "dockerfile=/context",
+		"--output", "type=image,name=" + req.ImageRef + ",push=true,registry.insecure=true",
 	}
 	if req.Target != "" {
-		args = append(args, "--target", req.Target)
+		buildArgs = append(buildArgs, "--opt", "target="+req.Target)
 	}
 	if req.Platform != "" {
-		args = append(args, "--custom-platform", req.Platform)
+		buildArgs = append(buildArgs, "--opt", "platform="+req.Platform)
 	}
 	keys := make([]string, 0, len(req.BuildArgs))
 	for k := range req.BuildArgs {
@@ -169,8 +187,10 @@ func (b *ImageBuildBackend) buildJobManifest(jobName, namespace, kanikoImage, re
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		args = append(args, "--build-arg", fmt.Sprintf("%s=%s", k, req.BuildArgs[k]))
+		buildArgs = append(buildArgs, "--opt", "build-arg:"+k+"="+req.BuildArgs[k])
 	}
+
+	builderCmd := "cd /context && tar xzf context.tar.gz && rm context.tar.gz && buildctl " + strings.Join(quoteArgs(buildArgs), " ")
 
 	podSpec := map[string]any{
 		"restartPolicy": "Never",
@@ -179,7 +199,7 @@ func (b *ImageBuildBackend) buildJobManifest(jobName, namespace, kanikoImage, re
 		},
 		"initContainers": []map[string]any{
 			{
-				"name":    "loader",
+				"name":    "wait-context",
 				"image":   "busybox:1.36",
 				"command": []string{"sh", "-c", "until [ -f /context/context.tar.gz ]; do sleep 1; done"},
 				"volumeMounts": []map[string]any{
@@ -189,9 +209,10 @@ func (b *ImageBuildBackend) buildJobManifest(jobName, namespace, kanikoImage, re
 		},
 		"containers": []map[string]any{
 			{
-				"name":  "kaniko",
-				"image": kanikoImage,
-				"args":  args,
+				"name":    "builder",
+				"image":   buildkitImage,
+				"command": []string{"sh", "-c"},
+				"args":    []string{builderCmd},
 				"volumeMounts": []map[string]any{
 					{"name": "context", "mountPath": "/context"},
 				},
@@ -199,7 +220,6 @@ func (b *ImageBuildBackend) buildJobManifest(jobName, namespace, kanikoImage, re
 		},
 	}
 
-	// Add hostAliases so the Kaniko Job can resolve the local registry hostname.
 	if registryClusterIP != "" && registryHost != "" {
 		host := strings.SplitN(registryHost, ":", 2)[0]
 		podSpec["hostAliases"] = []map[string]any{
@@ -227,6 +247,14 @@ func (b *ImageBuildBackend) buildJobManifest(jobName, namespace, kanikoImage, re
 			},
 		},
 	}
+}
+
+func quoteArgs(args []string) []string {
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = "'" + strings.ReplaceAll(a, "'", "'\\''") + "'"
+	}
+	return quoted
 }
 
 func (b *ImageBuildBackend) applyManifest(obj map[string]any) error {
@@ -359,7 +387,7 @@ func (b *ImageBuildBackend) waitForPodInit(ctx context.Context, namespace, jobNa
 	}
 }
 
-func (b *ImageBuildBackend) copyContextToJob(ctx context.Context, namespace, jobName, archivePath string) error {
+func (b *ImageBuildBackend) copyContextToJob(ctx context.Context, namespace, jobName, archivePath, containerName string) error {
 	// Get the pod name for the job
 	out, err := exec.CommandContext(ctx, b.kubectl, "-n", namespace, "get", "pod",
 		"-l", fmt.Sprintf("job-name=%s", jobName),
@@ -372,7 +400,7 @@ func (b *ImageBuildBackend) copyContextToJob(ctx context.Context, namespace, job
 		return fmt.Errorf("no pod found for job %s", jobName)
 	}
 	dest := fmt.Sprintf("%s/%s:/context/context.tar.gz", namespace, podName)
-	cpOut, err := exec.CommandContext(ctx, b.kubectl, "cp", archivePath, dest, "-c", "loader").CombinedOutput()
+	cpOut, err := exec.CommandContext(ctx, b.kubectl, "cp", archivePath, dest, "-c", containerName).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("kubectl cp context: %w: %s", err, strings.TrimSpace(string(cpOut)))
 	}
@@ -523,7 +551,7 @@ func (b *ImageBuildBackend) LoadAndPush(ctx context.Context, req ImageLoadReques
 		rawLogs, _ := b.jobLogs(namespace, jobName)
 		return ImageBuildResult{}, fmt.Errorf("skopeo job init failed %s: %w\n%s", req.ImageRef, err, rawLogs)
 	}
-	if err := b.copyContextToJob(ctx, namespace, jobName, archivePath); err != nil {
+	if err := b.copyContextToJob(ctx, namespace, jobName, archivePath, "loader"); err != nil {
 		return ImageBuildResult{}, fmt.Errorf("copy tar to job %s: %w", jobName, err)
 	}
 

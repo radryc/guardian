@@ -891,9 +891,8 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 		reg.Register(b.Group, b.Name, b.Cmd)
 	}
 
-	// Release and image commands
+	// Release command
 	reg.Register("release", "run", releaseCommand(printer))
-	reg.Register("image", "run", imageCommand(printer))
 
 	return reg
 }
