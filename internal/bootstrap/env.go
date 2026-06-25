@@ -141,6 +141,7 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["GUARDIAN_IMAGE_BUILD_REGISTRY"] = cfg.Guardian.ImageBuild.Registry
 	env["GUARDIAN_KANIKO_REGISTRY_MIRROR"] = cfg.Guardian.ImageBuild.KanikoMirror
 	env["GUARDIAN_KANIKO_DOCKER_CONFIG_SECRET"] = cfg.Guardian.ImageBuild.KanikoDockerConfigSecret
+	env["BUILDKITD_IMAGE"] = cfg.Guardian.ImageBuild.BuildKitImage
 	env["LOCAL_REGISTRY_PORT"] = cfg.Guardian.LocalRegistry.Port
 	env["LOCAL_REGISTRY_HOST_ALIASES"] = "" // set during deploy after clusterIP is known
 

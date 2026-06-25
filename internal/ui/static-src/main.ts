@@ -19,11 +19,39 @@ import { renderTopology, renderTopologyLegend } from "./topology";
 
 // ── Bootstrap ────────────────────────────────────────
 const state: AppState = createState();
-const REFRESH_BASE_MS = 20_000;
-const REFRESH_FAST_MS = 4_000;
-const REFRESH_HIDDEN_MS = 60_000;
+
+// Restore persisted refresh interval from localStorage.
+const SAVED_INTERVAL_KEY = "guardian.refreshIntervalMs";
+try {
+  const saved = localStorage.getItem(SAVED_INTERVAL_KEY);
+  if (saved !== null) {
+    const n = Number(saved);
+    if (Number.isFinite(n) && n >= 1_000 && n <= 120_000) {
+      state.refreshIntervalMs = n;
+    }
+  }
+} catch { /* localStorage unavailable */ }
+
+const REFRESH_MIN_MS = 1_000;
+const REFRESH_MAX_MS = 120_000;
+
+function baseRefreshMs(): number {
+  return state.refreshIntervalMs;
+}
+
+function fastRefreshMs(): number {
+  return Math.max(2_000, Math.floor(baseRefreshMs() / 5));
+}
+
+function hiddenRefreshMs(): number {
+  return Math.min(REFRESH_MAX_MS, baseRefreshMs() * 3);
+}
+
+function rolloutsRefreshMs(): number {
+  return Math.min(REFRESH_MAX_MS, baseRefreshMs() * 3);
+}
+
 const FAST_REFRESH_BURST_MS = 60_000;
-const REFRESH_ROLLOUTS_MS = 60_000;
 
 document.addEventListener("DOMContentLoaded", () => {
   hydrateStateFromLocation();
@@ -57,12 +85,12 @@ function scheduleNextOverviewRefresh(): void {
 
 function nextOverviewRefreshDelayMs(): number {
   if (document.hidden) {
-    return REFRESH_HIDDEN_MS;
+    return hiddenRefreshMs();
   }
   if (Date.now() < state.fastRefreshUntil || hasActivePartitionTransitions()) {
-    return REFRESH_FAST_MS;
+    return fastRefreshMs();
   }
-  return REFRESH_BASE_MS;
+  return baseRefreshMs();
 }
 
 function hasActivePartitionTransitions(): boolean {
@@ -111,7 +139,7 @@ function scheduleRolloutsRefresh(): void {
     } finally {
       scheduleRolloutsRefresh();
     }
-  }, REFRESH_ROLLOUTS_MS);
+  }, rolloutsRefreshMs());
 }
 
 function clearRolloutsRefresh(): void {
@@ -1381,7 +1409,7 @@ function renderBadge(status: string | undefined, label?: string, diagnosticTitle
   const normalized = String(status ?? "neutral").toLowerCase();
   const display = label ?? humanize(normalized);
   const detail = resolveDiagnosticDetail(diagnosticKey, normalized, diagnosticDetail);
-  const clickable = (normalized === "failing" || normalized === "attention") && detail.length > 0;
+  const clickable = (normalized === "failing" || normalized === "attention" || normalized === "drifted" || normalized === "drifted-locked") && detail.length > 0;
   if (!clickable) {
     return `<span class="badge badge-${escapeAttr(normalized)}">${escapeHtml(display)}</span>`;
   }
@@ -1394,7 +1422,7 @@ function resolveDiagnosticDetail(cacheKey: string | undefined, status: string, d
   if (!key) {
     return nextDetail;
   }
-  if (status === "failing" || status === "attention") {
+  if (status === "failing" || status === "attention" || status === "drifted" || status === "drifted-locked") {
     if (nextDetail) {
       state.diagnosticDetails[key] = nextDetail;
       return nextDetail;
@@ -1760,6 +1788,58 @@ function wireEvents(): void {
     }
   });
   ensureDiagnosticsModal();
+  wireRefreshSlider();
+}
+
+function wireRefreshSlider(): void {
+  const slider = document.getElementById("refreshSlider") as HTMLInputElement | null;
+  const label = document.getElementById("refreshIntervalLabel");
+  const popover = document.getElementById("refreshPopover");
+  const trigger = document.getElementById("syncIndicator");
+
+  if (!slider || !popover || !trigger) return;
+
+  // Init slider position from state.
+  const secs = Math.round(state.refreshIntervalMs / 1000);
+  slider.value = String(Math.min(REFRESH_MAX_MS / 1000, Math.max(REFRESH_MIN_MS / 1000, secs)));
+  if (label) label.textContent = `${slider.value}s`;
+
+  function togglePopover(): void {
+    const isOpen = !popover!.classList.contains("hidden");
+    if (isOpen) {
+      popover!.classList.add("hidden");
+    } else {
+      popover!.classList.remove("hidden");
+    }
+  }
+
+  trigger.addEventListener("click", (e: Event) => {
+    e.stopPropagation();
+    togglePopover();
+  });
+
+  slider.addEventListener("input", () => {
+    const val = Number(slider.value);
+    if (label) label.textContent = `${val}s`;
+  });
+
+  slider.addEventListener("change", () => {
+    const val = Number(slider.value);
+    if (!Number.isFinite(val) || val < 1) return;
+    state.refreshIntervalMs = val * 1000;
+    try { localStorage.setItem(SAVED_INTERVAL_KEY, String(state.refreshIntervalMs)); } catch { /* ignore */ }
+    // Restart the refresh loop with the new interval.
+    scheduleNextOverviewRefresh();
+  });
+
+  // Close popover on outside click.
+  document.addEventListener("click", (e: Event) => {
+    if (popover.classList.contains("hidden")) return;
+    const target = e.target as HTMLElement;
+    if (!popover.contains(target) && target !== trigger) {
+      popover.classList.add("hidden");
+    }
+  });
 }
 
 async function reconcileSelected(): Promise<void> {

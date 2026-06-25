@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestRegisterUsesRouterSuccessResponse(t *testing.T) {
@@ -357,12 +358,12 @@ func (f *fakeRouterClient) SubscribeGuardianChanges(_ context.Context, req *pb.S
 }
 
 func (f *fakeRouterClient) RegisterClient(_ context.Context, req *pb.RegisterClientRequest, _ ...grpc.CallOption) (*pb.RegisterClientResponse, error) {
-	cloned := *req
+	cloned := proto.Clone(req).(*pb.RegisterClientRequest)
 	if req.GuardianConfig != nil {
-		cfg := *req.GuardianConfig
-		cloned.GuardianConfig = &cfg
+		cfg := proto.Clone(req.GuardianConfig).(*pb.GuardianConfig)
+		cloned.GuardianConfig = cfg
 	}
-	f.registerReqs = append(f.registerReqs, &cloned)
+	f.registerReqs = append(f.registerReqs, cloned)
 	if f.registerResp != nil || f.registerErr != nil {
 		return f.registerResp, f.registerErr
 	}
@@ -382,8 +383,8 @@ func (f *fakeRouterClient) GetClusterInfo(context.Context, *pb.ClusterInfoReques
 }
 
 func (f *fakeRouterClient) ClientHeartbeat(_ context.Context, req *pb.ClientHeartbeatRequest, _ ...grpc.CallOption) (*pb.ClientHeartbeatResponse, error) {
-	cloned := *req
-	f.heartbeatReqs = append(f.heartbeatReqs, &cloned)
+	cloned := proto.Clone(req).(*pb.ClientHeartbeatRequest)
+	f.heartbeatReqs = append(f.heartbeatReqs, cloned)
 	if f.heartbeatResp != nil || f.heartbeatErr != nil {
 		return f.heartbeatResp, f.heartbeatErr
 	}

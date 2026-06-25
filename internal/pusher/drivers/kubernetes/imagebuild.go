@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"strings"
 
 	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
@@ -30,13 +29,8 @@ func (d *ImageBuildDriver) Check(ctx context.Context, in registry.AssetInput) er
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	registryHost := strings.TrimSpace(d.defaultRegistry)
-	if registryHost == "" {
+	if strings.TrimSpace(d.defaultRegistry) == "" {
 		return fmt.Errorf("image build registry not configured: set GUARDIAN_IMAGE_BUILD_REGISTRY")
-	}
-	host := strings.SplitN(registryHost, ":", 2)[0]
-	if _, err := net.DefaultResolver.LookupHost(ctx, host); err != nil {
-		return fmt.Errorf("image build registry host %q is not resolvable: %w", host, err)
 	}
 	return nil
 }
@@ -81,6 +75,7 @@ func (d *ImageBuildDriver) Apply(ctx context.Context, in registry.AssetInput) (r
 	}}
 
 	if exists, checkErr := d.backend.ImageExists(ctx, req.ImageRef); checkErr == nil && exists {
+		outputs.Outputs["source"] = "registry"
 		return outputs, nil
 	}
 	log.Printf("[ImageBuild] image=%s asset=%s not-in-registry: proceeding to build (tag=%s repo=%s)", req.ImageRef, in.Asset.Name, req.Tag, req.Repository)
@@ -96,6 +91,7 @@ func (d *ImageBuildDriver) Apply(ctx context.Context, in registry.AssetInput) (r
 		if err := d.backend.StampImage(ctx, currentRef, req.ImageRef); err != nil {
 			return registry.AssetResult{}, err
 		}
+		outputs.Outputs["source"] = "stamp"
 	} else if req.LoadReq != nil {
 		result, err := d.backend.LoadAndPush(ctx, *req.LoadReq)
 		if err != nil {
@@ -111,7 +107,7 @@ func (d *ImageBuildDriver) Apply(ctx context.Context, in registry.AssetInput) (r
 			})
 		}
 		outputs.Logs = logs
-		return outputs, nil
+		outputs.Outputs["source"] = "tar"
 	} else {
 		result, err := d.backend.BuildAndPublish(ctx, req.ImageBuildRequest)
 		if err != nil {
@@ -127,7 +123,7 @@ func (d *ImageBuildDriver) Apply(ctx context.Context, in registry.AssetInput) (r
 			})
 		}
 		outputs.Logs = logs
-		return outputs, nil
+		outputs.Outputs["source"] = "build"
 	}
 	return outputs, nil
 }
