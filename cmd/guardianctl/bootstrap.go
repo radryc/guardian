@@ -131,6 +131,13 @@ func devDeployCommand() *command.Command {
 				}
 			}
 
+			// Patch CoreDNS so registry.strata.local resolves cluster-wide.
+			if !*skipStorage {
+				if err := bootstrap.PatchCoreDNSForRegistry(ctx, *dryRun); err != nil {
+					fmt.Fprintf(os.Stderr, "  WARNING: CoreDNS patch failed: %v\n", err)
+				}
+			}
+
 			return nil
 		},
 	}
@@ -217,6 +224,11 @@ func devInitCommand() *command.Command {
 					cfg.Guardian.LocalRegistry.Namespace, cfg.Guardian.LocalRegistry.Name, *dryRun); err != nil {
 					fmt.Fprintf(os.Stderr, "  WARNING: containerd registry config failed: %v\n", err)
 				}
+			}
+
+			// Patch CoreDNS so registry.strata.local resolves cluster-wide.
+			if err := bootstrap.PatchCoreDNSForRegistry(ctx, *dryRun); err != nil {
+				fmt.Fprintf(os.Stderr, "  WARNING: CoreDNS patch failed: %v\n", err)
 			}
 
 			fmt.Println("=== deploying guardian ===")
@@ -695,6 +707,8 @@ func deployGuardianTemplates(ctx context.Context, cfg *bootstrap.Config, env boo
 	bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "svc-guardian-ui.yaml"), env, nil, dryRun)
 	bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "deploy-guardiand.yaml"), env, nil, dryRun)
 	bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "deploy-pusher-k8s.yaml"), env, nil, dryRun)
+	bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "deploy-buildkitd.yaml"), env, nil, dryRun)
+	bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "svc-buildkitd.yaml"), env, nil, dryRun)
 
 	if cfg.Guardian.Pushers.AWS.Enabled {
 		bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "deploy-pusher-aws.yaml"), env, nil, dryRun)

@@ -872,7 +872,7 @@ func buildIntentDocument(manifest intentdomain.Intent, versionID string, state *
 
 func buildAssetDocument(intentName string, spec assetdomain.Spec, intentHints []assetdomain.Hint, state *statedomain.IntentState, runtime intentTaskRuntime, latest *DeploymentView) AssetDocument {
 	status, displayStatus, health, summary := deriveAssetPresentation(state, spec.Name, runtime)
-	assetSummary, facts, service, ports, replicas := assetFacts(spec)
+	assetSummary, facts, service, ports, replicas := assetFacts(spec, assetOutputs(state, spec.Name))
 	if summary == "" {
 		summary = assetSummary
 	}
@@ -1449,14 +1449,14 @@ func deriveIntentPresentation(state *statedomain.IntentState, runtime intentTask
 		return string(state.Status), "Error", "failing", valueOrDefault(observedFailureSummary(state), valueOrDefault(pointerString(state.LastError), "The last task failed"))
 	case statedomain.StatusDrifted:
 		if _, _, observedSummary, ok := observedIntentHealthPresentation(state); ok {
-			return string(state.Status), "Diff found", "attention", combineDriftSummary("Drift detected and waiting for push", observedSummary)
+			return string(state.Status), "Diff found", "drifted", combineDriftSummary("Drift detected and waiting for push", observedSummary)
 		}
-		return string(state.Status), "Diff found", "attention", "Drift detected and waiting for push"
+		return string(state.Status), "Diff found", "drifted", "Drift detected and waiting for push"
 	case statedomain.StatusDriftedLocked:
 		if _, _, observedSummary, ok := observedIntentHealthPresentation(state); ok {
-			return string(state.Status), "Locked drift", "attention", combineDriftSummary("Drift detected but the intent is locked", observedSummary)
+			return string(state.Status), "Locked drift", "drifted-locked", combineDriftSummary("Drift detected but the intent is locked", observedSummary)
 		}
-		return string(state.Status), "Locked drift", "attention", "Drift detected but the intent is locked"
+		return string(state.Status), "Locked drift", "drifted-locked", "Drift detected but the intent is locked"
 	case statedomain.StatusBlocked:
 		return string(state.Status), "Blocked", "attention", "Waiting for joined intents to become healthy"
 	case statedomain.StatusDestroying:
@@ -1594,9 +1594,9 @@ func deriveAssetPresentation(state *statedomain.IntentState, assetName string, r
 	case statedomain.StatusDrifted:
 		if changed {
 			if _, _, observedSummary, ok := observedAssetHealthPresentation(state, assetName); ok {
-				return string(state.Status), "Diff found", "attention", combineDriftSummary("Live state differs from blueprint", observedSummary)
+				return string(state.Status), "Diff found", "drifted", combineDriftSummary("Live state differs from blueprint", observedSummary)
 			}
-			return string(state.Status), "Diff found", "attention", "Live state differs from blueprint"
+			return string(state.Status), "Diff found", "drifted", "Live state differs from blueprint"
 		}
 		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
 			return string(state.Status), displayStatus, health, summary
@@ -1605,9 +1605,9 @@ func deriveAssetPresentation(state *statedomain.IntentState, assetName string, r
 	case statedomain.StatusDriftedLocked:
 		if changed {
 			if _, _, observedSummary, ok := observedAssetHealthPresentation(state, assetName); ok {
-				return string(state.Status), "Locked drift", "attention", combineDriftSummary("Drift exists but push is locked", observedSummary)
+				return string(state.Status), "Locked drift", "drifted-locked", combineDriftSummary("Drift exists but push is locked", observedSummary)
 			}
-			return string(state.Status), "Locked drift", "attention", "Drift exists but push is locked"
+			return string(state.Status), "Locked drift", "drifted-locked", "Drift exists but push is locked"
 		}
 		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
 			return string(state.Status), displayStatus, health, summary
@@ -1639,7 +1639,7 @@ func combineDriftSummary(base, observed string) string {
 	return base + ": " + observed
 }
 
-func assetFacts(spec assetdomain.Spec) (string, []Fact, bool, []string, int) {
+func assetFacts(spec assetdomain.Spec, outputs map[string]string) (string, []Fact, bool, []string, int) {
 	typed, _, err := assetdefs.Decode(spec)
 	if err != nil {
 		return strings.ToLower(spec.Type) + " asset", nil, false, nil, 0
@@ -1794,6 +1794,24 @@ func assetFacts(spec assetdomain.Spec) (string, []Fact, bool, []string, int) {
 		}
 		facts = appendOutputsFact(facts, []string{"id", "endpoint"})
 		return "Observability service", facts, true, nil, 1
+	case *assetdefs.ImageBuildSpec:
+		facts := []Fact{
+			{Label: "Repository", Value: value.Repository},
+		}
+		if value.Registry != "" {
+			facts = append(facts, Fact{Label: "Registry", Value: value.Registry})
+		}
+		if value.SourceDir != "" {
+			facts = append(facts, Fact{Label: "Source", Value: "build"})
+		} else if value.ImageTar != "" {
+			facts = append(facts, Fact{Label: "Source", Value: "tar"})
+		}
+		// Show resolved build source from outputs (registry / tar / build)
+		if src := strings.TrimSpace(outputs["source"]); src != "" {
+			facts = append(facts, Fact{Label: "Status", Value: imageBuildSourceLabel(src)})
+		}
+		facts = appendOutputsFact(facts, []string{"imageRef", "source"})
+		return "Container image", facts, true, nil, 1
 	default:
 		return strings.ToLower(spec.Type) + " asset", nil, false, nil, 0
 	}
@@ -1842,6 +1860,21 @@ func describeConfigFiles(files map[string]string) string {
 		return strings.Join(keys, ", ")
 	}
 	return strings.Join(keys[:3], ", ") + fmt.Sprintf(" +%d", len(keys)-3)
+}
+
+func imageBuildSourceLabel(source string) string {
+	switch source {
+	case "registry":
+		return "cached"
+	case "tar":
+		return "loading tar"
+	case "build":
+		return "building"
+	case "stamp":
+		return "stamping"
+	default:
+		return source
+	}
 }
 
 func appendOutputsFact(facts []Fact, keys []string) []Fact {

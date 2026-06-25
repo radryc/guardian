@@ -21,7 +21,19 @@
       <span id="topnavPartition" class="text-[#E5ECF4] font-semibold">Control Center</span>
     </div>
     <div class="flex-1"></div>
-    <span id="syncIndicator" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold text-[#9BB0CF] bg-[#151B2B] border border-white/[0.09]">Loading…</span>
+    <span id="syncIndicator" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold text-[#9BB0CF] bg-[#151B2B] border border-white/[0.09] cursor-pointer select-none" title="Click to change refresh rate">Loading…</span>
+    <!-- Refresh rate popover -->
+    <div id="refreshPopover" class="refresh-popover hidden absolute top-full right-4 mt-1.5 w-52 rounded-lg border border-white/[0.09] bg-[#151B2B] shadow-lg p-3 z-50">
+      <div class="flex items-center justify-between mb-1.5">
+        <span class="text-[11px] font-semibold text-[#9BB0CF]">Auto-refresh</span>
+        <span id="refreshIntervalLabel" class="text-[11px] font-bold text-[#E5ECF4] tabular-nums">20s</span>
+      </div>
+      <input type="range" id="refreshSlider" class="refresh-slider w-full" min="1" max="120" value="20" step="1" />
+      <div class="flex justify-between text-[9px] text-[#566778] mt-0.5">
+        <span>1s</span>
+        <span>120s</span>
+      </div>
+    </div>
   </nav>
 
   <div class="app-shell flex min-h-screen pt-12">
