@@ -134,9 +134,10 @@ type GuardianPusherAWS struct {
 }
 
 type GuardianImageBuild struct {
-	Registry             string `yaml:"registry"`
-	KanikoMirror         string `yaml:"kanikoMirror"`
+	Registry                 string `yaml:"registry"`
+	KanikoMirror             string `yaml:"kanikoMirror"`
 	KanikoDockerConfigSecret string `yaml:"kanikoDockerConfigSecret"`
+	BuildKitImage            string `yaml:"buildKitImage"`
 }
 
 type GuardianLocalRegistry struct {
@@ -241,11 +242,12 @@ func DefaultConfig() Config {
 					AssumeRoleName: "GuardianCdkDeployRole",
 				},
 			},
-			ImageBuild: GuardianImageBuild{
-				Registry:                 "registry.strata.local:5000",
-				KanikoMirror:             "registry.strata.local:5000",
-				KanikoDockerConfigSecret: "",
-			},
+		ImageBuild: GuardianImageBuild{
+			Registry:                 "registry.strata.local:5000",
+			KanikoMirror:             "registry.strata.local:5000",
+			KanikoDockerConfigSecret: "",
+			BuildKitImage:            "moby/buildkit:latest",
+		},
 			LocalRegistry: GuardianLocalRegistry{
 				Name:      "monofs-registry",
 				Namespace: "monofs",
@@ -419,6 +421,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("GUARDIAN_KANIKO_REGISTRY_MIRROR"); v != "" {
 		cfg.Guardian.ImageBuild.KanikoMirror = v
+	}
+	if v := os.Getenv("BUILDKITD_IMAGE"); v != "" {
+		cfg.Guardian.ImageBuild.BuildKitImage = v
 	}
 	if v := os.Getenv("LOCAL_REGISTRY_HOST"); v != "" {
 		cfg.Guardian.LocalRegistry.Host = v

@@ -332,3 +332,45 @@ func PatchServiceFinalizers(ctx context.Context, namespace string, dryRun bool) 
 	}
 	return nil
 }
+
+// PatchCoreDNSForRegistry adds a rewrite rule to CoreDNS so that
+// registry.strata.local resolves cluster-wide to monofs-registry.
+func PatchCoreDNSForRegistry(ctx context.Context, dryRun bool) error {
+	rule := "rewrite stop name exact registry.strata.local monofs-registry.monofs.svc.cluster.local"
+	fmt.Fprintf(os.Stderr, "=== patching CoreDNS for registry.strata.local ===\n")
+
+	corefile, err := RunCapture(ctx, "kubectl", "-n", "kube-system", "get", "cm", "coredns",
+		"-o", "jsonpath={.data.Corefile}")
+	if err != nil {
+		return fmt.Errorf("get CoreDNS config: %w", err)
+	}
+	if strings.Contains(corefile, "registry.strata.local") {
+		fmt.Fprintf(os.Stderr, "  CoreDNS rewrite for registry.strata.local already present\n")
+		return nil
+	}
+	if dryRun {
+		fmt.Fprintf(os.Stderr, "+ patch CoreDNS with: %s\n", rule)
+		return nil
+	}
+
+	corefile = strings.Replace(corefile, "ready\n        kubernetes",
+		"ready\n        "+rule+"\n        kubernetes", 1)
+	if !strings.Contains(corefile, rule) {
+		return fmt.Errorf("failed to insert rewrite rule into Corefile")
+	}
+
+	patch := fmt.Sprintf(`{"data":{"Corefile":%s}}`, toJSONString(corefile))
+	if err := Run(ctx, false, "kubectl", "-n", "kube-system", "patch", "cm", "coredns",
+		"--type=merge", "-p", patch); err != nil {
+		return fmt.Errorf("patch CoreDNS ConfigMap: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "  CoreDNS rewrite added: registry.strata.local -> monofs-registry.monofs.svc.cluster.local\n")
+	return nil
+}
+
+func toJSONString(s string) string {
+	escaped := strings.ReplaceAll(s, "\\", "\\\\")
+	escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
+	escaped = strings.ReplaceAll(escaped, "\n", "\\n")
+	return "\"" + escaped + "\""
+}

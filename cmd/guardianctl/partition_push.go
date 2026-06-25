@@ -257,7 +257,20 @@ func normalizePartitionManifest(raw []byte, sourcePath string) (*partitiondomain
 func normalizeIntentManifest(raw []byte, sourcePath string, knownIntents []string) (*intentdomain.Intent, []byte, error) {
 	var intent intentdomain.Intent
 	if err := yaml.Unmarshal(raw, &intent); err != nil {
-		return nil, nil, annotateYAMLManifestError("intent", sourcePath, raw, err)
+		if !strings.Contains(err.Error(), "!!seq") {
+			return nil, nil, annotateYAMLManifestError("intent", sourcePath, raw, err)
+		}
+		var docs []intentdomain.Intent
+		if listErr := yaml.Unmarshal(raw, &docs); listErr != nil {
+			return nil, nil, annotateYAMLManifestError("intent", sourcePath, raw, err)
+		}
+		if len(docs) == 0 {
+			return nil, nil, fmt.Errorf("intent file %s is an empty YAML list", sourcePath)
+		}
+		if len(docs) > 1 {
+			return nil, nil, fmt.Errorf("intent file %s contains %d YAML documents; split into separate files", sourcePath, len(docs))
+		}
+		intent = docs[0]
 	}
 	intent.APIVersion = coalesceString(intent.APIVersion, "guardian/v1alpha1")
 	intent.Kind = coalesceString(intent.Kind, "Intent")

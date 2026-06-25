@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"sort"
 	"strings"
@@ -52,6 +53,7 @@ type ClientConfig struct {
 
 type GRPCClient struct {
 	routerAddr           string
+	routerHost           string
 	clientID             string
 	token                string
 	principalID          string
@@ -126,8 +128,14 @@ func NewGRPCClient(ctx context.Context, cfg ClientConfig) (*GRPCClient, error) {
 		return nil, fmt.Errorf("connect to monofs router: %w", err)
 	}
 
+	routerHost, _, err := net.SplitHostPort(cfg.RouterAddr)
+	if err != nil {
+		return nil, fmt.Errorf("parse monofs router address %q: %w", cfg.RouterAddr, err)
+	}
+
 	client := &GRPCClient{
 		routerAddr:           cfg.RouterAddr,
+		routerHost:           routerHost,
 		clientID:             cfg.ClientID,
 		token:                cfg.Token,
 		principalID:          cfg.PrincipalID,
@@ -366,7 +374,7 @@ func (c *GRPCClient) ReadFile(ctx context.Context, mountPath string) ([]byte, er
 	if lastErr == nil || status.Code(lastErr) == codes.NotFound {
 		return nil, os.ErrNotExist
 	}
-	return nil, lastErr
+	return nil, wrapDNSHint(lastErr)
 }
 
 func (c *GRPCClient) ListDir(ctx context.Context, mountPath string) ([]guardianapi.DirEntry, error) {
@@ -429,7 +437,7 @@ func (c *GRPCClient) ListDir(ctx context.Context, mountPath string) ([]guardiana
 		if lastErr == nil || status.Code(lastErr) == codes.NotFound {
 			return nil, nil
 		}
-		return nil, lastErr
+		return nil, wrapDNSHint(lastErr)
 	}
 
 	out := make([]guardianapi.DirEntry, 0, len(entries))
@@ -660,6 +668,24 @@ func (c *GRPCClient) snapshotNodeTargets() []nodeTarget {
 	return out
 }
 
+func (c *GRPCClient) rewriteNodeAddr(addr string) string {
+	if !c.useExternalAddresses {
+		return addr
+	}
+	ip := net.ParseIP(c.routerHost)
+	if ip == nil || !ip.IsLoopback() {
+		return addr
+	}
+	nodeHost, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if nodeHost == c.routerHost {
+		return addr
+	}
+	return net.JoinHostPort(c.routerHost, port)
+}
+
 func (c *GRPCClient) refreshNodes(ctx context.Context) error {
 	callCtx, cancel := c.withTimeout(ctx)
 	defer cancel()
@@ -669,7 +695,7 @@ func (c *GRPCClient) refreshNodes(ctx context.Context) error {
 		UseExternalAddresses: c.useExternalAddresses,
 	})
 	if err != nil {
-		return fmt.Errorf("fetch monofs cluster info: %w", err)
+		return fmt.Errorf("fetch monofs cluster info: %w", wrapDNSHint(err))
 	}
 
 	healthy := make([]*pb.NodeInfo, 0, len(resp.GetNodes()))
@@ -703,7 +729,7 @@ func (c *GRPCClient) refreshNodes(ctx context.Context) error {
 	var connectErr error
 	for _, node := range healthy {
 		nodeID := node.GetNodeId()
-		nodeAddr := node.GetAddress()
+		nodeAddr := c.rewriteNodeAddr(node.GetAddress())
 		seen[nodeID] = struct{}{}
 
 		conn := c.nodeConns[nodeID]
@@ -850,12 +876,37 @@ func mapRPCError(err error) error {
 	if err == nil {
 		return nil
 	}
-	switch status.Code(err) {
+	code := status.Code(err)
+	switch code {
 	case codes.AlreadyExists, codes.FailedPrecondition:
 		return guardianapi.ErrConflict
 	case codes.NotFound:
 		return os.ErrNotExist
+	case codes.Unavailable:
+		return wrapDNSHint(err)
 	default:
 		return err
 	}
+}
+
+func wrapDNSHint(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "name resolver") || strings.Contains(msg, "produced zero addresses") || strings.Contains(msg, "DNS resolution") {
+		return fmt.Errorf("%w\n\n  DNS resolution failed for a MonoFS node.\n"+
+			"  The node addresses returned by the router are K8s-internal names\n"+
+			"  (e.g. node-a-external.monofs.svc.cluster.local) that cannot be resolved\n"+
+			"  from outside the cluster.\n\n"+
+			"  Fixes:\n"+
+			"    - Pass an IP address as --monofs-router (node ports will use the same host)\n"+
+			"    - Add entries to /etc/hosts for the K8s service names\n"+
+			"    - Run guardianctl from inside the cluster", err)
+	}
+	if strings.Contains(msg, "connection refused") || strings.Contains(msg, "\"TRANSIENT_FAILURE\"") {
+		return fmt.Errorf("%w\n\n  Connection to a MonoFS node was refused.\n"+
+			"  Verify the node's gRPC port is reachable from this host.", err)
+	}
+	return err
 }
