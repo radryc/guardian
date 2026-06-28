@@ -149,10 +149,47 @@ func (d *ImageBuildDriver) buildRequest(ctx context.Context, in registry.AssetIn
 	if !ok {
 		return preparedImageBuildRequest{}, func() {}, fmt.Errorf("asset %q is not an ImageBuild", in.Asset.Name)
 	}
+
+	if spec.StampOnly && strings.TrimSpace(spec.SourceImage) != "" {
+		return d.buildStampOnlyRequest(spec)
+	}
+
+	if strings.TrimSpace(spec.SourceDir) == "" && strings.TrimSpace(spec.ImageTar) == "" {
+		return preparedImageBuildRequest{}, func() {}, fmt.Errorf("image build asset %q has no sourceDir, imageTar, or buildContext (set stampOnly+sourceImage for pre-pushed images)", in.Asset.Name)
+	}
+
 	if strings.TrimSpace(spec.ImageTar) != "" {
 		return d.buildTarRequest(ctx, in, spec)
 	}
 	return d.buildSourceRequest(ctx, in, spec)
+}
+
+func (d *ImageBuildDriver) buildStampOnlyRequest(spec *assetdefs.ImageBuildSpec) (preparedImageBuildRequest, func(), error) {
+	repo := strings.TrimSpace(spec.Repository)
+	registryHost := strings.TrimSpace(spec.Registry)
+	if registryHost == "" {
+		registryHost = strings.TrimSpace(d.defaultRegistry)
+	}
+	if registryHost == "" {
+		return preparedImageBuildRequest{}, func() {}, fmt.Errorf("image build asset %q requires registry or GUARDIAN_IMAGE_BUILD_REGISTRY", repo)
+	}
+
+	imageRef := strings.TrimSpace(spec.SourceImage)
+	if !strings.Contains(imageRef, "/") && registryHost != "" {
+		imageRef = registryHost + "/" + imageRef
+	}
+
+	tag := ""
+	if idx := strings.LastIndex(imageRef, ":"); idx >= 0 {
+		tag = imageRef[idx+1:]
+	}
+
+	return preparedImageBuildRequest{
+		ImageBuildRequest: ImageBuildRequest{ImageRef: imageRef},
+		Repository:        repo,
+		Registry:          registryHost,
+		Tag:               tag,
+	}, func() {}, nil
 }
 
 func (d *ImageBuildDriver) buildTarRequest(ctx context.Context, in registry.AssetInput, spec *assetdefs.ImageBuildSpec) (preparedImageBuildRequest, func(), error) {

@@ -9,17 +9,18 @@ import (
 )
 
 type ImageBuildSpec struct {
-	Repository  string            `json:"repository" yaml:"repository"`
-	Registry    string            `json:"registry,omitempty" yaml:"registry,omitempty"`
-	SourceDir   string            `json:"sourceDir,omitempty" yaml:"sourceDir,omitempty"`
-	ImageTar    string            `json:"imageTar,omitempty" yaml:"imageTar,omitempty"`
-	SourceImage string            `json:"sourceImage,omitempty" yaml:"sourceImage,omitempty"`
-	Dockerfile  string            `json:"dockerfile,omitempty" yaml:"dockerfile,omitempty"`
-	Target      string            `json:"target,omitempty" yaml:"target,omitempty"`
-	Platform    string            `json:"platform,omitempty" yaml:"platform,omitempty"`
-	BuildArgs   map[string]string `json:"buildArgs,omitempty" yaml:"buildArgs,omitempty"`
-	Insecure    *bool             `json:"insecure,omitempty" yaml:"insecure,omitempty"`
-	StampOnly   bool              `json:"stampOnly,omitempty" yaml:"stampOnly,omitempty"`
+	Repository   string            `json:"repository" yaml:"repository"`
+	Registry     string            `json:"registry,omitempty" yaml:"registry,omitempty"`
+	SourceDir    string            `json:"sourceDir,omitempty" yaml:"sourceDir,omitempty"`
+	ImageTar     string            `json:"imageTar,omitempty" yaml:"imageTar,omitempty"`
+	BuildContext string            `json:"buildContext,omitempty" yaml:"buildContext,omitempty"`
+	SourceImage  string            `json:"sourceImage,omitempty" yaml:"sourceImage,omitempty"`
+	Dockerfile   string            `json:"dockerfile,omitempty" yaml:"dockerfile,omitempty"`
+	Target       string            `json:"target,omitempty" yaml:"target,omitempty"`
+	Platform     string            `json:"platform,omitempty" yaml:"platform,omitempty"`
+	BuildArgs    map[string]string `json:"buildArgs,omitempty" yaml:"buildArgs,omitempty"`
+	Insecure     *bool             `json:"insecure,omitempty" yaml:"insecure,omitempty"`
+	StampOnly    bool              `json:"stampOnly,omitempty" yaml:"stampOnly,omitempty"`
 }
 
 type imageBuildDefinition struct{}
@@ -42,21 +43,50 @@ func (imageBuildDefinition) Validate(spec any, _ ValidationContext) error {
 	}
 	hasSourceDir := strings.TrimSpace(typed.SourceDir) != ""
 	hasImageTar := strings.TrimSpace(typed.ImageTar) != ""
-	if !hasSourceDir && !hasImageTar {
-		return fmt.Errorf("either sourceDir or imageTar must be specified")
+	hasBuildContext := strings.TrimSpace(typed.BuildContext) != ""
+	hasSourceImage := strings.TrimSpace(typed.SourceImage) != ""
+
+	modeCount := 0
+	if hasSourceDir {
+		modeCount++
 	}
-	if hasSourceDir && hasImageTar {
-		return fmt.Errorf("sourceDir and imageTar are mutually exclusive")
+	if hasImageTar {
+		modeCount++
 	}
+	if hasBuildContext {
+		modeCount++
+	}
+	if hasSourceImage && typed.StampOnly {
+		modeCount++
+	}
+	if modeCount > 1 {
+		return fmt.Errorf("sourceDir, imageTar, buildContext, and stampOnly+sourceImage are mutually exclusive")
+	}
+	if modeCount == 0 {
+		return fmt.Errorf("either sourceDir, imageTar, buildContext, or stampOnly+sourceImage must be specified")
+	}
+
 	if hasImageTar {
 		if !strings.HasPrefix(strings.TrimSpace(typed.ImageTar), "/") {
 			return fmt.Errorf("property imageTar must be an absolute logical path")
 		}
-		if strings.TrimSpace(typed.SourceImage) == "" {
+		if !hasSourceImage {
 			return fmt.Errorf("property sourceImage is required when imageTar is set")
 		}
 		return nil
 	}
+
+	if hasBuildContext {
+		if strings.TrimSpace(typed.Dockerfile) == "" {
+			return fmt.Errorf("property dockerfile is required when buildContext is set")
+		}
+		return validateBuildArgs(typed)
+	}
+
+	if typed.StampOnly && hasSourceImage {
+		return validateBuildArgs(typed)
+	}
+
 	if !strings.HasPrefix(strings.TrimSpace(typed.SourceDir), "/") {
 		return fmt.Errorf("property sourceDir must be an absolute logical path")
 	}
@@ -66,6 +96,10 @@ func (imageBuildDefinition) Validate(spec any, _ ValidationContext) error {
 			return fmt.Errorf("property dockerfile must be relative to sourceDir")
 		}
 	}
+	return validateBuildArgs(typed)
+}
+
+func validateBuildArgs(typed *ImageBuildSpec) error {
 	for key, value := range typed.BuildArgs {
 		if strings.TrimSpace(key) == "" {
 			return fmt.Errorf("property buildArgs must not contain empty keys")
