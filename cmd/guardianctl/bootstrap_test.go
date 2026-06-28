@@ -137,7 +137,7 @@ func TestBootstrapCommandsRegistered(t *testing.T) {
 	}
 
 	expectedCommands := []string{
-		"setup", "build", "deploy", "init", "stop", "destroy", "status", "ports", "stamp-urls",
+		"setup", "build", "deploy", "init", "stop", "destroy", "status", "stamp-urls", "configure-registry",
 	}
 	for _, cmd := range expectedCommands {
 		if !names[cmd] {
@@ -322,7 +322,7 @@ func TestBootstrapCommandsList(t *testing.T) {
 		}
 		names[c.Name] = true
 	}
-	expected := []string{"setup", "build", "deploy", "init", "stop", "destroy", "status", "ports", "stamp-urls"}
+	expected := []string{"setup", "build", "deploy", "init", "stop", "destroy", "status", "stamp-urls", "configure-registry"}
 	for _, name := range expected {
 		if !names[name] {
 			t.Errorf("missing command: %s", name)
