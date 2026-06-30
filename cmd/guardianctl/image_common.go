@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
 	"gopkg.in/yaml.v3"
 )
 
@@ -20,22 +19,20 @@ type imageState struct {
 }
 
 type imageEntry struct {
-	AssetName         string            `json:"assetName"`
-	IntentFile        string            `json:"intentFile"`
-	LocalTag          string            `json:"localTag"`
-	Repository        string            `json:"repository"`
-	Registry          string            `json:"registry,omitempty"`
-	Dockerfile        string            `json:"dockerfile"`
-	Context           string            `json:"context"`
-	BuildArgs         map[string]string `json:"buildArgs,omitempty"`
-	Target            string            `json:"target,omitempty"`
-	Platform          string            `json:"platform,omitempty"`
-	ImageRef          string            `json:"imageRef,omitempty"`
-	Tag               string            `json:"tag,omitempty"`
-	TarPath           string            `json:"tarPath,omitempty"`
-	SourceImage       string            `json:"sourceImage,omitempty"`
-	BuildContexts     map[string]string `json:"buildContexts,omitempty"`
-	ImageFromUpstream string            `json:"imageFromUpstream,omitempty"`
+	AssetName     string            `json:"assetName"`
+	IntentFile    string            `json:"intentFile"`
+	LocalTag      string            `json:"localTag"`
+	Repository    string            `json:"repository"`
+	Registry      string            `json:"registry,omitempty"`
+	Dockerfile    string            `json:"dockerfile"`
+	Context       string            `json:"context"`
+	BuildArgs     map[string]string `json:"buildArgs,omitempty"`
+	Target        string            `json:"target,omitempty"`
+	Platform      string            `json:"platform,omitempty"`
+	ImageRef      string            `json:"imageRef,omitempty"`
+	Tag           string            `json:"tag,omitempty"`
+	SourceImage   string            `json:"sourceImage,omitempty"`
+	BuildContexts map[string]string `json:"buildContexts,omitempty"`
 }
 
 type imageBuildAsset struct {
@@ -49,8 +46,8 @@ type imageBuildAsset struct {
 	BuildArgs         map[string]string
 	Target            string
 	Platform          string
-	ImageFromUpstream string
 	SourceImage       string
+	ImageFromUpstream string
 }
 
 func loadImageBuildAssets(dir string) ([]imageBuildAsset, error) {
@@ -81,19 +78,13 @@ func loadImageBuildAssets(dir string) ([]imageBuildAsset, error) {
 		if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
 			continue
 		}
-		intentNode := doc.Content[0]
 
-		var intent intentdomain.Intent
-		if err := doc.Content[0].Decode(&intent); err != nil {
-			return nil, fmt.Errorf("decode intent file %s: %w", intentPath, err)
-		}
-
-		assetsNode := findNode(intentNode, "spec", "assets")
+		assetsNode := findNode(doc.Content[0], "spec", "assets")
 		if assetsNode == nil || assetsNode.Kind != yaml.SequenceNode {
 			continue
 		}
 
-		for i, assetNode := range assetsNode.Content {
+		for _, assetNode := range assetsNode.Content {
 			typeNode := findNode(assetNode, "type")
 			if typeNode == nil || typeNode.Value != "ImageBuild" {
 				continue
@@ -104,8 +95,9 @@ func loadImageBuildAssets(dir string) ([]imageBuildAsset, error) {
 			}
 
 			buildContext := getStringNode(propsNode, "buildContext")
+			sourceImage := getStringNode(propsNode, "sourceImage")
 			imageFromUpstream := getStringNode(propsNode, "imageFromUpstream")
-			if buildContext == "" && imageFromUpstream == "" {
+			if buildContext == "" && sourceImage == "" && imageFromUpstream == "" {
 				continue
 			}
 
@@ -115,7 +107,18 @@ func loadImageBuildAssets(dir string) ([]imageBuildAsset, error) {
 				assetName = nameNode.Value
 			}
 
-			asset := imageBuildAsset{
+			buildArgsNode := findNode(propsNode, "buildArgs")
+			var buildArgs map[string]string
+			if buildArgsNode != nil && buildArgsNode.Kind == yaml.MappingNode {
+				buildArgs = map[string]string{}
+				for j := 0; j < len(buildArgsNode.Content); j += 2 {
+					key := buildArgsNode.Content[j].Value
+					val := buildArgsNode.Content[j+1].Value
+					buildArgs[key] = val
+				}
+			}
+
+			assets = append(assets, imageBuildAsset{
 				AssetName:         assetName,
 				IntentFile:        intentPath,
 				Repository:        getStringNode(propsNode, "repository"),
@@ -125,22 +128,10 @@ func loadImageBuildAssets(dir string) ([]imageBuildAsset, error) {
 				Dockerfile:        getStringNode(propsNode, "dockerfile"),
 				Target:            getStringNode(propsNode, "target"),
 				Platform:          getStringNode(propsNode, "platform"),
+				SourceImage:       sourceImage,
 				ImageFromUpstream: imageFromUpstream,
-				SourceImage:       getStringNode(propsNode, "sourceImage"),
-			}
-
-			buildArgsNode := findNode(propsNode, "buildArgs")
-			if buildArgsNode != nil && buildArgsNode.Kind == yaml.MappingNode {
-				asset.BuildArgs = map[string]string{}
-				for j := 0; j < len(buildArgsNode.Content); j += 2 {
-					key := buildArgsNode.Content[j].Value
-					val := buildArgsNode.Content[j+1].Value
-					asset.BuildArgs[key] = val
-				}
-			}
-
-			_ = i
-			assets = append(assets, asset)
+				BuildArgs:         buildArgs,
+			})
 		}
 	}
 	return assets, nil
@@ -195,6 +186,13 @@ func resolveDockerfile(dockerfile, buildContext, partitionDir string) string {
 		return dockerfile
 	}
 	return filepath.Join(buildContext, dockerfile)
+}
+
+func tagFromSourceImage(sourceImage string) string {
+	if idx := strings.LastIndex(sourceImage, ":"); idx >= 0 {
+		return sourceImage[idx+1:]
+	}
+	return "latest"
 }
 
 func gitVersion(dir string) (tag, commit, buildTime string) {
@@ -271,21 +269,6 @@ func removeNode(parent *yaml.Node, key string) {
 	}
 }
 
-func setBoolNode(parent *yaml.Node, key string, value bool) {
-	for i := 0; i < len(parent.Content); i += 2 {
-		if parent.Content[i].Value == key {
-			parent.Content[i+1].Value = fmt.Sprintf("%t", value)
-			parent.Content[i+1].Tag = "!!bool"
-			return
-		}
-	}
-	valStr := fmt.Sprintf("%t", value)
-	parent.Content = append(parent.Content,
-		&yaml.Node{Kind: yaml.ScalarNode, Value: key},
-		&yaml.Node{Kind: yaml.ScalarNode, Value: valStr, Tag: "!!bool"},
-	)
-}
-
 func getMapNode(parent *yaml.Node, key string) map[string]string {
 	for i := 0; i < len(parent.Content); i += 2 {
 		if parent.Content[i].Value == key {
@@ -312,6 +295,30 @@ func imageCommands() []bootstrapReg {
 	}
 }
 
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func setBoolNode(parent *yaml.Node, key string, value bool) {
+	for i := 0; i < len(parent.Content); i += 2 {
+		if parent.Content[i].Value == key {
+			parent.Content[i+1].Value = fmt.Sprintf("%t", value)
+			parent.Content[i+1].Tag = "!!bool"
+			return
+		}
+	}
+	valStr := fmt.Sprintf("%t", value)
+	parent.Content = append(parent.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Value: valStr, Tag: "!!bool"},
+	)
+}
+
 func deduplicateStrings(in []string) []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(in))
@@ -322,13 +329,4 @@ func deduplicateStrings(in []string) []string {
 		}
 	}
 	return out
-}
-
-func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

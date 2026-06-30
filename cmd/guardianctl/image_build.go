@@ -36,19 +36,15 @@ func imageBuildCommand() *command.Command {
 				return err
 			}
 			if len(assets) == 0 {
-				return fmt.Errorf("no ImageBuild assets (buildContext or imageFromUpstream) found in %s", dir)
+				fmt.Fprintf(os.Stderr, "  no buildable ImageBuild assets in %s — skipping\n", dir)
+				return nil
 			}
 
 			state := &imageState{Images: map[string]imageEntry{}}
 
 			for _, asset := range assets {
-				var tag string
-				var dockerfile, buildContext string
-				var buildArgs map[string]string
-				var version, commit, buildTime string
-
 				if asset.ImageFromUpstream != "" {
-					tag = asset.Repository + ":latest"
+					tag := asset.Repository + ":latest"
 					if asset.SourceImage != "" {
 						tag = asset.SourceImage
 					}
@@ -71,59 +67,73 @@ func imageBuildCommand() *command.Command {
 							return fmt.Errorf("docker tag %s -> %s: %w", asset.ImageFromUpstream, tag, err)
 						}
 					}
+
+					fmt.Fprintf(os.Stderr, "  pulled %s\n", tag)
+					fmt.Fprintln(os.Stdout, tag)
+
+					state.Images[asset.AssetName] = imageEntry{
+						AssetName:   asset.AssetName,
+						IntentFile:  asset.IntentFile,
+						LocalTag:    tag,
+						Repository:  asset.Repository,
+						Registry:    asset.Registry,
+						SourceImage: asset.SourceImage,
+					}
+					continue
+				}
+				if asset.BuildContext == "" {
+					continue
+				}
+				buildContext := expandBuildContext(asset.BuildContext)
+				dockerfile := resolveDockerfile(asset.Dockerfile, buildContext, dir)
+				tag := asset.Repository + ":latest"
+				if _, commit, _ := gitVersion(buildContext); commit != "" {
+					tag = asset.Repository + ":" + commit
+				}
+
+				buildArgs := make(map[string]string)
+				for k, v := range asset.BuildArgs {
+					buildArgs[k] = v
+				}
+				version, commit, buildTime := gitVersion(buildContext)
+				if version == "" {
+					version = commit
+				}
+				if version != "" {
+					buildArgs["VERSION"] = version
+				}
+				if commit != "" {
+					buildArgs["COMMIT"] = commit
+				}
+				if buildTime != "" {
+					buildArgs["BUILD_TIME"] = buildTime
+				}
+
+				dockerArgs := []string{"build", "-t", tag, "-f", dockerfile}
+				if asset.Target != "" {
+					dockerArgs = append(dockerArgs, "--target", asset.Target)
+				}
+				if asset.Platform != "" {
+					dockerArgs = append(dockerArgs, "--platform", asset.Platform)
+				}
+				for _, key := range sortedKeys(buildArgs) {
+					dockerArgs = append(dockerArgs, "--build-arg", key+"="+buildArgs[key])
+				}
+				for _, key := range sortedKeys(asset.BuildContexts) {
+					ctxPath := expandBuildContext(asset.BuildContexts[key])
+					dockerArgs = append(dockerArgs, "--build-context", key+"="+ctxPath)
+				}
+				dockerArgs = append(dockerArgs, buildContext)
+
+				if *dryRun {
+					fmt.Fprintf(os.Stderr, "+ docker %s\n", strings.Join(dockerArgs, " "))
 				} else {
-					buildContext = expandBuildContext(asset.BuildContext)
-					dockerfile = resolveDockerfile(asset.Dockerfile, buildContext, dir)
-
-					tag = asset.Repository + ":latest"
-					if _, commit, _ := gitVersion(buildContext); commit != "" {
-						tag = asset.Repository + ":" + commit
-					}
-
-					buildArgs = make(map[string]string)
-					for k, v := range asset.BuildArgs {
-						buildArgs[k] = v
-					}
-					version, commit, buildTime = gitVersion(buildContext)
-					if version == "" {
-						version = commit
-					}
-					if version != "" {
-						buildArgs["VERSION"] = version
-					}
-					if commit != "" {
-						buildArgs["COMMIT"] = commit
-					}
-					if buildTime != "" {
-						buildArgs["BUILD_TIME"] = buildTime
-					}
-
-					dockerArgs := []string{"build", "-t", tag, "-f", dockerfile}
-					if asset.Target != "" {
-						dockerArgs = append(dockerArgs, "--target", asset.Target)
-					}
-					if asset.Platform != "" {
-						dockerArgs = append(dockerArgs, "--platform", asset.Platform)
-					}
-					for _, key := range sortedKeys(buildArgs) {
-						dockerArgs = append(dockerArgs, "--build-arg", key+"="+buildArgs[key])
-					}
-					for _, key := range sortedKeys(asset.BuildContexts) {
-						ctxPath := expandBuildContext(asset.BuildContexts[key])
-						dockerArgs = append(dockerArgs, "--build-context", key+"="+ctxPath)
-					}
-					dockerArgs = append(dockerArgs, buildContext)
-
-					if *dryRun {
-						fmt.Fprintf(os.Stderr, "+ docker %s\n", strings.Join(dockerArgs, " "))
-					} else {
-						fmt.Fprintf(os.Stderr, "+ docker %s\n", strings.Join(dockerArgs, " "))
-						cmd := dockerExecCommand(ctx, "docker", dockerArgs...)
-						cmd.Stdout = os.Stdout
-						cmd.Stderr = os.Stderr
-						if err := cmd.Run(); err != nil {
-							return fmt.Errorf("docker build %s: %w", tag, err)
-						}
+					fmt.Fprintf(os.Stderr, "+ docker %s\n", strings.Join(dockerArgs, " "))
+					cmd := dockerExecCommand(ctx, "docker", dockerArgs...)
+					cmd.Stdout = os.Stdout
+					cmd.Stderr = os.Stderr
+					if err := cmd.Run(); err != nil {
+						return fmt.Errorf("docker build %s: %w", tag, err)
 					}
 				}
 
@@ -131,19 +141,18 @@ func imageBuildCommand() *command.Command {
 				fmt.Fprintln(os.Stdout, tag)
 
 				state.Images[asset.AssetName] = imageEntry{
-					AssetName:         asset.AssetName,
-					IntentFile:        asset.IntentFile,
-					LocalTag:          tag,
-					Repository:        asset.Repository,
-					Registry:          asset.Registry,
-					Dockerfile:        dockerfile,
-					Context:           buildContext,
-					BuildArgs:         buildArgs,
-					Target:            asset.Target,
-					Platform:          asset.Platform,
-					BuildContexts:     asset.BuildContexts,
-					ImageFromUpstream: asset.ImageFromUpstream,
-					SourceImage:       asset.SourceImage,
+					AssetName:     asset.AssetName,
+					IntentFile:    asset.IntentFile,
+					LocalTag:      tag,
+					Repository:    asset.Repository,
+					Registry:      asset.Registry,
+					Dockerfile:    dockerfile,
+					Context:       buildContext,
+					BuildArgs:     buildArgs,
+					Target:        asset.Target,
+					Platform:      asset.Platform,
+					BuildContexts: asset.BuildContexts,
+					SourceImage:   asset.SourceImage,
 				}
 			}
 

@@ -2,8 +2,10 @@ package kubernetesdriver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path"
 	"sort"
@@ -12,8 +14,10 @@ import (
 
 	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
 	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
+	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
 	orchestratorcommon "github.com/rydzu/ainfra/guardian/internal/orchestrator/common"
+	"github.com/rydzu/ainfra/guardian/internal/paths"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/driverutil"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/secrets"
@@ -533,7 +537,7 @@ func (d *LoadBalancerDriver) Apply(ctx context.Context, in registry.AssetInput) 
 	}
 	container := Container{
 		Name:            "lb-edge",
-		Image:           loadBalancerContainerImage(),
+		Image:           loadBalancerImage(spec),
 		ImagePullPolicy: "IfNotPresent",
 		Env: map[string]string{
 			"LB_BOOTSTRAP": bootstrapConfig,
@@ -917,9 +921,64 @@ func (d *baseDriver) checkReferences(ctx context.Context, in registry.AssetInput
 			if _, _, err := d.backend.GetClaim(namespace(in), claimName(in, dep)); err != nil {
 				return err
 			}
+		case "ImageBuild":
+			if err := d.checkImageBuildExists(ctx, in, dep); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+func (d *baseDriver) checkImageBuildExists(ctx context.Context, in registry.AssetInput, depName string) error {
+	_, typed, err := driverutil.DecodeNamedAsset(in, depName)
+	if err != nil {
+		return err
+	}
+	_ = typed.(*assetdefs.ImageBuildSpec)
+	imageRef, err := resolveImageBuildRef(ctx, in, depName)
+	if err != nil {
+		return err
+	}
+	if imageRef == "" {
+		return fmt.Errorf("image build dependency %s has no imageRef yet", depName)
+	}
+	host, repo, tag, ok := parseImageRef(imageRef)
+	if !ok {
+		return fmt.Errorf("image build dependency %s has invalid imageRef %q", depName, imageRef)
+	}
+	url := fmt.Sprintf("http://%s/v2/%s/manifests/%s", host, repo, tag)
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+	if err != nil {
+		return fmt.Errorf("check image %s: %w", imageRef, err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("registry unreachable for %s: %w", imageRef, err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("image %s not found in registry (status %d)", imageRef, resp.StatusCode)
+	}
+	return nil
+}
+
+func resolveImageBuildRef(ctx context.Context, in registry.AssetInput, assetName string) (string, error) {
+	if in.Store == nil {
+		return "", nil
+	}
+	raw, err := in.Store.ReadFile(ctx, paths.IntentState(in.PartitionName, in.IntentName))
+	if err != nil {
+		return "", nil
+	}
+	var state statedomain.IntentState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return "", err
+	}
+	if state.Outputs == nil {
+		return "", nil
+	}
+	return strings.TrimSpace(state.Outputs[assetName+".imageRef"]), nil
 }
 
 func (d *baseDriver) observeApplyReadiness(ctx context.Context, in registry.AssetInput) (*taskdomain.ApplyReadiness, error) {
@@ -1312,6 +1371,13 @@ func loadBalancerContainerImage() string {
 		return override
 	}
 	return "lb:latest"
+}
+
+func loadBalancerImage(spec *assetdefs.LoadBalancerSpec) string {
+	if strings.TrimSpace(spec.Image) != "" {
+		return strings.TrimSpace(spec.Image)
+	}
+	return loadBalancerContainerImage()
 }
 
 func generateHAProxyConfig(in registry.AssetInput, spec *assetdefs.LoadBalancerSpec) (string, error) {

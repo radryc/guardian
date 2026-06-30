@@ -474,13 +474,11 @@ func (b *ImageBuildBackend) ImageExists(ctx context.Context, imageRef string) (b
 	url := fmt.Sprintf("http://%s/v2/%s/manifests/%s", host, repo, tag)
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 	if err != nil {
-		log.Printf("[ImageBuild] registry-check image=%s requestError url=%s: %v", imageRef, url, err)
-		return false, nil
+		return false, fmt.Errorf("registry-check image=%s requestError url=%s: %w", imageRef, url, err)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Printf("[ImageBuild] registry-check image=%s httpError url=%s: %v", imageRef, url, err)
-		return false, nil
+		return false, fmt.Errorf("registry-check image=%s httpError url=%s: %w", imageRef, url, err)
 	}
 	resp.Body.Close()
 	exists := resp.StatusCode == http.StatusOK
@@ -518,6 +516,37 @@ func (b *ImageBuildBackend) StampImage(ctx context.Context, currentRef, newRef s
 }
 
 func (b *ImageBuildBackend) LoadAndPush(ctx context.Context, req ImageLoadRequest) (ImageBuildResult, error) {
+	// Fast path: try host docker daemon first. This avoids the overhead of
+	// creating a K8s Job, copying the context, and polling for completion.
+	// Falls back to skopeo K8s Job if docker is unavailable.
+	if result, ok := b.tryDockerLoadAndPush(ctx, req); ok {
+		return result, nil
+	}
+	return b.skopeoLoadAndPush(ctx, req)
+}
+
+func (b *ImageBuildBackend) tryDockerLoadAndPush(ctx context.Context, req ImageLoadRequest) (ImageBuildResult, bool) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		log.Printf("[ImageBuild] docker not found on host, falling back to skopeo job for %s", req.ImageRef)
+		return ImageBuildResult{}, false
+	}
+	if output, err := exec.CommandContext(ctx, "docker", "load", "-i", req.TarPath).CombinedOutput(); err != nil {
+		log.Printf("[ImageBuild] docker load failed (will try skopeo): %v\n%s", err, string(output))
+		return ImageBuildResult{}, false
+	}
+	if output, err := exec.CommandContext(ctx, "docker", "tag", req.SourceImage, req.ImageRef).CombinedOutput(); err != nil {
+		log.Printf("[ImageBuild] docker tag failed (will try skopeo): %v\n%s", err, string(output))
+		return ImageBuildResult{}, false
+	}
+	if output, err := exec.CommandContext(ctx, "docker", "push", req.ImageRef).CombinedOutput(); err != nil {
+		log.Printf("[ImageBuild] docker push failed (will try skopeo): %v\n%s", err, string(output))
+		return ImageBuildResult{}, false
+	}
+	log.Printf("[ImageBuild] image=%s pushed via docker (fast path)", req.ImageRef)
+	return ImageBuildResult{ImageRef: req.ImageRef}, true
+}
+
+func (b *ImageBuildBackend) skopeoLoadAndPush(ctx context.Context, req ImageLoadRequest) (ImageBuildResult, error) {
 	archivePath, archiveCleanup, err := prepareTarContext(req.TarPath)
 	if err != nil {
 		return ImageBuildResult{}, err

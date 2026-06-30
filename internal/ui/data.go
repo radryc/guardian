@@ -718,6 +718,9 @@ func (s *Server) loadIntentActivity(ctx context.Context, partitionName, intentNa
 				if jsonErr := json.Unmarshal(resultData, &result); jsonErr == nil {
 					resp.Logs = result.Logs
 					resp.LastOp = string(result.Op)
+					if result.Drift != nil {
+						resp.Drift = result.Drift
+					}
 				}
 			}
 		}
@@ -1801,10 +1804,8 @@ func assetFacts(spec assetdomain.Spec, outputs map[string]string) (string, []Fac
 		if value.Registry != "" {
 			facts = append(facts, Fact{Label: "Registry", Value: value.Registry})
 		}
-		if value.SourceDir != "" {
+		if value.BuildContext != "" {
 			facts = append(facts, Fact{Label: "Source", Value: "build"})
-		} else if value.ImageTar != "" {
-			facts = append(facts, Fact{Label: "Source", Value: "tar"})
 		}
 		// Show resolved build source from outputs (registry / tar / build)
 		if src := strings.TrimSpace(outputs["source"]); src != "" {

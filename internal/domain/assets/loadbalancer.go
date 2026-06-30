@@ -25,6 +25,7 @@ type ListenerSpec struct {
 
 type LoadBalancerSpec struct {
 	Config      string         `json:"config,omitempty" yaml:"config,omitempty"`
+	Image       string         `json:"image,omitempty" yaml:"image,omitempty"`
 	Targets     []string       `json:"targets" yaml:"targets"`
 	Listeners   []ListenerSpec `json:"listeners" yaml:"listeners"`
 	Networks    []string       `json:"networks,omitempty" yaml:"networks,omitempty"`

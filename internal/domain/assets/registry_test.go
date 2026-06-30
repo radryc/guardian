@@ -31,9 +31,10 @@ func TestDecodeReturnsTypedSpecs(t *testing.T) {
 				Type: assetdomain.TypeImageBuild,
 				Name: "api-image",
 				Properties: map[string]any{
-					"repository": "demo-api",
-					"registry":   "registry.strata.local:5000",
-					"sourceDir":  "/partitions/demo/payloads/sources/api",
+					"repository":   "demo-api",
+					"registry":     "registry.strata.local:5000",
+					"buildContext": "/partitions/demo/payloads/sources/api",
+					"dockerfile":   "Dockerfile",
 				},
 			},
 			wantTyp: "*assets.ImageBuildSpec",

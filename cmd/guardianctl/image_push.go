@@ -16,11 +16,10 @@ func imagePushCommand() *command.Command {
 	flags.SetOutput(ioDiscard{})
 	dirFlag := flags.String("dir", "", "path to partition directory")
 	registryFlag := flags.String("registry", "", "override target registry")
-	tarFlag := flags.Bool("tar", false, "export images as tar files instead of pushing to registry")
 	dryRun := flags.Bool("dry-run", false, "print commands without executing")
 
 	return &command.Command{
-		Description: "Push built images to a registry or export as tar files",
+		Description: "Push built images to a registry",
 		Flags:       flags,
 		Run: func(ctx context.Context, args []string) error {
 			if *dirFlag == "" {
@@ -34,71 +33,42 @@ func imagePushCommand() *command.Command {
 			}
 
 			for name, entry := range state.Images {
-				registry := entry.Registry
+				reg := entry.Registry
 				if *registryFlag != "" {
-					registry = *registryFlag
+					reg = *registryFlag
 				}
-				if registry == "" && !*tarFlag {
+				if reg == "" {
 					return fmt.Errorf("no registry specified for %s (set --registry or add registry to asset)", name)
 				}
 
 				tag := computeImageTag(ctx, entry.LocalTag)
 				entry.Tag = tag
+				imageRef := reg + "/" + entry.Repository + ":" + tag
+				entry.ImageRef = imageRef
 
-				if *tarFlag {
-					tarDir := filepath.Join(dir, "payloads", "images")
-					if err := os.MkdirAll(tarDir, 0755); err != nil {
-						return err
-					}
-					tarPath := filepath.Join(tarDir, entry.Repository+".tar")
-					entry.TarPath = tarPath
-					entry.SourceImage = entry.Repository + ":" + tag
-
-					dockerArgs := []string{"save", "-o", tarPath, entry.LocalTag}
-					if *dryRun {
-						fmt.Fprintf(os.Stderr, "+ docker %s\n", strings.Join(dockerArgs, " "))
-					} else {
-						fmt.Fprintf(os.Stderr, "+ docker %s\n", strings.Join(dockerArgs, " "))
-						cmd := dockerExecCommand(ctx, "docker", dockerArgs...)
-						cmd.Stdout = os.Stdout
-						cmd.Stderr = os.Stderr
-						if err := cmd.Run(); err != nil {
-							return fmt.Errorf("docker save %s: %w", entry.LocalTag, err)
-						}
-					}
-					fmt.Fprintf(os.Stderr, "  exported %s\n", tarPath)
-					fmt.Fprintln(os.Stdout, tarPath)
+				cmd := dockerExecCommand(ctx, "docker", "tag", entry.LocalTag, imageRef)
+				if *dryRun {
+					fmt.Fprintf(os.Stderr, "+ docker tag %s %s\n", entry.LocalTag, imageRef)
 				} else {
-					imageRef := registry + "/" + entry.Repository + ":" + tag
-					entry.ImageRef = imageRef
-
-					dockerTagArgs := []string{"tag", entry.LocalTag, imageRef}
-					if *dryRun {
-						fmt.Fprintf(os.Stderr, "+ docker %s\n", strings.Join(dockerTagArgs, " "))
-					} else {
-						fmt.Fprintf(os.Stderr, "+ docker %s\n", strings.Join(dockerTagArgs, " "))
-						cmd := dockerExecCommand(ctx, "docker", dockerTagArgs...)
-						cmd.Stderr = os.Stderr
-						if err := cmd.Run(); err != nil {
-							return fmt.Errorf("docker tag %s -> %s: %w", entry.LocalTag, imageRef, err)
-						}
+					fmt.Fprintf(os.Stderr, "+ docker tag %s %s\n", entry.LocalTag, imageRef)
+					if err := cmd.Run(); err != nil {
+						return fmt.Errorf("docker tag %s -> %s: %w", entry.LocalTag, imageRef, err)
 					}
-
-					dockerPushArgs := []string{"push", imageRef}
-					if *dryRun {
-						fmt.Fprintf(os.Stderr, "+ docker %s\n", strings.Join(dockerPushArgs, " "))
-					} else {
-						fmt.Fprintf(os.Stderr, "+ docker %s\n", strings.Join(dockerPushArgs, " "))
-						cmd := dockerExecCommand(ctx, "docker", dockerPushArgs...)
-						cmd.Stdout = os.Stdout
-						cmd.Stderr = os.Stderr
-						if err := cmd.Run(); err != nil {
-							return fmt.Errorf("docker push %s: %w", imageRef, err)
-						}
-					}
-					fmt.Fprintf(os.Stderr, "  pushed %s\n", imageRef)
-					fmt.Fprintln(os.Stdout, imageRef)
 				}
+
+				cmd = dockerExecCommand(ctx, "docker", "push", imageRef)
+				if *dryRun {
+					fmt.Fprintf(os.Stderr, "+ docker push %s\n", imageRef)
+				} else {
+					fmt.Fprintf(os.Stderr, "+ docker push %s\n", imageRef)
+					cmd.Stdout = os.Stdout
+					cmd.Stderr = os.Stderr
+					if err := cmd.Run(); err != nil {
+						return fmt.Errorf("docker push %s: %w", imageRef, err)
+					}
+				}
+				fmt.Fprintf(os.Stderr, "  pushed %s\n", imageRef)
+				fmt.Fprintln(os.Stdout, imageRef)
 
 				state.Images[name] = entry
 			}

@@ -16,7 +16,6 @@ func imageReleaseCommand() *command.Command {
 	dirFlag := flags.String("dir", "", "path to partition directory")
 	allFlag := flags.Bool("all", false, "release images for all partitions")
 	registryFlag := flags.String("registry", "", "override target registry")
-	tarFlag := flags.Bool("tar", false, "export images as tar files instead of pushing")
 	dryRun := flags.Bool("dry-run", false, "print commands without executing")
 
 	return &command.Command{
@@ -24,7 +23,7 @@ func imageReleaseCommand() *command.Command {
 		Flags:       flags,
 		Run: func(ctx context.Context, args []string) error {
 			if *allFlag {
-				return imageReleaseAll(ctx, *registryFlag, *tarFlag, *dryRun)
+				return imageReleaseAll(ctx, *registryFlag, *dryRun)
 			}
 
 			if *dirFlag == "" {
@@ -32,17 +31,22 @@ func imageReleaseCommand() *command.Command {
 			}
 
 			dir := filepath.Clean(*dirFlag)
-			return imageReleaseOne(ctx, dir, *registryFlag, *tarFlag, *dryRun)
+			return imageReleaseOne(ctx, dir, *registryFlag, *dryRun)
 		},
 	}
 }
 
-func imageReleaseOne(ctx context.Context, dir, registry string, useTar, dryRun bool) error {
+func imageReleaseOne(ctx context.Context, dir, registry string, dryRun bool) error {
 	fmt.Fprintf(os.Stderr, "=== building images in %s ===\n", dir)
 
 	tag := resolveDevTag(ctx)
 	if err := runImageBuildDir(ctx, dir, dryRun, tag); err != nil {
 		return fmt.Errorf("build: %w", err)
+	}
+
+	if _, err := loadImageState(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "=== no images to push or stamp — skipping ===\n")
+		return nil
 	}
 
 	fmt.Fprintf(os.Stderr, "=== pushing images ===\n")
@@ -59,7 +63,7 @@ func imageReleaseOne(ctx context.Context, dir, registry string, useTar, dryRun b
 	return nil
 }
 
-func imageReleaseAll(ctx context.Context, registry string, useTar, dryRun bool) error {
+func imageReleaseAll(ctx context.Context, registry string, dryRun bool) error {
 	partitions := []string{
 		"_bootstrap",
 		"agent", "doctor", "guardian-configs", "k8s-top",
@@ -74,10 +78,10 @@ func imageReleaseAll(ctx context.Context, registry string, useTar, dryRun bool) 
 		}
 		assets, err := loadImageBuildAssets(dir)
 		if err != nil || len(assets) == 0 {
-			fmt.Fprintf(os.Stderr, "skipping %s: no ImageBuild assets (buildContext or imageFromUpstream)\n", name)
+			fmt.Fprintf(os.Stderr, "skipping %s: no buildable ImageBuild assets\n", name)
 			continue
 		}
-		if err := imageReleaseOne(ctx, dir, registry, useTar, dryRun); err != nil {
+		if err := imageReleaseOne(ctx, dir, registry, dryRun); err != nil {
 			return fmt.Errorf("partition %s: %w", name, err)
 		}
 		fmt.Fprintln(os.Stderr)
