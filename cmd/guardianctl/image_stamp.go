@@ -73,13 +73,15 @@ func imageStampCommand() *command.Command {
 					}
 					assetName := nameNode.Value
 
-					imgEntry, ok := state.Images[assetName]
-					if !ok {
-						continue
-					}
-					if imgEntry.Tag == "" {
-						continue
-					}
+				imgEntry, ok := state.Images[assetName]
+				if !ok || imgEntry.Tag == "" {
+					continue
+				}
+
+				propsNode := findNode(assetNode, "properties")
+				if propsNode == nil || propsNode.Kind != yaml.MappingNode {
+					continue
+				}
 
 					versionNode := findNode(assetNode, "version")
 					if versionNode != nil {
@@ -89,26 +91,10 @@ func imageStampCommand() *command.Command {
 					}
 					modified = true
 
-					propsNode := findNode(assetNode, "properties")
-					if propsNode == nil || propsNode.Kind != yaml.MappingNode {
-						continue
+					if imgEntry.ImageRef != "" {
+						setStringNode(propsNode, "sourceImage", imgEntry.ImageRef)
+						fmt.Fprintf(os.Stderr, "  %s/%s: sourceImage=%s\n", filepath.Base(intentPath), assetName, imgEntry.ImageRef)
 					}
-
-				if imgEntry.ImageRef != "" {
-					setStringNode(propsNode, "sourceImage", imgEntry.ImageRef)
-					setBoolNode(propsNode, "stampOnly", true)
-					removeNode(propsNode, "imageTar")
-					removeNode(propsNode, "sourceDir")
-					removeNode(propsNode, "imageFromUpstream")
-					fmt.Fprintf(os.Stderr, "  %s/%s: stampOnly=true sourceImage=%s\n", filepath.Base(intentPath), assetName, imgEntry.ImageRef)
-				} else if imgEntry.TarPath != "" {
-					removeNode(propsNode, "buildContext")
-					removeNode(propsNode, "sourceDir")
-					removeNode(propsNode, "imageFromUpstream")
-					setStringNode(propsNode, "imageTar", "/partitions/"+filepath.Base(dir)+"/payloads/images/"+imgEntry.Repository+".tar")
-					setStringNode(propsNode, "sourceImage", imgEntry.SourceImage)
-					fmt.Fprintf(os.Stderr, "  %s/%s: tar=%s sourceImage=%s\n", filepath.Base(intentPath), assetName, imgEntry.TarPath, imgEntry.SourceImage)
-				}
 				}
 
 				if modified && !*dryRun {

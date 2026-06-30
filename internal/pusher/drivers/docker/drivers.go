@@ -685,7 +685,7 @@ func (d *LoadBalancerDriver) buildLoadBalancerContainer(in registry.AssetInput, 
 	container := Container{
 		Name:    name,
 		Kind:    "LoadBalancer",
-		Image:   loadBalancerContainerImage(),
+		Image:   loadBalancerImage(spec),
 		Hash:    hash,
 		Labels:  driverutil.Labels("docker", in, hash),
 		Network: networkName(in),
@@ -1551,6 +1551,13 @@ func loadBalancerContainerImage() string {
 		return override
 	}
 	return "lb:latest"
+}
+
+func loadBalancerImage(spec *assetdefs.LoadBalancerSpec) string {
+	if strings.TrimSpace(spec.Image) != "" {
+		return strings.TrimSpace(spec.Image)
+	}
+	return loadBalancerContainerImage()
 }
 
 func firstContainerPort(ports []PortBinding) int {

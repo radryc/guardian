@@ -89,7 +89,7 @@ func (b *ImageBuildBackend) ImageExists(ctx context.Context, imageRef string) (b
 			return false, nil
 		}
 		log.Printf("[ImageBuild] registry-check image=%s dockerError: %v output=%s", imageRef, err, strings.TrimSpace(string(output)))
-		return false, nil
+		return false, fmt.Errorf("docker manifest inspect %s: %w", imageRef, err)
 	}
 	return true, nil
 }

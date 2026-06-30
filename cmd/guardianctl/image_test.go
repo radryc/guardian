@@ -80,12 +80,12 @@ metadata:
 spec:
   assets:
     - type: ImageBuild
-      name: tar-build
+      name: upstream-build
       version: dev
       properties:
-        imageTar: /partitions/test/payloads/images/test.tar
-        sourceImage: test:latest
-        repository: test
+        imageFromUpstream: grafana/grafana:latest
+        sourceImage: grafana:latest
+        repository: grafana
 `
 	os.WriteFile(filepath.Join(intentsDir, "images.yaml"), []byte(imagesYAML), 0644)
 
@@ -93,8 +93,8 @@ spec:
 	if err != nil {
 		t.Fatalf("loadImageBuildAssets: %v", err)
 	}
-	if len(assets) != 0 {
-		t.Fatalf("expected 0 assets (no buildContext), got %d", len(assets))
+	if len(assets) != 1 {
+		t.Fatalf("expected 1 asset (imageFromUpstream), got %d", len(assets))
 	}
 }
 
@@ -294,13 +294,18 @@ spec:
 		}
 
 		stampOnly := getStringNode(props, "stampOnly")
-		if stampOnly != "true" {
-			t.Errorf("expected stampOnly=true, got %q", stampOnly)
+		if stampOnly != "" {
+			t.Errorf("expected no stampOnly, got %q", stampOnly)
 		}
 
 		buildContext := getStringNode(props, "buildContext")
 		if buildContext != "~/src/myapp" {
 			t.Errorf("expected buildContext preserved, got %q", buildContext)
+		}
+
+		dockerfile := getStringNode(props, "dockerfile")
+		if dockerfile != "Dockerfile" {
+			t.Errorf("expected dockerfile preserved, got %q", dockerfile)
 		}
 
 		return
@@ -337,10 +342,10 @@ spec:
 		Images: map[string]imageEntry{
 			"tar-build": {
 				AssetName:   "tar-build",
-				TarPath:     "/tmp/payloads/images/myapp.tar",
 				Tag:         "sha256-abc12345",
 				SourceImage: "myapp:sha256-abc12345",
 				Repository:  "myapp",
+				ImageRef:    "registry.strata.local:5000/myapp:sha256-abc12345",
 			},
 		},
 	}
@@ -367,18 +372,13 @@ spec:
 			continue
 		}
 		props := findNode(assetNode, "properties")
-		imageTar := getStringNode(props, "imageTar")
-		expectedPath := "/partitions/" + filepath.Base(dir) + "/payloads/images/myapp.tar"
-		if imageTar != expectedPath {
-			t.Errorf("expected imageTar %q, got %q", expectedPath, imageTar)
-		}
 		srcImg := getStringNode(props, "sourceImage")
-		if srcImg != "myapp:sha256-abc12345" {
+		if srcImg != "registry.strata.local:5000/myapp:sha256-abc12345" {
 			t.Errorf("expected sourceImage, got %q", srcImg)
 		}
 		buildContext := getStringNode(props, "buildContext")
-		if buildContext != "" {
-			t.Errorf("expected buildContext removed for tar mode, got %q", buildContext)
+		if buildContext != "~/src/myapp" {
+			t.Errorf("expected buildContext preserved, got %q", buildContext)
 		}
 		return
 	}
