@@ -109,6 +109,15 @@ func imageBuildCommand() *command.Command {
 					buildArgs["BUILD_TIME"] = buildTime
 				}
 
+				buildArgs = resolveImageBuildArgs(buildArgs, state)
+				for k, v := range buildArgs {
+					if intentOutputRe.MatchString(v) {
+						dep := intentOutputRe.FindStringSubmatch(v)[1]
+						return fmt.Errorf("asset %q: build arg %q has unresolved placeholder %q — ensure asset %q is listed before this one in images.yaml",
+							asset.AssetName, k, v, dep)
+					}
+				}
+
 				dockerArgs := []string{"build", "-t", tag, "-f", dockerfile}
 				if asset.Target != "" {
 					dockerArgs = append(dockerArgs, "--target", asset.Target)

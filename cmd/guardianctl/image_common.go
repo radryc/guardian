@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -317,6 +318,86 @@ func setBoolNode(parent *yaml.Node, key string, value bool) {
 		&yaml.Node{Kind: yaml.ScalarNode, Value: key},
 		&yaml.Node{Kind: yaml.ScalarNode, Value: valStr, Tag: "!!bool"},
 	)
+}
+
+// intentOutputRe matches ${intent.<name>.outputs.<asset>.<field>} placeholders.
+var intentOutputRe = regexp.MustCompile(`\$\{intent\.[^.]+\.outputs\.([^.]+)\.([^}]+)\}`)
+
+// stampBuildArgRefs replaces ${intent.<name>.outputs.<asset>.imageRef} placeholders
+// in a properties YAML node's buildArgs map with the pushed imageRef from state.
+// This ensures intent YAMLs pushed to Guardian contain resolved image references,
+// avoiding BuildTaskFromManifest failures when the images intent has no prior outputs.
+func stampBuildArgRefs(propsNode *yaml.Node, state *imageState) bool {
+	buildArgsNode := findNode(propsNode, "buildArgs")
+	if buildArgsNode == nil || buildArgsNode.Kind != yaml.MappingNode {
+		return false
+	}
+	modified := false
+	for i := 0; i+1 < len(buildArgsNode.Content); i += 2 {
+		val := buildArgsNode.Content[i+1].Value
+		resolved := intentOutputRe.ReplaceAllStringFunc(val, func(match string) string {
+			groups := intentOutputRe.FindStringSubmatch(match)
+			if len(groups) != 3 {
+				return match
+			}
+			entry, ok := state.Images[groups[1]]
+			if !ok || entry.ImageRef == "" {
+				return match
+			}
+			if groups[2] == "imageRef" {
+				return entry.ImageRef
+			}
+			return match
+		})
+		if resolved != val {
+			buildArgsNode.Content[i+1].Value = resolved
+			modified = true
+		}
+	}
+	return modified
+}
+
+// resolveImageBuildArgs replaces ${intent.<name>.outputs.<asset>.<field>} placeholders
+// in buildArgs with values from already-built images in state. During the build phase
+// imageRef resolves to LocalTag (the remote ImageRef is not set until push).
+func resolveImageBuildArgs(buildArgs map[string]string, state *imageState) map[string]string {
+	if len(buildArgs) == 0 || state == nil {
+		return buildArgs
+	}
+	resolved := make(map[string]string, len(buildArgs))
+	for k, v := range buildArgs {
+		resolved[k] = intentOutputRe.ReplaceAllStringFunc(v, func(match string) string {
+			groups := intentOutputRe.FindStringSubmatch(match)
+			if len(groups) != 3 {
+				return match
+			}
+			entry, ok := state.Images[groups[1]]
+			if !ok {
+				return match
+			}
+			switch groups[2] {
+			case "imageRef":
+				if entry.ImageRef != "" {
+					return entry.ImageRef
+				}
+				return entry.LocalTag
+			case "localTag":
+				return entry.LocalTag
+			case "repository":
+				return entry.Repository
+			case "registry":
+				return entry.Registry
+			case "tag":
+				if entry.Tag != "" {
+					return entry.Tag
+				}
+				return entry.LocalTag
+			default:
+				return match
+			}
+		})
+	}
+	return resolved
 }
 
 func deduplicateStrings(in []string) []string {

@@ -245,6 +245,121 @@ func TestDockerDriversApplyDiffDestroy(t *testing.T) {
 	}
 }
 
+func TestDockerSecretAssetOutputs(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	backend := NewBackend()
+	reg := registry.New()
+	writeFile(t, ctx, store, "/partitions/shared/secrets/team-token", []byte("super-secret-token\n"))
+	Register(reg, backend, secrets.NewStoreResolver(store))
+	runtime := &runtimepkg.Runtime{
+		QueuePath: paths.QueueDir("docker"),
+		WorkerID:  "docker-worker",
+		Store:     store,
+		Registry:  reg,
+		CanHandle: func(t *taskdomain.Task) bool { return t.Target.Cluster == "main" },
+	}
+
+	run := func(id string, assets []taskdomain.AbstractAsset) taskdomain.TaskResult {
+		t.Helper()
+		task := taskdomain.Task{
+			APIVersion:   "guardian/v1alpha1",
+			Kind:         "Task",
+			TaskID:       id,
+			Partition:    "demo",
+			Intent:       "secrets",
+			Op:           taskdomain.OpApply,
+			TargetPusher: "docker",
+			Target:       targetdomain.Placement{Cluster: "main"},
+			Assets:       assets,
+		}
+		content, err := json.Marshal(task)
+		if err != nil {
+			t.Fatalf("marshal task: %v", err)
+		}
+		writeFile(t, ctx, store, paths.QueueTask("docker", id), content)
+		if err := runtime.ProcessPending(ctx); err != nil {
+			t.Fatalf("process task: %v", err)
+		}
+		raw, err := store.ReadFile(ctx, paths.QueueResult("docker", id))
+		if err != nil {
+			t.Fatalf("read result: %v", err)
+		}
+		var result taskdomain.TaskResult
+		if err := json.Unmarshal(raw, &result); err != nil {
+			t.Fatalf("unmarshal result: %v", err)
+		}
+		return result
+	}
+
+	refApply := run("docker-secret-ref", []taskdomain.AbstractAsset{{
+		Type: "Secret",
+		Name: "team-token",
+		Properties: map[string]any{
+			"secretRef": "monofs-secret://shared/team-token",
+		},
+	}})
+	if refApply.Status != taskdomain.ResultSucceeded {
+		t.Fatalf("ref apply status = %q, error = %v", refApply.Status, refApply.Error)
+	}
+	if got := refApply.Outputs["team-token.value"]; got != "super-secret-token" {
+		t.Fatalf("team-token.value = %q, want super-secret-token", got)
+	}
+	if got := refApply.Outputs["team-token.secretRef"]; got != "monofs-secret://shared/team-token" {
+		t.Fatalf("team-token.secretRef = %q", got)
+	}
+
+	inlineApply := run("docker-secret-inline", []taskdomain.AbstractAsset{{
+		Type: "Secret",
+		Name: "inline-token",
+		Properties: map[string]any{
+			"value": "inline-secret",
+		},
+	}})
+	if inlineApply.Status != taskdomain.ResultSucceeded {
+		t.Fatalf("inline apply status = %q, error = %v", inlineApply.Status, inlineApply.Error)
+	}
+	if got := inlineApply.Outputs["inline-token.value"]; got != "inline-secret" {
+		t.Fatalf("inline-token.value = %q, want inline-secret", got)
+	}
+}
+
+func TestDockerSecretAssetDiffWhenOutputsMissing(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	backend := NewBackend()
+	reg := registry.New()
+	writeFile(t, ctx, store, "/partitions/shared/secrets/team-token", []byte("super-secret-token\n"))
+	Register(reg, backend, secrets.NewStoreResolver(store))
+
+	driver, ok := reg.Get("Secret")
+	if !ok {
+		t.Fatal("secret driver not registered")
+	}
+
+	in := registry.AssetInput{
+		PartitionName: "demo",
+		IntentName:    "secrets",
+		Asset: taskdomain.AbstractAsset{
+			Type: "Secret",
+			Name: "team-token",
+			Properties: map[string]any{
+				"secretRef": "monofs-secret://shared/team-token",
+			},
+		},
+		Target: targetdomain.Placement{Cluster: "main"},
+		Store:  store,
+	}
+
+	drift, err := driver.Diff(ctx, in)
+	if err != nil {
+		t.Fatalf("diff error: %v", err)
+	}
+	if drift.Status != "Changed" {
+		t.Fatalf("drift status = %q, want Changed", drift.Status)
+	}
+}
+
 func TestDockerNotFoundCaseInsensitive(t *testing.T) {
 	if !dockerNotFound("[]\nError response from daemon: get demo: no such volume") {
 		t.Fatal("expected lowercase docker not-found message to be recognized")

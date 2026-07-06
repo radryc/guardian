@@ -30,6 +30,7 @@ type baseDriver struct {
 type VolumeDriver struct{ baseDriver }
 type ConfigDriver struct{ baseDriver }
 type NetworkDriver struct{ baseDriver }
+type SecretDriver struct{ baseDriver }
 type ComputeDriver struct{ baseDriver }
 type TraefikRouteDriver struct{ baseDriver }
 type LoadBalancerDriver struct{ baseDriver }
@@ -68,6 +69,7 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 	reg.Register(&VolumeDriver{base})
 	reg.Register(&ConfigDriver{base})
 	reg.Register(&NetworkDriver{base})
+	reg.Register(&SecretDriver{base})
 	reg.Register(&ComputeDriver{base})
 	reg.Register(&ImageBuildDriver{baseDriver: base, backend: NewImageBuildBackend(), defaultRegistry: strings.TrimSpace(os.Getenv("GUARDIAN_IMAGE_BUILD_REGISTRY"))})
 	reg.Register(&TraefikRouteDriver{base})
@@ -81,6 +83,7 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 func (d *VolumeDriver) Type() string                         { return "Volume" }
 func (d *ConfigDriver) Type() string                         { return "Config" }
 func (d *NetworkDriver) Type() string                        { return "Network" }
+func (d *SecretDriver) Type() string                         { return "Secret" }
 func (d *ComputeDriver) Type() string                        { return "Compute" }
 func (d *TraefikRouteDriver) Type() string                   { return "TraefikRoute" }
 func (d *LoadBalancerDriver) Type() string                   { return "LoadBalancer" }
@@ -90,6 +93,7 @@ func (d *ObservabilityDriver) Type() string                  { return "Observabi
 func (d *VolumeDriver) Validate(map[string]any) error        { return nil }
 func (d *ConfigDriver) Validate(map[string]any) error        { return nil }
 func (d *NetworkDriver) Validate(map[string]any) error       { return nil }
+func (d *SecretDriver) Validate(map[string]any) error        { return nil }
 func (d *ComputeDriver) Validate(map[string]any) error       { return nil }
 func (d *TraefikRouteDriver) Validate(map[string]any) error  { return nil }
 func (d *LoadBalancerDriver) Validate(map[string]any) error  { return nil }
@@ -339,6 +343,71 @@ func (d *NetworkDriver) Destroy(ctx context.Context, in registry.AssetInput) err
 		return err
 	}
 	return d.backend.DeleteNetwork(explicitNetworkName(in, in.Asset.Name))
+}
+
+func (d *SecretDriver) Check(ctx context.Context, in registry.AssetInput) error {
+	return ctx.Err()
+}
+
+func (d *SecretDriver) ObserveState(ctx context.Context, in registry.AssetInput) (*taskdomain.HealthObservation, *taskdomain.ApplyReadiness, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	return &taskdomain.HealthObservation{Status: taskdomain.HealthHealthy, Summary: "secret value is available"}, readyObservation("secret value is ready"), nil
+}
+
+func (d *SecretDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdomain.DriftReport, error) {
+	if err := ctx.Err(); err != nil {
+		return taskdomain.DriftReport{}, err
+	}
+	spec, err := decodeSecret(in)
+	if err != nil {
+		return taskdomain.DriftReport{}, err
+	}
+	value := spec.Value
+	if strings.TrimSpace(spec.SecretRef) != "" {
+		value, err = d.resolver.Resolve(ctx, spec.SecretRef)
+		if err != nil {
+			return taskdomain.DriftReport{}, err
+		}
+	}
+	state, err := orchestratorcommon.LoadIntentState(ctx, in.Store, in.PartitionName, in.IntentName)
+	if err != nil {
+		return changedDrift(in.Asset.Name, "secret outputs pending"), nil
+	}
+	if strings.TrimSpace(state.Outputs[in.Asset.Name+".value"]) != strings.TrimSpace(value) {
+		return changedDrift(in.Asset.Name, "secret outputs differ"), nil
+	}
+	if strings.TrimSpace(spec.SecretRef) != "" && strings.TrimSpace(state.Outputs[in.Asset.Name+".secretRef"]) != strings.TrimSpace(spec.SecretRef) {
+		return changedDrift(in.Asset.Name, "secret reference differs"), nil
+	}
+	return inSyncDrift(in.Asset.Name, "secret asset is in sync"), nil
+}
+
+func (d *SecretDriver) Apply(ctx context.Context, in registry.AssetInput) (registry.AssetResult, error) {
+	if err := ctx.Err(); err != nil {
+		return registry.AssetResult{}, err
+	}
+	spec, err := decodeSecret(in)
+	if err != nil {
+		return registry.AssetResult{}, err
+	}
+	value := spec.Value
+	if strings.TrimSpace(spec.SecretRef) != "" {
+		value, err = d.resolver.Resolve(ctx, spec.SecretRef)
+		if err != nil {
+			return registry.AssetResult{}, err
+		}
+	}
+	outputs := map[string]string{"value": value}
+	if spec.SecretRef != "" {
+		outputs["secretRef"] = spec.SecretRef
+	}
+	return registry.AssetResult{Outputs: outputs}, nil
+}
+
+func (d *SecretDriver) Destroy(ctx context.Context, in registry.AssetInput) error {
+	return ctx.Err()
 }
 
 func (d *ComputeDriver) Check(ctx context.Context, in registry.AssetInput) error {
@@ -1114,6 +1183,18 @@ func decodeNetwork(in registry.AssetInput) (*assetdefs.NetworkSpec, error) {
 	spec, ok := typed.(*assetdefs.NetworkSpec)
 	if !ok {
 		return nil, fmt.Errorf("expected NetworkSpec, got %T", typed)
+	}
+	return spec, nil
+}
+
+func decodeSecret(in registry.AssetInput) (*assetdefs.SecretSpec, error) {
+	typed, err := driverutil.DecodeAsset(in)
+	if err != nil {
+		return nil, err
+	}
+	spec, ok := typed.(*assetdefs.SecretSpec)
+	if !ok {
+		return nil, fmt.Errorf("expected SecretSpec, got %T", typed)
 	}
 	return spec, nil
 }

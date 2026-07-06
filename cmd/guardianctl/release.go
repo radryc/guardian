@@ -20,6 +20,7 @@ func releaseCommand(printer *output.Printer) *command.Command {
 	dirFlag := flags.String("dir", "", "path to partition directory")
 	build := flags.Bool("build", false, "build and push images before releasing (runs image release)")
 	bump := flags.Bool("bump", false, "bump asset versions before releasing")
+	includeSecrets := flags.Bool("include-secrets", false, "include files under secrets/ when pushing partition bundle")
 	waitFlag := flags.Bool("wait", false, "wait for partition convergence")
 	reconcile := flags.Bool("reconcile", false, "run reconcile after push")
 	dryRun := flags.Bool("dry-run", false, "print commands without executing")
@@ -32,7 +33,7 @@ func releaseCommand(printer *output.Printer) *command.Command {
 		Run: func(ctx context.Context, args []string) error {
 			storeArgs := storeFlags(*monofsRouter, *monofsToken)
 			if *allFlag {
-				return releaseAll(ctx, printer, *build, *bump, *waitFlag, *reconcile, *dryRun, storeArgs)
+				return releaseAll(ctx, printer, *build, *bump, *includeSecrets, *waitFlag, *reconcile, *dryRun, storeArgs)
 			}
 
 			if *partition == "" && *dirFlag == "" {
@@ -51,12 +52,12 @@ func releaseCommand(printer *output.Printer) *command.Command {
 				return fmt.Errorf("partition directory not found (set ST_ROOT or use --dir)")
 			}
 
-			return releaseOne(ctx, printer, partName, partDir, *build, *bump, *waitFlag, *reconcile, *dryRun, storeArgs)
+			return releaseOne(ctx, printer, partName, partDir, *build, *bump, *includeSecrets, *waitFlag, *reconcile, *dryRun, storeArgs)
 		},
 	}
 }
 
-func releaseOne(ctx context.Context, printer *output.Printer, name, dir string, build, bump, wait, reconcile, dryRun bool, storeArgs []string) error {
+func releaseOne(ctx context.Context, printer *output.Printer, name, dir string, build, bump, includeSecrets, wait, reconcile, dryRun bool, storeArgs []string) error {
 	fmt.Fprintf(os.Stderr, "=== releasing partition %s ===\n", name)
 
 	self := selfBinary()
@@ -79,9 +80,23 @@ func releaseOne(ctx context.Context, printer *output.Printer, name, dir string, 
 		}
 	}
 
+	if _, err := loadImageState(dir); err == nil {
+		fmt.Fprintf(os.Stderr, "=== stamping image refs ===\n")
+		stampArgs := []string{"image", "stamp", "--dir", dir}
+		if dryRun {
+			stampArgs = append(stampArgs, "--dry-run")
+		}
+		if err := bootstrap.Run(ctx, dryRun, self, stampArgs...); err != nil {
+			return fmt.Errorf("image stamp: %w", err)
+		}
+	}
+
 	fmt.Fprintf(os.Stderr, "=== pushing partition to Guardian ===\n")
 	pushArgs := append([]string{self}, storeArgs...)
 	pushArgs = append(pushArgs, "partition", "push", "--dir", dir)
+	if includeSecrets || name == "shared" {
+		pushArgs = append(pushArgs, "--include-secrets")
+	}
 	if err := bootstrap.Run(ctx, dryRun, pushArgs[0], pushArgs[1:]...); err != nil {
 		return fmt.Errorf("partition push: %w", err)
 	}
@@ -108,8 +123,9 @@ func releaseOne(ctx context.Context, printer *output.Printer, name, dir string, 
 	return nil
 }
 
-func releaseAll(ctx context.Context, printer *output.Printer, build, bump, wait, reconcile, dryRun bool, storeArgs []string) error {
+func releaseAll(ctx context.Context, printer *output.Printer, build, bump, includeSecrets, wait, reconcile, dryRun bool, storeArgs []string) error {
 	partitions := []string{
+		"shared",
 		"guardian-configs", "opentelemetry", "k8s-top",
 		"doctor", "monitoring", "dev-workspace", "agent", "lolipop",
 	}
@@ -120,7 +136,7 @@ func releaseAll(ctx context.Context, printer *output.Printer, build, bump, wait,
 			fmt.Fprintf(os.Stderr, "skipping %s: partition dir not found\n", name)
 			continue
 		}
-		if err := releaseOne(ctx, printer, name, dir, build, bump, wait, reconcile, dryRun, storeArgs); err != nil {
+		if err := releaseOne(ctx, printer, name, dir, build, bump, includeSecrets, wait, reconcile, dryRun, storeArgs); err != nil {
 			return fmt.Errorf("partition %s: %w", name, err)
 		}
 		fmt.Fprintln(os.Stderr)

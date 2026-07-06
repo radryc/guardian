@@ -198,6 +198,21 @@ var catalogTemplates = map[string]CatalogTemplate{
 		Fields: networkCatalogFields(),
 		Hints:  hints(networkCatalogFields()),
 	},
+	assetdomain.TypeSecret: {
+		Type:        assetdomain.TypeSecret,
+		Title:       "Secret value",
+		Description: "Provide a secret value directly or resolve it from Guardian secret storage.",
+		Icon:        "🔐",
+		Category:    "Config",
+		Template: map[string]any{
+			"secretRef": "monofs-secret://shared/encryption-key",
+		},
+		Fields: secretCatalogFields(),
+		Hints: hints(secretCatalogFields(),
+			CatalogHint{Path: "value", Title: "Inline value", Description: "Secret content stored directly in manifest properties (development only)."},
+			CatalogHint{Path: "secretRef", Title: "Secret reference", Description: "Reference to a Guardian secret file, for example monofs-secret://shared/encryption-key."},
+		),
+	},
 	assetdomain.TypeLoadBalancer: {
 		Type:        assetdomain.TypeLoadBalancer,
 		Title:       "Network edge",
@@ -551,6 +566,13 @@ func networkCatalogFields() []CatalogField {
 		{Path: "driver", Title: "Driver", Control: "select", Options: []string{"bridge", "overlay", "host", "none"}, Description: "Network driver or backend selected by the pusher."},
 		{Path: "internal", Title: "Internal only", Control: "boolean", Description: "Restrict the network to internal east-west traffic when supported."},
 		{Path: "scope", Title: "Scope", Control: "select", Options: []string{"partition", "cluster"}, Description: "Visibility boundary for the network."},
+	}
+}
+
+func secretCatalogFields() []CatalogField {
+	return []CatalogField{
+		{Path: "secretRef", Title: "Secret reference", Control: "text", Placeholder: "monofs-secret://shared/encryption-key", Description: "Secret reference resolved by Guardian at apply time."},
+		{Path: "value", Title: "Inline value", Control: "text", Description: "Inline secret material for local development only."},
 	}
 }
 
