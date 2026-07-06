@@ -257,38 +257,38 @@ func devInitCommand() *command.Command {
 					fmt.Fprintf(os.Stderr, "  WARNING: image push failed: %v\n", err)
 				}
 
-			fmt.Fprintln(os.Stderr, "=== stamping bootstrap intent versions ===")
-			if err := runImageStampDir(ctx, bootstrapDir, *dryRun); err != nil {
-				fmt.Fprintf(os.Stderr, "  WARNING: image stamp failed: %v\n", err)
+				fmt.Fprintln(os.Stderr, "=== stamping bootstrap intent versions ===")
+				if err := runImageStampDir(ctx, bootstrapDir, *dryRun); err != nil {
+					fmt.Fprintf(os.Stderr, "  WARNING: image stamp failed: %v\n", err)
+				}
+
+				// Stamp all deployed partitions with the bootstrapped image tags.
+				for _, partName := range []string{
+					"guardian-configs", "agent", "doctor", "k8s-top",
+					"monitoring", "opentelemetry", "lb-agent",
+				} {
+					partDir := filepath.Join(filepath.Dir(bootstrapDir), partName)
+					if _, err := os.Stat(partDir); err != nil {
+						continue
+					}
+					if err := func() error {
+						state, err := loadImageState(bootstrapDir)
+						if err != nil {
+							return err
+						}
+						if err := saveImageState(partDir, state); err != nil {
+							return err
+						}
+						return runImageStampDir(ctx, partDir, *dryRun)
+					}(); err != nil {
+						fmt.Fprintf(os.Stderr, "  WARNING: %s stamp failed: %v\n", partName, err)
+					} else {
+						fmt.Fprintf(os.Stderr, "  ✓ stamped %s intent versions\n", partName)
+					}
+				}
 			}
 
-			// Stamp all deployed partitions with the bootstrapped image tags.
-			for _, partName := range []string{
-				"guardian-configs", "agent", "doctor", "k8s-top",
-				"monitoring", "opentelemetry", "lb-agent",
-			} {
-				partDir := filepath.Join(filepath.Dir(bootstrapDir), partName)
-				if _, err := os.Stat(partDir); err != nil {
-					continue
-				}
-				if err := func() error {
-					state, err := loadImageState(bootstrapDir)
-					if err != nil {
-						return err
-					}
-					if err := saveImageState(partDir, state); err != nil {
-						return err
-					}
-					return runImageStampDir(ctx, partDir, *dryRun)
-				}(); err != nil {
-					fmt.Fprintf(os.Stderr, "  WARNING: %s stamp failed: %v\n", partName, err)
-				} else {
-				fmt.Fprintf(os.Stderr, "  ✓ stamped %s intent versions\n", partName)
-				}
-			}
-		}
-
-		fmt.Println("=== deploying guardian ===")
+			fmt.Println("=== deploying guardian ===")
 			if err := deployGuardianTemplates(ctx, cfg, env, guardianDir, *dryRun); err != nil {
 				return err
 			}
@@ -661,6 +661,9 @@ func deployStorageTemplates(ctx context.Context, cfg *bootstrap.Config, env boot
 	// ConfigMaps
 	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "configmap-fetcher-s3.yaml"), env, nil, dryRun)
 
+	// FUSE device plugin — must be deployed early so nodes expose sretoolhub.com/fuse
+	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "k8s-fuse-plugin.yaml"), env, nil, dryRun)
+
 	// PVCs
 	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "pvc-minio.yaml"), env, nil, dryRun)
 	bootstrap.ApplyTemplatesForEach(ctx, filepath.Join(storageDir, "pvc-fetcher.yaml"), env,
@@ -673,6 +676,15 @@ func deployStorageTemplates(ctx context.Context, cfg *bootstrap.Config, env boot
 
 	// Deployments
 	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "deploy-minio.yaml"), env, nil, dryRun)
+
+	// Wait for MinIO to be ready before deploying fetchers
+	if !dryRun {
+		if err := bootstrap.WaitForDeployment(ctx, ns, "minio", dryRun); err != nil {
+			return fmt.Errorf("waiting for minio: %w", err)
+		}
+	}
+	createMinioBucket(ctx, cfg.Storage.Namespace, dryRun)
+
 	bootstrap.ApplyTemplatesForEach(ctx, filepath.Join(storageDir, "deploy-fetcher.yaml"), env,
 		func(s string) bootstrap.Env { return bootstrap.Env{"SUFFIX": s} },
 		[]string{"a", "b"}, dryRun)
@@ -715,6 +727,7 @@ func deployStorageTemplates(ctx context.Context, cfg *bootstrap.Config, env boot
 	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "svc-haproxy.yaml"), env, nil, dryRun)
 	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "deploy-registry.yaml"), env, nil, dryRun)
 	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "svc-registry.yaml"), env, nil, dryRun)
+	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "svc-registry-external.yaml"), env, nil, dryRun)
 
 	return nil
 }
@@ -725,6 +738,48 @@ func deploysStorage() []string {
 		"node-a", "node-b", "node-c", "node-d", "node-e",
 		"router-a", "router-b", "monofs-registry",
 	}
+}
+
+func createMinioBucket(ctx context.Context, storageNamespace string, dryRun bool) {
+	awsAccessKey := os.Getenv("MINIO_ACCESS_KEY")
+	if awsAccessKey == "" {
+		awsAccessKey = "minioadmin"
+	}
+	awsSecretKey := os.Getenv("MINIO_SECRET_KEY")
+	if awsSecretKey == "" {
+		awsSecretKey = "minioadmin"
+	}
+
+	script := fmt.Sprintf(
+		`mc alias set local http://minio.%s.svc.cluster.local:9000 %s %s && mc mb local/monofs || true`,
+		storageNamespace, awsAccessKey, awsSecretKey,
+	)
+	if dryRun {
+		_ = bootstrap.Run(ctx, dryRun, "kubectl", "-n", storageNamespace,
+			"run", "minio-init-bucket", "--rm", "-i", "--restart=Never",
+			"--image=minio/mc:latest", "--command", "--", "sh", "-c", script)
+		return
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			wait := time.Duration(attempt) * 2 * time.Second
+			fmt.Fprintf(os.Stderr, "  retrying minio bucket init in %v (attempt %d/5)...\n", wait, attempt+1)
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return
+			}
+		}
+		lastErr = bootstrap.Run(ctx, dryRun, "kubectl", "-n", storageNamespace,
+			"run", "minio-init-bucket", "--rm", "-i", "--restart=Never",
+			"--image=minio/mc:latest", "--command", "--", "sh", "-c", script)
+		if lastErr == nil {
+			return
+		}
+	}
+	fmt.Fprintf(os.Stderr, "  WARNING: minio bucket bootstrap failed after retries: %v\n", lastErr)
 }
 
 func waitStorageDeployments(ctx context.Context, cfg *bootstrap.Config, dryRun bool) error {
@@ -738,11 +793,6 @@ func waitStorageDeployments(ctx context.Context, cfg *bootstrap.Config, dryRun b
 
 func waitLBEdgeDeployments(ctx context.Context, cfg *bootstrap.Config, dryRun bool) error {
 	if err := bootstrap.WaitForDeployment(ctx, cfg.LB.Namespace, "monofs-haproxy", dryRun); err != nil {
-		return err
-	}
-	// Restart lb-k8s-agent to trigger full endpoint re-sync
-	bootstrap.Run(ctx, dryRun, "kubectl", "-n", cfg.LB.Namespace, "rollout", "restart", "deployment/lb-k8s-agent")
-	if err := bootstrap.WaitForDeployment(ctx, cfg.LB.Namespace, "lb-k8s-agent", dryRun); err != nil {
 		return err
 	}
 	return nil
@@ -1098,6 +1148,14 @@ func runImageBuildDir(ctx context.Context, dir string, dryRun bool, tag string) 
 		for k, v := range asset.BuildArgs {
 			buildArgs[k] = v
 		}
+		buildArgs = resolveImageBuildArgs(buildArgs, state)
+		for k, v := range buildArgs {
+			if intentOutputRe.MatchString(v) {
+				dep := intentOutputRe.FindStringSubmatch(v)[1]
+				return fmt.Errorf("asset %q: build arg %q has unresolved placeholder %q — ensure asset %q is listed before this one in images.yaml",
+					asset.AssetName, k, v, dep)
+			}
+		}
 
 		dockerArgs := []string{"build", "-t", imgTag, "-f", dockerfile}
 		if asset.Target != "" {
@@ -1173,15 +1231,34 @@ func runImagePushDir(ctx context.Context, dir, registry string, dryRun bool) err
 			}
 		}
 
-		cmd = dockerExecCommand(ctx, "docker", "push", imageRef)
 		if dryRun {
 			fmt.Fprintf(os.Stderr, "+ docker push %s\n", imageRef)
 		} else {
-			fmt.Fprintf(os.Stderr, "+ docker push %s\n", imageRef)
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			if err := cmd.Run(); err != nil {
-				return fmt.Errorf("docker push %s: %w", imageRef, err)
+			// Retry push with backoff — registry may still be starting.
+			var lastErr error
+			for attempt := 0; attempt < 5; attempt++ {
+				if attempt > 0 {
+					wait := time.Duration(attempt) * 2 * time.Second
+					fmt.Fprintf(os.Stderr, "  retrying push in %v (attempt %d/5)...\n", wait, attempt+1)
+					select {
+					case <-time.After(wait):
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}
+				cmd := dockerExecCommand(ctx, "docker", "push", imageRef)
+				fmt.Fprintf(os.Stderr, "+ docker push %s\n", imageRef)
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				if err := cmd.Run(); err != nil {
+					lastErr = err
+					continue
+				}
+				lastErr = nil
+				break
+			}
+			if lastErr != nil {
+				return fmt.Errorf("docker push %s: %w", imageRef, lastErr)
 			}
 		}
 
@@ -1255,6 +1332,7 @@ func runImageStampDir(ctx context.Context, dir string, dryRun bool) error {
 			if imgEntry.ImageRef != "" {
 				setStringNode(propsNode, "sourceImage", imgEntry.ImageRef)
 			}
+			stampBuildArgRefs(propsNode, state)
 		}
 
 		if modified && !dryRun {

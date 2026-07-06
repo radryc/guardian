@@ -345,7 +345,13 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 		}
 		if !activeTask {
 			specHashChanged := oldSpecHash != "" && oldSpecHash != compiledIntent.IntentSpecHash
+			specNeedsApply := current.LastAppliedSpecHash != "" && current.LastAppliedSpecHash != compiledIntent.IntentSpecHash
 			nextOp := taskdomain.OpDiff
+			// If compiled spec diverges from last applied spec, force CHECK so the
+			// result processor can queue APPLY even when DIFF reports InSync.
+			if specNeedsApply {
+				nextOp = taskdomain.OpCheck
+			}
 			// Recovery path: if we already know the intent is drifted and no task
 			// is active, resume at CHECK instead of repeatedly running DIFF.
 			// Apply/Check failures need the same recovery path once the operator
@@ -385,6 +391,9 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 			// Spec changed while task in-flight — cancel old task and queue new one.
 			log.Printf("reconciler: partition=%s intent=%s spec changed while task in-flight, re-queuing", partitionName, name)
 			nextOp := taskdomain.OpDiff
+			if current.LastAppliedSpecHash != "" && current.LastAppliedSpecHash != compiledIntent.IntentSpecHash {
+				nextOp = taskdomain.OpCheck
+			}
 			next, err := common.BuildTask(ctx, r.store, current, nextOp, outputs)
 			if err != nil {
 				return fail(err)

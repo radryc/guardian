@@ -242,6 +242,76 @@ func TestServerClientConfigRejectsNonLoopback(t *testing.T) {
 	}
 }
 
+func TestBuildIntentDocumentRedactsSecretOutputs(t *testing.T) {
+	t.Parallel()
+
+	manifest := intentdomain.Intent{
+		Metadata: intentdomain.Metadata{Name: "secrets"},
+		Spec: intentdomain.IntentSpec{
+			Assets: []assetdomain.Spec{{
+				Name: "monofs-encryption-key",
+				Type: assetdomain.TypeSecret,
+			}},
+		},
+	}
+	state := &statedomain.IntentState{
+		Outputs: map[string]string{
+			"monofs-encryption-key.secretRef": "monofs-secret://shared/encryption-key",
+			"monofs-encryption-key.value":     "real-secret-value",
+		},
+	}
+
+	doc := buildIntentDocument(manifest, "ver-1", state, intentTaskRuntime{}, []string{"monofs-encryption-key"}, nil)
+
+	if got := doc.Outputs["monofs-encryption-key.value"]; got != redactedSecretValue {
+		t.Fatalf("intent output value = %q, want %q", got, redactedSecretValue)
+	}
+	if got := doc.Outputs["monofs-encryption-key.secretRef"]; got != "monofs-secret://shared/encryption-key" {
+		t.Fatalf("intent output secretRef unexpectedly changed: %q", got)
+	}
+	if len(doc.Assets) != 1 {
+		t.Fatalf("assets len = %d, want 1", len(doc.Assets))
+	}
+	if got := doc.Assets[0].Outputs["value"]; got != redactedSecretValue {
+		t.Fatalf("asset output value = %q, want %q", got, redactedSecretValue)
+	}
+	if got := doc.Assets[0].Outputs["secretRef"]; got != "monofs-secret://shared/encryption-key" {
+		t.Fatalf("asset output secretRef unexpectedly changed: %q", got)
+	}
+}
+
+func TestBuildDeploymentViewRedactsSensitiveValueOutputs(t *testing.T) {
+	t.Parallel()
+
+	view := buildDeploymentView(historydomain.DeploymentRecord{
+		Intent:             "secrets",
+		DeploymentRevision: "dep_1",
+		Outputs: map[string]string{
+			"monofs-encryption-key.value":     "real-secret-value",
+			"monofs-encryption-key.secretRef": "monofs-secret://shared/encryption-key",
+		},
+		AssetVersions: map[string]string{
+			"monofs-encryption-key": "20260702-1400",
+		},
+		AssetVersionIDs: map[string]string{
+			"monofs-encryption-key": "asset_1",
+		},
+	}, nil)
+
+	if got := view.Outputs["monofs-encryption-key.value"]; got != redactedSecretValue {
+		t.Fatalf("deployment output value = %q, want %q", got, redactedSecretValue)
+	}
+	if got := view.Outputs["monofs-encryption-key.secretRef"]; got != "monofs-secret://shared/encryption-key" {
+		t.Fatalf("deployment output secretRef unexpectedly changed: %q", got)
+	}
+	if len(view.Assets) != 1 {
+		t.Fatalf("asset deployment len = %d, want 1", len(view.Assets))
+	}
+	if got := view.Assets[0].Outputs["value"]; got != redactedSecretValue {
+		t.Fatalf("asset deployment output value = %q, want %q", got, redactedSecretValue)
+	}
+}
+
 func TestServerClientConfigAllowsMatchingDiscoveryToken(t *testing.T) {
 	t.Parallel()
 

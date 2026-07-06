@@ -22,9 +22,9 @@ type Config struct {
 }
 
 type StorageConfig struct {
-	Namespace    string   `yaml:"namespace"`
-	ClusterID    string   `yaml:"clusterId"`
-	NodeNames    []string `yaml:"nodeNames"`
+	Namespace      string   `yaml:"namespace"`
+	ClusterID      string   `yaml:"clusterId"`
+	NodeNames      []string `yaml:"nodeNames"`
 	RouterSuffixes []string `yaml:"routerSuffixes"`
 
 	Images StorageImages `yaml:"images"`
@@ -48,6 +48,7 @@ type StorageImages struct {
 	Registry   string `yaml:"registry"`
 	LB         string `yaml:"lb"`
 	Minio      string `yaml:"minio"`
+	Fuse       string `yaml:"fuse"`
 	PullPolicy string `yaml:"pullPolicy"`
 }
 
@@ -97,12 +98,12 @@ type GuardianConfig struct {
 }
 
 type GuardianImages struct {
-	Guardiand   string `yaml:"guardiand"`
-	PusherK8s   string `yaml:"pusherK8s"`
-	PusherAws   string `yaml:"pusherAws"`
+	Guardiand    string `yaml:"guardiand"`
+	PusherK8s    string `yaml:"pusherK8s"`
+	PusherAws    string `yaml:"pusherAws"`
 	PusherDocker string `yaml:"pusherDocker"`
-	LB          string `yaml:"lb"`
-	PullPolicy  string `yaml:"pullPolicy"`
+	LB           string `yaml:"lb"`
+	PullPolicy   string `yaml:"pullPolicy"`
 }
 
 type GuardianMonofs struct {
@@ -127,10 +128,10 @@ type GuardianPusherDocker struct {
 }
 
 type GuardianPusherAWS struct {
-	Enabled         bool   `yaml:"enabled"`
-	Account         string `yaml:"account"`
-	Region          string `yaml:"region"`
-	AssumeRoleName  string `yaml:"assumeRoleName"`
+	Enabled        bool   `yaml:"enabled"`
+	Account        string `yaml:"account"`
+	Region         string `yaml:"region"`
+	AssumeRoleName string `yaml:"assumeRoleName"`
 }
 
 type GuardianImageBuild struct {
@@ -163,9 +164,9 @@ type Env map[string]string
 func DefaultConfig() Config {
 	return Config{
 		Storage: StorageConfig{
-			Namespace:    "monofs",
-			ClusterID:    "monofs-cluster",
-			NodeNames:    []string{"node-a", "node-b", "node-c", "node-d", "node-e"},
+			Namespace:      "monofs",
+			ClusterID:      "monofs-cluster",
+			NodeNames:      []string{"node-a", "node-b", "node-c", "node-d", "node-e"},
 			RouterSuffixes: []string{"a", "b"},
 			Images: StorageImages{
 				Server:     "monofs-server:latest",
@@ -242,12 +243,12 @@ func DefaultConfig() Config {
 					AssumeRoleName: "GuardianCdkDeployRole",
 				},
 			},
-		ImageBuild: GuardianImageBuild{
-			Registry:                 "registry.strata.local:5000",
-			KanikoMirror:             "registry.strata.local:5000",
-			KanikoDockerConfigSecret: "",
-			BuildKitImage:            "moby/buildkit:latest",
-		},
+			ImageBuild: GuardianImageBuild{
+				Registry:                 "registry.strata.local:5000",
+				KanikoMirror:             "registry.strata.local:5000",
+				KanikoDockerConfigSecret: "",
+				BuildKitImage:            "moby/buildkit:latest",
+			},
 			LocalRegistry: GuardianLocalRegistry{
 				Name:      "monofs-registry",
 				Namespace: "monofs",
@@ -336,6 +337,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("MONOFS_LB_IMAGE"); v != "" {
 		cfg.Storage.Images.LB = v
+	}
+	if v := os.Getenv("FUSE_DEVICE_PLUGIN_IMAGE"); v != "" {
+		cfg.Storage.Images.Fuse = v
 	}
 	if v := os.Getenv("MINIO_IMAGE"); v != "" {
 		cfg.Storage.Images.Minio = v

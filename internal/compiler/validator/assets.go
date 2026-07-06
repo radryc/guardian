@@ -54,6 +54,24 @@ func validateIntentAssets(assets []intentdomain.AssetSpec, intentHints []assetdo
 				return fmt.Errorf("asset %q (%s): payload.aws is required", asset.Name, asset.Type)
 			}
 		}
+		if asset.Type == assetdomain.TypeConfig {
+			typed, _, err := assetdefs.Decode(assetdomain.Spec{
+				Type:       asset.Type,
+				Name:       asset.Name,
+				DependsOn:  append([]string(nil), asset.DependsOn...),
+				Properties: asset.Properties,
+			})
+			if err != nil {
+				return fmt.Errorf("asset %q (%s): %w", asset.Name, asset.Type, err)
+			}
+			cfg, ok := typed.(*assetdefs.ConfigSpec)
+			if !ok {
+				return fmt.Errorf("asset %q (%s): internal config spec type mismatch", asset.Name, asset.Type)
+			}
+			if cfg.Content == "" && len(cfg.Data) == 0 && len(asset.Payload) == 0 {
+				return fmt.Errorf("asset %q (%s): requires either property content, property data, or payload", asset.Name, asset.Type)
+			}
+		}
 		if err := assetdefs.ValidateAssetHints(asset.Hints); err != nil {
 			return fmt.Errorf("asset %q: %w", asset.Name, err)
 		}

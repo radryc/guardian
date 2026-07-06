@@ -52,6 +52,7 @@ function rolloutsRefreshMs(): number {
 }
 
 const FAST_REFRESH_BURST_MS = 60_000;
+const STALE_SNAPSHOT_AFTER_MS = 60_000;
 
 document.addEventListener("DOMContentLoaded", () => {
   hydrateStateFromLocation();
@@ -763,6 +764,16 @@ function renderIntentCards(): void {
             <div class="muted">${escapeHtml(intent.summary ?? "")}</div>
             <div class="pill-row mt-2">
               ${renderBadge(intent.health, intent.displayStatus, `${intent.name} intent`, intent.summary, `intent:${state.selectedPartition}:${intent.name}`)}
+              ${(() => {
+                const freshness = intentFreshness(intent);
+                return renderBadge(
+                  freshness.status,
+                  freshness.label,
+                  `${intent.name} snapshot freshness`,
+                  freshness.detail,
+                  `intent-freshness:${state.selectedPartition}:${intent.name}`,
+                );
+              })()}
               <span class="pill">${escapeHtml(intent.targetSummary ?? "Unassigned")}</span>
               ${(intent.joined ?? []).map((j: string) => `<span class="pill">joins ${escapeHtml(j)}</span>`).join("")}
               ${catSummary.map((g: any) => `<span class="pill">${escapeHtml(`${g.category} ${g.count}`)}</span>`).join("")}
@@ -1381,7 +1392,15 @@ function renderPageChrome(): void {
 
   if (activePanel === "overviewPanel" && detail) {
     subtitle = `${detail.partition.manifest.spec?.deletionPolicy ?? "orphan"} policy · ${detail.partition.manifest.spec?.reconciliation?.mode ?? "manual"} reconcile · ${detail.intents.length} intents`;
-    pills = `${renderBadge(detail.health?.status, detail.health?.displayStatus ?? "Selected", `${detail.partition.manifest.metadata.name} health`, detail.health?.summary, `partition-health:${detail.partition.manifest.metadata.name}`)} <span class="pill">${detail.topology?.nodes?.length ?? 0} nodes</span>`;
+    const freshness = partitionFreshness(detail);
+    const freshnessBadge = renderBadge(
+      freshness.status,
+      freshness.label,
+      `${detail.partition.manifest.metadata.name} snapshot freshness`,
+      freshness.detail,
+      `partition-freshness:${detail.partition.manifest.metadata.name}`,
+    );
+    pills = `${renderBadge(detail.health?.status, detail.health?.displayStatus ?? "Selected", `${detail.partition.manifest.metadata.name} health`, detail.health?.summary, `partition-health:${detail.partition.manifest.metadata.name}`)} ${freshnessBadge} <span class="pill">${detail.topology?.nodes?.length ?? 0} nodes</span>`;
   }
   if (activePanel === "topologyPanel") {
     subtitle = detail ? `Topology for ${detail.partition.manifest.metadata.name}.` : "Select a partition to inspect its graph.";
@@ -1414,6 +1433,88 @@ function renderBadge(status: string | undefined, label?: string, diagnosticTitle
     return `<span class="badge badge-${escapeAttr(normalized)}">${escapeHtml(display)}</span>`;
   }
   return `<button type="button" class="badge badge-${escapeAttr(normalized)} badge-clickable" data-diagnostic-title="${escapeAttr((diagnosticTitle ?? display).trim())}" data-diagnostic-detail="${escapeAttr(detail)}" aria-label="Show diagnostic details for ${escapeAttr(display)}">${escapeHtml(display)}</button>`;
+}
+
+function parseTimestampMs(value: unknown): number | null {
+  if (!value) {
+    return null;
+  }
+  const ms = Date.parse(String(value));
+  if (!Number.isFinite(ms)) {
+    return null;
+  }
+  return ms;
+}
+
+function latestIntentSampleMs(intent: any): number | null {
+  const ts = intent?.state?.timestamps ?? {};
+  const candidates = [
+    parseTimestampMs(ts.lastCheckAt),
+    parseTimestampMs(ts.lastApplyAt),
+    parseTimestampMs(ts.lastDiffAt),
+    parseTimestampMs(ts.lastQueuedAt),
+  ].filter((v): v is number => v !== null);
+  if (candidates.length === 0) {
+    return null;
+  }
+  return Math.max(...candidates);
+}
+
+function formatAgeMs(ageMs: number): string {
+  const sec = Math.max(0, Math.floor(ageMs / 1000));
+  if (sec < 60) {
+    return `${sec}s ago`;
+  }
+  const min = Math.floor(sec / 60);
+  if (min < 60) {
+    return `${min}m ago`;
+  }
+  const hr = Math.floor(min / 60);
+  if (hr < 24) {
+    return `${hr}h ago`;
+  }
+  const day = Math.floor(hr / 24);
+  return `${day}d ago`;
+}
+
+function intentFreshness(intent: any): { status: string; label: string; detail: string } {
+  const sampleMs = latestIntentSampleMs(intent);
+  if (sampleMs === null) {
+    return {
+      status: "neutral",
+      label: "No sample",
+      detail: "No reconciliation timestamps are available yet for this intent.",
+    };
+  }
+  const ageMs = Date.now() - sampleMs;
+  const stale = ageMs > STALE_SNAPSHOT_AFTER_MS;
+  return {
+    status: stale ? "attention" : "healthy",
+    label: stale ? `Stale ${formatAgeMs(ageMs)}` : `Fresh ${formatAgeMs(ageMs)}`,
+    detail: `Last sampled ${formatAgeMs(ageMs)} at ${formatDateTime(new Date(sampleMs).toISOString())}.`,
+  };
+}
+
+function partitionFreshness(detail: any): { status: string; label: string; detail: string } {
+  const intents = Array.isArray(detail?.intents) ? detail.intents : [];
+  const samples = intents
+    .map((intent: any) => latestIntentSampleMs(intent))
+    .filter((v: number | null): v is number => v !== null);
+  if (samples.length === 0) {
+    return {
+      status: "neutral",
+      label: "No samples",
+      detail: "No intent reconciliation timestamps are available for this partition.",
+    };
+  }
+  const newest = Math.max(...samples);
+  const ageMs = Date.now() - newest;
+  const stale = ageMs > STALE_SNAPSHOT_AFTER_MS;
+  return {
+    status: stale ? "attention" : "healthy",
+    label: stale ? `Stale snapshot ${formatAgeMs(ageMs)}` : `Fresh snapshot ${formatAgeMs(ageMs)}`,
+    detail: `Most recent intent sample is ${formatAgeMs(ageMs)} old (${formatDateTime(new Date(newest).toISOString())}).`,
+  };
 }
 
 function resolveDiagnosticDetail(cacheKey: string | undefined, status: string, detail: string | undefined): string {

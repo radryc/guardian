@@ -461,6 +461,196 @@ func TestSortedKeys(t *testing.T) {
 	}
 }
 
+func TestResolveImageBuildArgs(t *testing.T) {
+	state := &imageState{
+		Images: map[string]imageEntry{
+			"monofs-client-build": {
+				AssetName:  "monofs-client-build",
+				LocalTag:   "monofs-client:20260701-113740",
+				Repository: "monofs-client",
+				Registry:   "registry.strata.local:5000",
+			},
+			"pushed-build": {
+				AssetName: "pushed-build",
+				LocalTag:  "myapp:localsha",
+				ImageRef:  "registry.strata.local:5000/myapp:sha256-abc123",
+				Tag:       "sha256-abc123",
+			},
+		},
+	}
+
+	tests := []struct {
+		name     string
+		input    map[string]string
+		expected map[string]string
+	}{
+		{
+			name: "imageRef falls back to LocalTag when ImageRef is empty",
+			input: map[string]string{
+				"MONOFS_CLIENT_IMAGE": "${intent.images.outputs.monofs-client-build.imageRef}",
+			},
+			expected: map[string]string{
+				"MONOFS_CLIENT_IMAGE": "monofs-client:20260701-113740",
+			},
+		},
+		{
+			name: "imageRef uses ImageRef when set",
+			input: map[string]string{
+				"BASE": "${intent.images.outputs.pushed-build.imageRef}",
+			},
+			expected: map[string]string{
+				"BASE": "registry.strata.local:5000/myapp:sha256-abc123",
+			},
+		},
+		{
+			name: "localTag field",
+			input: map[string]string{
+				"LOCAL": "${intent.images.outputs.monofs-client-build.localTag}",
+			},
+			expected: map[string]string{
+				"LOCAL": "monofs-client:20260701-113740",
+			},
+		},
+		{
+			name: "repository field",
+			input: map[string]string{
+				"REPO": "${intent.images.outputs.monofs-client-build.repository}",
+			},
+			expected: map[string]string{
+				"REPO": "monofs-client",
+			},
+		},
+		{
+			name: "unknown asset leaves placeholder intact",
+			input: map[string]string{
+				"X": "${intent.images.outputs.nonexistent.imageRef}",
+			},
+			expected: map[string]string{
+				"X": "${intent.images.outputs.nonexistent.imageRef}",
+			},
+		},
+		{
+			name: "non-placeholder values are unchanged",
+			input: map[string]string{
+				"GO_VERSION": "1.22",
+			},
+			expected: map[string]string{
+				"GO_VERSION": "1.22",
+			},
+		},
+		{
+			name:     "nil state returns input unchanged",
+			input:    map[string]string{"K": "${intent.images.outputs.x.imageRef}"},
+			expected: map[string]string{"K": "${intent.images.outputs.x.imageRef}"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			st := state
+			if tc.name == "nil state returns input unchanged" {
+				st = nil
+			}
+			got := resolveImageBuildArgs(tc.input, st)
+			for k, want := range tc.expected {
+				if got[k] != want {
+					t.Errorf("key %q: got %q, want %q", k, got[k], want)
+				}
+			}
+		})
+	}
+}
+
+func TestResolveImageBuildArgsUnresolved(t *testing.T) {
+	// When the upstream asset is NOT yet in state, the placeholder must stay intact
+	// so that the caller can detect and report it as an error rather than silently
+	// passing a garbage value to Docker.
+	state := &imageState{Images: map[string]imageEntry{}}
+
+	got := resolveImageBuildArgs(map[string]string{
+		"MONOFS_CLIENT_IMAGE": "${intent.images.outputs.monofs-client-build.imageRef}",
+	}, state)
+
+	want := "${intent.images.outputs.monofs-client-build.imageRef}"
+	if got["MONOFS_CLIENT_IMAGE"] != want {
+		t.Errorf("expected placeholder to be preserved, got %q", got["MONOFS_CLIENT_IMAGE"])
+	}
+
+	if !intentOutputRe.MatchString(got["MONOFS_CLIENT_IMAGE"]) {
+		t.Errorf("intentOutputRe should match the unresolved placeholder so callers can detect it")
+	}
+}
+
+func TestStampBuildArgRefs(t *testing.T) {
+	state := &imageState{
+		Images: map[string]imageEntry{
+			"monofs-client-build": {
+				AssetName: "monofs-client-build",
+				ImageRef:  "registry.strata.local:5000/monofs-client:sha256-f010b1bac6082790",
+			},
+		},
+	}
+
+	// Build a propsNode with buildArgs containing a placeholder.
+	propsNode := &yaml.Node{
+		Kind: yaml.MappingNode,
+		Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Value: "buildArgs"},
+			{
+				Kind: yaml.MappingNode,
+				Content: []*yaml.Node{
+					{Kind: yaml.ScalarNode, Value: "MONOFS_CLIENT_IMAGE"},
+					{Kind: yaml.ScalarNode, Value: "${intent.images.outputs.monofs-client-build.imageRef}"},
+					{Kind: yaml.ScalarNode, Value: "OTHER_ARG"},
+					{Kind: yaml.ScalarNode, Value: "static-value"},
+				},
+			},
+		},
+	}
+
+	modified := stampBuildArgRefs(propsNode, state)
+	if !modified {
+		t.Fatal("expected stampBuildArgRefs to report a modification")
+	}
+
+	buildArgsNode := findNode(propsNode, "buildArgs")
+	got := buildArgsNode.Content[1].Value
+	want := "registry.strata.local:5000/monofs-client:sha256-f010b1bac6082790"
+	if got != want {
+		t.Errorf("MONOFS_CLIENT_IMAGE: got %q, want %q", got, want)
+	}
+	if buildArgsNode.Content[3].Value != "static-value" {
+		t.Error("static buildArg should be unchanged")
+	}
+}
+
+func TestStampBuildArgRefsNoop(t *testing.T) {
+	// Asset with no imageRef yet in state should leave placeholder intact.
+	state := &imageState{Images: map[string]imageEntry{}}
+	propsNode := &yaml.Node{
+		Kind: yaml.MappingNode,
+		Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Value: "buildArgs"},
+			{
+				Kind: yaml.MappingNode,
+				Content: []*yaml.Node{
+					{Kind: yaml.ScalarNode, Value: "MONOFS_CLIENT_IMAGE"},
+					{Kind: yaml.ScalarNode, Value: "${intent.images.outputs.monofs-client-build.imageRef}"},
+				},
+			},
+		},
+	}
+
+	modified := stampBuildArgRefs(propsNode, state)
+	if modified {
+		t.Error("stampBuildArgRefs should not modify when imageRef is missing from state")
+	}
+	buildArgsNode := findNode(propsNode, "buildArgs")
+	if buildArgsNode.Content[1].Value != "${intent.images.outputs.monofs-client-build.imageRef}" {
+		t.Error("placeholder should be preserved when imageRef missing")
+	}
+}
+
 func TestDeduplicateStrings(t *testing.T) {
 	in := []string{"a", "b", "a", "c", "b"}
 	out := deduplicateStrings(in)

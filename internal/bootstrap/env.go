@@ -79,6 +79,7 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["MONOFS_SEARCH_IMAGE"] = cfg.Storage.Images.Search
 	env["MONOFS_REGISTRY_IMAGE"] = cfg.Storage.Images.Registry
 	env["MONOFS_LB_IMAGE"] = cfg.Storage.Images.LB
+	env["FUSE_DEVICE_PLUGIN_IMAGE"] = cfg.Storage.Images.Fuse
 	env["MINIO_IMAGE"] = cfg.Storage.Images.Minio
 	env["MONOFS_IMAGE_PULL_POLICY"] = cfg.Storage.Images.PullPolicy
 
@@ -144,6 +145,13 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["BUILDKITD_IMAGE"] = cfg.Guardian.ImageBuild.BuildKitImage
 	env["LOCAL_REGISTRY_PORT"] = cfg.Guardian.LocalRegistry.Port
 	env["LOCAL_REGISTRY_HOST_ALIASES"] = "" // set during deploy after clusterIP is known
+	env["MONOFS_WORKSPACE_STATE_DIR"] = envOrDefault("MONOFS_WORKSPACE_STATE_DIR", "")
+	env["MONOFS_SOURCE_PUSH_MODE"] = envOrDefault("MONOFS_SOURCE_PUSH_MODE", "squash")
+	env["MONOFS_POLICY_GATE"] = envOrDefault("MONOFS_POLICY_GATE", "false")
+	env["MONOFS_POLICY_CONFIG"] = envOrDefault("MONOFS_POLICY_CONFIG", "")
+	env["MONOFS_AUTO_PUSH"] = envOrDefault("MONOFS_AUTO_PUSH", "false")
+	env["MONOFS_AUTO_PUSH_INTERVAL"] = envOrDefault("MONOFS_AUTO_PUSH_INTERVAL", "60s")
+	env["MONOFS_GUARDIAN_STATE_DIR"] = envOrDefault("MONOFS_GUARDIAN_STATE_DIR", ".monofs-router-state")
 
 	// --- AWS pusher ---
 	env["GUARDIAN_AWS_ACCOUNT"] = cfg.Guardian.Pushers.AWS.Account
@@ -157,10 +165,10 @@ func ComputeEnv(cfg *Config) (Env, error) {
 // ComputeNodeEnv computes the additional env vars for a specific node suffix.
 func ComputeNodeEnv(cfg *Config, suffix string) Env {
 	env := Env{
-		"SUFFIX":            suffix,
-		"NODE_NAME":         nodeName(suffix),
+		"SUFFIX":             suffix,
+		"NODE_NAME":          nodeName(suffix),
 		"NODE_EXTERNAL_PORT": nodeExternalPort(cfg, suffix),
-		"KVS_EXTRA_ARGS":    kvsExtraArgs(cfg, suffix),
+		"KVS_EXTRA_ARGS":     kvsExtraArgs(cfg, suffix),
 	}
 	return env
 }
@@ -172,11 +180,11 @@ func ComputeRouterEnv(cfg *Config, suffix string, externalAddrCSV string) Env {
 	}
 	routerNameVal := routerName(suffix)
 	return Env{
-		"SUFFIX":              suffix,
-		"ROUTER_NAME":         routerNameVal,
-		"ROUTER_PEER_NAME":    routerPeerName(suffix),
-		"MONOFS_CLUSTER_ID":   cfg.Storage.ClusterID,
-		"MONOFS_NODE_ADDRS":   internalNodeAddrCSV(cfg),
+		"SUFFIX":                suffix,
+		"ROUTER_NAME":           routerNameVal,
+		"ROUTER_PEER_NAME":      routerPeerName(suffix),
+		"MONOFS_CLUSTER_ID":     cfg.Storage.ClusterID,
+		"MONOFS_NODE_ADDRS":     internalNodeAddrCSV(cfg),
 		"MONOFS_EXTERNAL_ADDRS": externalAddrCSV,
 	}
 }
@@ -185,6 +193,13 @@ func ComputeRouterEnv(cfg *Config, suffix string, externalAddrCSV string) Env {
 
 func b64(s string) string {
 	return base64.StdEncoding.EncodeToString([]byte(s))
+}
+
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func generateToken(bytes int) (string, error) {

@@ -73,15 +73,15 @@ func imageStampCommand() *command.Command {
 					}
 					assetName := nameNode.Value
 
-				imgEntry, ok := state.Images[assetName]
-				if !ok || imgEntry.Tag == "" {
-					continue
-				}
+					imgEntry, ok := state.Images[assetName]
+					if !ok || imgEntry.Tag == "" {
+						continue
+					}
 
-				propsNode := findNode(assetNode, "properties")
-				if propsNode == nil || propsNode.Kind != yaml.MappingNode {
-					continue
-				}
+					propsNode := findNode(assetNode, "properties")
+					if propsNode == nil || propsNode.Kind != yaml.MappingNode {
+						continue
+					}
 
 					versionNode := findNode(assetNode, "version")
 					if versionNode != nil {

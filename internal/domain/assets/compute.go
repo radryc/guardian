@@ -35,9 +35,14 @@ type ResourceClass struct {
 }
 
 type ResourcesSpec struct {
-	Limits       ResourceClass `json:"limits,omitempty" yaml:"limits,omitempty"`
-	Requests     ResourceClass `json:"requests,omitempty" yaml:"requests,omitempty"`
-	Reservations ResourceClass `json:"reservations,omitempty" yaml:"reservations,omitempty"`
+	Limits       ResourceClass       `json:"limits,omitempty" yaml:"limits,omitempty"`
+	Requests     ResourceClass       `json:"requests,omitempty" yaml:"requests,omitempty"`
+	Reservations ResourceClass       `json:"reservations,omitempty" yaml:"reservations,omitempty"`
+}
+
+type ExtendedResourcesSpec struct {
+	Limits   map[string]string `json:"limits,omitempty" yaml:"limits,omitempty"`
+	Requests map[string]string `json:"requests,omitempty" yaml:"requests,omitempty"`
 }
 
 type HealthCheckSpec struct {
@@ -73,7 +78,9 @@ type ComputeSpec struct {
 	Ports                  []PortSpec          `json:"ports,omitempty" yaml:"ports,omitempty"`
 	VolumeMounts           []VolumeMountSpec   `json:"volumeMounts,omitempty" yaml:"volumeMounts,omitempty"`
 	ConfigMounts           []ConfigMountSpec   `json:"configMounts,omitempty" yaml:"configMounts,omitempty"`
-	HostBindMounts         []HostBindMountSpec `json:"hostBindMounts,omitempty" yaml:"hostBindMounts,omitempty"`
+	HostBindMounts         []HostBindMountSpec     `json:"hostBindMounts,omitempty" yaml:"hostBindMounts,omitempty"`
+	ExtendedResources      *ExtendedResourcesSpec  `json:"extendedResources,omitempty" yaml:"extendedResources,omitempty"`
+	HostUsers              *bool                   `json:"hostUsers,omitempty" yaml:"hostUsers,omitempty"`
 }
 
 type computeDefinition struct{}

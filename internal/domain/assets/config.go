@@ -27,9 +27,6 @@ func (configDefinition) Validate(spec any, _ ValidationContext) error {
 	if !ok {
 		return fmt.Errorf("internal config spec type mismatch")
 	}
-	if typed.Content == "" && len(typed.Data) == 0 {
-		return fmt.Errorf("requires either property content or property data")
-	}
 	for key, value := range typed.Data {
 		if err := requireString(key, "data key"); err != nil {
 			return fmt.Errorf("property data contains invalid key: %w", err)

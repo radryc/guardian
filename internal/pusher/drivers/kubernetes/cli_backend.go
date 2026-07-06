@@ -199,7 +199,7 @@ func (b *CLIBackend) UpsertDeployment(deployment Deployment) error {
 	if probe := deployment.Container.ReadinessProbe; probe != nil {
 		containerSpec["readinessProbe"] = probeSpec(probe)
 	}
-	if r := deployment.Container.Resources; r.CPURequest != "" || r.CPULimit != "" || r.MemoryRequest != "" || r.MemoryLimit != "" {
+	if r := deployment.Container.Resources; r.CPURequest != "" || r.CPULimit != "" || r.MemoryRequest != "" || r.MemoryLimit != "" || len(r.ExtendedResources) > 0 {
 		resources := map[string]any{}
 		if req := map[string]string{}; r.CPURequest != "" || r.MemoryRequest != "" {
 			if r.CPURequest != "" {
@@ -218,6 +218,25 @@ func (b *CLIBackend) UpsertDeployment(deployment Deployment) error {
 				lim["memory"] = r.MemoryLimit
 			}
 			resources["limits"] = lim
+		}
+		for k, v := range r.ExtendedResources {
+			parts := strings.SplitN(k, ".", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			category, resourceName := parts[0], parts[1]
+			switch category {
+			case "limits":
+				if resources["limits"] == nil {
+					resources["limits"] = map[string]string{}
+				}
+				resources["limits"].(map[string]string)[resourceName] = v
+			case "requests":
+				if resources["requests"] == nil {
+					resources["requests"] = map[string]string{}
+				}
+				resources["requests"].(map[string]string)[resourceName] = v
+			}
 		}
 		containerSpec["resources"] = resources
 	}
@@ -246,10 +265,13 @@ func (b *CLIBackend) UpsertDeployment(deployment Deployment) error {
 						"containers": []map[string]any{containerSpec},
 						"volumes":    volumeItems,
 					}
-					if deployment.ServiceAccountName != "" {
-						podSpec["serviceAccountName"] = deployment.ServiceAccountName
-					}
-					return podSpec
+				if deployment.ServiceAccountName != "" {
+					podSpec["serviceAccountName"] = deployment.ServiceAccountName
+				}
+				if deployment.HostUsers != nil {
+					podSpec["hostUsers"] = *deployment.HostUsers
+				}
+				return podSpec
 				}(),
 			},
 		},

@@ -77,6 +77,17 @@ func TestDecodeReturnsTypedSpecs(t *testing.T) {
 			},
 			wantTyp: "*assets.ObservabilitySpec",
 		},
+		{
+			name: "secret",
+			spec: assetdomain.Spec{
+				Type: assetdomain.TypeSecret,
+				Name: "encryption-key",
+				Properties: map[string]any{
+					"secretRef": "monofs-secret://shared/encryption-key",
+				},
+			},
+			wantTyp: "*assets.SecretSpec",
+		},
 	}
 
 	for _, tt := range tests {
