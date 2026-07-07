@@ -459,3 +459,82 @@ func validatePrebuiltAssembly(workspaceDir string) error {
 	}
 	return nil
 }
+
+func (b *CLIBackend) UpsertFileSystem(ctx context.Context, fs FileSystem) (string, error) {
+	return "", fmt.Errorf("CLIBackend does not support UpsertFileSystem; use AWSBackend")
+}
+func (b *CLIBackend) GetFileSystem(ctx context.Context, fsID string) (FileSystem, bool, error) {
+	return FileSystem{}, false, nil
+}
+func (b *CLIBackend) DeleteFileSystem(ctx context.Context, fsID string) error {
+	return fmt.Errorf("CLIBackend does not support DeleteFileSystem; use AWSBackend")
+}
+func (b *CLIBackend) UpsertParameter(ctx context.Context, param Parameter) error {
+	return fmt.Errorf("CLIBackend does not support UpsertParameter; use AWSBackend")
+}
+func (b *CLIBackend) GetParameter(ctx context.Context, name string) (Parameter, bool, error) {
+	return Parameter{}, false, nil
+}
+func (b *CLIBackend) DeleteParameter(ctx context.Context, name string) error {
+	return fmt.Errorf("CLIBackend does not support DeleteParameter; use AWSBackend")
+}
+func (b *CLIBackend) UpsertSecret(ctx context.Context, secret Secret) (string, error) {
+	return "", fmt.Errorf("CLIBackend does not support UpsertSecret; use AWSBackend")
+}
+func (b *CLIBackend) GetSecret(ctx context.Context, secretID string) (Secret, bool, error) {
+	return Secret{}, false, nil
+}
+func (b *CLIBackend) DeleteSecret(ctx context.Context, secretID string) error {
+	return nil
+}
+func (b *CLIBackend) UpsertService(ctx context.Context, svc ECSService) error {
+	return fmt.Errorf("CLIBackend does not support UpsertService; use AWSBackend")
+}
+func (b *CLIBackend) GetService(ctx context.Context, cluster, name string) (ECSService, bool, error) {
+	return ECSService{}, false, nil
+}
+func (b *CLIBackend) DeleteService(ctx context.Context, cluster, name string) error {
+	return nil
+}
+func (b *CLIBackend) UpsertLoadBalancer(ctx context.Context, lb LoadBalancer) (string, error) {
+	return "", fmt.Errorf("CLIBackend does not support UpsertLoadBalancer; use AWSBackend")
+}
+func (b *CLIBackend) GetLoadBalancer(ctx context.Context, name string) (LoadBalancer, bool, error) {
+	return LoadBalancer{}, false, nil
+}
+func (b *CLIBackend) DeleteLoadBalancer(ctx context.Context, arn string) error {
+	return nil
+}
+func (b *CLIBackend) UpsertTargetGroup(ctx context.Context, tg TargetGroup) (string, error) {
+	return "", fmt.Errorf("CLIBackend does not support UpsertTargetGroup; use AWSBackend")
+}
+func (b *CLIBackend) GetTargetGroup(ctx context.Context, name string) (TargetGroup, bool, error) {
+	return TargetGroup{}, false, nil
+}
+func (b *CLIBackend) DeleteTargetGroup(ctx context.Context, arn string) error {
+	return nil
+}
+func (b *CLIBackend) UpsertListener(ctx context.Context, listener Listener) (string, error) {
+	return "", fmt.Errorf("CLIBackend does not support UpsertListener; use AWSBackend")
+}
+func (b *CLIBackend) GetListener(ctx context.Context, lbARN string, port int) (Listener, bool, error) {
+	return Listener{}, false, nil
+}
+func (b *CLIBackend) DeleteListener(ctx context.Context, arn string) error {
+	return nil
+}
+func (b *CLIBackend) UpsertBucket(ctx context.Context, bucket BucketSpec) error {
+	return fmt.Errorf("CLIBackend does not support UpsertBucket; use AWSBackend")
+}
+func (b *CLIBackend) GetBucket(ctx context.Context, name string) (BucketSpec, bool, error) {
+	return BucketSpec{}, false, nil
+}
+func (b *CLIBackend) DeleteBucket(ctx context.Context, name string) error {
+	return nil
+}
+func (b *CLIBackend) UpsertLogGroup(ctx context.Context, group LogGroup) error {
+	return fmt.Errorf("CLIBackend does not support UpsertLogGroup; use AWSBackend")
+}
+func (b *CLIBackend) GetLogGroup(ctx context.Context, name string) (LogGroup, bool, error) {
+	return LogGroup{}, false, nil
+}

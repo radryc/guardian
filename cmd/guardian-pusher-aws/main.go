@@ -129,8 +129,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("configure aws backend: %v", err)
 	}
+	sdkBackend := awsdriver.NewAWSBackend("", region, false)
+	composite := awsdriver.NewCompositeBackend(backend, sdkBackend)
 	reg := registry.New()
-	awsdriver.Register(reg, backend, secrets.NewStoreResolver(store))
+	awsdriver.Register(reg, composite, secrets.NewStoreResolver(store))
 	runtime := &runtimepkg.Runtime{
 		QueuePath:               paths.QueueDir(pusherName),
 		WorkerID:                workerID,

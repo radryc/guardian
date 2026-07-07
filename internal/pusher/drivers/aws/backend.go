@@ -168,3 +168,56 @@ func cloneStringMap(in map[string]string) map[string]string {
 	}
 	return out
 }
+
+func (b *Backend) UpsertFileSystem(ctx context.Context, fs FileSystem) (string, error) { return "fs-test", nil }
+func (b *Backend) GetFileSystem(ctx context.Context, fsID string) (FileSystem, bool, error) {
+	return FileSystem{ID: fsID, Hash: "test"}, true, nil
+}
+func (b *Backend) DeleteFileSystem(ctx context.Context, fsID string) error { return nil }
+func (b *Backend) UpsertParameter(ctx context.Context, param Parameter) error { return nil }
+func (b *Backend) GetParameter(ctx context.Context, name string) (Parameter, bool, error) {
+	return Parameter{Name: name, Hash: "test"}, true, nil
+}
+func (b *Backend) DeleteParameter(ctx context.Context, name string) error { return nil }
+func (b *Backend) UpsertSecret(ctx context.Context, secret Secret) (string, error) {
+	return "arn:aws:secretsmanager:test:test:secret:test", nil
+}
+func (b *Backend) GetSecret(ctx context.Context, secretID string) (Secret, bool, error) {
+	return Secret{ID: secretID, Hash: "test"}, true, nil
+}
+func (b *Backend) DeleteSecret(ctx context.Context, secretID string) error { return nil }
+func (b *Backend) UpsertService(ctx context.Context, svc ECSService) error { return nil }
+func (b *Backend) GetService(ctx context.Context, cluster, name string) (ECSService, bool, error) {
+	return ECSService{Name: name, Hash: "test"}, true, nil
+}
+func (b *Backend) DeleteService(ctx context.Context, cluster, name string) error { return nil }
+func (b *Backend) UpsertLoadBalancer(ctx context.Context, lb LoadBalancer) (string, error) {
+	return "arn:aws:elasticloadbalancing:test:test:loadbalancer/test", nil
+}
+func (b *Backend) GetLoadBalancer(ctx context.Context, name string) (LoadBalancer, bool, error) {
+	return LoadBalancer{Name: name, Hash: "test"}, true, nil
+}
+func (b *Backend) DeleteLoadBalancer(ctx context.Context, arn string) error { return nil }
+func (b *Backend) UpsertTargetGroup(ctx context.Context, tg TargetGroup) (string, error) {
+	return "arn:aws:elasticloadbalancing:test:test:targetgroup/test", nil
+}
+func (b *Backend) GetTargetGroup(ctx context.Context, name string) (TargetGroup, bool, error) {
+	return TargetGroup{Name: name, Hash: "test"}, true, nil
+}
+func (b *Backend) DeleteTargetGroup(ctx context.Context, arn string) error { return nil }
+func (b *Backend) UpsertListener(ctx context.Context, listener Listener) (string, error) {
+	return "arn:aws:elasticloadbalancing:test:test:listener/test", nil
+}
+func (b *Backend) GetListener(ctx context.Context, lbARN string, port int) (Listener, bool, error) {
+	return Listener{Hash: "test"}, true, nil
+}
+func (b *Backend) DeleteListener(ctx context.Context, arn string) error { return nil }
+func (b *Backend) UpsertBucket(ctx context.Context, bucket BucketSpec) error { return nil }
+func (b *Backend) GetBucket(ctx context.Context, name string) (BucketSpec, bool, error) {
+	return BucketSpec{Name: name, Hash: "test"}, true, nil
+}
+func (b *Backend) DeleteBucket(ctx context.Context, name string) error { return nil }
+func (b *Backend) UpsertLogGroup(ctx context.Context, group LogGroup) error { return nil }
+func (b *Backend) GetLogGroup(ctx context.Context, name string) (LogGroup, bool, error) {
+	return LogGroup{Name: name, Hash: "test"}, true, nil
+}

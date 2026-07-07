@@ -912,6 +912,11 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 		reg.Register(b.Group, b.Name, b.Cmd)
 	}
 
+	// AWS commands (no store required — work with AWS APIs and CDK CLI)
+	for _, a := range awsCommands() {
+		reg.Register(a.Group, a.Name, a.Cmd)
+	}
+
 	// Image commands (no store required — work with docker directly)
 	for _, img := range imageCommands() {
 		reg.Register(img.Group, img.Name, img.Cmd)
