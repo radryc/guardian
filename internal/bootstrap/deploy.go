@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -353,11 +354,17 @@ func PatchCoreDNSForRegistry(ctx context.Context, dryRun bool) error {
 		return nil
 	}
 
-	corefile = strings.Replace(corefile, "ready\n        kubernetes",
-		"ready\n        "+rule+"\n        kubernetes", 1)
-	if !strings.Contains(corefile, rule) {
-		return fmt.Errorf("failed to insert rewrite rule into Corefile")
+	// Insert rewrite rule after the "ready" line, before the "kubernetes" block.
+	// Use regex to handle variable indentation.
+	re := regexp.MustCompile(`(?m)^(\s*ready\s*\n)(\s*kubernetes\b)`)
+	if !re.MatchString(corefile) {
+		return fmt.Errorf("failed to insert rewrite rule into Corefile: could not find 'ready' + 'kubernetes' block")
 	}
+	indent := "    "
+	if m := regexp.MustCompile(`(?m)^(\s+)kubernetes\b`).FindStringSubmatch(corefile); len(m) > 1 {
+		indent = m[1]
+	}
+	corefile = re.ReplaceAllString(corefile, "${1}"+indent+rule+"\n${2}")
 
 	patch := fmt.Sprintf(`{"data":{"Corefile":%s}}`, toJSONString(corefile))
 	if err := Run(ctx, false, "kubectl", "-n", "kube-system", "patch", "cm", "coredns",

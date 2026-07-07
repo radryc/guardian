@@ -759,6 +759,63 @@ spec:
 	}
 }
 
+func TestStoreReadReturnsFileContent(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	seedFile(t, ctx, store, "/partitions/demo/config.yaml", []byte("apiVersion: guardian/v1alpha1\n"))
+
+	var buf bytes.Buffer
+	printer := &output.Printer{Format: cliformat.FormatText, Writer: &buf}
+	reg := registerCommands(store, printer)
+
+	if err := reg.Run(ctx, []string{"store", "read", "--path", "/partitions/demo/config.yaml"}); err != nil {
+		t.Fatalf("Run(store read) error = %v", err)
+	}
+	if got := buf.String(); !strings.Contains(got, "apiVersion: guardian/v1alpha1") {
+		t.Fatalf("unexpected read output %q", got)
+	}
+}
+
+func TestFilesystemReadBlocksSecretPaths(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	seedFile(t, ctx, store, "/partitions/demo/secrets/encryption-key", []byte("super-secret\n"))
+
+	var buf bytes.Buffer
+	printer := &output.Printer{Format: cliformat.FormatText, Writer: &buf}
+	reg := registerCommands(store, printer)
+
+	err := reg.Run(ctx, []string{"filesystem", "read", "--path", "/partitions/demo/secrets/encryption-key"})
+	if err == nil {
+		t.Fatalf("Run(filesystem read) expected error")
+	}
+	if !strings.Contains(err.Error(), "access to secret paths is not allowed") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestFilesystemTreeHidesSecretsDirectory(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	seedFile(t, ctx, store, "/partitions/demo/config.yaml", []byte("apiVersion: guardian/v1alpha1\n"))
+	seedFile(t, ctx, store, "/partitions/demo/secrets/encryption-key", []byte("super-secret\n"))
+
+	var buf bytes.Buffer
+	printer := &output.Printer{Format: cliformat.FormatText, Writer: &buf}
+	reg := registerCommands(store, printer)
+
+	if err := reg.Run(ctx, []string{"filesystem", "tree", "--path", "/partitions/demo", "--recursive"}); err != nil {
+		t.Fatalf("Run(filesystem tree) error = %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "secrets") {
+		t.Fatalf("expected tree output to hide secrets, got %q", out)
+	}
+	if !strings.Contains(out, "config.yaml") {
+		t.Fatalf("expected non-secret file in tree output, got %q", out)
+	}
+}
+
 func TestPartitionListDiscoveryForbiddenIncludesKubernetesHelp(t *testing.T) {
 	ctx := context.Background()
 	resetGuardianAutoStoreHooks(t)

@@ -650,7 +650,28 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 			return storeTree(ctx, store, printer, *pathFlag, *recursiveFlag)
 		}}
 	}()))
-
+	reg.Register("store", "read", storeCommand(func() *command.Command {
+		flags := flag.NewFlagSet("store read", flag.ContinueOnError)
+		pathFlag := flags.String("path", "", "logical file path (required)")
+		return &command.Command{Description: "Read a file from the store", Flags: flags, Run: func(ctx context.Context, _ []string) error {
+			return storeRead(ctx, store, printer, *pathFlag)
+		}}
+	}()))
+	reg.Register("filesystem", "tree", storeCommand(func() *command.Command {
+		flags := flag.NewFlagSet("filesystem tree", flag.ContinueOnError)
+		pathFlag := flags.String("path", "", "logical path prefix (required)")
+		recursiveFlag := flags.Bool("recursive", false, "walk subdirectories recursively")
+		return &command.Command{Description: "List files and directories in the store", Flags: flags, Run: func(ctx context.Context, _ []string) error {
+			return storeTree(ctx, store, printer, *pathFlag, *recursiveFlag)
+		}}
+	}()))
+	reg.Register("filesystem", "read", storeCommand(func() *command.Command {
+		flags := flag.NewFlagSet("filesystem read", flag.ContinueOnError)
+		pathFlag := flags.String("path", "", "logical file path (required)")
+		return &command.Command{Description: "Read a file from the store", Flags: flags, Run: func(ctx context.Context, _ []string) error {
+			return storeRead(ctx, store, printer, *pathFlag)
+		}}
+	}()))
 
 	reg.Register("partition", "get", storeCommand(func() *command.Command {
 		flags := flag.NewFlagSet("partition get", flag.ContinueOnError)
@@ -891,6 +912,16 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 		reg.Register(b.Group, b.Name, b.Cmd)
 	}
 
+	// AWS commands (no store required — work with AWS APIs and CDK CLI)
+	for _, a := range awsCommands() {
+		reg.Register(a.Group, a.Name, a.Cmd)
+	}
+
+	// Image commands (no store required — work with docker directly)
+	for _, img := range imageCommands() {
+		reg.Register(img.Group, img.Name, img.Cmd)
+	}
+
 	// Release command
 	reg.Register("release", "run", releaseCommand(printer))
 
@@ -904,6 +935,9 @@ func storeTree(ctx context.Context, store guardianapi.Store, printer *output.Pri
 	if prefix == "" {
 		return fmt.Errorf("--path is required")
 	}
+	if isSecretPath(prefix) {
+		return fmt.Errorf("access to secret paths is not allowed")
+	}
 	return walkStoreTree(ctx, store, printer, prefix, "", recursive)
 }
 
@@ -912,8 +946,15 @@ func walkStoreTree(ctx context.Context, store guardianapi.Store, printer *output
 	if err != nil {
 		return err
 	}
-	for i, entry := range entries {
-		isLast := i == len(entries)-1
+	visible := make([]guardianapi.DirEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Name == "secrets/" || entry.Name == "secrets" {
+			continue
+		}
+		visible = append(visible, entry)
+	}
+	for i, entry := range visible {
+		isLast := i == len(visible)-1
 		connector := "├── "
 		childIndent := "│   "
 		if isLast {
@@ -943,6 +984,46 @@ func walkStoreTree(ctx context.Context, store guardianapi.Store, printer *output
 		}
 	}
 	return nil
+}
+
+func storeRead(ctx context.Context, store guardianapi.Store, printer *output.Printer, logicalPath string) error {
+	if store == nil {
+		return fmt.Errorf("store not available")
+	}
+	if logicalPath == "" {
+		return fmt.Errorf("--path is required")
+	}
+	if isSecretPath(logicalPath) {
+		return fmt.Errorf("access to secret paths is not allowed")
+	}
+	data, err := store.ReadFile(ctx, logicalPath)
+	if err != nil {
+		return err
+	}
+	if printer.Format == cliformat.FormatJSON {
+		printer.PrintJSON(map[string]any{"path": logicalPath, "content": string(data)})
+		return nil
+	}
+	_, err = fmt.Fprint(printer.Writer, string(data))
+	return err
+}
+
+func isSecretPath(logicalPath string) bool {
+	path := strings.TrimSpace(logicalPath)
+	if path == "" {
+		return false
+	}
+	path = strings.Trim(path, "/")
+	if path == "" {
+		return false
+	}
+	parts := strings.Split(path, "/")
+	for _, part := range parts {
+		if part == "secrets" {
+			return true
+		}
+	}
+	return false
 }
 
 func assetCatalogCommand(printer *output.Printer) *command.Command {

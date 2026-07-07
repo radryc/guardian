@@ -2,8 +2,10 @@ package kubernetesdriver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path"
 	"sort"
@@ -12,8 +14,10 @@ import (
 
 	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
 	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
+	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
 	orchestratorcommon "github.com/rydzu/ainfra/guardian/internal/orchestrator/common"
+	"github.com/rydzu/ainfra/guardian/internal/paths"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/driverutil"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/secrets"
@@ -26,6 +30,7 @@ type baseDriver struct {
 
 type VolumeDriver struct{ baseDriver }
 type ConfigDriver struct{ baseDriver }
+type SecretDriver struct{ baseDriver }
 type ComputeDriver struct{ baseDriver }
 type TraefikRouteDriver struct{ baseDriver }
 type LoadBalancerDriver struct{ baseDriver }
@@ -49,6 +54,7 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 	base := baseDriver{backend: backend, resolver: resolver}
 	reg.Register(&VolumeDriver{base})
 	reg.Register(&ConfigDriver{base})
+	reg.Register(&SecretDriver{base})
 	reg.Register(&ComputeDriver{base})
 	reg.Register(&ImageBuildDriver{baseDriver: base, backend: NewImageBuildBackend(), defaultRegistry: strings.TrimSpace(os.Getenv("GUARDIAN_IMAGE_BUILD_REGISTRY"))})
 	reg.Register(&TraefikRouteDriver{base})
@@ -61,6 +67,7 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 
 func (d *VolumeDriver) Type() string                         { return "Volume" }
 func (d *ConfigDriver) Type() string                         { return "Config" }
+func (d *SecretDriver) Type() string                         { return "Secret" }
 func (d *ComputeDriver) Type() string                        { return "Compute" }
 func (d *TraefikRouteDriver) Type() string                   { return "TraefikRoute" }
 func (d *LoadBalancerDriver) Type() string                   { return "LoadBalancer" }
@@ -69,6 +76,7 @@ func (d *SQLDatabaseDriver) Type() string                    { return d.typeName
 func (d *ObservabilityDriver) Type() string                  { return "Observability" }
 func (d *VolumeDriver) Validate(map[string]any) error        { return nil }
 func (d *ConfigDriver) Validate(map[string]any) error        { return nil }
+func (d *SecretDriver) Validate(map[string]any) error        { return nil }
 func (d *ComputeDriver) Validate(map[string]any) error       { return nil }
 func (d *TraefikRouteDriver) Validate(map[string]any) error  { return nil }
 func (d *LoadBalancerDriver) Validate(map[string]any) error  { return nil }
@@ -216,6 +224,71 @@ func (d *ConfigDriver) Destroy(ctx context.Context, in registry.AssetInput) erro
 		return err
 	}
 	return d.backend.DeleteConfigMap(namespace(in), configMapName(in, in.Asset.Name))
+}
+
+func (d *SecretDriver) Check(ctx context.Context, in registry.AssetInput) error {
+	return ctx.Err()
+}
+
+func (d *SecretDriver) ObserveState(ctx context.Context, in registry.AssetInput) (*taskdomain.HealthObservation, *taskdomain.ApplyReadiness, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	return &taskdomain.HealthObservation{Status: taskdomain.HealthHealthy, Summary: "secret value is available"}, &taskdomain.ApplyReadiness{Status: taskdomain.ApplyReadinessReady, Summary: "secret value is ready"}, nil
+}
+
+func (d *SecretDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdomain.DriftReport, error) {
+	if err := ctx.Err(); err != nil {
+		return taskdomain.DriftReport{}, err
+	}
+	spec, err := decodeSecret(in)
+	if err != nil {
+		return taskdomain.DriftReport{}, err
+	}
+	value := spec.Value
+	if strings.TrimSpace(spec.SecretRef) != "" {
+		value, err = d.resolver.Resolve(ctx, spec.SecretRef)
+		if err != nil {
+			return taskdomain.DriftReport{}, err
+		}
+	}
+	state, err := orchestratorcommon.LoadIntentState(ctx, in.Store, in.PartitionName, in.IntentName)
+	if err != nil {
+		return changedDrift(in.Asset.Name, "secret outputs pending"), nil
+	}
+	if strings.TrimSpace(state.Outputs[in.Asset.Name+".value"]) != strings.TrimSpace(value) {
+		return changedDrift(in.Asset.Name, "secret outputs differ"), nil
+	}
+	if strings.TrimSpace(spec.SecretRef) != "" && strings.TrimSpace(state.Outputs[in.Asset.Name+".secretRef"]) != strings.TrimSpace(spec.SecretRef) {
+		return changedDrift(in.Asset.Name, "secret reference differs"), nil
+	}
+	return inSyncDrift(in.Asset.Name, "secret asset is in sync"), nil
+}
+
+func (d *SecretDriver) Apply(ctx context.Context, in registry.AssetInput) (registry.AssetResult, error) {
+	if err := ctx.Err(); err != nil {
+		return registry.AssetResult{}, err
+	}
+	spec, err := decodeSecret(in)
+	if err != nil {
+		return registry.AssetResult{}, err
+	}
+	value := spec.Value
+	if strings.TrimSpace(spec.SecretRef) != "" {
+		value, err = d.resolver.Resolve(ctx, spec.SecretRef)
+		if err != nil {
+			return registry.AssetResult{}, err
+		}
+	}
+	outputs := map[string]string{"value": value}
+	if spec.SecretRef != "" {
+		outputs["secretRef"] = spec.SecretRef
+	}
+	return registry.AssetResult{Outputs: outputs}, nil
+}
+
+func (d *SecretDriver) Destroy(ctx context.Context, in registry.AssetInput) error {
+	return ctx.Err()
 }
 
 func (d *ComputeDriver) Check(ctx context.Context, in registry.AssetInput) error {
@@ -368,6 +441,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 		ReadyReplicas:     max(1, driverutil.IntValue(spec.Replicas, 1)),
 		AvailableReplicas: max(1, driverutil.IntValue(spec.Replicas, 1)),
 		Container:         container,
+		HostUsers:         spec.HostUsers,
 	}
 	applyWorkloadPayload(&deployment, payload)
 	markDeploymentReady(&deployment)
@@ -533,7 +607,7 @@ func (d *LoadBalancerDriver) Apply(ctx context.Context, in registry.AssetInput) 
 	}
 	container := Container{
 		Name:            "lb-edge",
-		Image:           loadBalancerContainerImage(),
+		Image:           loadBalancerImage(spec),
 		ImagePullPolicy: "IfNotPresent",
 		Env: map[string]string{
 			"LB_BOOTSTRAP": bootstrapConfig,
@@ -917,9 +991,64 @@ func (d *baseDriver) checkReferences(ctx context.Context, in registry.AssetInput
 			if _, _, err := d.backend.GetClaim(namespace(in), claimName(in, dep)); err != nil {
 				return err
 			}
+		case "ImageBuild":
+			if err := d.checkImageBuildExists(ctx, in, dep); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+func (d *baseDriver) checkImageBuildExists(ctx context.Context, in registry.AssetInput, depName string) error {
+	_, typed, err := driverutil.DecodeNamedAsset(in, depName)
+	if err != nil {
+		return err
+	}
+	_ = typed.(*assetdefs.ImageBuildSpec)
+	imageRef, err := resolveImageBuildRef(ctx, in, depName)
+	if err != nil {
+		return err
+	}
+	if imageRef == "" {
+		return fmt.Errorf("image build dependency %s has no imageRef yet", depName)
+	}
+	host, repo, tag, ok := parseImageRef(imageRef)
+	if !ok {
+		return fmt.Errorf("image build dependency %s has invalid imageRef %q", depName, imageRef)
+	}
+	url := fmt.Sprintf("http://%s/v2/%s/manifests/%s", host, repo, tag)
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+	if err != nil {
+		return fmt.Errorf("check image %s: %w", imageRef, err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("registry unreachable for %s: %w", imageRef, err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("image %s not found in registry (status %d)", imageRef, resp.StatusCode)
+	}
+	return nil
+}
+
+func resolveImageBuildRef(ctx context.Context, in registry.AssetInput, assetName string) (string, error) {
+	if in.Store == nil {
+		return "", nil
+	}
+	raw, err := in.Store.ReadFile(ctx, paths.IntentState(in.PartitionName, in.IntentName))
+	if err != nil {
+		return "", nil
+	}
+	var state statedomain.IntentState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return "", err
+	}
+	if state.Outputs == nil {
+		return "", nil
+	}
+	return strings.TrimSpace(state.Outputs[assetName+".imageRef"]), nil
 }
 
 func (d *baseDriver) observeApplyReadiness(ctx context.Context, in registry.AssetInput) (*taskdomain.ApplyReadiness, error) {
@@ -1063,6 +1192,18 @@ func decodeConfig(in registry.AssetInput) (*assetdefs.ConfigSpec, error) {
 	spec, ok := typed.(*assetdefs.ConfigSpec)
 	if !ok {
 		return nil, fmt.Errorf("expected ConfigSpec, got %T", typed)
+	}
+	return spec, nil
+}
+
+func decodeSecret(in registry.AssetInput) (*assetdefs.SecretSpec, error) {
+	typed, err := driverutil.DecodeAsset(in)
+	if err != nil {
+		return nil, err
+	}
+	spec, ok := typed.(*assetdefs.SecretSpec)
+	if !ok {
+		return nil, fmt.Errorf("expected SecretSpec, got %T", typed)
 	}
 	return spec, nil
 }
@@ -1219,6 +1360,15 @@ func buildComputeContainer(ctx context.Context, in registry.AssetInput, resolver
 			MemoryLimit:   r.Limits.Memory,
 		}
 	}
+	if er := spec.ExtendedResources; er != nil {
+		container.Resources.ExtendedResources = make(map[string]string)
+		for k, v := range er.Limits {
+			container.Resources.ExtendedResources["limits."+k] = v
+		}
+		for k, v := range er.Requests {
+			container.Resources.ExtendedResources["requests."+k] = v
+		}
+	}
 	for _, mount := range spec.VolumeMounts {
 		_, typed, err := driverutil.DecodeNamedAsset(in, mount.Volume)
 		if err != nil {
@@ -1312,6 +1462,13 @@ func loadBalancerContainerImage() string {
 		return override
 	}
 	return "lb:latest"
+}
+
+func loadBalancerImage(spec *assetdefs.LoadBalancerSpec) string {
+	if strings.TrimSpace(spec.Image) != "" {
+		return strings.TrimSpace(spec.Image)
+	}
+	return loadBalancerContainerImage()
 }
 
 func generateHAProxyConfig(in registry.AssetInput, spec *assetdefs.LoadBalancerSpec) (string, error) {

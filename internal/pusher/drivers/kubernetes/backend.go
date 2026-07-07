@@ -47,10 +47,11 @@ type VolumeMount struct {
 }
 
 type ContainerResources struct {
-	CPURequest    string
-	CPULimit      string
-	MemoryRequest string
-	MemoryLimit   string
+	CPURequest         string
+	CPULimit           string
+	MemoryRequest      string
+	MemoryLimit        string
+	ExtendedResources  map[string]string
 }
 
 type ProbeTCPSocket struct {
@@ -102,6 +103,7 @@ type Deployment struct {
 	CrashLoopBackOff   bool
 	PodFailureReason   string // non-empty when CrashLoopBackOff is true; names the exact waiting reason
 	ServiceAccountName string
+	HostUsers          *bool
 }
 
 type Service struct {
@@ -246,7 +248,10 @@ func cloneDeployment(in Deployment) Deployment {
 		ReadyReplicas:      in.ReadyReplicas,
 		AvailableReplicas:  in.AvailableReplicas,
 		Container:          cloneContainer(in.Container),
+		CrashLoopBackOff:   in.CrashLoopBackOff,
+		PodFailureReason:   in.PodFailureReason,
 		ServiceAccountName: in.ServiceAccountName,
+		HostUsers:          in.HostUsers,
 	}
 }
 
@@ -264,8 +269,24 @@ func cloneContainer(in Container) Container {
 		ReadinessProbe:  cloneProbe(in.ReadinessProbe),
 		Privileged:      in.Privileged,
 		Capabilities:    append([]string(nil), in.Capabilities...),
-		Resources:       in.Resources,
+		Resources:       cloneContainerResources(in.Resources),
 	}
+}
+
+func cloneContainerResources(in ContainerResources) ContainerResources {
+	out := ContainerResources{
+		CPURequest:    in.CPURequest,
+		CPULimit:      in.CPULimit,
+		MemoryRequest: in.MemoryRequest,
+		MemoryLimit:   in.MemoryLimit,
+	}
+	if len(in.ExtendedResources) > 0 {
+		out.ExtendedResources = make(map[string]string, len(in.ExtendedResources))
+		for k, v := range in.ExtendedResources {
+			out.ExtendedResources[k] = v
+		}
+	}
+	return out
 }
 
 func cloneProbe(in *Probe) *Probe {

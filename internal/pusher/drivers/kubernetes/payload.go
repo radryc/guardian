@@ -36,6 +36,7 @@ type workloadPayload struct {
 	ServicePorts       []ServicePort     `yaml:"servicePorts,omitempty"`
 	ServiceAnnotations map[string]string `yaml:"serviceAnnotations,omitempty"`
 	ServiceAccountName string            `yaml:"serviceAccountName,omitempty"`
+	HostUsers          *bool             `yaml:"hostUsers,omitempty"`
 }
 
 func loadVolumePayload(ctx context.Context, in registry.AssetInput) (volumePayload, error) {
@@ -110,5 +111,8 @@ func applyWorkloadPayload(deployment *Deployment, payload workloadPayload) {
 	}
 	if payload.ServiceAccountName != "" {
 		deployment.ServiceAccountName = payload.ServiceAccountName
+	}
+	if payload.HostUsers != nil {
+		deployment.HostUsers = payload.HostUsers
 	}
 }

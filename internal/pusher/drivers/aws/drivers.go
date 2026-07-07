@@ -12,6 +12,7 @@ import (
 	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
 	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
+	orchestratorcommon "github.com/rydzu/ainfra/guardian/internal/orchestrator/common"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/driverutil"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/secrets"
@@ -24,6 +25,7 @@ type baseDriver struct {
 }
 
 type CDKStackDriver struct{ baseDriver }
+type SecretDriver struct{ baseDriver }
 
 func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resolver) {
 	if reg == nil {
@@ -35,13 +37,106 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 	if resolver == nil {
 		resolver = secrets.NoopResolver{}
 	}
-	reg.Register(&CDKStackDriver{baseDriver{backend: backend, resolver: resolver}})
+	base := baseDriver{backend: backend, resolver: resolver}
+	reg.Register(&CDKStackDriver{base})
+	reg.Register(&SecretDriver{base})
+	reg.Register(&VolumeDriver{baseDriver: base})
+	reg.Register(&ConfigDriver{baseDriver: base})
+	reg.Register(&ComputeDriver{baseDriver: base})
+	reg.Register(&LoadBalancerDriver{baseDriver: base})
+	reg.Register(&ObjectStoreDriver{baseDriver: base})
 }
 
 func (d *CDKStackDriver) Type() string { return assetdomain.TypeCDKStack }
+func (d *SecretDriver) Type() string   { return assetdomain.TypeSecret }
 
 func (d *CDKStackDriver) Validate(props map[string]any) error {
 	return assetdefs.Validate(assetdomain.Spec{Type: assetdomain.TypeCDKStack, Properties: props}, assetdefs.ValidationContext{})
+}
+
+func (d *SecretDriver) Validate(props map[string]any) error {
+	return assetdefs.Validate(assetdomain.Spec{Type: assetdomain.TypeSecret, Properties: props}, assetdefs.ValidationContext{})
+}
+
+func (d *SecretDriver) Check(ctx context.Context, in registry.AssetInput) error {
+	return ctx.Err()
+}
+
+func (d *SecretDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdomain.DriftReport, error) {
+	if err := ctx.Err(); err != nil {
+		return taskdomain.DriftReport{}, err
+	}
+	specAny, err := driverutil.DecodeAsset(in)
+	if err != nil {
+		return taskdomain.DriftReport{}, err
+	}
+	spec, ok := specAny.(*assetdefs.SecretSpec)
+	if !ok {
+		return taskdomain.DriftReport{}, fmt.Errorf("expected SecretSpec, got %T", specAny)
+	}
+	value := spec.Value
+	if strings.TrimSpace(spec.SecretRef) != "" {
+		value, err = d.resolver.Resolve(ctx, spec.SecretRef)
+		if err != nil {
+			return taskdomain.DriftReport{}, err
+		}
+	}
+	state, err := orchestratorcommon.LoadIntentState(ctx, in.Store, in.PartitionName, in.IntentName)
+	if err != nil {
+		return changedDrift(in.Asset.Name, "secret outputs pending"), nil
+	}
+	if strings.TrimSpace(state.Outputs[in.Asset.Name+".value"]) != strings.TrimSpace(value) {
+		return changedDrift(in.Asset.Name, "secret outputs differ"), nil
+	}
+	if strings.TrimSpace(spec.SecretRef) != "" && strings.TrimSpace(state.Outputs[in.Asset.Name+".secretRef"]) != strings.TrimSpace(spec.SecretRef) {
+		return changedDrift(in.Asset.Name, "secret reference differs"), nil
+	}
+	return inSyncDrift(in.Asset.Name, "secret asset is in sync"), nil
+}
+
+func (d *SecretDriver) Apply(ctx context.Context, in registry.AssetInput) (registry.AssetResult, error) {
+	if err := ctx.Err(); err != nil {
+		return registry.AssetResult{}, err
+	}
+	specAny, err := driverutil.DecodeAsset(in)
+	if err != nil {
+		return registry.AssetResult{}, err
+	}
+	spec, ok := specAny.(*assetdefs.SecretSpec)
+	if !ok {
+		return registry.AssetResult{}, fmt.Errorf("expected SecretSpec, got %T", specAny)
+	}
+	value := spec.Value
+	if strings.TrimSpace(spec.SecretRef) != "" {
+		value, err = d.resolver.Resolve(ctx, spec.SecretRef)
+		if err != nil {
+			return registry.AssetResult{}, err
+		}
+	}
+
+	secretName := awsSecretName(in, in.Asset.Name)
+	hash := driverutil.CompositeHash(in)
+	tags := awsTags(in, hash)
+
+	secretARN, _ := d.backend.UpsertSecret(ctx, Secret{
+		Name:  secretName,
+		Value: value,
+		Hash:  hash,
+		Tags:  tags,
+	})
+
+	outputs := map[string]string{"value": value}
+	if spec.SecretRef != "" {
+		outputs["secretRef"] = spec.SecretRef
+	}
+	if secretARN != "" {
+		outputs["arn"] = secretARN
+	}
+	return registry.AssetResult{Outputs: outputs}, nil
+}
+
+func (d *SecretDriver) Destroy(ctx context.Context, in registry.AssetInput) error {
+	return ctx.Err()
 }
 
 func (d *CDKStackDriver) Check(ctx context.Context, in registry.AssetInput) error {

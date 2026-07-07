@@ -496,6 +496,78 @@ spec:
 	}
 }
 
+func TestReconcilePartitionSpecChangedSinceLastApplyQueuesCheck(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "test")
+	recon := reconciler.NewReconciler(store, disp, time.Minute)
+
+	seedRaw(t, ctx, store, paths.PartitionConfig("demo"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Partition
+metadata:
+  name: demo
+spec:
+  deletionPolicy: orphan
+  reconciliation:
+    mode: auto
+    interval: 30s
+`))
+	seedRaw(t, ctx, store, paths.IntentManifest("demo", "api"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: api
+spec:
+  intentType: standard
+  targetPusher: local
+  target:
+    cluster: local
+  locked: false
+  assets:
+    - type: Compute
+      name: web
+      properties:
+        image: api:v2
+`))
+
+	seedRaw(t, ctx, store, paths.IntentState("demo", "api"), mustJSON(t, statedomain.IntentState{
+		APIVersion:          "guardian/v1alpha1",
+		Kind:                "IntentState",
+		Partition:           "demo",
+		Intent:              "api",
+		Status:              statedomain.StatusHealthy,
+		TargetPusher:        "local",
+		Target:              targetdomain.Placement{Cluster: "local"},
+		IntentVersionID:     "intent-v1",
+		IntentSpecHash:      "spec-hash-v1",
+		LastAppliedSpecHash: "spec-hash-v1",
+		PartitionRevision:   "part-rev-v1",
+		AssetVersionIDs:     map[string]string{"web": "asset-v1"},
+		Outputs:             map[string]string{"web.id": "demo/api/web"},
+	}))
+
+	if err := recon.ReconcilePartition(ctx, "demo", true); err != nil {
+		t.Fatalf("ReconcilePartition() error = %v", err)
+	}
+
+	state, err := common.LoadIntentState(ctx, store, "demo", "api")
+	if err != nil {
+		t.Fatalf("LoadIntentState(api) error = %v", err)
+	}
+	if state.LastTaskID == "" {
+		t.Fatalf("expected LastTaskID to be set")
+	}
+
+	var task taskdomain.Task
+	if err := loadJSON(ctx, store, paths.QueueTask("local", state.LastTaskID), &task); err != nil {
+		t.Fatalf("load queued task error = %v", err)
+	}
+	if task.Op != taskdomain.OpCheck {
+		t.Fatalf("queued task op = %q, want %q", task.Op, taskdomain.OpCheck)
+	}
+}
+
 func mustJSON(t *testing.T, value any) []byte {
 	t.Helper()
 	content, err := json.Marshal(value)

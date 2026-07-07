@@ -244,6 +244,29 @@ func TestValidateIntentRejectsConfigWithoutPayload(t *testing.T) {
 	}
 }
 
+func TestValidateIntentAllowsConfigWithPayloadOnly(t *testing.T) {
+	intent := &intentdomain.Intent{
+		Metadata: intentdomain.Metadata{Name: "app"},
+		Spec: intentdomain.IntentSpec{
+			IntentType:   "standard",
+			TargetPusher: "local",
+			Target:       targetdomain.Placement{Cluster: "local"},
+			Assets: []intentdomain.AssetSpec{{
+				Type:    "Config",
+				Name:    "payload-config",
+				Payload: map[string]string{"k8s": "/partitions/app/payloads/config.k8s.yaml"},
+				Properties: map[string]any{
+					"format": "yaml",
+				},
+			}},
+		},
+	}
+
+	if err := ValidateIntent(intent, []string{"app"}, []string{"local"}); err != nil {
+		t.Fatalf("ValidateIntent() error = %v", err)
+	}
+}
+
 func TestValidateIntentRejectsRelativePayloadPath(t *testing.T) {
 	intent := &intentdomain.Intent{
 		Metadata: intentdomain.Metadata{Name: "app"},

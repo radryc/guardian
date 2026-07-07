@@ -718,6 +718,9 @@ func (s *Server) loadIntentActivity(ctx context.Context, partitionName, intentNa
 				if jsonErr := json.Unmarshal(resultData, &result); jsonErr == nil {
 					resp.Logs = result.Logs
 					resp.LastOp = string(result.Op)
+					if result.Drift != nil {
+						resp.Drift = result.Drift
+					}
 				}
 			}
 		}
@@ -821,7 +824,7 @@ func buildIntentDocument(manifest intentdomain.Intent, versionID string, state *
 	lastUpdatedAt := latestStateTimestamp(state)
 	outputs := map[string]string{}
 	if state != nil {
-		outputs = copyStringMap(state.Outputs)
+		outputs = redactIntentOutputsForUI(manifest.Spec.Assets, state.Outputs)
 	}
 	doc := IntentDocument{
 		Name:              manifest.Metadata.Name,
@@ -849,7 +852,7 @@ func buildIntentDocument(manifest intentdomain.Intent, versionID string, state *
 			CreatedAt:          latest.CreatedAt,
 			Target:             latest.Target,
 			TaskIDs:            append([]string(nil), latest.TaskIDs...),
-			Outputs:            copyStringMap(latest.Outputs),
+			Outputs:            redactIntentOutputsForUI(manifest.Spec.Assets, latest.Outputs),
 		}
 		if latest.CreatedAt.After(doc.LastUpdatedAt) {
 			doc.LastUpdatedAt = latest.CreatedAt
@@ -901,7 +904,7 @@ func buildAssetDocument(intentName string, spec assetdomain.Spec, intentHints []
 		Summary:        summary,
 		TaskActive:     runtime.Active,
 		TaskTimedOut:   runtime.TimedOut,
-		Outputs:        assetOutputs(state, spec.Name),
+		Outputs:        redactAssetOutputsForUI(spec.Type, assetOutputs(state, spec.Name)),
 		QuickFacts:     facts,
 		References:     refs,
 		Service:        service,
@@ -1258,6 +1261,10 @@ func buildDeploymentView(record historydomain.DeploymentRecord, logs []taskdomai
 			}
 			assets[assetName] = item
 		}
+		if isSensitiveAssetOutputForUI(outputKey) {
+			item.Outputs[outputKey] = redactedSecretValue
+			continue
+		}
 		item.Outputs[outputKey] = value
 	}
 	items := make([]AssetDeployment, 0, len(assets))
@@ -1283,7 +1290,7 @@ func buildDeploymentView(record historydomain.DeploymentRecord, logs []taskdomai
 		Target:             formatTarget(record.Target),
 		TaskIDs:            append([]string(nil), record.TaskIDs...),
 		ChangedAssets:      append([]string(nil), record.ChangedAssets...),
-		Outputs:            copyStringMap(record.Outputs),
+		Outputs:            redactOutputMapForUI(record.Outputs),
 		Assets:             items,
 	}
 }
@@ -1801,10 +1808,8 @@ func assetFacts(spec assetdomain.Spec, outputs map[string]string) (string, []Fac
 		if value.Registry != "" {
 			facts = append(facts, Fact{Label: "Registry", Value: value.Registry})
 		}
-		if value.SourceDir != "" {
+		if value.BuildContext != "" {
 			facts = append(facts, Fact{Label: "Source", Value: "build"})
-		} else if value.ImageTar != "" {
-			facts = append(facts, Fact{Label: "Source", Value: "tar"})
 		}
 		// Show resolved build source from outputs (registry / tar / build)
 		if src := strings.TrimSpace(outputs["source"]); src != "" {
@@ -1908,6 +1913,66 @@ func assetOutputs(state *statedomain.IntentState, assetName string) map[string]s
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+const redactedSecretValue = "******"
+
+func isSensitiveAssetOutputForUI(outputKey string) bool {
+	return strings.EqualFold(strings.TrimSpace(outputKey), "value")
+}
+
+func redactAssetOutputsForUI(assetType string, outputs map[string]string) map[string]string {
+	if len(outputs) == 0 {
+		return nil
+	}
+	out := copyStringMap(outputs)
+	if !strings.EqualFold(strings.TrimSpace(assetType), string(assetdomain.TypeSecret)) {
+		return out
+	}
+	for key := range out {
+		if isSensitiveAssetOutputForUI(key) {
+			out[key] = redactedSecretValue
+		}
+	}
+	return out
+}
+
+func redactIntentOutputsForUI(assets []assetdomain.Spec, outputs map[string]string) map[string]string {
+	if len(outputs) == 0 {
+		return nil
+	}
+	secretAssets := map[string]struct{}{}
+	for _, spec := range assets {
+		if strings.EqualFold(strings.TrimSpace(spec.Type), string(assetdomain.TypeSecret)) {
+			secretAssets[strings.TrimSpace(spec.Name)] = struct{}{}
+		}
+	}
+	out := copyStringMap(outputs)
+	for key := range out {
+		assetName, outputKey, ok := splitAssetOutputKey(key)
+		if !ok {
+			continue
+		}
+		if _, isSecret := secretAssets[assetName]; isSecret && isSensitiveAssetOutputForUI(outputKey) {
+			out[key] = redactedSecretValue
+		}
+	}
+	return out
+}
+
+func redactOutputMapForUI(outputs map[string]string) map[string]string {
+	if len(outputs) == 0 {
+		return nil
+	}
+	out := copyStringMap(outputs)
+	for key, value := range out {
+		if _, outputKey, ok := splitAssetOutputKey(key); ok && isSensitiveAssetOutputForUI(outputKey) {
+			out[key] = redactedSecretValue
+			continue
+		}
+		out[key] = value
 	}
 	return out
 }

@@ -91,22 +91,20 @@ var catalogTemplates = map[string]CatalogTemplate{
 		Icon:        "🏗️",
 		Category:    "Build",
 		Template: map[string]any{
-			"repository":  "example-api",
-			"registry":    "registry.strata.local:5000",
-			"sourceDir":   "/partitions/example/payloads/sources/api",
-			"imageTar":    "/partitions/example/payloads/images/example-api.tar",
-			"sourceImage": "example-api:latest",
-			"dockerfile":  "Dockerfile",
-			"platform":    "linux/amd64",
+			"repository":   "example-api",
+			"registry":     "registry.strata.local:5000",
+			"buildContext": "~/src/example",
+			"sourceImage":  "example-api:latest",
+			"dockerfile":   "Dockerfile",
+			"platform":     "linux/amd64",
 		},
 		Fields: imageBuildCatalogFields(),
 		Hints: hints(imageBuildCatalogFields(),
 			CatalogHint{Path: "repository", Title: "Repository name", Description: "Repository/name portion of the pushed image reference, without registry or tag."},
 			CatalogHint{Path: "registry", Title: "Registry host", Description: "Registry host:port used for the published immutable image. Leave empty to let the pusher use its default registry."},
-			CatalogHint{Path: "sourceDir", Title: "Staged source tree", Description: "Absolute Guardian logical path for the staged Docker build context directory. Mutually exclusive with imageTar."},
-			CatalogHint{Path: "imageTar", Title: "Pre-built image tar", Description: "Absolute Guardian logical path to a pre-built OCI image tar file. Mutually exclusive with sourceDir."},
-			CatalogHint{Path: "sourceImage", Title: "Source image name", Description: "The repo:tag inside the tar file, used for retagging after load. Required when imageTar is set."},
-			CatalogHint{Path: "dockerfile", Title: "Dockerfile path", Description: "Path to the Dockerfile relative to sourceDir. Defaults to Dockerfile."},
+			CatalogHint{Path: "buildContext", Title: "Build context", Description: "Local path to the Docker build context directory."},
+			CatalogHint{Path: "sourceImage", Title: "Source image", Description: "Registry reference for the pre-pushed image. Set automatically by image release stamp."},
+			CatalogHint{Path: "dockerfile", Title: "Dockerfile path", Description: "Path to the Dockerfile relative to buildContext. Defaults to Dockerfile."},
 			CatalogHint{Path: "target", Title: "Build target", Description: "Optional Dockerfile target stage to build."},
 			CatalogHint{Path: "platform", Title: "Platform", Description: "Optional target platform such as linux/amd64."},
 			CatalogHint{Path: "buildArgs", Title: "Build args", Description: "Docker build arguments passed to the image builder."},
@@ -199,6 +197,21 @@ var catalogTemplates = map[string]CatalogTemplate{
 		},
 		Fields: networkCatalogFields(),
 		Hints:  hints(networkCatalogFields()),
+	},
+	assetdomain.TypeSecret: {
+		Type:        assetdomain.TypeSecret,
+		Title:       "Secret value",
+		Description: "Provide a secret value directly or resolve it from Guardian secret storage.",
+		Icon:        "🔐",
+		Category:    "Config",
+		Template: map[string]any{
+			"secretRef": "monofs-secret://shared/encryption-key",
+		},
+		Fields: secretCatalogFields(),
+		Hints: hints(secretCatalogFields(),
+			CatalogHint{Path: "value", Title: "Inline value", Description: "Secret content stored directly in manifest properties (development only)."},
+			CatalogHint{Path: "secretRef", Title: "Secret reference", Description: "Reference to a Guardian secret file, for example monofs-secret://shared/encryption-key."},
+		),
 	},
 	assetdomain.TypeLoadBalancer: {
 		Type:        assetdomain.TypeLoadBalancer,
@@ -314,8 +327,7 @@ func imageBuildCatalogFields() []CatalogField {
 	return []CatalogField{
 		{Path: "repository", Title: "Repository", Control: "text", Placeholder: "example-api"},
 		{Path: "registry", Title: "Registry", Control: "text", Placeholder: "registry.strata.local:5000"},
-		{Path: "sourceDir", Title: "Source dir", Control: "text", Placeholder: "/partitions/example/payloads/sources/api"},
-		{Path: "imageTar", Title: "Image tar", Control: "text", Placeholder: "/partitions/example/payloads/images/example-api.tar"},
+		{Path: "buildContext", Title: "Build context", Control: "text", Placeholder: "~/src/example"},
 		{Path: "sourceImage", Title: "Source image", Control: "text", Placeholder: "example-api:latest"},
 		{Path: "dockerfile", Title: "Dockerfile", Control: "text", Placeholder: "Dockerfile"},
 		{Path: "target", Title: "Build target", Control: "text", Placeholder: "runtime"},
@@ -554,6 +566,13 @@ func networkCatalogFields() []CatalogField {
 		{Path: "driver", Title: "Driver", Control: "select", Options: []string{"bridge", "overlay", "host", "none"}, Description: "Network driver or backend selected by the pusher."},
 		{Path: "internal", Title: "Internal only", Control: "boolean", Description: "Restrict the network to internal east-west traffic when supported."},
 		{Path: "scope", Title: "Scope", Control: "select", Options: []string{"partition", "cluster"}, Description: "Visibility boundary for the network."},
+	}
+}
+
+func secretCatalogFields() []CatalogField {
+	return []CatalogField{
+		{Path: "secretRef", Title: "Secret reference", Control: "text", Placeholder: "monofs-secret://shared/encryption-key", Description: "Secret reference resolved by Guardian at apply time."},
+		{Path: "value", Title: "Inline value", Control: "text", Description: "Inline secret material for local development only."},
 	}
 }
 

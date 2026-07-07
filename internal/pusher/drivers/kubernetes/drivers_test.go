@@ -3,6 +3,7 @@ package kubernetesdriver
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
@@ -30,7 +31,6 @@ func TestKubernetesDriversApplyDiffDestroy(t *testing.T) {
 		Registry:  reg,
 		CanHandle: func(t *taskdomain.Task) bool { return t.Target.Cluster == "main" },
 	}
-
 	run := func(id string, op taskdomain.Operation) taskdomain.TaskResult {
 		t.Helper()
 		task := taskdomain.Task{
@@ -213,6 +213,42 @@ func TestKubernetesDriversApplyDiffDestroy(t *testing.T) {
 		t.Fatalf("get deployment after destroy: %v", err)
 	} else if ok {
 		t.Fatalf("expected compute deployment removed")
+	}
+}
+
+func TestKubernetesSecretAssetDiffWhenOutputsMissing(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	backend := NewBackend()
+	reg := registry.New()
+	writeFile(t, ctx, store, "/partitions/shared/secrets/team-token", []byte("super-secret-token\n"))
+	Register(reg, backend, secrets.NewStoreResolver(store))
+
+	driver, ok := reg.Get("Secret")
+	if !ok {
+		t.Fatal("secret driver not registered")
+	}
+
+	in := registry.AssetInput{
+		PartitionName: "demo",
+		IntentName:    "secrets",
+		Asset: taskdomain.AbstractAsset{
+			Type: "Secret",
+			Name: "team-token",
+			Properties: map[string]any{
+				"secretRef": "monofs-secret://shared/team-token",
+			},
+		},
+		Target: targetdomain.Placement{Cluster: "main", Namespace: "platform"},
+		Store:  store,
+	}
+
+	drift, err := driver.Diff(ctx, in)
+	if err != nil {
+		t.Fatalf("diff error: %v", err)
+	}
+	if drift.Status != "Changed" {
+		t.Fatalf("drift status = %q, want Changed", drift.Status)
 	}
 }
 
@@ -453,6 +489,65 @@ func TestCLIBackendContainerVolumesRendersHostPathMounts(t *testing.T) {
 		t.Fatalf("expected hostPath mount at /dev/fuse, got %+v", mounts)
 	}
 }
+
+func TestCLIBackendContainsHostUsers(t *testing.T) {
+	deployment := Deployment{
+		Name: "workspace",
+		Container: Container{
+			Resources: ContainerResources{
+				ExtendedResources: map[string]string{
+					"limits.sretoolhub.com/fuse": "1",
+				},
+			},
+		},
+	}
+	deployment.HostUsers = boolPtr(true)
+
+	containerSpec := map[string]any{
+		"name":  deployment.Name,
+		"image": "test:v1",
+	}
+	if r := deployment.Container.Resources; len(r.ExtendedResources) > 0 {
+		resources := map[string]any{}
+		for k, v := range r.ExtendedResources {
+			parts := strings.SplitN(k, ".", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			category, resourceName := parts[0], parts[1]
+			switch category {
+			case "limits":
+				if resources["limits"] == nil {
+					resources["limits"] = map[string]string{}
+				}
+				resources["limits"].(map[string]string)[resourceName] = v
+			case "requests":
+				if resources["requests"] == nil {
+					resources["requests"] = map[string]string{}
+				}
+				resources["requests"].(map[string]string)[resourceName] = v
+			}
+		}
+		containerSpec["resources"] = resources
+	}
+
+	podSpec := map[string]any{
+		"containers": []map[string]any{containerSpec},
+	}
+	if deployment.HostUsers != nil {
+		podSpec["hostUsers"] = *deployment.HostUsers
+	}
+
+	if podSpec["hostUsers"] != true {
+		t.Fatal("expected hostUsers = true in pod spec")
+	}
+	limits := containerSpec["resources"].(map[string]any)["limits"].(map[string]string)
+	if limits["sretoolhub.com/fuse"] != "1" {
+		t.Fatalf("expected limits.sretoolhub.com/fuse = 1, got %q", limits["sretoolhub.com/fuse"])
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
 
 func TestKubernetesLoadBalancerServiceTypeFromSpec(t *testing.T) {
 	ctx := context.Background()
