@@ -40,6 +40,11 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 	base := baseDriver{backend: backend, resolver: resolver}
 	reg.Register(&CDKStackDriver{base})
 	reg.Register(&SecretDriver{base})
+	reg.Register(&VolumeDriver{baseDriver: base})
+	reg.Register(&ConfigDriver{baseDriver: base})
+	reg.Register(&ComputeDriver{baseDriver: base})
+	reg.Register(&LoadBalancerDriver{baseDriver: base})
+	reg.Register(&ObjectStoreDriver{baseDriver: base})
 }
 
 func (d *CDKStackDriver) Type() string { return assetdomain.TypeCDKStack }
@@ -108,9 +113,24 @@ func (d *SecretDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 			return registry.AssetResult{}, err
 		}
 	}
+
+	secretName := awsSecretName(in, in.Asset.Name)
+	hash := driverutil.CompositeHash(in)
+	tags := awsTags(in, hash)
+
+	secretARN, _ := d.backend.UpsertSecret(ctx, Secret{
+		Name:  secretName,
+		Value: value,
+		Hash:  hash,
+		Tags:  tags,
+	})
+
 	outputs := map[string]string{"value": value}
 	if spec.SecretRef != "" {
 		outputs["secretRef"] = spec.SecretRef
+	}
+	if secretARN != "" {
+		outputs["arn"] = secretARN
 	}
 	return registry.AssetResult{Outputs: outputs}, nil
 }
