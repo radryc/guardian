@@ -52,6 +52,7 @@ func NewS3Publisher(ctx context.Context, cfg Config) (Publisher, error) {
 		bucket: cfg.S3Bucket,
 		prefix: strings.Trim(cfg.S3Prefix, "/"),
 		queue:  make(chan uploadRequest, 128),
+		done:   make(chan struct{}),
 	}
 	pub.wg.Add(1)
 	go pub.run()
@@ -69,6 +70,7 @@ type s3Publisher struct {
 	bucket string
 	prefix string
 	queue  chan uploadRequest
+	done   chan struct{}
 	once   sync.Once
 	wg     sync.WaitGroup
 }
@@ -82,12 +84,16 @@ func (p *s3Publisher) Publish(logicalPath string, content []byte, contentType st
 		content:     append([]byte(nil), content...),
 		contentType: contentType,
 	}
-	p.queue <- req
+	select {
+	case p.queue <- req:
+	case <-p.done:
+	}
 }
 
 func (p *s3Publisher) Close(ctx context.Context) error {
 	done := make(chan struct{})
 	p.once.Do(func() {
+		close(p.done)
 		close(p.queue)
 		go func() {
 			p.wg.Wait()

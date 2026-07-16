@@ -67,13 +67,6 @@ func awsTargetGroupName(in registry.AssetInput, suffix string) string {
 	return strings.TrimRight(name, "-")
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func sanitizeAlpha(s string) string {
 	result := make([]byte, 0, len(s))
 	for i := range s {

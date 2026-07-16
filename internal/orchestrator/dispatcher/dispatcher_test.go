@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
 	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
 	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
 	"github.com/rydzu/ainfra/guardian/internal/orchestrator/common"
@@ -137,6 +139,85 @@ func TestWriteIntentStateWritesPartitionRuntime(t *testing.T) {
 	if got, want := partitionState.Metrics.TotalIntents, 1; got != want {
 		t.Fatalf("partition total intents = %d, want %d", got, want)
 	}
+}
+
+func TestWriteIntentStateEmitsPartitionStatusChangeEvent(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	dispatch := NewDispatcher(store, "test")
+
+	if err := dispatch.WritePartitionState(ctx, &statedomain.PartitionState{
+		APIVersion:        "guardian/v1alpha1",
+		Kind:              "PartitionState",
+		Partition:         "demo",
+		Status:            "Compiled",
+		IntentVersions:    map[string]string{"api": "api-v1"},
+		ConfigVersionID:   "config-v1",
+		PartitionRevision: "partition-rev-v1",
+	}); err != nil {
+		t.Fatalf("WritePartitionState() error = %v", err)
+	}
+
+	if err := dispatch.WriteIntentState(ctx, &statedomain.IntentState{
+		APIVersion:        "guardian/v1alpha1",
+		Kind:              "IntentState",
+		Partition:         "demo",
+		Intent:            "api",
+		Status:            statedomain.StatusHealthy,
+		IntentVersionID:   "api-v1",
+		IntentSpecHash:    "hash-v1",
+		PartitionRevision: "partition-rev-v1",
+		TargetPusher:      "local",
+		Target:            targetdomain.Placement{Cluster: "local"},
+		Outputs:           map[string]string{"url": "https://demo.example"},
+		LastTaskID:        "task-1",
+		Timestamps: statedomain.StateTimestamps{
+			LastQueuedAt: time.Date(2026, time.May, 6, 12, 0, 0, 0, time.UTC),
+		},
+	}); err != nil {
+		t.Fatalf("WriteIntentState() error = %v", err)
+	}
+
+	events, err := eventRecords(ctx, store, "demo")
+	if err != nil {
+		t.Fatalf("eventRecords() error = %v", err)
+	}
+	var statusEvents []historydomain.EventRecord
+	for _, e := range events {
+		if e.Type == "partition.status.updated" {
+			statusEvents = append(statusEvents, e)
+		}
+	}
+	if len(statusEvents) == 0 {
+		t.Fatal("expected partition.status.updated event, got none")
+	}
+	latest := statusEvents[len(statusEvents)-1]
+	if latest.Details["status"] != "Healthy" {
+		t.Fatalf("latest status event status = %q, want Healthy", latest.Details["status"])
+	}
+}
+
+func eventRecords(ctx context.Context, store guardianapi.ReadStore, partition string) ([]historydomain.EventRecord, error) {
+	entries, err := store.ListDir(ctx, paths.StateEventsDir(partition))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]historydomain.EventRecord, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir || !strings.HasSuffix(entry.Name, ".json") {
+			continue
+		}
+		var event historydomain.EventRecord
+		data, err := store.ReadFile(ctx, paths.EventState(partition, strings.TrimSuffix(entry.Name, ".json")))
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(data, &event); err != nil {
+			return nil, err
+		}
+		out = append(out, event)
+	}
+	return out, nil
 }
 
 func TestWriteIntentStateSerializesPartitionRuntimeUpdates(t *testing.T) {

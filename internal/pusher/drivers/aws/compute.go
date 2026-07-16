@@ -3,6 +3,7 @@ package awsdriver
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
@@ -205,13 +206,6 @@ func hasCapability(caps []string, target string) bool {
 	return false
 }
 
-func portIntValue(port int, fallback int) int {
-	if port > 0 {
-		return port
-	}
-	return fallback
-}
-
 func resolveResources(spec *assetdefs.ComputeSpec) (int, int) {
 	cpu := 256
 	mem := 512
@@ -231,18 +225,37 @@ func resolveResources(spec *assetdefs.ComputeSpec) (int, int) {
 }
 
 func parseCPU(cpu string) int {
+	cpu = strings.TrimSpace(cpu)
+	if cpu == "" {
+		return 256
+	}
+	isMillicpu := strings.HasSuffix(cpu, "m")
+	if isMillicpu {
+		cpu = cpu[:len(cpu)-1]
+	}
 	val := 0
-	mult := 1
+	fracDigits := 0
 	for i := 0; i < len(cpu); i++ {
 		c := cpu[i]
 		if c >= '0' && c <= '9' {
+			if fracDigits > 0 {
+				fracDigits++
+			}
 			val = val*10 + int(c-'0')
-		} else if c == 'm' {
-			mult = 1
-			break
 		} else if c == '.' {
-			continue
+			fracDigits = 1
 		}
+	}
+	if isMillicpu {
+		// millicpu to vCPU: 1000m = 1 vCPU
+		// ECS CPU units: 1 vCPU = 1024 units
+		val = val * 1024 / 1000
+	} else if fracDigits > 0 {
+		// fractional vCPU (e.g. "0.5") — scale back the extra digits
+		for i := 1; i < fracDigits; i++ {
+			val /= 10
+		}
+		val = val * 1024
 	}
 	if val == 0 {
 		return 256
@@ -250,7 +263,7 @@ func parseCPU(cpu string) int {
 	if val < 256 {
 		return 256
 	}
-	return val * mult
+	return val
 }
 
 func parseMemory(mem string) int {

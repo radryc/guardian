@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"embed"
@@ -65,6 +66,7 @@ type Server struct {
 	pushers           []string
 	staleTaskAfter    time.Duration
 	partitionData     *partitionDataCache
+	rolloutCache      *rolloutCache
 	clientConfig      ClientConfig
 	clientConfigToken string
 	index             *template.Template
@@ -73,6 +75,8 @@ type Server struct {
 }
 
 const defaultUIDataCacheTTL = 3 * time.Second
+const defaultRolloutWindow = 12 * time.Hour
+const defaultRolloutTTL = 1 * time.Minute
 
 type partitionDataCache struct {
 	ttl     time.Duration
@@ -140,6 +144,58 @@ func (c *partitionDataCache) invalidatePartition(partitionName string) {
 	c.mu.Unlock()
 }
 
+type rolloutCache struct {
+	ttl     time.Duration
+	mu      sync.RWMutex
+	entries map[string]rolloutCacheEntry
+}
+
+type rolloutCacheEntry struct {
+	expiresAt time.Time
+	payload   *PartitionRolloutsResponse
+}
+
+func newRolloutCache(ttl time.Duration) *rolloutCache {
+	if ttl <= 0 {
+		return nil
+	}
+	return &rolloutCache{
+		ttl:     ttl,
+		entries: make(map[string]rolloutCacheEntry),
+	}
+}
+
+func (c *rolloutCache) get(key string, now time.Time) (*PartitionRolloutsResponse, bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.mu.RLock()
+	entry, ok := c.entries[key]
+	c.mu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	if now.After(entry.expiresAt) {
+		c.mu.Lock()
+		delete(c.entries, key)
+		c.mu.Unlock()
+		return nil, false
+	}
+	return entry.payload, true
+}
+
+func (c *rolloutCache) set(key string, now time.Time, payload *PartitionRolloutsResponse) {
+	if c == nil || payload == nil {
+		return
+	}
+	c.mu.Lock()
+	c.entries[key] = rolloutCacheEntry{
+		expiresAt: now.Add(c.ttl),
+		payload:   payload,
+	}
+	c.mu.Unlock()
+}
+
 func New(opts Options) (*Server, error) {
 	if opts.Store == nil {
 		return nil, fmt.Errorf("ui store is required")
@@ -169,6 +225,7 @@ func New(opts Options) (*Server, error) {
 		pushers:           pushers,
 		staleTaskAfter:    staleTaskAfter,
 		partitionData:     newPartitionDataCache(dataCacheTTL),
+		rolloutCache:      newRolloutCache(defaultRolloutTTL),
 		clientConfig:      opts.ClientConfig,
 		clientConfigToken: strings.TrimSpace(opts.ClientConfigToken),
 		index:             index,
@@ -205,10 +262,56 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	build := buildinfo.Current()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = s.index.Execute(w, map[string]any{
-		"Title": "Guardian Control Center",
-	})
+	var buf bytes.Buffer
+	if err := s.index.Execute(&buf, map[string]any{
+		"Title":              "Guardian Control Center",
+		"BuildVersionLabel":  indexBuildVersionLabel(build),
+		"BuildVersionDetail": indexBuildVersionDetail(build),
+	}); err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	buf.WriteTo(w)
+}
+
+func indexBuildVersionLabel(info buildinfo.Info) string {
+	version := strings.TrimSpace(info.Version)
+	if version == "" {
+		version = "dev"
+	}
+	revision := strings.TrimSpace(info.Revision)
+	if revision != "" && revision != "unknown" {
+		if len(revision) > 8 {
+			revision = revision[:8]
+		}
+		version = fmt.Sprintf("%s+%s", version, revision)
+	}
+	if info.Modified {
+		version += "*"
+	}
+	return version
+}
+
+func indexBuildVersionDetail(info buildinfo.Info) string {
+	parts := []string{fmt.Sprintf("version: %s", strings.TrimSpace(info.Version))}
+	if revision := strings.TrimSpace(info.Revision); revision != "" {
+		parts = append(parts, fmt.Sprintf("revision: %s", revision))
+	}
+	if branch := strings.TrimSpace(info.Branch); branch != "" {
+		parts = append(parts, fmt.Sprintf("branch: %s", branch))
+	}
+	if buildDate := strings.TrimSpace(info.BuildDate); buildDate != "" {
+		parts = append(parts, fmt.Sprintf("built: %s", buildDate))
+	}
+	if goVersion := strings.TrimSpace(info.GoVersion); goVersion != "" {
+		parts = append(parts, fmt.Sprintf("go: %s", goVersion))
+	}
+	if info.Modified {
+		parts = append(parts, "working tree modified")
+	}
+	return strings.Join(parts, " | ")
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -350,6 +453,20 @@ func (s *Server) handlePartitionRoute(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		if opts.Since == nil {
+			since := time.Now().UTC().Add(-defaultRolloutWindow)
+			opts.Since = &since
+		}
+		if r.URL.Query().Get("limit") == "" {
+			opts.LimitPerIntent = historyquery.DefaultRolloutLimit
+		}
+		cacheKey := fmt.Sprintf("rollouts:%s:%s:%s:%d", name,
+			timePtrStr(opts.Since), timePtrStr(opts.Until), opts.LimitPerIntent)
+		now := time.Now()
+		if cached, ok := s.rolloutCache.get(cacheKey, now); ok {
+			writeJSON(w, http.StatusOK, cached)
+			return
+		}
 		rollouts, err := s.loadPartitionRollouts(r.Context(), name, opts)
 		if err != nil {
 			status := http.StatusInternalServerError
@@ -359,6 +476,7 @@ func (s *Server) handlePartitionRoute(w http.ResponseWriter, r *http.Request) {
 			writeError(w, status, err)
 			return
 		}
+		s.rolloutCache.set(cacheKey, now, rollouts)
 		writeJSON(w, http.StatusOK, rollouts)
 	case "history":
 		if r.Method != http.MethodGet {
@@ -782,6 +900,13 @@ func defaultString(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func timePtrStr(t *time.Time) string {
+	if t == nil {
+		return "nil"
+	}
+	return t.Format(time.RFC3339)
 }
 
 func newCorrelationID() string {

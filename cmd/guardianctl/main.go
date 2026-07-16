@@ -552,6 +552,11 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 		return requireStoreCommand(store, cmd)
 	}
 
+	// SSO login for the CLI (device flow); these do not require the store.
+	reg.Register("auth", "login", loginCommand())
+	reg.Register("auth", "logout", logoutCommand())
+	reg.Register("auth", "whoami", whoamiCommand())
+
 	reg.Register("partition", "init", storeCommand(func() *command.Command {
 		flags := flag.NewFlagSet("partition init", flag.ContinueOnError)
 		flags.SetOutput(ioDiscard{})

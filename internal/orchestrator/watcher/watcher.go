@@ -29,10 +29,12 @@ func (w *Watcher) Watch(ctx context.Context, store guardianapi.WatchStore, parti
 	}
 	out := make(chan string)
 	ready := make(chan string, len(prefixes)+8)
+	done := make(chan struct{})
 	timers := map[string]*time.Timer{}
 
 	go func() {
 		defer close(out)
+		defer close(done)
 		defer func() {
 			for _, timer := range timers {
 				timer.Stop()
@@ -63,12 +65,12 @@ func (w *Watcher) Watch(ctx context.Context, store guardianapi.WatchStore, parti
 				if timer, exists := timers[partition]; exists {
 					timer.Stop()
 				}
-				timers[partition] = time.AfterFunc(debounce, func() {
-					select {
-					case ready <- partition:
-					case <-ctx.Done():
-					}
-				})
+			timers[partition] = time.AfterFunc(debounce, func() {
+				select {
+				case ready <- partition:
+				case <-done:
+				}
+			})
 			}
 		}
 	}()

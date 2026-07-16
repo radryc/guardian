@@ -15,6 +15,7 @@ import (
 )
 
 const DefaultDeploymentLimit = 10
+const DefaultRolloutLimit = 50
 const archiveScanPageSize = 256
 
 type DeploymentFilter struct {

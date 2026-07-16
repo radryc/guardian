@@ -27,6 +27,35 @@ const trustPolicyDocument = `{
   ]
 }`
 
+const trustPolicyDocumentRolesAnywhere = `{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::%s:root"
+      },
+      "Action": "sts:AssumeRole"
+    },
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "rolesanywhere.amazonaws.com"
+      },
+      "Action": [
+        "sts:AssumeRole",
+        "sts:TagSession",
+        "sts:SetSourceIdentity"
+      ],
+      "Condition": {
+        "ArnEquals": {
+          "aws:SourceArn": "%s"
+        }
+      }
+    }
+  ]
+}`
+
 const roleDescription = "CDK deployment role managed by Guardian. Allows CloudFormation stack create/update/delete and related resource provisioning."
 
 type RoleInfo struct {
@@ -140,6 +169,30 @@ func EnsureRole(ctx context.Context, cfg Config, accountID string) (*RoleInfo, e
 		CreatedAt: awsroot.ToTime(createOut.Role.CreateDate),
 		PolicyARN: policyARN,
 	}, nil
+}
+
+func UpdateRoleTrustPolicyForRolesAnywhere(ctx context.Context, cfg Config, accountID, trustAnchorARN string) error {
+	if cfg.DryRun {
+		fmt.Printf("  would update role trust policy with rolesanywhere.amazonaws.com for anchor %s\n", trustAnchorARN)
+		return nil
+	}
+
+	awsCfg, err := loadAWSConfig(ctx, cfg)
+	if err != nil {
+		return err
+	}
+
+	client := iam.NewFromConfig(awsCfg)
+	trustPolicy := fmt.Sprintf(trustPolicyDocumentRolesAnywhere, accountID, trustAnchorARN)
+
+	_, err = client.UpdateAssumeRolePolicy(ctx, &iam.UpdateAssumeRolePolicyInput{
+		RoleName:       awsroot.String(cfg.RoleName),
+		PolicyDocument: awsroot.String(trustPolicy),
+	})
+	if err != nil {
+		return fmt.Errorf("update trust policy for role %s: %w", cfg.RoleName, err)
+	}
+	return nil
 }
 
 func loadAWSConfig(ctx context.Context, cfg Config) (awsroot.Config, error) {

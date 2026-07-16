@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,7 +30,9 @@ type compliancePublisher interface {
 type Dispatcher struct {
 	store       guardianapi.Store
 	principalID string
-	compliance  compliancePublisher
+
+	complianceMu sync.RWMutex
+	compliance   compliancePublisher
 
 	// lastHashMu guards lastWriteHash, which is used to skip redundant
 	// WriteIntentState / WritePartitionState calls when the serialised content
@@ -54,7 +58,9 @@ func NewDispatcher(store guardianapi.Store, principalID string) *Dispatcher {
 }
 
 func (d *Dispatcher) SetCompliancePublisher(publisher compliancePublisher) {
+	d.complianceMu.Lock()
 	d.compliance = publisher
+	d.complianceMu.Unlock()
 }
 
 // SeedRuntimeMetrics warms the in-memory runtime cache from the durable store
@@ -200,8 +206,10 @@ func (d *Dispatcher) DeleteIntentState(ctx context.Context, partition, intent, c
 		delete(d.lastWriteHash, partitionStatePath)
 		delete(d.lastWriteHash, runtimePath)
 		d.lastHashMu.Unlock()
+		previousStatus := d.cachedPartitionStatus(partition)
 		if runtime != nil {
 			d.storePartitionRuntime(runtime)
+			d.emitPartitionStatusEvent(ctx, runtime, previousStatus)
 		} else {
 			d.evictPartitionRuntime(partition)
 		}
@@ -291,10 +299,13 @@ func (d *Dispatcher) ArchiveDeployment(ctx context.Context, rec *historydomain.D
 }
 
 func (d *Dispatcher) publish(logicalPath string, content []byte, contentType string) {
-	if d.compliance == nil {
+	d.complianceMu.RLock()
+	pub := d.compliance
+	d.complianceMu.RUnlock()
+	if pub == nil {
 		return
 	}
-	d.compliance.Publish(logicalPath, content, contentType)
+	pub.Publish(logicalPath, content, contentType)
 }
 
 func marshalLogEntries(entries []taskdomain.LogEntry) ([]byte, error) {
@@ -333,6 +344,7 @@ func (d *Dispatcher) lockPartitionWrites(partition string) func() {
 func (d *Dispatcher) writeStateAndRuntime(ctx context.Context, logicalPath string, content []byte, runtime *statedomain.PartitionRuntime, reason, operation string) error {
 	runtime = statedomain.NormalizePartitionRuntime(runtime)
 	partitionStatePath := paths.PartitionState(runtime.Partition)
+	previousStatus := d.cachedPartitionStatus(runtime.Partition)
 	var partitionStateContent []byte
 	if runtime.PartitionState != nil {
 		var err error
@@ -369,6 +381,7 @@ func (d *Dispatcher) writeStateAndRuntime(ctx context.Context, logicalPath strin
 	}
 	if len(writes) == 0 {
 		d.storePartitionRuntime(runtime)
+		d.emitPartitionStatusEvent(ctx, runtime, previousStatus)
 		return nil
 	}
 	if _, err := d.store.UpsertFiles(ctx, guardianapi.MutationBatch{
@@ -394,7 +407,54 @@ func (d *Dispatcher) writeStateAndRuntime(ctx context.Context, logicalPath strin
 		}
 	}
 	d.storePartitionRuntime(runtime)
+	d.emitPartitionStatusEvent(ctx, runtime, previousStatus)
 	return nil
+}
+
+func (d *Dispatcher) cachedPartitionStatus(partition string) string {
+	d.runtimeMu.RLock()
+	defer d.runtimeMu.RUnlock()
+	if cached := d.runtimeCache[partition]; cached != nil && cached.PartitionState != nil {
+		return cached.PartitionState.Status
+	}
+	return ""
+}
+
+func (d *Dispatcher) emitPartitionStatusEvent(ctx context.Context, runtime *statedomain.PartitionRuntime, previousStatus string) {
+	if runtime == nil || runtime.PartitionState == nil {
+		return
+	}
+	newStatus := strings.TrimSpace(runtime.PartitionState.Status)
+	if newStatus == "" || newStatus == previousStatus {
+		return
+	}
+	displayStatus := strings.TrimSpace(runtime.PartitionState.DisplayStatus)
+	if displayStatus == "" {
+		displayStatus = newStatus
+	}
+	message := fmt.Sprintf("partition status is %s", displayStatus)
+	if previousStatus != "" {
+		message = fmt.Sprintf("partition status changed from %s to %s", previousStatus, displayStatus)
+	}
+	details := map[string]string{
+		"status":         newStatus,
+		"previousStatus": previousStatus,
+		"displayStatus":  displayStatus,
+		"summary":        strings.TrimSpace(runtime.PartitionState.Summary),
+	}
+	if runtime.PartitionState.Metrics.TotalIntents > 0 {
+		details["totalIntents"] = strconv.Itoa(runtime.PartitionState.Metrics.TotalIntents)
+		details["healthyIntents"] = strconv.Itoa(runtime.PartitionState.Metrics.HealthyIntents)
+		details["pendingIntents"] = strconv.Itoa(runtime.PartitionState.Metrics.PendingIntents)
+		details["attentionIntents"] = strconv.Itoa(runtime.PartitionState.Metrics.AttentionIntents)
+		details["failingIntents"] = strconv.Itoa(runtime.PartitionState.Metrics.FailingIntents)
+	}
+	_ = d.WriteEvent(ctx, &historydomain.EventRecord{
+		Partition: runtime.Partition,
+		Type:      "partition.status.updated",
+		Message:   message,
+		Details:   details,
+	})
 }
 
 func (d *Dispatcher) partitionRuntime(ctx context.Context, partition string) (*statedomain.PartitionRuntime, error) {

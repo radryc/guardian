@@ -48,8 +48,12 @@ func GenerateCA(paths CertPaths) (*x509.Certificate, *rsa.PrivateKey, error) {
 		return nil, nil, fmt.Errorf("generate CA key: %w", err)
 	}
 
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate CA serial number: %w", err)
+	}
 	template := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
+		SerialNumber: serialNumber,
 		Subject: pkix.Name{
 			CommonName:   "Guardian IAM Roles Anywhere CA",
 			Organization: []string{"Guardian"},
@@ -90,8 +94,12 @@ func GenerateClientCert(paths CertPaths, caCert *x509.Certificate, caKey *rsa.Pr
 		return nil, fmt.Errorf("generate client key: %w", err)
 	}
 
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, fmt.Errorf("generate client serial number: %w", err)
+	}
 	template := &x509.Certificate{
-		SerialNumber: big.NewInt(2),
+		SerialNumber: serialNumber,
 		Subject: pkix.Name{
 			CommonName:   "guardian-pusher",
 			Organization: []string{"Guardian"},
@@ -164,15 +172,16 @@ func EnsureCerts(paths CertPaths, forceNew bool) (caPEM string, clientPEM string
 }
 
 type RolesAnywhereConfig struct {
-	Profile         string
-	Region          string
-	TrustAnchorARN  string
-	ProfileARN      string
-	RoleARN         string
-	RoleName        string
-	Certificate     string
-	PrivateKeyPath  string
-	CertDir         string
+	Profile          string
+	Region           string
+	TrustAnchorARN   string
+	ProfileARN       string
+	RoleARN          string
+	RoleName         string
+	Certificate      string
+	CertificatePath  string
+	PrivateKeyPath   string
+	CertDir          string
 }
 
 func EnsureRolesAnywhere(ctx context.Context, cfg RolesAnywhereConfig, caPEM string, sourceProfile string) (*RolesAnywhereConfig, error) {
@@ -183,13 +192,14 @@ func EnsureRolesAnywhere(ctx context.Context, cfg RolesAnywhereConfig, caPEM str
 	client := rolesanywhere.NewFromConfig(awsCfg)
 
 	result := &RolesAnywhereConfig{
-		Profile:        cfg.Profile,
-		Region:         cfg.Region,
-		RoleName:       cfg.RoleName,
-		RoleARN:        cfg.RoleARN,
-		Certificate:    cfg.Certificate,
-		PrivateKeyPath: cfg.PrivateKeyPath,
-		CertDir:        cfg.CertDir,
+		Profile:         cfg.Profile,
+		Region:          cfg.Region,
+		RoleName:        cfg.RoleName,
+		RoleARN:         cfg.RoleARN,
+		Certificate:     cfg.Certificate,
+		CertificatePath: cfg.CertificatePath,
+		PrivateKeyPath:  cfg.PrivateKeyPath,
+		CertDir:         cfg.CertDir,
 	}
 
 	taOut, err := client.CreateTrustAnchor(ctx, &rolesanywhere.CreateTrustAnchorInput{
@@ -203,19 +213,17 @@ func EnsureRolesAnywhere(ctx context.Context, cfg RolesAnywhereConfig, caPEM str
 		Enabled: awsroot.Bool(true),
 	})
 	if err != nil {
-		if !strings.Contains(err.Error(), "already exists") && !strings.Contains(err.Error(), "ConflictException") {
-			existing, listErr := client.ListTrustAnchors(ctx, &rolesanywhere.ListTrustAnchorsInput{})
-			if listErr == nil {
-				for _, ta := range existing.TrustAnchors {
-					if awsroot.ToString(ta.Name) == "GuardianLocalAnchor" && awsroot.ToBool(ta.Enabled) {
-						result.TrustAnchorARN = awsroot.ToString(ta.TrustAnchorArn)
-						break
-					}
+		existing, listErr := client.ListTrustAnchors(ctx, &rolesanywhere.ListTrustAnchorsInput{})
+		if listErr == nil {
+			for _, ta := range existing.TrustAnchors {
+				if awsroot.ToString(ta.Name) == "GuardianLocalAnchor" {
+					result.TrustAnchorARN = awsroot.ToString(ta.TrustAnchorArn)
+					break
 				}
 			}
-			if result.TrustAnchorARN == "" {
-				return nil, fmt.Errorf("create trust anchor: %w", err)
-			}
+		}
+		if result.TrustAnchorARN == "" {
+			return nil, fmt.Errorf("create trust anchor: %w", err)
 		}
 	}
 	if result.TrustAnchorARN == "" && taOut != nil {
@@ -228,22 +236,17 @@ func EnsureRolesAnywhere(ctx context.Context, cfg RolesAnywhereConfig, caPEM str
 		RoleArns: roleARNs,
 		Enabled:  awsroot.Bool(true),
 	})
-	_ = profileOut
 	if err != nil {
-		if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "ConflictException") {
-			existing, listErr := client.ListProfiles(ctx, &rolesanywhere.ListProfilesInput{})
-			if listErr == nil {
-				for _, p := range existing.Profiles {
-					if awsroot.ToString(p.Name) == "GuardianLocalProfile" {
-						result.ProfileARN = awsroot.ToString(p.ProfileArn)
-						break
-					}
+		existing, listErr := client.ListProfiles(ctx, &rolesanywhere.ListProfilesInput{})
+		if listErr == nil {
+			for _, p := range existing.Profiles {
+				if awsroot.ToString(p.Name) == "GuardianLocalProfile" {
+					result.ProfileARN = awsroot.ToString(p.ProfileArn)
+					break
 				}
 			}
-			if result.ProfileARN == "" {
-				return nil, fmt.Errorf("create profile: %w", err)
-			}
-		} else {
+		}
+		if result.ProfileARN == "" {
 			return nil, fmt.Errorf("create profile: %w", err)
 		}
 	}
@@ -288,7 +291,7 @@ credential_process = aws_signing_helper credential-process \\
   --role-arn %s
 region = %s
 `, 
-		cfg.Certificate,
+		cfg.CertificatePath,
 		cfg.PrivateKeyPath,
 		cfg.TrustAnchorARN,
 		cfg.ProfileARN,
@@ -310,25 +313,36 @@ region = %s
 }
 
 func appendAWSConfig(path, block string) error {
-	os.MkdirAll(filepath.Dir(path), 0700)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
 
 	existing, _ := os.ReadFile(path)
 	content := string(existing)
 
 	if strings.Contains(content, "[profile guardian-rolesanywhere]") {
-		return nil
+		start := strings.Index(content, "[profile guardian-rolesanywhere]")
+		end := strings.Index(content[start:], "\n[")
+		if end == -1 {
+			end = len(content) - start
+		}
+		content = strings.TrimRight(content[:start]+content[start+end:], "\n")
 	}
 
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	f, err := os.OpenFile(path, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	if len(content) > 0 && !strings.HasSuffix(content, "\n\n") {
-		f.WriteString("\n")
+	if len(content) > 0 {
+		if _, err := f.WriteString(content + "\n\n"); err != nil {
+			return err
+		}
 	}
-	f.WriteString(block)
+	if _, err := f.WriteString(block); err != nil {
+		return err
+	}
 	return nil
 }
 

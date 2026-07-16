@@ -118,12 +118,15 @@ func (d *SecretDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 	hash := driverutil.CompositeHash(in)
 	tags := awsTags(in, hash)
 
-	secretARN, _ := d.backend.UpsertSecret(ctx, Secret{
+	secretARN, err := d.backend.UpsertSecret(ctx, Secret{
 		Name:  secretName,
 		Value: value,
 		Hash:  hash,
 		Tags:  tags,
 	})
+	if err != nil {
+		return registry.AssetResult{}, fmt.Errorf("upsert secret: %w", err)
+	}
 
 	outputs := map[string]string{"value": value}
 	if spec.SecretRef != "" {

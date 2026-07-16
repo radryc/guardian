@@ -233,8 +233,13 @@ type RolloutView struct {
 	Current            bool               `json:"current,omitempty"`
 	NewIntent          bool               `json:"newIntent,omitempty"`
 	SelfHealing        bool               `json:"selfHealing,omitempty"`
+	HealthStatus       string             `json:"healthStatus,omitempty"`
+	HealthText         string             `json:"healthText,omitempty"`
+	HealthSummary      string             `json:"healthSummary,omitempty"`
 	Summary            string             `json:"summary"`
 	Assets             []RolloutAssetView `json:"assets"`
+	AppliedAt          time.Time          `json:"appliedAt,omitempty"`
+	StatusSince        time.Time          `json:"statusSince,omitempty"`
 }
 
 type RolloutAssetView struct {
@@ -272,6 +277,8 @@ type DeploymentView struct {
 	TaskIDs            []string          `json:"taskIDs"`
 	ChangedAssets      []string          `json:"changedAssets,omitempty"`
 	Outputs            map[string]string `json:"outputs,omitempty"`
+	Status             string            `json:"status"`
+	DisplayStatus      string            `json:"displayStatus"`
 	Assets             []AssetDeployment `json:"assets"`
 }
 
@@ -592,7 +599,7 @@ func (s *Server) loadPartitionData(ctx context.Context, partitionName string, in
 				assetOrder = mergeAssetOrder(compiledIntent.AssetOrder, manifest.Spec.Assets)
 			}
 		}
-		intents = append(intents, buildIntentDocument(*manifest, intentVersions[name], intentStates[name], intentRuntimes[name], assetOrder, latestDeployments[name]))
+		intents = append(intents, buildIntentDocument(*manifest, intentVersions[name], intentStates[name], intentRuntimes[name], assetOrder, latestDeployments[name], intentStates))
 	}
 
 	health := buildPartitionHealth(intents, partitionState)
@@ -663,6 +670,44 @@ func (s *Server) loadPartitionRollouts(ctx context.Context, partitionName string
 	for _, rollout := range rollouts {
 		views = append(views, buildRolloutView(rollout))
 	}
+	intentStates, _ := loadIntentStates(ctx, s.store, partitionName)
+	for i := range views {
+		if !views[i].Current {
+			continue
+		}
+		istate, ok := intentStates[views[i].Intent]
+		if !ok {
+			continue
+		}
+		displayText, statusKey, summary, hasHealth := observedIntentHealthPresentation(istate)
+		if hasHealth && statusKey != "" {
+			views[i].HealthStatus = statusKey
+			views[i].HealthText = displayText
+			views[i].HealthSummary = summary
+		} else if istate.Status == statedomain.StatusHealthy {
+			views[i].HealthStatus = "healthy"
+			views[i].HealthText = "Current"
+			healthSummary := "Live state matches desired state"
+			if istate.Health != nil {
+				healthSummary = valueOrDefault(strings.TrimSpace(istate.Health.Summary), healthSummary)
+			}
+			views[i].HealthSummary = healthSummary
+		}
+		ts := istate.Timestamps
+		if !ts.LastApplyAt.IsZero() {
+			views[i].AppliedAt = ts.LastApplyAt
+		}
+		candidates := []time.Time{ts.LastApplyAt, ts.LastDiffAt, ts.LastCheckAt, ts.LastQueuedAt}
+		var latest time.Time
+		for _, t := range candidates {
+			if !t.IsZero() && t.After(latest) {
+				latest = t
+			}
+		}
+		if !latest.IsZero() {
+			views[i].StatusSince = latest
+		}
+	}
 	return &PartitionRolloutsResponse{
 		GeneratedAt: time.Now().UTC(),
 		Rollouts:    views,
@@ -691,6 +736,26 @@ func (s *Server) loadIntentActivity(ctx context.Context, partitionName, intentNa
 		return nil, err
 	}
 	status, displayStatus, _, summary := deriveIntentPresentation(istate, runtime)
+	if status == string(statedomain.StatusBlocked) && istate != nil && len(istate.Joins) > 0 {
+		deps := map[string]*statedomain.IntentState{}
+		for _, join := range istate.Joins {
+			raw, err := s.store.ReadFile(ctx, paths.IntentState(partitionName, join))
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					continue
+				}
+				return nil, err
+			}
+			var depState statedomain.IntentState
+			if err := json.Unmarshal(raw, &depState); err != nil {
+				return nil, err
+			}
+			deps[join] = &depState
+		}
+		if s := blockedSummary(istate, deps); s != "" {
+			summary = s
+		}
+	}
 	resp := &IntentActivityResponse{
 		GeneratedAt:   time.Now().UTC(),
 		Partition:     partitionName,
@@ -819,8 +884,31 @@ func (s *Server) intentTaskRuntime(ctx context.Context, state *statedomain.Inten
 	return runtime, nil
 }
 
-func buildIntentDocument(manifest intentdomain.Intent, versionID string, state *statedomain.IntentState, runtime intentTaskRuntime, assetOrder []string, latest *DeploymentView) IntentDocument {
+func blockedSummary(state *statedomain.IntentState, deps map[string]*statedomain.IntentState) string {
+	if state == nil || len(state.Joins) == 0 {
+		return "Waiting for joined intents to become healthy"
+	}
+	var unhealthy []string
+	for _, join := range state.Joins {
+		joined, ok := deps[join]
+		if !ok || joined == nil || joined.Status == statedomain.StatusHealthy || joined.Status == statedomain.StatusDestroyed {
+			continue
+		}
+		unhealthy = append(unhealthy, join)
+	}
+	if len(unhealthy) == 0 {
+		return "Waiting for joined intents to become healthy"
+	}
+	return "Waiting for " + strings.Join(unhealthy, ", ") + " to become healthy"
+}
+
+func buildIntentDocument(manifest intentdomain.Intent, versionID string, state *statedomain.IntentState, runtime intentTaskRuntime, assetOrder []string, latest *DeploymentView, deps map[string]*statedomain.IntentState) IntentDocument {
 	status, displayStatus, health, summary := deriveIntentPresentation(state, runtime)
+	if status == string(statedomain.StatusBlocked) {
+		if s := blockedSummary(state, deps); s != "" {
+			summary = s
+		}
+	}
 	lastUpdatedAt := latestStateTimestamp(state)
 	outputs := map[string]string{}
 	if state != nil {
@@ -868,13 +956,18 @@ func buildIntentDocument(manifest intentdomain.Intent, versionID string, state *
 		if !ok {
 			continue
 		}
-		doc.Assets = append(doc.Assets, buildAssetDocument(manifest.Metadata.Name, spec, manifest.Spec.Hints, state, runtime, latest))
+		doc.Assets = append(doc.Assets, buildAssetDocument(manifest.Metadata.Name, spec, manifest.Spec.Hints, state, runtime, latest, deps))
 	}
 	return doc
 }
 
-func buildAssetDocument(intentName string, spec assetdomain.Spec, intentHints []assetdomain.Hint, state *statedomain.IntentState, runtime intentTaskRuntime, latest *DeploymentView) AssetDocument {
+func buildAssetDocument(intentName string, spec assetdomain.Spec, intentHints []assetdomain.Hint, state *statedomain.IntentState, runtime intentTaskRuntime, latest *DeploymentView, deps map[string]*statedomain.IntentState) AssetDocument {
 	status, displayStatus, health, summary := deriveAssetPresentation(state, spec.Name, runtime)
+	if status == string(statedomain.StatusBlocked) {
+		if s := blockedSummary(state, deps); s != "" {
+			summary = s
+		}
+	}
 	assetSummary, facts, service, ports, replicas := assetFacts(spec, assetOutputs(state, spec.Name))
 	if summary == "" {
 		summary = assetSummary
@@ -1283,6 +1376,7 @@ func buildDeploymentView(record historydomain.DeploymentRecord, logs []taskdomai
 			Outputs:       copyStringMap(item.Outputs),
 		})
 	}
+	status, displayStatus := deploymentStatusFromAssets(items)
 	return DeploymentView{
 		DeploymentRevision: record.DeploymentRevision,
 		Intent:             record.Intent,
@@ -1291,7 +1385,38 @@ func buildDeploymentView(record historydomain.DeploymentRecord, logs []taskdomai
 		TaskIDs:            append([]string(nil), record.TaskIDs...),
 		ChangedAssets:      append([]string(nil), record.ChangedAssets...),
 		Outputs:            redactOutputMapForUI(record.Outputs),
+		Status:             status,
+		DisplayStatus:      displayStatus,
 		Assets:             items,
+	}
+}
+
+func deploymentStatusFromAssets(assets []AssetDeployment) (string, string) {
+	if len(assets) == 0 {
+		return "healthy", "Ready"
+	}
+	hasFailing := false
+	hasAttention := false
+	hasPending := false
+	for _, asset := range assets {
+		switch asset.Status {
+		case "failing":
+			hasFailing = true
+		case "attention":
+			hasAttention = true
+		case "pending":
+			hasPending = true
+		}
+	}
+	switch {
+	case hasFailing:
+		return "failing", "Error"
+	case hasAttention:
+		return "attention", "Degraded"
+	case hasPending:
+		return "pending", "Progressing"
+	default:
+		return "healthy", "Ready"
 	}
 }
 
@@ -1417,6 +1542,19 @@ func classifyEvent(event historydomain.EventRecord) (string, string) {
 		return "attention", "Drift"
 	case "deploy.completed":
 		return "healthy", "Pushed"
+	case "intent.blocked":
+		return "attention", "Blocked"
+	case "intent.unblocked":
+		return "healthy", "Unblocked"
+	case "partition.pushed":
+		if event.Details["is_new"] == "true" {
+			return "pending", "Started"
+		}
+		return "neutral", "Updated"
+	case "partition.status.updated":
+		return classifyPartitionStatus(event.Details["status"], event.Details["displayStatus"])
+	case "rollback.triggered", "rollback.applied":
+		return "attention", "Rollback"
 	}
 	status := strings.ToLower(strings.TrimSpace(event.Details["status"]))
 	switch {
@@ -1430,6 +1568,30 @@ func classifyEvent(event historydomain.EventRecord) (string, string) {
 		return "healthy", "Stable"
 	default:
 		return "neutral", "Event"
+	}
+}
+
+func classifyPartitionStatus(status, displayStatus string) (string, string) {
+	status = strings.ToLower(strings.TrimSpace(status))
+	display := strings.TrimSpace(displayStatus)
+	if display == "" {
+		display = humanizeWords(status)
+	}
+	switch {
+	case status == "healthy" || strings.EqualFold(displayStatus, "Stable"):
+		return "healthy", "Ready"
+	case status == "progressing" || strings.EqualFold(displayStatus, "Progressing"):
+		return "pending", "Progressing"
+	case status == "failing" || strings.EqualFold(displayStatus, "Needs action"):
+		return "failing", display
+	case status == "attention":
+		return "attention", display
+	case status == "invalid":
+		return "failing", display
+	case status == "compiled":
+		return "pending", display
+	default:
+		return "neutral", display
 	}
 }
 
@@ -1455,13 +1617,21 @@ func deriveIntentPresentation(state *statedomain.IntentState, runtime intentTask
 	case statedomain.StatusDiffFailed, statedomain.StatusCheckFailed, statedomain.StatusApplyFailed:
 		return string(state.Status), "Error", "failing", valueOrDefault(observedFailureSummary(state), valueOrDefault(pointerString(state.LastError), "The last task failed"))
 	case statedomain.StatusDrifted:
+		detail := driftDetail(state.Drift)
 		if _, _, observedSummary, ok := observedIntentHealthPresentation(state); ok {
-			return string(state.Status), "Diff found", "drifted", combineDriftSummary("Drift detected and waiting for push", observedSummary)
+			return string(state.Status), "Diff found", "drifted", combineDriftSummary(combineDriftSummary("Drift detected and waiting for push", detail), observedSummary)
+		}
+		if detail != "" {
+			return string(state.Status), "Diff found", "drifted", combineDriftSummary("Drift detected and waiting for push", detail)
 		}
 		return string(state.Status), "Diff found", "drifted", "Drift detected and waiting for push"
 	case statedomain.StatusDriftedLocked:
+		detail := driftDetail(state.Drift)
 		if _, _, observedSummary, ok := observedIntentHealthPresentation(state); ok {
-			return string(state.Status), "Locked drift", "drifted-locked", combineDriftSummary("Drift detected but the intent is locked", observedSummary)
+			return string(state.Status), "Locked drift", "drifted-locked", combineDriftSummary(combineDriftSummary("Drift detected but the intent is locked", detail), observedSummary)
+		}
+		if detail != "" {
+			return string(state.Status), "Locked drift", "drifted-locked", combineDriftSummary("Drift detected but the intent is locked", detail)
 		}
 		return string(state.Status), "Locked drift", "drifted-locked", "Drift detected but the intent is locked"
 	case statedomain.StatusBlocked:
@@ -1600,8 +1770,12 @@ func deriveAssetPresentation(state *statedomain.IntentState, assetName string, r
 		return string(state.Status), "Error", "failing", valueOrDefault(pointerString(state.LastError), "Last task failed")
 	case statedomain.StatusDrifted:
 		if changed {
+			detail := driftDetail(state.Drift)
 			if _, _, observedSummary, ok := observedAssetHealthPresentation(state, assetName); ok {
-				return string(state.Status), "Diff found", "drifted", combineDriftSummary("Live state differs from blueprint", observedSummary)
+				return string(state.Status), "Diff found", "drifted", combineDriftSummary(combineDriftSummary("Live state differs from blueprint", detail), observedSummary)
+			}
+			if detail != "" {
+				return string(state.Status), "Diff found", "drifted", combineDriftSummary("Live state differs from blueprint", detail)
 			}
 			return string(state.Status), "Diff found", "drifted", "Live state differs from blueprint"
 		}
@@ -1611,8 +1785,12 @@ func deriveAssetPresentation(state *statedomain.IntentState, assetName string, r
 		return string(state.Status), "No diff", "healthy", "No current drift on this asset"
 	case statedomain.StatusDriftedLocked:
 		if changed {
+			detail := driftDetail(state.Drift)
 			if _, _, observedSummary, ok := observedAssetHealthPresentation(state, assetName); ok {
-				return string(state.Status), "Locked drift", "drifted-locked", combineDriftSummary("Drift exists but push is locked", observedSummary)
+				return string(state.Status), "Locked drift", "drifted-locked", combineDriftSummary(combineDriftSummary("Drift exists but push is locked", detail), observedSummary)
+			}
+			if detail != "" {
+				return string(state.Status), "Locked drift", "drifted-locked", combineDriftSummary("Drift exists but push is locked", detail)
 			}
 			return string(state.Status), "Locked drift", "drifted-locked", "Drift exists but push is locked"
 		}
@@ -1644,6 +1822,21 @@ func combineDriftSummary(base, observed string) string {
 		return observed
 	}
 	return base + ": " + observed
+}
+
+func driftDetail(drift *taskdomain.DriftReport) string {
+	if drift == nil {
+		return ""
+	}
+	summary := strings.TrimSpace(drift.Summary)
+	if len(drift.ChangedAssets) > 0 {
+		assets := strings.Join(drift.ChangedAssets, ", ")
+		if summary != "" {
+			return summary + " [" + assets + "]"
+		}
+		return "changed: " + assets
+	}
+	return summary
 }
 
 func assetFacts(spec assetdomain.Spec, outputs map[string]string) (string, []Fact, bool, []string, int) {

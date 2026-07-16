@@ -2,6 +2,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -47,11 +48,25 @@ type Reconciler struct {
 	parallelism    int
 	partitionLocks sync.Map
 
+	// authorize optionally gates externally-triggered partition reconciles
+	// (authz epic E2). nil means allow. It is invoked for ReconcilePartition
+	// calls (UI/CLI/watcher) and should permit trusted automation while
+	// enforcing maintainer/admin on human-initiated requests.
+	authorize func(ctx context.Context, partition string) error
+
 	// guarded by runMu; only non-nil while Run() is executing
 	runMu                 sync.Mutex
 	pool                  *priorityPool
 	scheduler             quartz.Scheduler
 	scheduledFingerprints map[string]string // partition → "intervalStr|jitterPct"
+}
+
+// SetAuthorizer installs a control-plane authorization hook that gates
+// ReconcilePartition. Passing nil disables it (allow all).
+func (r *Reconciler) SetAuthorizer(fn func(ctx context.Context, partition string) error) {
+	r.runMu.Lock()
+	r.authorize = fn
+	r.runMu.Unlock()
 }
 
 // NewReconciler creates a reconciler using a fixed interval. Suitable for
@@ -143,6 +158,14 @@ func (r *Reconciler) ReconcileAll(ctx context.Context) error {
 }
 
 func (r *Reconciler) ReconcilePartition(ctx context.Context, partitionName string, force bool) error {
+	r.runMu.Lock()
+	authorizer := r.authorize
+	r.runMu.Unlock()
+	if authorizer != nil {
+		if err := authorizer(ctx, partitionName); err != nil {
+			return fmt.Errorf("reconcile %s: %w", partitionName, err)
+		}
+	}
 	partitionLock := r.partitionLock(partitionName)
 	partitionLock.Lock()
 	defer partitionLock.Unlock()
@@ -152,16 +175,22 @@ func (r *Reconciler) ReconcilePartition(ctx context.Context, partitionName strin
 func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName string, force bool) error {
 	attrs := []attribute.KeyValue{attribute.String("guardian.partition", partitionName)}
 	count, failures, duration := reconcileInstruments()
-	count.Add(ctx, 1, metricapi.WithAttributes(attrs...))
+	if count != nil {
+		count.Add(ctx, 1, metricapi.WithAttributes(attrs...))
+	}
 	ctx, span := otel.Tracer(reconcilerScope).Start(ctx, "guardian.reconcile.partition", trace.WithAttributes(attrs...))
 	startedAt := time.Now()
 	telemetry.EmitInfo(ctx, reconcilerScope, fmt.Sprintf("reconciling partition %s", partitionName))
 	defer func() {
-		duration.Record(ctx, time.Since(startedAt).Seconds(), metricapi.WithAttributes(attrs...))
+		if duration != nil {
+			duration.Record(ctx, time.Since(startedAt).Seconds(), metricapi.WithAttributes(attrs...))
+		}
 		span.End()
 	}()
 	fail := func(err error) error {
-		failures.Add(ctx, 1, metricapi.WithAttributes(attrs...))
+		if failures != nil {
+			failures.Add(ctx, 1, metricapi.WithAttributes(attrs...))
+		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		telemetry.EmitError(ctx, reconcilerScope, fmt.Sprintf("reconcile partition %s failed: %v", partitionName, err))
@@ -179,7 +208,7 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 	}
 
 	intentEntries, err := r.store.ListDir(ctx, paths.PartitionIntentsDir(partitionName))
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fail(err)
 	}
 	intentContents := map[string][]byte{}
@@ -205,7 +234,7 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 	}
 
 	existingStates, err := common.LoadAllIntentStates(ctx, r.store, partitionName)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fail(err)
 	}
 	if existingStates == nil {
@@ -333,11 +362,35 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 			// LastTaskID would corrupt the result-processor's in-progress work,
 			// causing subsequent results to be dropped as stale.
 			if !activeTask {
+				prevStatus := current.Status
 				if current.Status != statedomain.StatusHealthy {
 					current.Status = statedomain.StatusBlocked
 				}
 				if err := r.dispatcher.WriteIntentState(ctx, current); err != nil {
 					return fail(err)
+				}
+				if current.Status != prevStatus {
+					var unhealthyJoins []string
+					for _, join := range current.Joins {
+						joined := depsSnapshot[join]
+						if joined == nil || joined.Status != statedomain.StatusHealthy {
+							unhealthyJoins = append(unhealthyJoins, join)
+						}
+					}
+					msg := "Waiting for joined intents to become healthy"
+					if len(unhealthyJoins) > 0 {
+						msg = "Waiting for " + strings.Join(unhealthyJoins, ", ") + " to become healthy"
+					}
+					_ = r.dispatcher.WriteEvent(ctx, &historydomain.EventRecord{
+						Partition: partitionName,
+						Intent:    name,
+						Type:      "intent.blocked",
+						Message:   msg,
+						Details: map[string]string{
+							"joins":          strings.Join(current.Joins, ","),
+							"unhealthyJoins": strings.Join(unhealthyJoins, ","),
+						},
+					})
 				}
 			}
 			existingStates[name] = current
@@ -447,14 +500,14 @@ func (r *Reconciler) reconcileRemovedIntents(ctx context.Context, partitionName,
 			}
 			manifestContent, err := r.loadDeletedIntentManifest(ctx, partitionName, name, state)
 			if err != nil {
-				if !os.IsNotExist(err) {
+				if !errors.Is(err, os.ErrNotExist) {
 					return err
 				}
 				// Manifest is gone and was never archived — we can't generate a
 				// DESTROY task.  Fall back to orphaning the state so the reconciler
 				// is not permanently broken by an unresolvable intent.
 				correlationID := revisions.NewCorrelationID()
-				if delErr := r.dispatcher.DeleteIntentState(ctx, partitionName, name, correlationID, "destroy policy: manifest unresolvable, orphaning state"); delErr != nil && !os.IsNotExist(delErr) {
+				if delErr := r.dispatcher.DeleteIntentState(ctx, partitionName, name, correlationID, "destroy policy: manifest unresolvable, orphaning state"); delErr != nil && !errors.Is(delErr, os.ErrNotExist) {
 					return delErr
 				}
 				delete(existingStates, name)
@@ -492,7 +545,7 @@ func (r *Reconciler) reconcileRemovedIntents(ctx context.Context, partitionName,
 				continue
 			}
 			correlationID := revisions.NewCorrelationID()
-			if err := r.dispatcher.DeleteIntentState(ctx, partitionName, name, correlationID, "orphan deleted intent state"); err != nil && !os.IsNotExist(err) {
+			if err := r.dispatcher.DeleteIntentState(ctx, partitionName, name, correlationID, "orphan deleted intent state"); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
 			delete(existingStates, name)
@@ -518,7 +571,7 @@ func (r *Reconciler) loadDeletedIntentManifest(ctx context.Context, partitionNam
 		if err == nil {
 			return version.Content, nil
 		}
-		if !os.IsNotExist(err) {
+		if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
 	}
@@ -586,7 +639,7 @@ func (r *Reconciler) reconcileAll(ctx context.Context) error {
 func (r *Reconciler) partitionNames(ctx context.Context) ([]string, error) {
 	entries, err := r.store.ListDir(ctx, paths.PartitionsRoot())
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
@@ -597,7 +650,7 @@ func (r *Reconciler) partitionNames(ctx context.Context) ([]string, error) {
 			continue
 		}
 		if _, err := r.store.Stat(ctx, paths.PartitionConfig(entry.Name)); err != nil {
-			if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
 			return nil, err
@@ -811,9 +864,19 @@ func rolloutLogSuffix(specHashChanged bool) string {
 func reconcileInstruments() (metricapi.Int64Counter, metricapi.Int64Counter, metricapi.Float64Histogram) {
 	reconcileMetricsOnce.Do(func() {
 		meter := otel.Meter(reconcilerScope)
-		reconcileCounter, _ = meter.Int64Counter("guardian.reconcile.partition.executions")
-		reconcileFailCounter, _ = meter.Int64Counter("guardian.reconcile.partition.failures")
-		reconcileDuration, _ = meter.Float64Histogram("guardian.reconcile.partition.duration")
+		var err error
+		reconcileCounter, err = meter.Int64Counter("guardian.reconcile.partition.executions")
+		if err != nil {
+			telemetry.EmitError(context.Background(), reconcilerScope, fmt.Sprintf("create reconcile counter: %v", err))
+		}
+		reconcileFailCounter, err = meter.Int64Counter("guardian.reconcile.partition.failures")
+		if err != nil {
+			telemetry.EmitError(context.Background(), reconcilerScope, fmt.Sprintf("create reconcile fail counter: %v", err))
+		}
+		reconcileDuration, err = meter.Float64Histogram("guardian.reconcile.partition.duration")
+		if err != nil {
+			telemetry.EmitError(context.Background(), reconcilerScope, fmt.Sprintf("create reconcile duration histogram: %v", err))
+		}
 	})
 	return reconcileCounter, reconcileFailCounter, reconcileDuration
 }

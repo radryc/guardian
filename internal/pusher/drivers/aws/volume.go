@@ -32,7 +32,7 @@ func (d *VolumeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 		return inSyncDrift(in.Asset.Name, "ephemeral storage is in sync"), nil
 	}
 
-	fsID := loadSavedOutput(in, in.Asset.Name+".efsId")
+	fsID := loadSavedOutput(ctx, in, in.Asset.Name+".efsId")
 	if fsID == "" {
 		return changedDrift(in.Asset.Name, "EFS filesystem not yet created"), nil
 	}
@@ -83,18 +83,18 @@ func (d *VolumeDriver) Destroy(ctx context.Context, in registry.AssetInput) erro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	fsID := loadSavedOutput(in, in.Asset.Name+".efsId")
+	fsID := loadSavedOutput(ctx, in, in.Asset.Name+".efsId")
 	if fsID == "" {
 		return nil
 	}
 	return d.backend.DeleteFileSystem(ctx, fsID)
 }
 
-func loadSavedOutput(in registry.AssetInput, key string) string {
+func loadSavedOutput(ctx context.Context, in registry.AssetInput, key string) string {
 	if in.Store == nil {
 		return ""
 	}
-	state, err := orchestratorcommon.LoadIntentState(context.Background(), in.Store, in.PartitionName, in.IntentName)
+	state, err := orchestratorcommon.LoadIntentState(ctx, in.Store, in.PartitionName, in.IntentName)
 	if err != nil {
 		return ""
 	}

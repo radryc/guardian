@@ -869,6 +869,30 @@ function renderActivityDrawer(): string {
   const logs = data.logs ?? [];
   const drift = data.drift;
 
+  const taskAgeMs = ts.lastQueuedAt ? Date.now() - new Date(ts.lastQueuedAt).getTime() : null;
+  const taskAgeStr = taskAgeMs !== null && taskAgeMs > 0 ? formatAgeMs(taskAgeMs) : null;
+
+  let taskStatusHtml = "";
+  if (data.taskTimedOut) {
+    taskStatusHtml = `
+      <div class="activity-task-status activity-task-stale">
+        <span class="activity-task-status-icon">⚠</span>
+        <div>
+          <strong>Task appears stuck</strong>
+          <div class="activity-task-status-detail">Queued ${taskAgeStr ?? "a while"} ago. The worker may be down or the task lost. Check pusher logs for errors.</div>
+        </div>
+      </div>`;
+  } else if (data.taskActive) {
+    taskStatusHtml = `
+      <div class="activity-task-status activity-task-running">
+        <span class="activity-task-status-icon">◌</span>
+        <div>
+          <strong>Task in progress</strong>
+          <div class="activity-task-status-detail">Running for ${taskAgeStr ?? "unknown duration"}. ${data.lastOp ? `Current op: ${escapeHtml(data.lastOp)}` : ""}</div>
+        </div>
+      </div>`;
+  }
+
   return `
     <div class="activity-drawer">
       <div class="activity-header">
@@ -876,6 +900,7 @@ function renderActivityDrawer(): string {
         ${data.lastOp ? `<span class="activity-op-badge">last op: ${escapeHtml(data.lastOp)}</span>` : ""}
         ${data.lastTaskID ? `<span class="activity-task-id">${escapeHtml(data.lastTaskID.slice(0, 16))}…</span>` : ""}
       </div>
+      ${taskStatusHtml}
       ${tsRows.length ? `
         <div class="activity-timestamps">
           ${tsRows.map((t) => `<span class="activity-ts-item"><span class="activity-ts-label">${escapeHtml(t.label)}</span> ${formatDateTime(t.value)}</span>`).join("")}
@@ -1069,11 +1094,71 @@ function renderRollouts(): void {
     container.textContent = state.rolloutsError;
     return;
   }
-  const rollouts = state.rollouts?.rollouts ?? [];
-  container.className = rollouts.length ? "timeline-stack" : "empty-state text-sm text-[#566778]";
-  container.innerHTML = rollouts.length
-    ? rollouts.map(renderRolloutCard).join("")
-    : "No archived rollouts were found for this partition yet.";
+  const rollouts: any[] = state.rollouts?.rollouts ?? [];
+  if (!rollouts.length) {
+    container.className = "empty-state text-sm text-[#566778]";
+    container.textContent = "No archived rollouts were found for this partition yet.";
+    return;
+  }
+
+  const revisionCounts = new Map<string, number>();
+  for (const item of rollouts) {
+    const rev = item.deploymentRevision ?? "";
+    revisionCounts.set(rev, (revisionCounts.get(rev) ?? 0) + 1);
+  }
+  const seenInPass = new Set<string>();
+  const annotated = rollouts.map((item: any) => {
+    const rev = item.deploymentRevision ?? "";
+    const count = revisionCounts.get(rev) ?? 1;
+    const isRollback = count > 1 && !seenInPass.has(rev);
+    seenInPass.add(rev);
+    return { ...item, _rollback: isRollback };
+  });
+
+  const createdTimes = annotated
+    .map((item: any) => new Date(item.createdAt).getTime())
+    .filter((ms: number) => Number.isFinite(ms));
+  const minTime = createdTimes.length ? Math.min(...createdTimes) : Date.now();
+  const maxTime = createdTimes.length ? Math.max(...createdTimes) : minTime;
+  const paddedMaxTime = maxTime + Math.max(60_000, Math.floor((maxTime - minTime || 1) * 0.1));
+  const span = Math.max(1, paddedMaxTime - minTime);
+
+  const laneMap = new Map<string, any[]>();
+  for (const item of annotated) {
+    const lane = String(item.intent ?? "").trim() || "(unknown intent)";
+    const existing = laneMap.get(lane);
+    if (existing) {
+      existing.push(item);
+    } else {
+      laneMap.set(lane, [item]);
+    }
+  }
+  const lanes = Array.from(laneMap.entries())
+    .map(([intent, items]) => ({
+      intent,
+      items: items.slice().sort((a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
+    }))
+    .sort((a, b) => {
+      const aLatest = new Date(a.items[a.items.length - 1]?.createdAt ?? 0).getTime();
+      const bLatest = new Date(b.items[b.items.length - 1]?.createdAt ?? 0).getTime();
+      return bLatest - aLatest;
+    });
+
+  const axisTicks = makeRolloutAxisTicks(minTime, paddedMaxTime, 6);
+  container.className = "rollout-graph";
+  container.innerHTML = `
+    <div class="rollout-axis" role="presentation">
+      ${axisTicks.map((tick) => `
+        <div class="rollout-axis-tick" style="left:${tick.left}%">
+          <span>${escapeHtml(tick.label)}</span>
+        </div>
+      `).join("")}
+    </div>
+    <div class="rollout-lanes">
+      ${lanes.map((lane) => renderRolloutLane(lane, minTime, span)).join("")}
+    </div>
+  `;
+
   container.querySelectorAll<HTMLElement>("[data-rollout-toggle]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.preventDefault();
@@ -1085,66 +1170,241 @@ function renderRollouts(): void {
 }
 
 function renderRolloutCard(item: any): string {
+  const rollout = describeRollout(item);
   const assets = item.assets ?? [];
   const assetCount = assets.length;
   const rolloutKey = makeRolloutKey(item);
   const expanded = !!state.expandedRolloutKeys[rolloutKey];
-  const statusBadge = item.current
-    ? renderBadge("healthy", "Current")
-    : item.newIntent
-      ? renderBadge("pending", "New intent")
-      : renderBadge("healthy", "Rollout");
+
+  const diagnosticTitle = item.healthText || rollout.statusText;
+  const diagnosticDetail = item.healthSummary || "";
+  const statusBadge = renderBadge(
+    rollout.statusKey,
+    rollout.statusText,
+    diagnosticTitle,
+    diagnosticDetail,
+    undefined,
+    rolloutStatusHint(rollout.statusText),
+  );
+
   return `
-    <article class="timeline-card">
-      <div class="timeline-head">
-        <div>
-          <h3>${escapeHtml(item.intent)}</h3>
-          <div class="muted">${escapeHtml(item.summary || item.deploymentRevision)}</div>
+    <div class="rollout-detail-card ${rollout.cardClass}">
+      <div class="rollout-detail-header">
+        <div class="rollout-tl-row">
+          <div>
+            <div class="rollout-tl-intent">${escapeHtml(item.intent)}</div>
+            <div class="rollout-tl-rev" title="Deployment revision">${escapeHtml(item.deploymentRevision)}</div>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            ${assetCount ? `
+              <button
+                class="rollout-toggle${expanded ? " active" : ""}"
+                type="button"
+                data-rollout-toggle="${escapeAttr(rolloutKey)}"
+                aria-expanded="${expanded ? "true" : "false"}"
+                aria-label="${expanded ? "Hide asset details" : "Show asset details"}"
+              >
+                <span class="rollout-toggle-indicator" aria-hidden="true">${expanded ? "−" : "+"}</span>
+                <span>${expanded ? "Hide" : `${assetCount} asset${assetCount === 1 ? "" : "s"}`}</span>
+              </button>
+            ` : ""}
+            ${statusBadge}
+          </div>
         </div>
-        <div class="timeline-head-actions">
-          ${assetCount ? `
-            <button
-              class="rollout-toggle${expanded ? " active" : ""}"
-              type="button"
-              data-rollout-toggle="${escapeAttr(rolloutKey)}"
-              aria-expanded="${expanded ? "true" : "false"}"
-              aria-label="${expanded ? "Hide asset details" : "Show asset details"}"
-            >
-              <span class="rollout-toggle-indicator" aria-hidden="true">${expanded ? "−" : "+"}</span>
-              <span>${expanded ? "Hide assets" : `Assets ${assetCount}`}</span>
-            </button>
-          ` : ""}
-          ${statusBadge}
+
+        <div class="rollout-tl-row">
+          <div class="rollout-tl-meta">
+            <span>${formatDateTime(item.createdAt)}</span>
+            ${item.target ? `<span>${escapeHtml(item.target)}</span>` : ""}
+            ${(item.taskIDs ?? []).length ? `<span>${escapeHtml((item.taskIDs ?? []).join(", "))}</span>` : ""}
+          </div>
         </div>
+        ${item.summary ? `<div class="rollout-tl-row"><div class="rollout-tl-summary">${escapeHtml(item.summary)}</div></div>` : ""}
       </div>
-      <div class="timeline-meta">
-        <span>${formatDateTime(item.createdAt)}</span>
-        ${item.target ? `<span>${escapeHtml(item.target)}</span>` : ""}
-        <span>${escapeHtml(item.deploymentRevision)}</span>
-        ${(item.taskIDs ?? []).map((taskId: string) => `<span>${escapeHtml(taskId)}</span>`).join("")}
-      </div>
-      ${assetCount ? `<div class="timeline-assets-summary muted">${expanded ? `${assetCount} asset${assetCount === 1 ? "" : "s"} shown` : `${assetCount} asset${assetCount === 1 ? "" : "s"} hidden`}</div>` : ""}
-      ${expanded ? `
-        <div class="timeline-assets">
-          ${assets.map((asset: any) => `
-            <div class="timeline-asset">
-              <div class="flex justify-between items-start gap-2">
-                <div>
-                  <strong class="text-[13px] text-[#E5ECF4]">${escapeHtml(asset.name)}</strong>
-                  <div class="muted">${escapeHtml(asset.type || "Asset")}</div>
+
+        ${expanded && assetCount ? `
+          <div class="timeline-assets">
+            ${assets.map((asset: any) => `
+              <div class="timeline-asset">
+                <div class="flex justify-between items-start gap-2">
+                  <div>
+                    <strong class="text-[13px] text-[#E5ECF4]" title="Asset name from the intent manifest.">${escapeHtml(asset.name)}</strong>
+                    <div class="muted" title="Asset type from the intent specification.">${escapeHtml(asset.type || "Asset")}</div>
+                  </div>
+                  ${renderBadge(
+                    rolloutChangeStatus(asset.change),
+                    humanize(asset.change || "updated"),
+                    undefined,
+                    undefined,
+                    undefined,
+                    rolloutChangeHint(asset.change),
+                  )}
                 </div>
-                ${renderBadge(rolloutChangeStatus(asset.change), humanize(asset.change || "updated"))}
+                <div class="fact-row mt-1">
+                  <span class="fact fact-release">Version: ${escapeHtml(asset.version || item.deploymentRevision)}</span>
+                  ${asset.type ? `<span class="fact">${escapeHtml(asset.type)}</span>` : ""}
+                </div>
               </div>
-              <div class="fact-row mt-1">
-                <span class="fact fact-release">Release: ${escapeHtml(asset.version || item.deploymentRevision)}</span>
-                ${asset.type ? `<span class="fact">Type: ${escapeHtml(asset.type)}</span>` : ""}
-              </div>
-            </div>
-          `).join("")}
-        </div>
-      ` : ""}
+            `).join("")}
+          </div>
+        ` : ""}
+    </div>
+  `;
+}
+
+function renderRolloutLane(
+  lane: { intent: string; items: any[] },
+  minTime: number,
+  span: number,
+): string {
+  const segments: string[] = [];
+  for (let index = 0; index < lane.items.length; index++) {
+    const item = lane.items[index];
+    const isLast = index === lane.items.length - 1;
+    const start = new Date(item.createdAt).getTime();
+    const next = isLast ? minTime + span : new Date(lane.items[index + 1].createdAt).getTime();
+    const appliedAt = parseTimestamp(item.appliedAt);
+    const canSplit = isLast && appliedAt !== null && appliedAt > start && appliedAt < next;
+    if (canSplit) {
+      const left1 = Math.max(0, Math.min(100, ((start - minTime) / span) * 100));
+      const splitLeft = Math.max(left1 + 0.5, Math.min(100, ((appliedAt! - minTime) / span) * 100));
+      const width1 = Math.max(0.5, splitLeft - left1);
+      segments.push(`<div class="rollout-lane-segment seg-deploying" style="left:${left1}%;width:${width1}%"></div>`);
+      const nextLeft = Math.max(splitLeft + 0.5, Math.min(100, ((next - minTime) / span) * 100));
+      const width2 = Math.max(0.5, nextLeft - splitLeft);
+      const stableClass = describeRollout(item).segmentClass;
+      segments.push(`<div class="rollout-lane-segment ${stableClass}" style="left:${splitLeft}%;width:${width2}%"></div>`);
+    } else {
+      const left = Math.max(0, Math.min(100, ((start - minTime) / span) * 100));
+      const nextLeft = Math.max(left + 1, Math.min(100, ((next - minTime) / span) * 100));
+      const width = Math.max(1, nextLeft - left);
+      const activeRollout = isLast ? describeRollout(item) : describeRollout(lane.items[index + 1]);
+      segments.push(`<div class="rollout-lane-segment ${activeRollout.segmentClass}" style="left:${left}%;width:${width}%"></div>`);
+    }
+  }
+
+  const markers = lane.items.map((item: any) => {
+    const rolloutKey = makeRolloutKey(item);
+    const expanded = !!state.expandedRolloutKeys[rolloutKey];
+    const at = new Date(item.createdAt).getTime();
+    const left = Math.max(0, Math.min(100, ((at - minTime) / span) * 100));
+    const rollout = describeRollout(item);
+    return `
+      <button
+        class="rollout-lane-point ${rollout.pointClass}${expanded ? " active" : ""}"
+        type="button"
+        style="left:${left}%"
+        data-rollout-toggle="${escapeAttr(rolloutKey)}"
+        aria-expanded="${expanded ? "true" : "false"}"
+        title="${escapeAttr(`${rollout.statusText}: ${item.deploymentRevision}`)}"
+      ></button>
+    `;
+  });
+
+  const expandedCards = lane.items
+    .filter((item: any) => state.expandedRolloutKeys[makeRolloutKey(item)])
+    .map((item: any) => renderRolloutCard(item));
+
+  return `
+    <article class="rollout-lane">
+      <header class="rollout-lane-header">
+        <div class="rollout-lane-intent">${escapeHtml(lane.intent)}</div>
+        <div class="rollout-lane-count">${lane.items.length} rollout${lane.items.length === 1 ? "" : "s"}</div>
+      </header>
+      <div class="rollout-lane-track-wrap">
+        <div class="rollout-lane-track"></div>
+        <div class="rollout-lane-segments">${segments.join("")}</div>
+        <div class="rollout-lane-points">${markers.join("")}</div>
+      </div>
+      ${expandedCards.length ? `<div class="rollout-lane-details">${expandedCards.join("")}</div>` : ""}
     </article>
   `;
+}
+
+function makeRolloutAxisTicks(min: number, max: number, count: number): Array<{ left: number; label: string }> {
+  if (count <= 1 || max <= min) {
+    return [{ left: 0, label: formatRolloutAxisLabel(min) }];
+  }
+  const ticks: Array<{ left: number; label: string }> = [];
+  const span = max - min;
+  for (let idx = 0; idx < count; idx++) {
+    const ratio = idx / (count - 1);
+    const ts = min + span * ratio;
+    ticks.push({ left: Number((ratio * 100).toFixed(3)), label: formatRolloutAxisLabel(ts) });
+  }
+  return ticks;
+}
+
+function formatRolloutAxisLabel(timestampMs: number): string {
+  const date = new Date(timestampMs);
+  if (Number.isNaN(date.getTime())) {
+    return "—";
+  }
+  const datePart = date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const timePart = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+  return `${datePart}, ${timePart}`;
+}
+
+function describeRollout(item: any): { statusText: string; statusKey: string; cardClass: string; segmentClass: string; pointClass: string } {
+  if (item.current) {
+    if (item.healthStatus === "failing") {
+      return { statusText: "Error", statusKey: "failing", cardClass: "card-current card-failing", segmentClass: "seg-failing", pointClass: "point-failing" };
+    }
+    if (item.healthStatus === "attention") {
+      return { statusText: "Degraded", statusKey: "attention", cardClass: "card-current card-degraded", segmentClass: "seg-degraded", pointClass: "point-degraded" };
+    }
+    if (item.healthStatus === "healthy" || item.healthStatus === "ready") {
+      return { statusText: "Current", statusKey: "healthy", cardClass: "card-current", segmentClass: "seg-current", pointClass: "point-current" };
+    }
+    if (item.newIntent) {
+      return { statusText: "New intent", statusKey: "pending", cardClass: "card-current card-new", segmentClass: "seg-new", pointClass: "point-new" };
+    }
+    return { statusText: "Current", statusKey: "healthy", cardClass: "card-current", segmentClass: "seg-current", pointClass: "point-current" };
+  }
+  if (item.newIntent) {
+    return { statusText: "New intent", statusKey: "pending", cardClass: "card-new", segmentClass: "seg-new", pointClass: "point-new" };
+  }
+  if (item.selfHealing) {
+    return { statusText: "Self-heal", statusKey: "neutral", cardClass: "", segmentClass: "seg-heal", pointClass: "point-heal" };
+  }
+  if (item._rollback) {
+    return { statusText: "Rollback", statusKey: "attention", cardClass: "card-rollback", segmentClass: "seg-rollback", pointClass: "point-rollback" };
+  }
+  return { statusText: "Superseded", statusKey: "neutral", cardClass: "", segmentClass: "seg-old", pointClass: "point-old" };
+}
+
+function rolloutStatusHint(statusText: string): string {
+  switch (statusText) {
+    case "Current":
+      return "This is the latest successful rollout revision for the intent.";
+    case "Error":
+      return "The current rollout has failing assets (e.g. ImagePullBackOff, CrashLoopBackOff).";
+    case "Degraded":
+      return "The current rollout has assets that are not fully ready.";
+    case "New intent":
+      return "The intent appeared for the first time in this rollout.";
+    case "Self-heal":
+      return "Guardian reconciled drift and re-applied the desired state without a new intent change.";
+    case "Rollback":
+      return "Guardian reverted to a previously known-good deployment revision.";
+    default:
+      return "An older rollout kept for history; it is no longer the active revision.";
+  }
+}
+
+function rolloutChangeHint(change: string | undefined): string {
+  switch ((change ?? "").toLowerCase()) {
+    case "added":
+      return "This asset was introduced in this rollout.";
+    case "removed":
+      return "This asset was removed in this rollout.";
+    case "refreshed":
+      return "Guardian re-applied this asset during self-heal to restore desired state.";
+    case "updated":
+      return "This asset definition or effective version changed in this rollout.";
+    default:
+      return "This asset participated in this rollout.";
+  }
 }
 
 function toggleRolloutExpanded(rolloutKey: string): void {
@@ -1220,7 +1480,7 @@ function renderDeploymentCard(item: any): string {
           <h3>${escapeHtml(item.intent)}</h3>
           <div class="muted">${escapeHtml(item.deploymentRevision)}</div>
         </div>
-        <span class="badge badge-healthy">Pushed</span>
+        ${renderBadge(item.status, item.displayStatus)}
       </div>
       <div class="timeline-meta">
         <span>${formatDateTime(item.createdAt)}</span>
@@ -1424,26 +1684,37 @@ function renderPageChrome(): void {
 }
 
 // ── Helpers ───────────────────────────────────────────
-function renderBadge(status: string | undefined, label?: string, diagnosticTitle?: string, diagnosticDetail?: string, diagnosticKey?: string): string {
+function renderBadge(status: string | undefined, label?: string, diagnosticTitle?: string, diagnosticDetail?: string, diagnosticKey?: string, hint?: string): string {
   const normalized = String(status ?? "neutral").toLowerCase();
   const display = label ?? humanize(normalized);
   const detail = resolveDiagnosticDetail(diagnosticKey, normalized, diagnosticDetail);
   const clickable = (normalized === "failing" || normalized === "attention" || normalized === "drifted" || normalized === "drifted-locked") && detail.length > 0;
+  const hintAttr = hint ? ` title="${escapeAttr(hint)}"` : "";
   if (!clickable) {
-    return `<span class="badge badge-${escapeAttr(normalized)}">${escapeHtml(display)}</span>`;
+    return `<span class="badge badge-${escapeAttr(normalized)}"${hintAttr}>${escapeHtml(display)}</span>`;
   }
-  return `<button type="button" class="badge badge-${escapeAttr(normalized)} badge-clickable" data-diagnostic-title="${escapeAttr((diagnosticTitle ?? display).trim())}" data-diagnostic-detail="${escapeAttr(detail)}" aria-label="Show diagnostic details for ${escapeAttr(display)}">${escapeHtml(display)}</button>`;
+  return `<button type="button" class="badge badge-${escapeAttr(normalized)} badge-clickable" data-diagnostic-title="${escapeAttr((diagnosticTitle ?? display).trim())}" data-diagnostic-detail="${escapeAttr(detail)}" aria-label="Show diagnostic details for ${escapeAttr(display)}"${hintAttr}>${escapeHtml(display)}</button>`;
 }
 
 function parseTimestampMs(value: unknown): number | null {
   if (!value) {
     return null;
   }
-  const ms = Date.parse(String(value));
+  const str = String(value);
+  if (str === "0001-01-01T00:00:00Z" || str === "") {
+    return null;
+  }
+  const ms = Date.parse(str);
   if (!Number.isFinite(ms)) {
     return null;
   }
   return ms;
+}
+
+function parseTimestamp(value: unknown): number | null {
+  if (!value) return null;
+  const ms = Date.parse(String(value));
+  return Number.isFinite(ms) ? ms : null;
 }
 
 function latestIntentSampleMs(intent: any): number | null {

@@ -102,6 +102,8 @@ type Deployment struct {
 	Container          Container
 	CrashLoopBackOff   bool
 	PodFailureReason   string // non-empty when CrashLoopBackOff is true; names the exact waiting reason
+	PodFailureMessage  string // non-empty when CrashLoopBackOff is true; contains the detailed waiting message
+	PodFailurePodName  string // non-empty when CrashLoopBackOff is true; name of the failing pod
 	ServiceAccountName string
 	HostUsers          *bool
 }
@@ -208,6 +210,10 @@ func (b *Backend) DeleteService(namespace, name string) error {
 	defer b.mu.Unlock()
 	delete(b.services, key(namespace, name))
 	return nil
+}
+
+func (b *Backend) GetPodEvents(namespace, podName string) ([]string, error) {
+	return nil, nil
 }
 
 func key(namespace, name string) string {

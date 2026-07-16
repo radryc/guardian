@@ -360,8 +360,6 @@ func (b *AWSBackend) upsertTaskDefinition(ctx context.Context, client *ecs.Clien
 		taskMem = "512"
 	}
 
-	needsFargate := svc.LaunchType == "FARGATE"
-
 	out, err := client.RegisterTaskDefinition(ctx, &ecs.RegisterTaskDefinitionInput{
 		Family:                  awsroot.String(svc.TaskFamily),
 		ContainerDefinitions:    []ecstypes.ContainerDefinition{container},
@@ -375,7 +373,6 @@ func (b *AWSBackend) upsertTaskDefinition(ctx context.Context, client *ecs.Clien
 	if err != nil {
 		return "", err
 	}
-	_ = needsFargate
 	return awsroot.ToString(out.TaskDefinition.TaskDefinitionArn), nil
 }
 
@@ -529,6 +526,9 @@ func (b *AWSBackend) UpsertLoadBalancer(ctx context.Context, lb LoadBalancer) (s
 	if err != nil {
 		return "", fmt.Errorf("create load balancer: %w", err)
 	}
+	if len(out.LoadBalancers) == 0 {
+		return "", fmt.Errorf("create load balancer: no load balancer returned")
+	}
 	return awsroot.ToString(out.LoadBalancers[0].LoadBalancerArn), nil
 }
 
@@ -628,6 +628,9 @@ func (b *AWSBackend) UpsertTargetGroup(ctx context.Context, tg TargetGroup) (str
 	if err != nil {
 		return "", fmt.Errorf("create target group: %w", err)
 	}
+	if len(out.TargetGroups) == 0 {
+		return "", fmt.Errorf("create target group: no target group returned")
+	}
 	return awsroot.ToString(out.TargetGroups[0].TargetGroupArn), nil
 }
 
@@ -718,6 +721,9 @@ func (b *AWSBackend) UpsertListener(ctx context.Context, listener Listener) (str
 	})
 	if err != nil {
 		return "", fmt.Errorf("create listener: %w", err)
+	}
+	if len(out.Listeners) == 0 {
+		return "", fmt.Errorf("create listener: no listener returned")
 	}
 	return awsroot.ToString(out.Listeners[0].ListenerArn), nil
 }
@@ -1030,10 +1036,14 @@ func toECSPortMappings(ports []PortDef) []ecstypes.PortMapping {
 	var out []ecstypes.PortMapping
 	for _, p := range ports {
 		proto := ecstypes.TransportProtocolTcp
+		hostPort := int32(p.HostPort)
+		if hostPort == 0 {
+			hostPort = int32(p.ContainerPort)
+		}
 		out = append(out, ecstypes.PortMapping{
 			Name:          awsroot.String(p.Name),
 			ContainerPort: awsroot.Int32(int32(p.ContainerPort)),
-			HostPort:      awsroot.Int32(int32(p.HostPort)),
+			HostPort:      awsroot.Int32(hostPort),
 			Protocol:      proto,
 		})
 	}
@@ -1081,19 +1091,4 @@ func toELBv2HealthProto(proto string) elbv2types.ProtocolEnum {
 	default:
 		return elbv2types.ProtocolEnumHttp
 	}
-}
-
-// types aliases for s3 and secretsmanager services
-type types struct{}
-type s3Types = struct{}
-
-// These are needed to avoid circular dep issues with the s3 import
-func init() {
-	_ = cloudwatchlogs.ServiceID
-	_ = s3.ServiceID
-	_ = secretsmanager.ServiceID
-	_ = efs.ServiceID
-	_ = ecs.ServiceID
-	_ = elasticloadbalancingv2.ServiceID
-	_ = ssm.ServiceID
 }

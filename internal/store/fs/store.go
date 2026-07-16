@@ -314,7 +314,11 @@ func (s *Store) logicalToPhysical(logicalPath string) string {
 	if trimmed == "" {
 		return s.root
 	}
-	return filepath.Join(s.root, filepath.FromSlash(trimmed))
+	physical := filepath.Join(s.root, filepath.FromSlash(trimmed))
+	if !strings.HasPrefix(physical, s.root+string(filepath.Separator)) && physical != s.root {
+		return filepath.Join(s.root, "INVALID_PATH")
+	}
+	return physical
 }
 
 func normalizeLogicalPath(logicalPath string) string {

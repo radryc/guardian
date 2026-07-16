@@ -261,7 +261,7 @@ func TestBuildIntentDocumentRedactsSecretOutputs(t *testing.T) {
 		},
 	}
 
-	doc := buildIntentDocument(manifest, "ver-1", state, intentTaskRuntime{}, []string{"monofs-encryption-key"}, nil)
+	doc := buildIntentDocument(manifest, "ver-1", state, intentTaskRuntime{}, []string{"monofs-encryption-key"}, nil, nil)
 
 	if got := doc.Outputs["monofs-encryption-key.value"]; got != redactedSecretValue {
 		t.Fatalf("intent output value = %q, want %q", got, redactedSecretValue)
@@ -442,7 +442,7 @@ func TestDeriveAssetPresentationDriftedLockedIncludesObservedCause(t *testing.T)
 	if displayStatus != "Locked drift" || health != "drifted-locked" {
 		t.Fatalf("presentation = (%q, %q), want (Locked drift, drifted-locked)", displayStatus, health)
 	}
-	if summary != "Drift exists but push is locked: kubernetes deployment missing" {
+	if summary != "Drift exists but push is locked: changed: web: kubernetes deployment missing" {
 		t.Fatalf("summary = %q", summary)
 	}
 }
@@ -789,6 +789,7 @@ func TestServerRolloutsExposeNewIntentAndChangedAssets(t *testing.T) {
 
 	ctx := context.Background()
 	store := memory.New()
+	now := time.Now().UTC()
 	apiOld := historydomain.DeploymentRecord{
 		APIVersion:         "guardian/v1alpha1",
 		Kind:               "DeploymentRecord",
@@ -797,7 +798,7 @@ func TestServerRolloutsExposeNewIntentAndChangedAssets(t *testing.T) {
 		Intent:             "api",
 		AssetVersionIDs:    map[string]string{"config": "asset-config-v1"},
 		AssetVersions:      map[string]string{"config": "config-v1"},
-		CreatedAt:          time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC),
+		CreatedAt:          now.Add(-3 * time.Hour),
 	}
 	apiNew := historydomain.DeploymentRecord{
 		APIVersion:         "guardian/v1alpha1",
@@ -807,7 +808,7 @@ func TestServerRolloutsExposeNewIntentAndChangedAssets(t *testing.T) {
 		Intent:             "api",
 		AssetVersionIDs:    map[string]string{"config": "asset-config-v2", "binary": "asset-binary-v1"},
 		AssetVersions:      map[string]string{"config": "config-v2", "binary": "binary-v1"},
-		CreatedAt:          time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC),
+		CreatedAt:          now.Add(-1 * time.Hour),
 	}
 	jobsInitial := historydomain.DeploymentRecord{
 		APIVersion:         "guardian/v1alpha1",
@@ -817,7 +818,7 @@ func TestServerRolloutsExposeNewIntentAndChangedAssets(t *testing.T) {
 		Intent:             "jobs",
 		AssetVersionIDs:    map[string]string{"jobs-config": "asset-jobs-config-v1"},
 		AssetVersions:      map[string]string{"jobs-config": "jobs-config-v1"},
-		CreatedAt:          time.Date(2026, 4, 29, 15, 0, 0, 0, time.UTC),
+		CreatedAt:          now.Add(-2 * time.Hour),
 	}
 	seedRawFiles(t, ctx, store,
 		guardianapi.PathWrite{LogicalPath: paths.PartitionConfig("demo"), Content: mustMarshalYAML(t, newPartition("demo"))},
@@ -856,6 +857,65 @@ func TestServerRolloutsExposeNewIntentAndChangedAssets(t *testing.T) {
 	}
 	if !response.Rollouts[1].NewIntent {
 		t.Fatalf("expected jobs rollout to be marked as new")
+	}
+}
+
+func TestServerRolloutsMarkCurrentHealthyRolloutAsGreen(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := memory.New()
+	now := time.Now().UTC()
+	jobsInitial := historydomain.DeploymentRecord{
+		APIVersion:         "guardian/v1alpha1",
+		Kind:               "DeploymentRecord",
+		DeploymentRevision: "dep_jobs_initial",
+		Partition:          "demo",
+		Intent:             "jobs",
+		AssetVersionIDs:    map[string]string{"jobs-config": "asset-jobs-config-v1"},
+		AssetVersions:      map[string]string{"jobs-config": "jobs-config-v1"},
+		CreatedAt:          now.Add(-2 * time.Hour),
+	}
+	seedRawFiles(t, ctx, store,
+		guardianapi.PathWrite{LogicalPath: paths.PartitionConfig("demo"), Content: mustMarshalYAML(t, newPartition("demo"))},
+		guardianapi.PathWrite{LogicalPath: paths.ArchiveState("demo", "jobs", jobsInitial.DeploymentRevision), Content: mustMarshalJSON(t, jobsInitial)},
+		guardianapi.PathWrite{LogicalPath: paths.ArchiveManifest("demo", "jobs", jobsInitial.DeploymentRevision), Content: mustMarshalYAML(t, intentdomain.Intent{Metadata: intentdomain.Metadata{Name: "jobs"}, Spec: intentdomain.IntentSpec{TargetPusher: "local", Assets: []intentdomain.AssetSpec{{Type: assetdomain.TypeConfig, Name: "jobs-config", Version: "jobs-config-v1"}}}})},
+		guardianapi.PathWrite{LogicalPath: paths.IntentState("demo", "jobs"), Content: mustMarshalJSON(t, statedomain.IntentState{
+			APIVersion:      "guardian/v1alpha1",
+			Kind:            "IntentState",
+			Partition:       "demo",
+			Intent:          "jobs",
+			Status:          statedomain.StatusHealthy,
+			IntentVersionID: "jobs-v1",
+			TargetPusher:    "local",
+			Health:          &taskdomain.HealthObservation{Status: taskdomain.HealthHealthy, Summary: "all checks passed"},
+		})},
+	)
+
+	srv, err := New(Options{Store: store, PrincipalID: "test-ui", Pushers: []string{"local"}})
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	httpSrv := httptest.NewServer(srv)
+	defer httpSrv.Close()
+
+	var response PartitionRolloutsResponse
+	requestJSON(t, httpSrv, http.MethodGet, "/api/partitions/demo/rollouts", nil, &response)
+	if got, want := len(response.Rollouts), 1; got != want {
+		t.Fatalf("rollout count = %d, want %d", got, want)
+	}
+	if !response.Rollouts[0].NewIntent {
+		t.Fatalf("expected rollout to be marked as new")
+	}
+	if !response.Rollouts[0].Current {
+		t.Fatalf("expected rollout to be current")
+	}
+	if got, want := response.Rollouts[0].HealthStatus, "healthy"; got != want {
+		t.Fatalf("health status = %q, want %q", got, want)
+	}
+	if got, want := response.Rollouts[0].HealthText, "Current"; got != want {
+		t.Fatalf("health text = %q, want %q", got, want)
 	}
 }
 
@@ -1406,7 +1466,7 @@ func TestBuildIntentDocumentMergesYamlHintOverrides(t *testing.T) {
 			}},
 		},
 	}
-	doc := buildIntentDocument(manifest, "", nil, intentTaskRuntime{}, []string{"api"}, nil)
+	doc := buildIntentDocument(manifest, "", nil, intentTaskRuntime{}, []string{"api"}, nil, nil)
 	if len(doc.OutputHints) != 1 || doc.OutputHints[0].Path != "outputs.url" {
 		t.Fatalf("unexpected output hints: %+v", doc.OutputHints)
 	}

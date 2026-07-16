@@ -17,9 +17,9 @@ type Spec struct {
 }
 
 type State struct {
-	Partition string            `json:"partition"`
-	Intent    string            `json:"intent"`
-	Asset     string            `json:"asset"`
-	VersionID string            `json:"versionID"`
-	Outputs   map[string]string `json:"outputs,omitempty"`
+	Partition string            `yaml:"partition" json:"partition"`
+	Intent    string            `yaml:"intent" json:"intent"`
+	Asset     string            `yaml:"asset" json:"asset"`
+	VersionID string            `yaml:"versionID" json:"versionID"`
+	Outputs   map[string]string `yaml:"outputs,omitempty" json:"outputs,omitempty"`
 }

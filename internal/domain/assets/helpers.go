@@ -92,10 +92,3 @@ func validateStringList(values []string, field string) error {
 	}
 	return nil
 }
-
-func assetError(name, assetType string, err error) error {
-	if err == nil {
-		return nil
-	}
-	return fmt.Errorf("asset %q (%s): %w", name, assetType, err)
-}

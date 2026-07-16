@@ -117,19 +117,23 @@ func awsSetupCommand() *command.Command {
 				_ = clientKeyPEM
 
 				raCfg := awssetup.RolesAnywhereConfig{
-					Profile:        "guardian-rolesanywhere",
-					Region:         cfg.Region,
-					RoleARN:        roleARN,
-					RoleName:       cfg.RoleName,
-					Certificate:    caPEM,
-					PrivateKeyPath: filepath.Join(certPaths.CADir, "client-key.pem"),
-					CertDir:        certPaths.CADir,
+					Profile:         "guardian-rolesanywhere",
+					Region:          cfg.Region,
+					RoleARN:         roleARN,
+					RoleName:        cfg.RoleName,
+					Certificate:     caPEM,
+					CertificatePath: certPaths.Client,
+					PrivateKeyPath:  filepath.Join(certPaths.CADir, "client-key.pem"),
+					CertDir:         certPaths.CADir,
 				}
 
 				if !cfg.DryRun {
 					result, raErr := awssetup.EnsureRolesAnywhere(ctx, raCfg, caPEM, cfg.Profile)
 					if raErr != nil {
 						return fmt.Errorf("roles anywhere setup: %w", raErr)
+					}
+					if err := awssetup.UpdateRoleTrustPolicyForRolesAnywhere(ctx, cfg, identity.Account, result.TrustAnchorARN); err != nil {
+						fmt.Printf("  warning: could not update role trust policy: %v\n", err)
 					}
 					awssetup.PrintRolesAnywhereSummary(*result)
 				} else {
@@ -141,10 +145,9 @@ func awsSetupCommand() *command.Command {
 			fmt.Println()
 			fmt.Println("=== setup complete ===")
 			if *authMode == "rolesanywhere" {
-				fmt.Println("Run: aws_signing_helper must be installed for credential_process")
-				fmt.Println("  curl -Lo /usr/local/bin/aws_signing_helper \\")
-				fmt.Println("    https://github.com/aws/rolesanywhere-credential-helper/releases/latest/download/aws_signing_helper-linux-amd64")
-				fmt.Println("  chmod +x /usr/local/bin/aws_signing_helper")
+				fmt.Println("Install aws_signing_helper for credential_process:")
+				fmt.Println("  git clone https://github.com/aws/rolesanywhere-credential-helper.git /tmp/ash && \\")
+				fmt.Println("  make -C /tmp/ash release && sudo cp /tmp/ash/build/bin/aws_signing_helper /usr/local/bin/")
 			} else {
 				fmt.Printf("next: guardianctl aws init --profile %s --region %s\n",
 					cfg.Profile, cfg.Region)

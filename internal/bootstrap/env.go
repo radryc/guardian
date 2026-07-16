@@ -153,6 +153,21 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["MONOFS_AUTO_PUSH_INTERVAL"] = envOrDefault("MONOFS_AUTO_PUSH_INTERVAL", "60s")
 	env["MONOFS_GUARDIAN_STATE_DIR"] = envOrDefault("MONOFS_GUARDIAN_STATE_DIR", ".monofs-router-state")
 
+	// --- Partition authz + SSO (OIDC). Off by default; enabled by start.sh --with-dex. ---
+	env["MONOFS_OIDC_ISSUER"] = envOrDefault("MONOFS_OIDC_ISSUER", "")
+	env["MONOFS_OIDC_AUDIENCE"] = envOrDefault("MONOFS_OIDC_AUDIENCE", "")
+	env["MONOFS_OIDC_JWKS_URL"] = envOrDefault("MONOFS_OIDC_JWKS_URL", "")
+	env["MONOFS_AUTHZ_ENFORCE_INGEST"] = envOrDefault("MONOFS_AUTHZ_ENFORCE_INGEST", "false")
+	env["MONOFS_AUTHZ_GRANTS_JSON"] = envOrDefault("MONOFS_AUTHZ_GRANTS_JSON", "")
+	env["GUARDIAN_AUTHZ_ENFORCE_DEPLOY"] = envOrDefault("GUARDIAN_AUTHZ_ENFORCE_DEPLOY", "false")
+	env["MONOFS_OIDC_CLIENT_ID"] = envOrDefault("MONOFS_OIDC_CLIENT_ID", "")
+	env["MONOFS_OIDC_CLIENT_SECRET"] = envOrDefault("MONOFS_OIDC_CLIENT_SECRET", "")
+	env["MONOFS_OIDC_REDIRECT_URL"] = envOrDefault("MONOFS_OIDC_REDIRECT_URL", "")
+	env["MONOFS_OIDC_AUTH_URL"] = envOrDefault("MONOFS_OIDC_AUTH_URL", "")
+	env["MONOFS_ROUTER_OIDC_REDIRECT_URL"] = envOrDefault("MONOFS_ROUTER_OIDC_REDIRECT_URL", "")
+	env["MONOFS_ROUTER_OIDC_AUTH_URL"] = envOrDefault("MONOFS_ROUTER_OIDC_AUTH_URL", "")
+	env["MONOFS_AUTHZ_ENFORCE_UI"] = envOrDefault("MONOFS_AUTHZ_ENFORCE_UI", "false")
+
 	// --- AWS pusher ---
 	env["GUARDIAN_AWS_ACCOUNT"] = cfg.Guardian.Pushers.AWS.Account
 	env["GUARDIAN_AWS_REGION"] = cfg.Guardian.Pushers.AWS.Region
@@ -670,10 +685,45 @@ func SetTopLevelKey(path, key, value string) error {
 }
 
 // GenerateEncryptionKey generates a new 64-char hex encryption key.
-func GenerateEncryptionKey() string {
+func GenerateEncryptionKey() (string, error) {
 	b := make([]byte, 32)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate encryption key: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// PersistentKeyPath returns the path to the persistent encryption key file
+// stored in ~/.strata/encryption-key so it survives cluster rebuilds.
+func PersistentKeyPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".strata", "encryption-key")
+}
+
+// LoadOrGenerateEncryptionKey loads the encryption key from the persistent
+// path (~/.strata/encryption-key). If the file does not exist, a new key is
+// generated and saved there. The key is always written to ../monofs/.env.
+func LoadOrGenerateEncryptionKey() (string, error) {
+	keyPath := PersistentKeyPath()
+
+	if data, err := os.ReadFile(keyPath); err == nil {
+		key := strings.TrimSpace(string(data))
+		if len(key) == 64 {
+			return key, nil
+		}
+	}
+
+	key, err := GenerateEncryptionKey()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0700); err != nil {
+		return "", fmt.Errorf("create persistent key dir: %w", err)
+	}
+	if err := os.WriteFile(keyPath, []byte(key+"\n"), 0600); err != nil {
+		return "", fmt.Errorf("write persistent key: %w", err)
+	}
+	return key, nil
 }
 
 // WriteMonofsEnv writes an encryption key to ../monofs/.env.

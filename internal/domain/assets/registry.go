@@ -22,7 +22,7 @@ var definitions = map[string]Definition{}
 
 func Register(def Definition) {
 	if def == nil {
-		return
+		panic("assets.Register: nil Definition")
 	}
 	definitions[def.Type()] = def
 }

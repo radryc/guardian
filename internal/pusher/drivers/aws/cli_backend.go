@@ -485,7 +485,7 @@ func (b *CLIBackend) GetSecret(ctx context.Context, secretID string) (Secret, bo
 	return Secret{}, false, nil
 }
 func (b *CLIBackend) DeleteSecret(ctx context.Context, secretID string) error {
-	return nil
+	return fmt.Errorf("CLIBackend does not support DeleteSecret; use AWSBackend")
 }
 func (b *CLIBackend) UpsertService(ctx context.Context, svc ECSService) error {
 	return fmt.Errorf("CLIBackend does not support UpsertService; use AWSBackend")

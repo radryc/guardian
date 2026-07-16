@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	coreauthz "github.com/radryc/monofs/pkg/authz"
+	guardauthz "github.com/rydzu/ainfra/guardian/internal/authz"
 	"github.com/rydzu/ainfra/guardian/internal/buildinfo"
 	"github.com/rydzu/ainfra/guardian/internal/compliance"
 	"github.com/rydzu/ainfra/guardian/internal/config"
@@ -48,10 +50,34 @@ func main() {
 	var configPath string
 	var reconcileInterval string
 	var uiListen string
+	var authzOIDCIssuer string
+	var authzOIDCAudience string
+	var authzOIDCJWKSURL string
+	var authzGrantsPath string
+	var authzEnforceDeploy bool
 	flag.StringVar(&configPath, "config", "", "path to guardian config file")
 	flag.StringVar(&reconcileInterval, "reconcile-interval", "10m", "interval between full Guardian reconcile cycles")
 	flag.StringVar(&uiListen, "ui-listen", "", "listen address for Guardian UI/API (for example :8090)")
+	flag.StringVar(&authzOIDCIssuer, "oidc-issuer", "", "OIDC issuer URL for SSO token verification on the Guardian UI (observe mode when empty)")
+	flag.StringVar(&authzOIDCAudience, "oidc-audience", "", "Expected OIDC audience for SSO tokens")
+	flag.StringVar(&authzOIDCJWKSURL, "oidc-jwks-url", "", "OIDC JWKS URL (discovered from issuer when empty)")
+	flag.StringVar(&authzGrantsPath, "authz-grants-path", "", "Path to the shared authz grant store JSON (control-plane deploy authorization)")
+	flag.BoolVar(&authzEnforceDeploy, "authz-enforce-deploy", false, "Require the maintainer/admin role on a partition for human-initiated deploy/reconcile")
 	flag.Parse()
+
+	// Environment fallbacks (guardiand is primarily env-driven in deployments).
+	if authzOIDCIssuer == "" {
+		authzOIDCIssuer = strings.TrimSpace(os.Getenv("MONOFS_OIDC_ISSUER"))
+	}
+	if authzOIDCAudience == "" {
+		authzOIDCAudience = strings.TrimSpace(os.Getenv("MONOFS_OIDC_AUDIENCE"))
+	}
+	if authzOIDCJWKSURL == "" {
+		authzOIDCJWKSURL = strings.TrimSpace(os.Getenv("MONOFS_OIDC_JWKS_URL"))
+	}
+	if !authzEnforceDeploy && strings.EqualFold(strings.TrimSpace(os.Getenv("GUARDIAN_AUTHZ_ENFORCE_DEPLOY")), "true") {
+		authzEnforceDeploy = true
+	}
 
 	cfg := config.Default()
 	if configPath != "" {
@@ -170,6 +196,24 @@ func main() {
 	}
 	processor := results.NewProcessor(store, dispatcher)
 	recon := reconciler.NewReconcilerWithOptions(store, dispatcher, cfg.Guardian.ReconcileInterval, staleTaskDuration)
+
+	// Control-plane deploy authorization (authz epic E2). Trusted automation
+	// (no identity in context) is always allowed; human-initiated reconciles that
+	// carry an SSO identity must hold the maintainer/admin role on the partition.
+	if deployGuard, guardErr := guardauthz.LoadGuardWithInline(strings.TrimSpace(authzGrantsPath), strings.TrimSpace(os.Getenv("MONOFS_AUTHZ_GRANTS_JSON")), authzEnforceDeploy); guardErr != nil {
+		log.Printf("guardian: control-plane authz disabled: %v", guardErr)
+	} else {
+		recon.SetAuthorizer(func(actx context.Context, partition string) error {
+			id, ok := coreauthz.IdentityFromContext(actx)
+			if !ok || id.IsAnonymous() {
+				return nil // trusted automation / service principal
+			}
+			return deployGuard.AuthorizeModify(actx, partition)
+		})
+		if authzEnforceDeploy {
+			log.Printf("guardian: control-plane deploy authorization enabled (grants=%s)", authzGrantsPath)
+		}
+	}
 	watcher := &watcherpkg.Watcher{}
 	var wg sync.WaitGroup
 
@@ -186,9 +230,62 @@ func main() {
 		if err != nil {
 			log.Fatalf("build ui server: %v", err)
 		}
+		// Attach SSO identity to UI/API requests (authz epic E1, observe mode).
+		var uiVerifier coreauthz.TokenVerifier = coreauthz.NoopVerifier{}
+		if strings.TrimSpace(authzOIDCIssuer) != "" && strings.TrimSpace(authzOIDCAudience) != "" {
+			if v, verr := coreauthz.NewOIDCVerifier(coreauthz.OIDCConfig{
+				Issuer:   strings.TrimSpace(authzOIDCIssuer),
+				Audience: strings.TrimSpace(authzOIDCAudience),
+				JWKSURL:  strings.TrimSpace(authzOIDCJWKSURL),
+			}); verr != nil {
+				log.Printf("guardian ui: OIDC verifier disabled: %v", verr)
+			} else {
+				uiVerifier = v
+				log.Printf("guardian ui: OIDC SSO verification enabled (issuer=%s)", authzOIDCIssuer)
+			}
+		}
+		uiAuthenticator := coreauthz.NewAuthenticator(uiVerifier, nil, false)
+		var uiHandler http.Handler = uiAuthenticator.HTTPMiddleware(uiServer)
+
+		// Browser login (Authorization Code + PKCE + session cookie) is enabled
+		// when OIDC verification is active and a client secret + redirect URL are
+		// provided. It mounts /auth/login, /auth/callback, /auth/logout and
+		// resolves identity from the session cookie (or a bearer token).
+		clientSecret := strings.TrimSpace(os.Getenv("MONOFS_OIDC_CLIENT_SECRET"))
+		redirectURL := strings.TrimSpace(os.Getenv("MONOFS_OIDC_REDIRECT_URL"))
+		publicAuthURL := strings.TrimSpace(os.Getenv("MONOFS_OIDC_AUTH_URL"))
+		if _, isOIDC := uiVerifier.(*coreauthz.OIDCVerifier); isOIDC && clientSecret != "" && redirectURL != "" {
+			clientID := strings.TrimSpace(os.Getenv("MONOFS_OIDC_CLIENT_ID"))
+			if clientID == "" {
+				clientID = "monofs"
+			}
+			waCfg := coreauthz.WebAuthConfig{
+				Issuer:       strings.TrimSpace(authzOIDCIssuer),
+				ClientID:     clientID,
+				ClientSecret: clientSecret,
+				RedirectURL:  redirectURL,
+				Verifier:     uiVerifier,
+				RequireLogin: strings.EqualFold(strings.TrimSpace(os.Getenv("MONOFS_AUTHZ_ENFORCE_UI")), "true"),
+			}
+			if publicAuthURL != "" {
+				waCfg.Endpoints.AuthURL = publicAuthURL
+			}
+			if wa, werr := coreauthz.NewWebAuthenticator(ctx, waCfg); werr != nil {
+				log.Printf("guardian ui: browser login disabled: %v", werr)
+			} else {
+				uiHandler = wa.Handler(uiServer)
+				if publicAuthURL != "" {
+					log.Printf("guardian ui: browser login enabled (redirect=%s, auth_url=%s, require_login=%v)",
+						redirectURL, publicAuthURL, strings.EqualFold(strings.TrimSpace(os.Getenv("MONOFS_AUTHZ_ENFORCE_UI")), "true"))
+				} else {
+					log.Printf("guardian ui: browser login enabled (redirect=%s, require_login=%v)",
+						redirectURL, strings.EqualFold(strings.TrimSpace(os.Getenv("MONOFS_AUTHZ_ENFORCE_UI")), "true"))
+				}
+			}
+		}
 		httpServer := &http.Server{
 			Addr:    cfg.Guardian.UIListenAddress,
-			Handler: otelhttp.NewHandler(uiServer, "guardian.ui"),
+			Handler: otelhttp.NewHandler(uiHandler, "guardian.ui"),
 		}
 		runHTTPServer(ctx, &wg, httpServer)
 		log.Printf("guardian ui listening on %s", cfg.Guardian.UIListenAddress)
@@ -269,8 +366,8 @@ func main() {
 			}
 
 			// Prime the initial scan interval: start fast if tasks are already
-		// in flight (e.g. daemon restart mid-rollout), idle otherwise.
-		initialLive, err := processLiveResultFiles(ctx, store, processor, pushers, scanReason)
+			// in flight (e.g. daemon restart mid-rollout), idle otherwise.
+			initialLive, err := processLiveResultFiles(ctx, store, processor, pushers, scanReason)
 			if err != nil {
 				log.Printf("result-processor: %s scan failed: %v", scanReason, err)
 			}

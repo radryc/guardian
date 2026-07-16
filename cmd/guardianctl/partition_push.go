@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"github.com/rydzu/ainfra/guardian/internal/compiler/manifest"
 	"github.com/rydzu/ainfra/guardian/internal/compiler/planner"
 	"github.com/rydzu/ainfra/guardian/internal/compiler/validator"
+	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
 	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
 	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
 	"github.com/rydzu/ainfra/guardian/internal/paths"
@@ -462,6 +464,11 @@ func pushPartitionBundle(ctx context.Context, store guardianapi.Store, bundle *l
 		Rollouts:      rollouts,
 	}
 
+	isNewPartition := len(remoteFiles) == 0
+	if err := writePartitionPushEvent(ctx, store, bundle.PartitionName, correlationID, isNewPartition, len(writePaths), len(deletedPaths)); err != nil {
+		return nil, err
+	}
+
 	if len(writes) > 0 {
 		batch, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{
 			Writes: writes,
@@ -569,6 +576,42 @@ func isBlobUnavailableError(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "blob not found") ||
 		strings.Contains(msg, "failed to read blob via fetcher")
+}
+
+func writePartitionPushEvent(ctx context.Context, store guardianapi.Store, partition, correlationID string, isNewPartition bool, written, deleted int) error {
+	eventType := "partition.pushed"
+	message := "partition updated"
+	if isNewPartition {
+		message = "partition created"
+	}
+	event := &historydomain.EventRecord{
+		APIVersion:    "guardian/v1alpha1",
+		Kind:          "EventRecord",
+		EventID:       revisions.NewEventID(),
+		Partition:     partition,
+		Type:          eventType,
+		Message:       message,
+		CorrelationID: correlationID,
+		CreatedAt:     time.Now().UTC(),
+		Details: map[string]string{
+			"is_new":  strconv.FormatBool(isNewPartition),
+			"written": strconv.Itoa(written),
+			"deleted": strconv.Itoa(deleted),
+		},
+	}
+	content, err := json.MarshalIndent(event, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = store.UpsertFiles(ctx, guardianapi.MutationBatch{
+		Writes: []guardianapi.PathWrite{{LogicalPath: paths.EventState(partition, event.EventID), Content: content}},
+		Context: guardianapi.MutationContext{
+			PrincipalID:   "guardianctl",
+			Reason:        "write partition push event",
+			CorrelationID: correlationID,
+		},
+	})
+	return err
 }
 
 func coalesceString(value, fallback string) string {

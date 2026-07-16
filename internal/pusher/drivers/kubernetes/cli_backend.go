@@ -326,8 +326,10 @@ func (b *CLIBackend) GetDeployment(namespace, name string) (Deployment, bool, er
 	}
 	labels := cloneStringMap(payload.Metadata.Labels)
 	var podFailureReason string
+	var podFailureMessage string
+	var podFailurePodName string
 	if payload.Status.ReadyReplicas < replicas {
-		podFailureReason = b.podsTerminalFailure(namespace, labels)
+		podFailureReason, podFailureMessage, podFailurePodName = b.podsTerminalFailure(namespace, labels)
 	}
 	hash := payload.Metadata.Annotations[fullHashAnnotation]
 	if hash == "" {
@@ -344,6 +346,8 @@ func (b *CLIBackend) GetDeployment(namespace, name string) (Deployment, bool, er
 		Container:         container,
 		CrashLoopBackOff:  podFailureReason != "",
 		PodFailureReason:  podFailureReason,
+		PodFailureMessage: podFailureMessage,
+		PodFailurePodName: podFailurePodName,
 	}, true, nil
 }
 
@@ -363,14 +367,14 @@ var transientPodWaitingReasons = map[string]bool{
 // non-transient waiting state. Any waiting reason that is not in the known
 // transient allowlist is considered a terminal failure.
 // Returns an empty string when all pods are healthy or transiently starting.
-func (b *CLIBackend) podsTerminalFailure(namespace string, labels map[string]string) string {
+func (b *CLIBackend) podsTerminalFailure(namespace string, labels map[string]string) (reason, message, podName string) {
 	sel := selectorForLabels(labels)
 	parts := make([]string, 0, len(sel))
 	for k, v := range sel {
 		parts = append(parts, k+"="+v)
 	}
 	if len(parts) == 0 {
-		return ""
+		return "", "", ""
 	}
 	sort.Strings(parts)
 	selector := strings.Join(parts, ",")
@@ -378,46 +382,126 @@ func (b *CLIBackend) podsTerminalFailure(namespace string, labels map[string]str
 	args = append(args, "-n", namespace, "get", "pods", "-l", selector, "-o", "json")
 	raw, err := b.run(args...)
 	if err != nil {
-		return ""
+		return "", "", ""
 	}
 	var podList struct {
 		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
 			Status struct {
+				Conditions []struct {
+					Type   string `json:"type"`
+					Status string `json:"status"`
+					Reason string `json:"reason"`
+				} `json:"conditions"`
 				ContainerStatuses []struct {
 					State struct {
 						Waiting *struct {
-							Reason string `json:"reason"`
+							Reason  string `json:"reason"`
+							Message string `json:"message"`
 						} `json:"waiting"`
 						Running *struct{} `json:"running"`
 					} `json:"state"`
 				} `json:"containerStatuses"`
+				InitContainerStatuses []struct {
+					State struct {
+						Waiting *struct {
+							Reason  string `json:"reason"`
+							Message string `json:"message"`
+						} `json:"waiting"`
+						Running *struct{} `json:"running"`
+					} `json:"state"`
+				} `json:"initContainerStatuses"`
 			} `json:"status"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(raw, &podList); err != nil {
-		return ""
+		return "", "", ""
 	}
 	for _, pod := range podList.Items {
-		for _, cs := range pod.Status.ContainerStatuses {
-			w := cs.State.Waiting
-			if w == nil {
-				// running or terminated — not a transient wait, not a failure
-				continue
-			}
-			if w.Reason == "" || transientPodWaitingReasons[w.Reason] {
-				// known-good transient state
-				continue
-			}
-			// anything else (ImagePullBackOff, CrashLoopBackOff, CreateContainerConfigError, …)
-			return w.Reason
+		r, m, found := b.containerWaitingFailure(pod.Status.ContainerStatuses, pod.Metadata.Name)
+		if found {
+			return r, m, pod.Metadata.Name
+		}
+		r, m, found = b.containerWaitingFailure(pod.Status.InitContainerStatuses, pod.Metadata.Name)
+		if found {
+			return r, m, pod.Metadata.Name
 		}
 	}
-	return ""
+	return "", "", ""
+}
+
+func (b *CLIBackend) containerWaitingFailure(statuses []struct {
+	State struct {
+		Waiting *struct {
+			Reason  string `json:"reason"`
+			Message string `json:"message"`
+		} `json:"waiting"`
+		Running *struct{} `json:"running"`
+	} `json:"state"`
+}, podName string) (reason, message string, found bool) {
+	for _, cs := range statuses {
+		w := cs.State.Waiting
+		if w == nil {
+			continue
+		}
+		if w.Reason == "" || transientPodWaitingReasons[w.Reason] {
+			continue
+		}
+		return w.Reason, w.Message, true
+	}
+	return "", "", false
 }
 
 // podsCrashLoopBackOff is kept for backward compatibility; prefer podsTerminalFailure.
 func (b *CLIBackend) podsCrashLoopBackOff(namespace string, labels map[string]string) bool {
-	return b.podsTerminalFailure(namespace, labels) != ""
+	reason, _, _ := b.podsTerminalFailure(namespace, labels)
+	return reason != ""
+}
+
+func (b *CLIBackend) GetPodEvents(namespace, podName string) ([]string, error) {
+	if podName == "" {
+		return nil, nil
+	}
+	args := b.baseArgs()
+	args = append(args, "-n", namespace, "get", "events", "--field-selector", "involvedObject.name="+podName, "-o", "json")
+	raw, err := b.run(args...)
+	if err != nil {
+		return nil, nil
+	}
+	var evList struct {
+		Items []struct {
+			Type          string `json:"type"`
+			Reason        string `json:"reason"`
+			Message       string `json:"message"`
+			LastTimestamp string `json:"lastTimestamp"`
+			Count         int    `json:"count"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &evList); err != nil {
+		return nil, nil
+	}
+	entries := make([]string, 0, len(evList.Items))
+	for _, ev := range evList.Items {
+		msg := strings.TrimSpace(ev.Message)
+		if msg == "" {
+			continue
+		}
+		line := ev.Reason
+		if ev.Type != "" {
+			line = ev.Type + " " + ev.Reason
+		}
+		if ev.Count > 1 {
+			line += fmt.Sprintf(" (x%d)", ev.Count)
+		}
+		line += ": " + msg
+		if ev.LastTimestamp != "" {
+			line += " (" + ev.LastTimestamp + ")"
+		}
+		entries = append(entries, line)
+	}
+	return entries, nil
 }
 
 func (b *CLIBackend) DeleteDeployment(namespace, name string) error {

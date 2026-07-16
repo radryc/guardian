@@ -21,6 +21,13 @@
       <span id="topnavPartition" class="text-[#E5ECF4] font-semibold">Control Center</span>
     </div>
     <div class="flex-1"></div>
+    <span
+      id="buildVersionStamp"
+      class="inline-flex items-center gap-1 px-2 py-1 mr-2 rounded-full text-[10px] font-semibold text-[#9BB0CF] bg-[#151B2B] border border-white/[0.09]"
+      title="build: local static preview"
+    >
+      dev
+    </span>
     <span id="syncIndicator" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold text-[#9BB0CF] bg-[#151B2B] border border-white/[0.09] cursor-pointer select-none" title="Click to change refresh rate">Loading…</span>
     <!-- Refresh rate popover -->
     <div id="refreshPopover" class="refresh-popover hidden absolute top-full right-4 mt-1.5 w-52 rounded-lg border border-white/[0.09] bg-[#151B2B] shadow-lg p-3 z-50">
@@ -220,6 +227,15 @@
               <div>
                 <h2 class="card-title">Rollouts</h2>
                 <p class="text-muted text-[13px]">New intents and asset releases archived for the selected partition.</p>
+                <div class="flex flex-wrap items-center gap-3 mt-2 text-[11px] text-[#9BB0CF]">
+                  <span class="inline-flex items-center gap-1.5" title="Latest successful rollout revision for an intent."><span class="status-dot status-dot-healthy"></span>Current</span>
+                  <span class="inline-flex items-center gap-1.5" title="The current rollout has failing assets (ImagePullBackOff, CrashLoopBackOff, etc)."><span class="status-dot status-dot-failing"></span>Error</span>
+                  <span class="inline-flex items-center gap-1.5" title="The current rollout has assets that are not fully ready."><span class="status-dot status-dot-attention"></span>Degraded</span>
+                  <span class="inline-flex items-center gap-1.5" title="Intent appeared for the first time in this rollout."><span class="status-dot status-dot-pending"></span>New intent</span>
+                  <span class="inline-flex items-center gap-1.5" title="Guardian reconciled drift and re-applied desired state."><span class="status-dot" style="background:#A78BFA"></span>Self-heal</span>
+                  <span class="inline-flex items-center gap-1.5" title="Guardian reverted to a previous deployment revision."><span class="status-dot status-dot-attention"></span>Rollback</span>
+                  <span class="inline-flex items-center gap-1.5" title="Older rollout kept for history; not currently active."><span class="status-dot status-dot-neutral"></span>Superseded</span>
+                </div>
               </div>
               <button id="refreshRolloutsButton" class="btn-secondary">Refresh</button>
             </div>

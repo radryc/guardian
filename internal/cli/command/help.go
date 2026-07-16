@@ -137,7 +137,7 @@ func (r *Registry) groupUsage(group string) {
 	out := os.Stderr
 	program := programName()
 	fmt.Fprintf(out, "Usage: %s %s <command>\n", program, group)
-	fmt.Fprintf(out, "\n%s commands:\n", strings.Title(group))
+	fmt.Fprintf(out, "\n%s commands:\n", strings.ToUpper(group[:1])+group[1:])
 	sorted := append([]*Command(nil), cmds...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	for _, cmd := range sorted {

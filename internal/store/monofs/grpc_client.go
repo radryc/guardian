@@ -13,15 +13,32 @@ import (
 	"time"
 
 	pb "github.com/radryc/monofs/api/proto"
+	"github.com/rydzu/ainfra/guardian/internal/clitoken"
 	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 )
 
 const defaultClientHeartbeatInterval = 30 * time.Second
 const defaultTopologyRefreshInterval = 5 * time.Second
+
+// cliBearerCreds attaches the cached `guardianctl login` token (if any) as an
+// Authorization: Bearer header on outgoing RPCs, so human CLI calls carry an
+// SSO identity. It is a no-op when no token is cached (machines/services keep
+// using their own token mechanism).
+type cliBearerCreds struct{}
+
+func (cliBearerCreds) GetRequestMetadata(_ context.Context, _ ...string) (map[string]string, error) {
+	if tok := clitoken.Bearer(); tok != "" {
+		return map[string]string{"authorization": "Bearer " + tok}, nil
+	}
+	return nil, nil
+}
+
+func (cliBearerCreds) RequireTransportSecurity() bool { return false }
 
 type routerClient interface {
 	UpsertGuardianPaths(ctx context.Context, in *pb.UpsertGuardianPathsRequest, opts ...grpc.CallOption) (*pb.UpsertGuardianPathsResponse, error)
@@ -66,7 +83,8 @@ type GRPCClient struct {
 	rpcTimeout           time.Duration
 	writable             bool
 
-	mu sync.Mutex
+	mu       sync.Mutex
+	routerMu sync.Mutex
 
 	routerConn  *grpc.ClientConn
 	router      routerClient
@@ -76,6 +94,10 @@ type GRPCClient struct {
 	lastRefresh time.Time
 	refreshTTL  time.Duration
 
+	refreshMu      sync.Mutex
+	refreshing     bool
+	refreshRequest chan struct{}
+
 	stopHeartbeat chan struct{}
 	stopOnce      sync.Once
 	heartbeatWG   sync.WaitGroup
@@ -84,6 +106,23 @@ type GRPCClient struct {
 type nodeTarget struct {
 	id     string
 	client pb.MonoFSClient
+}
+
+func dialRouter(addr string) (*grpc.ClientConn, error) {
+	return grpc.NewClient(
+		addr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithPerRPCCredentials(cliBearerCreds{}),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                30 * time.Second,
+			Timeout:             10 * time.Second,
+			PermitWithoutStream: true,
+		}),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(1024*1024*1024),
+			grpc.MaxCallSendMsgSize(1024*1024*1024),
+		),
+	)
 }
 
 func NewGRPCClient(ctx context.Context, cfg ClientConfig) (*GRPCClient, error) {
@@ -116,14 +155,7 @@ func NewGRPCClient(ctx context.Context, cfg ClientConfig) (*GRPCClient, error) {
 		cfg.Hostname = hostname
 	}
 
-	conn, err := grpc.NewClient(
-		cfg.RouterAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(1024*1024*1024),
-			grpc.MaxCallSendMsgSize(1024*1024*1024),
-		),
-	)
+	conn, err := dialRouter(cfg.RouterAddr)
 	if err != nil {
 		return nil, fmt.Errorf("connect to monofs router: %w", err)
 	}
@@ -214,62 +246,62 @@ func (c *GRPCClient) stopHeartbeatLoop() {
 }
 
 func (c *GRPCClient) UpsertPaths(ctx context.Context, token string, writes []guardianapi.PathWrite, mutationCtx guardianapi.MutationContext) (guardianapi.BatchRevision, error) {
-	callCtx, cancel := c.withTimeout(ctx)
-	defer cancel()
-
-	stream, err := c.router.UpsertGuardianPathsStream(callCtx)
-	if err != nil {
-		return guardianapi.BatchRevision{}, mapRPCError(err)
-	}
-
 	const maxChunkBytes = 8 * 1024 * 1024
 	const maxChunkFiles = 64
-	var chunk []*pb.GuardianPathWrite
-	var chunkBytes int
-	firstChunk := true
 
-	for i, write := range writes {
-		pw := &pb.GuardianPathWrite{
-			LogicalPath:       write.LogicalPath,
-			Content:           write.Content,
-			ExpectedVersionId: write.ExpectedVersionID,
+	return retryRouterCall(c, ctx, func() (guardianapi.BatchRevision, error) {
+		callCtx, cancel := c.withTimeout(ctx)
+		defer cancel()
+
+		stream, err := c.router.UpsertGuardianPathsStream(callCtx)
+		if err != nil {
+			return guardianapi.BatchRevision{}, mapRPCError(err)
 		}
-		chunk = append(chunk, pw)
-		chunkBytes += len(write.Content)
-		isLast := i == len(writes)-1
 
-		if chunkBytes >= maxChunkBytes || len(chunk) >= maxChunkFiles || isLast {
-			msg := &pb.GuardianPathWriteChunk{
-				Writes: chunk,
-				IsLast: isLast,
+		var chunk []*pb.GuardianPathWrite
+		var chunkBytes int
+		firstChunk := true
+
+		for i, write := range writes {
+			pw := &pb.GuardianPathWrite{
+				LogicalPath:       write.LogicalPath,
+				Content:           write.Content,
+				ExpectedVersionId: write.ExpectedVersionID,
 			}
-			if firstChunk {
-				msg.GuardianToken = token
-				msg.Context = toProtoMutationContext(mutationCtx)
-				firstChunk = false
-			}
-			if err := stream.Send(msg); err != nil {
-				if _, recvErr := stream.CloseAndRecv(); recvErr != nil {
-					return guardianapi.BatchRevision{}, mapRPCError(recvErr)
+			chunk = append(chunk, pw)
+			chunkBytes += len(write.Content)
+			isLast := i == len(writes)-1
+
+			if chunkBytes >= maxChunkBytes || len(chunk) >= maxChunkFiles || isLast {
+				msg := &pb.GuardianPathWriteChunk{
+					Writes: chunk,
+					IsLast: isLast,
 				}
-				return guardianapi.BatchRevision{}, mapRPCError(err)
+				if firstChunk {
+					msg.GuardianToken = token
+					msg.Context = toProtoMutationContext(mutationCtx)
+					firstChunk = false
+				}
+				if err := stream.Send(msg); err != nil {
+					return guardianapi.BatchRevision{}, mapRPCError(err)
+				}
+				chunk = nil
+				chunkBytes = 0
 			}
-			chunk = nil
-			chunkBytes = 0
 		}
-	}
 
-	resp, err := stream.CloseAndRecv()
-	if err != nil {
-		return guardianapi.BatchRevision{}, mapRPCError(err)
-	}
-	if resp != nil && !resp.GetSuccess() {
-		return guardianapi.BatchRevision{}, fmt.Errorf("monofs upsert failed: %s", resp.GetMessage())
-	}
-	return guardianapi.BatchRevision{
-		BatchRevisionID: resp.GetBatchRevisionId(),
-		Files:           convertFileVersions(resp.GetVersions()),
-	}, nil
+		resp, err := stream.CloseAndRecv()
+		if err != nil {
+			return guardianapi.BatchRevision{}, mapRPCError(err)
+		}
+		if resp != nil && !resp.GetSuccess() {
+			return guardianapi.BatchRevision{}, fmt.Errorf("monofs upsert failed: %s", resp.GetMessage())
+		}
+		return guardianapi.BatchRevision{
+			BatchRevisionID: resp.GetBatchRevisionId(),
+			Files:           convertFileVersions(resp.GetVersions()),
+		}, nil
+	})
 }
 
 func (c *GRPCClient) DeletePaths(ctx context.Context, token string, deletes []guardianapi.PathDelete, mutationCtx guardianapi.MutationContext) (guardianapi.BatchRevision, error) {
@@ -285,62 +317,67 @@ func (c *GRPCClient) DeletePaths(ctx context.Context, token string, deletes []gu
 		})
 	}
 
-	callCtx, cancel := c.withTimeout(ctx)
-	defer cancel()
-	resp, err := c.router.DeleteGuardianPaths(callCtx, req)
-	if err != nil {
-		return guardianapi.BatchRevision{}, mapRPCError(err)
-	}
-	if resp != nil && !resp.GetSuccess() {
-		return guardianapi.BatchRevision{}, fmt.Errorf("monofs delete failed: %s", resp.GetMessage())
-	}
-	return guardianapi.BatchRevision{
-		BatchRevisionID: resp.GetBatchRevisionId(),
-		Files:           convertFileVersions(resp.GetTombstones()),
-	}, nil
+	return retryRouterCall(c, ctx, func() (guardianapi.BatchRevision, error) {
+		callCtx, cancel := c.withTimeout(ctx)
+		defer cancel()
+		resp, err := c.router.DeleteGuardianPaths(callCtx, req)
+		if err != nil {
+			return guardianapi.BatchRevision{}, mapRPCError(err)
+		}
+		if resp != nil && !resp.GetSuccess() {
+			return guardianapi.BatchRevision{}, fmt.Errorf("monofs delete failed: %s", resp.GetMessage())
+		}
+		return guardianapi.BatchRevision{
+			BatchRevisionID: resp.GetBatchRevisionId(),
+			Files:           convertFileVersions(resp.GetTombstones()),
+		}, nil
+	})
 }
 
 func (c *GRPCClient) ListVersions(ctx context.Context, token, logicalPath string) ([]guardianapi.FileVersion, error) {
-	var (
-		pageToken string
-		out       []guardianapi.FileVersion
-	)
-	for {
-		callCtx, cancel := c.withTimeout(ctx)
-		resp, err := c.router.ListGuardianVersions(callCtx, &pb.ListGuardianVersionsRequest{
-			GuardianToken: token,
-			LogicalPath:   logicalPath,
-			PageSize:      256,
-			PageToken:     pageToken,
-		})
-		cancel()
-		if err != nil {
-			return nil, mapRPCError(err)
+	return retryRouterCall(c, ctx, func() ([]guardianapi.FileVersion, error) {
+		var (
+			pageToken string
+			out       []guardianapi.FileVersion
+		)
+		for {
+			callCtx, cancel := c.withTimeout(ctx)
+			resp, err := c.router.ListGuardianVersions(callCtx, &pb.ListGuardianVersionsRequest{
+				GuardianToken: token,
+				LogicalPath:   logicalPath,
+				PageSize:      256,
+				PageToken:     pageToken,
+			})
+			cancel()
+			if err != nil {
+				return nil, mapRPCError(err)
+			}
+			out = append(out, convertFileVersions(resp.GetVersions())...)
+			pageToken = resp.GetNextPageToken()
+			if pageToken == "" {
+				return out, nil
+			}
 		}
-		out = append(out, convertFileVersions(resp.GetVersions())...)
-		pageToken = resp.GetNextPageToken()
-		if pageToken == "" {
-			return out, nil
-		}
-	}
+	})
 }
 
 func (c *GRPCClient) GetVersion(ctx context.Context, token, logicalPath, versionID string) (guardianapi.VersionedFile, error) {
-	callCtx, cancel := c.withTimeout(ctx)
-	defer cancel()
-
-	resp, err := c.router.GetGuardianVersion(callCtx, &pb.GetGuardianVersionRequest{
-		GuardianToken: token,
-		LogicalPath:   logicalPath,
-		VersionId:     versionID,
+	return retryRouterCall(c, ctx, func() (guardianapi.VersionedFile, error) {
+		callCtx, cancel := c.withTimeout(ctx)
+		defer cancel()
+		resp, err := c.router.GetGuardianVersion(callCtx, &pb.GetGuardianVersionRequest{
+			GuardianToken: token,
+			LogicalPath:   logicalPath,
+			VersionId:     versionID,
+		})
+		if err != nil {
+			return guardianapi.VersionedFile{}, mapRPCError(err)
+		}
+		return guardianapi.VersionedFile{
+			Version: convertFileVersion(resp.GetVersion()),
+			Content: append([]byte(nil), resp.GetContent()...),
+		}, nil
 	})
-	if err != nil {
-		return guardianapi.VersionedFile{}, mapRPCError(err)
-	}
-	return guardianapi.VersionedFile{
-		Version: convertFileVersion(resp.GetVersion()),
-		Content: append([]byte(nil), resp.GetContent()...),
-	}, nil
 }
 
 func (c *GRPCClient) ReadFile(ctx context.Context, mountPath string) ([]byte, error) {
@@ -484,10 +521,13 @@ func paginateDirEntries(entries []guardianapi.DirEntry, opts guardianapi.DirList
 
 func (c *GRPCClient) Watch(ctx context.Context, prefixes []string) (<-chan guardianapi.ChangeEvent, error) {
 	callCtx, cancel := context.WithCancel(ctx)
-	stream, err := c.router.SubscribeGuardianChanges(callCtx, &pb.SubscribeGuardianChangesRequest{
-		GuardianToken:        c.token,
-		LogicalPrefixes:      prefixes,
-		IncludeInlineContent: false,
+
+	stream, err := retryRouterCall(c, ctx, func() (grpc.ServerStreamingClient[pb.GuardianChangeEvent], error) {
+		return c.router.SubscribeGuardianChanges(callCtx, &pb.SubscribeGuardianChangesRequest{
+			GuardianToken:        c.token,
+			LogicalPrefixes:      prefixes,
+			IncludeInlineContent: false,
+		})
 	})
 	if err != nil {
 		cancel()
@@ -616,21 +656,39 @@ func (c *GRPCClient) healthyNodes(ctx context.Context) ([]nodeTarget, error) {
 	if nodes, ok := c.cachedHealthyNodes(); ok {
 		return nodes, nil
 	}
-	if err := c.refreshNodes(ctx); err != nil {
-		if ctx.Err() != nil {
-			return nil, err
+	const maxRetries = 4
+	const baseBackoff = 500 * time.Millisecond
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			if isTransportUnavailable(lastErr) {
+				_ = c.reconnectRouter(ctx)
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(baseBackoff * time.Duration(attempt)):
+			}
+		}
+		if err := c.refreshNodes(ctx); err != nil {
+			if ctx.Err() != nil {
+				return nil, err
+			}
+			lastErr = err
+			nodes := c.snapshotNodeTargets()
+			if len(nodes) > 0 {
+				return nodes, nil
+			}
+			continue
 		}
 		nodes := c.snapshotNodeTargets()
-		if len(nodes) > 0 {
-			return nodes, nil
+		if len(nodes) == 0 {
+			lastErr = fmt.Errorf("no healthy monofs nodes available")
+			continue
 		}
-		return nil, err
+		return nodes, nil
 	}
-	nodes := c.snapshotNodeTargets()
-	if len(nodes) == 0 {
-		return nil, fmt.Errorf("no healthy monofs nodes available")
-	}
-	return nodes, nil
+	return nil, lastErr
 }
 
 func (c *GRPCClient) cachedHealthyNodes() ([]nodeTarget, bool) {
@@ -640,11 +698,12 @@ func (c *GRPCClient) cachedHealthyNodes() ([]nodeTarget, bool) {
 	}
 	c.mu.Lock()
 	fresh := !c.lastRefresh.IsZero() && time.Since(c.lastRefresh) <= ttl && len(c.nodeClients) > 0
-	c.mu.Unlock()
 	if !fresh {
+		c.mu.Unlock()
 		return nil, false
 	}
-	nodes := c.snapshotNodeTargets()
+	nodes := c.snapshotNodeTargetsLocked()
+	c.mu.Unlock()
 	if len(nodes) == 0 {
 		return nil, false
 	}
@@ -654,7 +713,10 @@ func (c *GRPCClient) cachedHealthyNodes() ([]nodeTarget, bool) {
 func (c *GRPCClient) snapshotNodeTargets() []nodeTarget {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.snapshotNodeTargetsLocked()
+}
 
+func (c *GRPCClient) snapshotNodeTargetsLocked() []nodeTarget {
 	ids := make([]string, 0, len(c.nodeClients))
 	for id := range c.nodeClients {
 		ids = append(ids, id)
@@ -713,7 +775,6 @@ func (c *GRPCClient) refreshNodes(ctx context.Context) error {
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.nodeConns == nil {
 		c.nodeConns = map[string]*grpc.ClientConn{}
 	}
@@ -723,60 +784,89 @@ func (c *GRPCClient) refreshNodes(ctx context.Context) error {
 	if c.nodeAddrs == nil {
 		c.nodeAddrs = map[string]string{}
 	}
+	c.mu.Unlock()
 
 	seen := map[string]struct{}{}
 	connected := 0
+	type staleConn struct {
+		nodeID string
+		conn   *grpc.ClientConn
+	}
+	var staleConns []staleConn
 	var connectErr error
+
 	for _, node := range healthy {
 		nodeID := node.GetNodeId()
 		nodeAddr := c.rewriteNodeAddr(node.GetAddress())
 		seen[nodeID] = struct{}{}
 
+		c.mu.Lock()
 		conn := c.nodeConns[nodeID]
-		if conn != nil && c.nodeAddrs[nodeID] == nodeAddr {
+		sameAddr := conn != nil && c.nodeAddrs[nodeID] == nodeAddr
+		c.mu.Unlock()
+
+		if sameAddr {
 			connected++
 			continue
 		}
 		if conn != nil {
-			_ = conn.Close()
+			staleConns = append(staleConns, staleConn{nodeID: nodeID, conn: conn})
+			c.mu.Lock()
 			delete(c.nodeConns, nodeID)
 			delete(c.nodeClients, nodeID)
 			delete(c.nodeAddrs, nodeID)
+			c.mu.Unlock()
 		}
 		nodeConn, dialErr := grpc.NewClient(
 			nodeAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(1024*1024*1024),
-			grpc.MaxCallSendMsgSize(1024*1024*1024),
-		),
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithKeepaliveParams(keepalive.ClientParameters{
+				Time:                30 * time.Second,
+				Timeout:             10 * time.Second,
+				PermitWithoutStream: true,
+			}),
+			grpc.WithDefaultCallOptions(
+				grpc.MaxCallRecvMsgSize(1024*1024*1024),
+				grpc.MaxCallSendMsgSize(1024*1024*1024),
+			),
 		)
 		if dialErr != nil {
 			connectErr = fmt.Errorf("connect to monofs node %s: %w", nodeID, dialErr)
 			continue
 		}
+		c.mu.Lock()
 		c.nodeConns[nodeID] = nodeConn
 		c.nodeClients[nodeID] = pb.NewMonoFSClient(nodeConn)
 		c.nodeAddrs[nodeID] = nodeAddr
 		connected++
+		c.mu.Unlock()
 	}
 
+	c.mu.Lock()
 	for nodeID, conn := range c.nodeConns {
 		if _, ok := seen[nodeID]; ok {
 			continue
 		}
-		_ = conn.Close()
+		staleConns = append(staleConns, staleConn{nodeID: nodeID, conn: conn})
 		delete(c.nodeConns, nodeID)
 		delete(c.nodeClients, nodeID)
 		delete(c.nodeAddrs, nodeID)
 	}
+	c.lastRefresh = time.Now()
+	c.mu.Unlock()
+
+	go func() {
+		for _, sc := range staleConns {
+			_ = sc.conn.Close()
+		}
+	}()
+
 	if connected == 0 {
 		if connectErr != nil {
 			return connectErr
 		}
 		return fmt.Errorf("no healthy monofs nodes available")
 	}
-	c.lastRefresh = time.Now()
 	return nil
 }
 
@@ -785,7 +875,6 @@ func (c *GRPCClient) invalidateNodeOnTransportError(nodeID string, err error) {
 		return
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if conn := c.nodeConns[nodeID]; conn != nil {
 		_ = conn.Close()
 	}
@@ -793,16 +882,124 @@ func (c *GRPCClient) invalidateNodeOnTransportError(nodeID string, err error) {
 	delete(c.nodeClients, nodeID)
 	delete(c.nodeAddrs, nodeID)
 	c.lastRefresh = time.Time{}
+	c.mu.Unlock()
+	go c.tryBackgroundRefresh()
+}
+
+func (c *GRPCClient) tryBackgroundRefresh() {
+	if c.router == nil {
+		return
+	}
+	c.refreshMu.Lock()
+	if c.refreshing {
+		c.refreshMu.Unlock()
+		return
+	}
+	c.refreshing = true
+	c.refreshMu.Unlock()
+
+	defer func() {
+		c.refreshMu.Lock()
+		c.refreshing = false
+		c.refreshMu.Unlock()
+	}()
+
+	const maxAttempts = 4
+	const backoff = 1 * time.Second
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(backoff * time.Duration(attempt))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := c.refreshNodes(ctx)
+		cancel()
+		if err == nil {
+			return
+		}
+	}
+}
+
+func (c *GRPCClient) reconnectRouter(ctx context.Context) error {
+	c.routerMu.Lock()
+	defer c.routerMu.Unlock()
+
+	oldConn := c.routerConn
+
+	newConn, err := dialRouter(c.routerAddr)
+	if err != nil {
+		return fmt.Errorf("reconnect to monofs router: %w", err)
+	}
+
+	c.routerConn = newConn
+	c.router = pb.NewMonoFSRouterClient(newConn)
+
+	if oldConn != nil {
+		_ = oldConn.Close()
+	}
+
+	callCtx, cancel := c.withTimeout(ctx)
+	defer cancel()
+	resp, regErr := c.router.RegisterClient(callCtx, c.buildRegisterRequest())
+	if regErr != nil {
+		return nil
+	}
+	hbInterval, hbErr := registerHeartbeatInterval(resp)
+	if hbErr != nil {
+		return nil
+	}
+	if hbInterval <= 0 {
+		hbInterval = defaultClientHeartbeatInterval
+	}
+	return nil
+}
+
+const retryMaxAttempts = 3
+const retryBackoff = 500 * time.Millisecond
+
+func retryRouterCall[T any](c *GRPCClient, ctx context.Context, fn func() (T, error)) (T, error) {
+	var lastErr error
+	for attempt := 0; attempt < retryMaxAttempts; attempt++ {
+		if attempt > 0 {
+			if ctx.Err() != nil {
+				var zero T
+				return zero, ctx.Err()
+			}
+			select {
+			case <-ctx.Done():
+				var zero T
+				return zero, ctx.Err()
+			case <-time.After(retryBackoff * time.Duration(attempt)):
+			}
+			if reconnectErr := c.reconnectRouter(ctx); reconnectErr != nil {
+				lastErr = reconnectErr
+				continue
+			}
+		}
+		result, err := fn()
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if !isTransportUnavailable(err) {
+			return result, err
+		}
+	}
+	var zero T
+	return zero, lastErr
 }
 
 func isTransportUnavailable(err error) bool {
 	if err == nil {
 		return false
 	}
-	if status.Code(err) == codes.Unavailable {
+	code := status.Code(err)
+	if code == codes.Unavailable {
 		return true
 	}
 	message := strings.ToLower(err.Error())
+	if code == codes.Canceled && strings.Contains(message, "client connection is closing") {
+		return true
+	}
 	return strings.Contains(message, "error reading server preface") ||
 		strings.Contains(message, "connection reset by peer") ||
 		strings.Contains(message, "transport is closing") ||

@@ -277,7 +277,7 @@ func ConfigureKindRegistryForContainerd(ctx context.Context, kindClusterName, re
   skip_verify = true
 `, clusterIP, clusterIP)
 
-	registries := []string{"registry.strata.local:5000"}
+	registries := []string{"registry.strata.local:5000", "docker.io"}
 
 	for _, node := range strings.Split(nodes, "\n") {
 		node = strings.TrimSpace(node)
@@ -380,4 +380,55 @@ func toJSONString(s string) string {
 	escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
 	escaped = strings.ReplaceAll(escaped, "\n", "\\n")
 	return "\"" + escaped + "\""
+}
+
+func EnsureKindImage(ctx context.Context, image, kindClusterName string) error {
+	if kindClusterName == "" {
+		ctxName := kubectlQuery("config", "current-context")
+		if !strings.HasPrefix(ctxName, "kind-") {
+			return fmt.Errorf("not a kind cluster context: %s", ctxName)
+		}
+		kindClusterName = strings.TrimPrefix(ctxName, "kind-")
+	}
+
+	if _, err := RunCapture(ctx, "docker", "image", "inspect", image); err != nil {
+		fmt.Fprintf(os.Stderr, "  pulling %s ...\n", image)
+		if err := Run(ctx, false, "docker", "pull", "--platform", "linux/amd64", image); err != nil {
+			return fmt.Errorf("pulling %s: %w", image, err)
+		}
+	}
+
+	tmpFile := filepath.Join(os.TempDir(), "kind-load-"+strings.ReplaceAll(strings.ReplaceAll(image, "/", "-"), ":", "-")+".tar")
+	if err := Run(ctx, false, "docker", "save", image, "-o", tmpFile); err != nil {
+		return fmt.Errorf("saving %s: %w", image, err)
+	}
+	defer os.Remove(tmpFile)
+
+	nodeList, err := RunCapture(ctx, "kind", "get", "nodes", "--name", kindClusterName)
+	if err != nil {
+		return fmt.Errorf("listing kind nodes: %w", err)
+	}
+	nodes := strings.Fields(strings.TrimSpace(nodeList))
+	if len(nodes) == 0 {
+		return fmt.Errorf("no kind nodes found for cluster %s", kindClusterName)
+	}
+
+	for _, node := range nodes {
+		fmt.Fprintf(os.Stderr, "  loading %s on node %s\n", image, node)
+		f, err := os.Open(tmpFile)
+		if err != nil {
+			return fmt.Errorf("opening tar for node %s: %w", node, err)
+		}
+		cmd := exec.CommandContext(ctx, "docker", "exec", "-i", node, "ctr", "--namespace=k8s.io", "images", "import", "--snapshotter=overlayfs", "-")
+		cmd.Stdin = f
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if rerr := cmd.Run(); rerr != nil {
+			f.Close()
+			return fmt.Errorf("importing image on node %s: %w", node, rerr)
+		}
+		f.Close()
+	}
+
+	return nil
 }

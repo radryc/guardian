@@ -138,6 +138,8 @@ func waitForPartitionStatus(ctx context.Context, store guardianapi.Store, partit
 	want = strings.TrimSpace(want)
 	deadline := time.Now().Add(timeout)
 	var last partitionStatusResult
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
 		status, err := loadPartitionStatus(ctx, store, partition)
 		if err != nil {
@@ -156,7 +158,7 @@ func waitForPartitionStatus(ctx context.Context, store guardianapi.Store, partit
 		select {
 		case <-ctx.Done():
 			return status, ctx.Err()
-		case <-time.After(interval):
+		case <-ticker.C:
 		}
 	}
 }

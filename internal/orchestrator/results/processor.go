@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,10 +30,10 @@ import (
 const processorScope = "guardian/results"
 
 var (
-	resultMetricsOnce sync.Once
-	resultCounter     metricapi.Int64Counter
-	resultFailCounter metricapi.Int64Counter
-	resultDuration    metricapi.Float64Histogram
+	resultMetricsOnce   sync.Once
+	resultCounter       metricapi.Int64Counter
+	resultFailCounter   metricapi.Int64Counter
+	resultDuration      metricapi.Float64Histogram
 )
 
 type Processor struct {
@@ -47,20 +48,26 @@ func NewProcessor(store guardianapi.Store, dispatcher *dispatcher.Dispatcher) *P
 func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskResult) error {
 	attrs := resultAttributes(result)
 	count, failures, duration := resultInstruments()
-	count.Add(ctx, 1, metricapi.WithAttributes(attrs...))
+	if count != nil {
+		count.Add(ctx, 1, metricapi.WithAttributes(attrs...))
+	}
 	ctx, span := otel.Tracer(processorScope).Start(ctx, "guardian.result.process", trace.WithAttributes(attrs...))
 	startedAt := time.Now()
 	telemetry.EmitInfo(ctx, processorScope, fmt.Sprintf("processing result %s for %s/%s", result.TaskID, result.Partition, result.Intent))
 	log.Printf("results: processing task=%s op=%s partition=%s intent=%s status=%s pusher=%s", result.TaskID, result.Op, result.Partition, result.Intent, result.Status, result.Pusher)
 	defer func() {
-		duration.Record(ctx, time.Since(startedAt).Seconds(), metricapi.WithAttributes(attrs...))
+		if duration != nil {
+			duration.Record(ctx, time.Since(startedAt).Seconds(), metricapi.WithAttributes(attrs...))
+		}
 		span.End()
 	}()
 	fail := func(err error) error {
 		if err == nil {
 			return nil
 		}
-		failures.Add(ctx, 1, metricapi.WithAttributes(attrs...))
+		if failures != nil {
+			failures.Add(ctx, 1, metricapi.WithAttributes(attrs...))
+		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		telemetry.EmitError(ctx, processorScope, fmt.Sprintf("process result %s failed: %v", result.TaskID, err))
@@ -462,6 +469,7 @@ func (p *Processor) queueDependents(ctx context.Context, partition string) error
 		if !common.DependenciesHealthy(state, states) {
 			continue
 		}
+		prevStatus := state.Status
 		next, err := common.BuildTask(ctx, p.store, state, taskdomain.OpDiff, outputs)
 		if err != nil {
 			return err
@@ -476,6 +484,17 @@ func (p *Processor) queueDependents(ctx context.Context, partition string) error
 		}
 		if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
 			return err
+		}
+		if prevStatus == statedomain.StatusBlocked {
+			_ = p.dispatcher.WriteEvent(ctx, &historydomain.EventRecord{
+				Partition: partition,
+				Intent:    name,
+				Type:      "intent.unblocked",
+				Message:   "Dependencies satisfied; queued reconciliation",
+				Details: map[string]string{
+					"taskID": next.TaskID,
+				},
+			})
 		}
 		states[name] = state
 		outputs[name] = copyStringMap(state.Outputs)
@@ -557,7 +576,7 @@ func valueOrDefault(s, def string) string {
 
 func copyStringMap(in map[string]string) map[string]string {
 	if in == nil {
-		return map[string]string{}
+		return nil
 	}
 	out := make(map[string]string, len(in))
 	for key, value := range in {
@@ -612,21 +631,25 @@ func collectTaskIDs(taskFile *taskdomain.Task, current string) []string {
 }
 
 func sortStrings(values []string) {
-	for i := 0; i < len(values); i++ {
-		for j := i + 1; j < len(values); j++ {
-			if values[j] < values[i] {
-				values[i], values[j] = values[j], values[i]
-			}
-		}
-	}
+	sort.Strings(values)
 }
 
 func resultInstruments() (metricapi.Int64Counter, metricapi.Int64Counter, metricapi.Float64Histogram) {
 	resultMetricsOnce.Do(func() {
 		meter := otel.Meter(processorScope)
-		resultCounter, _ = meter.Int64Counter("guardian.result.executions")
-		resultFailCounter, _ = meter.Int64Counter("guardian.result.failures")
-		resultDuration, _ = meter.Float64Histogram("guardian.result.duration")
+		var err error
+		resultCounter, err = meter.Int64Counter("guardian.result.executions")
+		if err != nil {
+			telemetry.EmitError(context.Background(), processorScope, fmt.Sprintf("create result counter: %v", err))
+		}
+		resultFailCounter, err = meter.Int64Counter("guardian.result.failures")
+		if err != nil {
+			telemetry.EmitError(context.Background(), processorScope, fmt.Sprintf("create result fail counter: %v", err))
+		}
+		resultDuration, err = meter.Float64Histogram("guardian.result.duration")
+		if err != nil {
+			telemetry.EmitError(context.Background(), processorScope, fmt.Sprintf("create result duration histogram: %v", err))
+		}
 	})
 	return resultCounter, resultFailCounter, resultDuration
 }

@@ -1087,7 +1087,14 @@ func (d *baseDriver) observeComputeHealth(ctx context.Context, in registry.Asset
 		if reason == "" {
 			reason = "CrashLoopBackOff"
 		}
-		return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: fmt.Sprintf("kubernetes deployment has pods in %s", reason)}, nil
+		summary := fmt.Sprintf("kubernetes deployment has pods in %s", reason)
+		if deployment.PodFailureMessage != "" {
+			summary += ". " + deployment.PodFailureMessage
+		}
+		if events, _ := d.backend.GetPodEvents(deployment.Namespace, deployment.PodFailurePodName); len(events) > 0 {
+			summary += "\n" + strings.Join(events, "\n")
+		}
+		return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: summary}, nil
 	}
 	if deployment.ReadyReplicas < deployment.Replicas || deployment.AvailableReplicas < deployment.Replicas {
 		return &taskdomain.HealthObservation{Status: taskdomain.HealthDegraded, Summary: "kubernetes deployment is not ready"}, nil
@@ -1133,7 +1140,14 @@ func (d *baseDriver) observeServiceBackedHealth(ctx context.Context, in registry
 		if reason == "" {
 			reason = "CrashLoopBackOff"
 		}
-		return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: fmt.Sprintf("kubernetes deployment has pods in %s", reason)}, nil
+		summary := fmt.Sprintf("kubernetes deployment has pods in %s", reason)
+		if deployment.PodFailureMessage != "" {
+			summary += ". " + deployment.PodFailureMessage
+		}
+		if events, _ := d.backend.GetPodEvents(deployment.Namespace, deployment.PodFailurePodName); len(events) > 0 {
+			summary += "\n" + strings.Join(events, "\n")
+		}
+		return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: summary}, nil
 	}
 	if deployment.ReadyReplicas < deployment.Replicas || deployment.AvailableReplicas < deployment.Replicas {
 		return &taskdomain.HealthObservation{Status: taskdomain.HealthDegraded, Summary: "kubernetes deployment is not ready"}, nil

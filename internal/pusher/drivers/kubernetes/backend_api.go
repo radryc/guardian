@@ -13,6 +13,8 @@ type BackendAPI interface {
 	GetDeployment(namespace, name string) (Deployment, bool, error)
 	DeleteDeployment(namespace, name string) error
 
+	GetPodEvents(namespace, podName string) ([]string, error)
+
 	UpsertService(service Service) error
 	GetService(namespace, name string) (Service, bool, error)
 	DeleteService(namespace, name string) error

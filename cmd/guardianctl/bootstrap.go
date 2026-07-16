@@ -216,6 +216,10 @@ func devInitCommand() *command.Command {
 				if err := bootstrap.LoadImagesIntoKind(ctx, allImages, *dryRun); err != nil {
 					return fmt.Errorf("loading images into kind: %w", err)
 				}
+
+				if err := bootstrap.EnsureKindImage(ctx, cfg.Guardian.ImageBuild.BuildKitImage, ""); err != nil {
+					return fmt.Errorf("buildkitd image not loaded into kind: %w", err)
+				}
 			}
 
 			env, err := bootstrap.ComputeEnv(cfg)
@@ -557,9 +561,13 @@ func setupCommand() *command.Command {
 				}
 			}
 
-			// Generate encryption key
-			fmt.Println("=== generating MonoFS encryption key ===")
-			key := bootstrap.GenerateEncryptionKey()
+			// Load or generate encryption key
+			fmt.Println("=== MonoFS encryption key ===")
+			key, err := bootstrap.LoadOrGenerateEncryptionKey()
+			if err != nil {
+				return fmt.Errorf("encryption key: %w", err)
+			}
+			fmt.Printf("  persistent: %s\n", bootstrap.PersistentKeyPath())
 			if *dryRun {
 				fmt.Printf("  would write key to ../monofs/.env\n")
 			} else {
@@ -683,8 +691,6 @@ func deployStorageTemplates(ctx context.Context, cfg *bootstrap.Config, env boot
 			return fmt.Errorf("waiting for minio: %w", err)
 		}
 	}
-	createMinioBucket(ctx, cfg.Storage.Namespace, dryRun)
-
 	bootstrap.ApplyTemplatesForEach(ctx, filepath.Join(storageDir, "deploy-fetcher.yaml"), env,
 		func(s string) bootstrap.Env { return bootstrap.Env{"SUFFIX": s} },
 		[]string{"a", "b"}, dryRun)
@@ -712,6 +718,7 @@ func deployStorageTemplates(ctx context.Context, cfg *bootstrap.Config, env boot
 
 	// Services
 	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "svc-minio.yaml"), env, nil, dryRun)
+	createMinioBucket(ctx, cfg.Storage.Namespace, dryRun)
 	bootstrap.ApplyTemplatesForEach(ctx, filepath.Join(storageDir, "svc-fetcher.yaml"), env,
 		func(s string) bootstrap.Env { return bootstrap.Env{"SUFFIX": s} },
 		[]string{"a", "b"}, dryRun)
@@ -750,8 +757,17 @@ func createMinioBucket(ctx context.Context, storageNamespace string, dryRun bool
 		awsSecretKey = "minioadmin"
 	}
 
+	// Pre-load the mc image into kind so the ephemeral pod can use it.
+	ctxName, _ := bootstrap.RunCapture(ctx, "kubectl", "config", "current-context")
+	if strings.HasPrefix(ctxName, "kind-") && !dryRun {
+		fmt.Fprintf(os.Stderr, "  loading minio/mc:latest into kind...\n")
+		if err := bootstrap.EnsureKindImage(ctx, "minio/mc:latest", ""); err != nil {
+			fmt.Fprintf(os.Stderr, "  WARNING: could not load minio/mc into kind: %v\n", err)
+		}
+	}
+
 	script := fmt.Sprintf(
-		`mc alias set local http://minio.%s.svc.cluster.local:9000 %s %s && mc mb local/monofs || true`,
+		`mc alias set local http://minio.%s.svc.cluster.local:9000 %s %s && mc mb --ignore-existing local/monofs`,
 		storageNamespace, awsAccessKey, awsSecretKey,
 	)
 	if dryRun {
@@ -776,6 +792,7 @@ func createMinioBucket(ctx context.Context, storageNamespace string, dryRun bool
 			"run", "minio-init-bucket", "--rm", "-i", "--restart=Never",
 			"--image=minio/mc:latest", "--command", "--", "sh", "-c", script)
 		if lastErr == nil {
+			fmt.Fprintf(os.Stderr, "  minio bucket monofs ready\n")
 			return
 		}
 	}
@@ -1033,6 +1050,23 @@ func resolveDevTag(ctx context.Context) string {
 	if sha, _ := bootstrap.RunCapture(ctx, "git", "rev-parse", "--short", "HEAD"); sha != "" {
 		return sha
 	}
+	root := findRootDir()
+	if root != "." {
+		entries, err := os.ReadDir(root)
+		if err == nil {
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				gitDir := filepath.Join(root, entry.Name(), ".git")
+				if info, err := os.Stat(gitDir); err == nil && info.IsDir() {
+					if sha, _ := bootstrap.RunCapture(ctx, "git", "-C", filepath.Join(root, entry.Name()), "rev-parse", "--short", "HEAD"); sha != "" {
+						return sha
+					}
+				}
+			}
+		}
+	}
 	return time.Now().UTC().Format("20060102-150405")
 }
 
@@ -1042,7 +1076,9 @@ func writeDevTag(tag string) {
 	if root == "." {
 		return
 	}
-	os.WriteFile(filepath.Join(root, "deploy", "bootstrap", ".dev-tag"), []byte(tag+"\n"), 0644)
+	if err := os.WriteFile(filepath.Join(root, "deploy", "bootstrap", ".dev-tag"), []byte(tag+"\n"), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "  warning: write .dev-tag: %v\n", err)
+	}
 }
 
 // readDevTag reads the persisted dev tag.
@@ -1234,7 +1270,6 @@ func runImagePushDir(ctx context.Context, dir, registry string, dryRun bool) err
 		if dryRun {
 			fmt.Fprintf(os.Stderr, "+ docker push %s\n", imageRef)
 		} else {
-			// Retry push with backoff — registry may still be starting.
 			var lastErr error
 			for attempt := 0; attempt < 5; attempt++ {
 				if attempt > 0 {
@@ -1259,6 +1294,23 @@ func runImagePushDir(ctx context.Context, dir, registry string, dryRun bool) err
 			}
 			if lastErr != nil {
 				return fmt.Errorf("docker push %s: %w", imageRef, lastErr)
+			}
+		}
+
+		libraryImageRef := reg + "/library/" + entry.Repository + ":" + tag
+		if dryRun {
+			fmt.Fprintf(os.Stderr, "+ docker tag %s %s (for docker.io mirror)\n", entry.LocalTag, libraryImageRef)
+			fmt.Fprintf(os.Stderr, "+ docker push %s\n", libraryImageRef)
+		} else {
+			cmd = dockerExecCommand(ctx, "docker", "tag", entry.LocalTag, libraryImageRef)
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("docker tag %s -> %s: %w", entry.LocalTag, libraryImageRef, err)
+			}
+			cmd = dockerExecCommand(ctx, "docker", "push", libraryImageRef)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				fmt.Fprintf(os.Stderr, "  WARNING: docker push %s (library mirror) failed: %v\n", libraryImageRef, err)
 			}
 		}
 
