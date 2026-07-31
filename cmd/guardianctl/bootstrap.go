@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"os"
@@ -105,6 +106,15 @@ func devDeployCommand() *command.Command {
 			env, err := bootstrap.ComputeEnv(cfg)
 			if err != nil {
 				return err
+			}
+
+			if !*dryRun {
+				key, _ := bootstrap.LoadOrGenerateEncryptionKey()
+				tokenB64 := env["MONOFS_TOKEN_B64"]
+				token, _ := base64.StdEncoding.DecodeString(tokenB64)
+				if err := bootstrap.WriteSharedPartitionSecrets(key, string(token)); err != nil {
+					fmt.Fprintf(os.Stderr, "  WARNING: shared partition secrets sync failed: %v\n", err)
+				}
 			}
 
 			storageDir, guardianDir := bootstrap.TemplateDirs()
@@ -225,6 +235,15 @@ func devInitCommand() *command.Command {
 			env, err := bootstrap.ComputeEnv(cfg)
 			if err != nil {
 				return err
+			}
+
+			if !*dryRun {
+				key, _ := bootstrap.LoadOrGenerateEncryptionKey()
+				tokenB64 := env["MONOFS_TOKEN_B64"]
+				token, _ := base64.StdEncoding.DecodeString(tokenB64)
+				if err := bootstrap.WriteSharedPartitionSecrets(key, string(token)); err != nil {
+					fmt.Fprintf(os.Stderr, "  WARNING: shared partition secrets sync failed: %v\n", err)
+				}
 			}
 
 			storageDir, guardianDir := bootstrap.TemplateDirs()
@@ -569,12 +588,16 @@ func setupCommand() *command.Command {
 			}
 			fmt.Printf("  persistent: %s\n", bootstrap.PersistentKeyPath())
 			if *dryRun {
-				fmt.Printf("  would write key to ../monofs/.env\n")
+				fmt.Printf("  would write key to ../monofs/.env and shared partition\n")
 			} else {
 				if err := bootstrap.WriteMonofsEnv(key); err != nil {
 					return fmt.Errorf("writing monofs .env: %w", err)
 				}
 				fmt.Println("  written to ../monofs/.env")
+				if err := bootstrap.WriteSharedPartitionSecrets(key, ""); err != nil {
+					return fmt.Errorf("writing shared partition secrets: %w", err)
+				}
+				fmt.Println("  written to stratatools/partitions/shared/secrets/")
 			}
 
 			fmt.Println("=== setup complete ===")
@@ -1045,24 +1068,36 @@ func ensureDockerNetwork(ctx context.Context, network string, dryRun bool) {
 
 // --- Dev tag management ---
 
-// resolveDevTag returns a unique build tag: short git SHA if in a repo, else timestamp.
+// resolveDevTag returns a unique build tag preferring the monofs repo short git
+// SHA so the tag changes whenever monofs source changes (invalidating Docker cache).
+// Falls back to any sibling repo SHA, then a timestamp.
 func resolveDevTag(ctx context.Context) string {
 	if sha, _ := bootstrap.RunCapture(ctx, "git", "rev-parse", "--short", "HEAD"); sha != "" {
 		return sha
 	}
 	root := findRootDir()
-	if root != "." {
-		entries, err := os.ReadDir(root)
-		if err == nil {
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					continue
-				}
-				gitDir := filepath.Join(root, entry.Name(), ".git")
-				if info, err := os.Stat(gitDir); err == nil && info.IsDir() {
-					if sha, _ := bootstrap.RunCapture(ctx, "git", "-C", filepath.Join(root, entry.Name()), "rev-parse", "--short", "HEAD"); sha != "" {
-						return sha
-					}
+	if root == "." {
+		return time.Now().UTC().Format("20060102-150405")
+	}
+
+	// Prefer monofs repo SHA so tag changes when monofs source changes.
+	monofsDir := filepath.Join(root, "monofs")
+	if info, err := os.Stat(filepath.Join(monofsDir, ".git")); err == nil && info.IsDir() {
+		if sha, _ := bootstrap.RunCapture(ctx, "git", "-C", monofsDir, "rev-parse", "--short", "HEAD"); sha != "" {
+			return sha
+		}
+	}
+
+	entries, err := os.ReadDir(root)
+	if err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() || entry.Name() == "monofs" {
+				continue
+			}
+			gitDir := filepath.Join(root, entry.Name(), ".git")
+			if info, err := os.Stat(gitDir); err == nil && info.IsDir() {
+				if sha, _ := bootstrap.RunCapture(ctx, "git", "-C", filepath.Join(root, entry.Name()), "rev-parse", "--short", "HEAD"); sha != "" {
+					return sha
 				}
 			}
 		}
@@ -1250,6 +1285,9 @@ func runImagePushDir(ctx context.Context, dir, registry string, dryRun bool) err
 		reg := entry.Registry
 		if registry != "" {
 			reg = registry
+		}
+		if reg == "" {
+			return fmt.Errorf("no registry specified for %s (set --registry or add registry to asset)", name)
 		}
 
 		tag := computeImageTag(ctx, entry.LocalTag)
