@@ -747,9 +747,9 @@ func TestDetailedContainerDiff_SecretEnvSkipped(t *testing.T) {
 
 func TestDetailedContainerDiff_PortsDrift(t *testing.T) {
 	desired := Container{Image: "img", Running: true,
-		Ports: []PortBinding{{ContainerPort: 8080, Protocol: "TCP"}, {ContainerPort: 9090, Protocol: "TCP"}}}
+		Ports: []PortBinding{{ContainerPort: 8080, HostPort: 80, Protocol: "TCP"}, {ContainerPort: 9090, HostPort: 443, Protocol: "TCP"}}}
 	actual := Container{Image: "img", Running: true,
-		Ports: []PortBinding{{ContainerPort: 8080, Protocol: "TCP"}}}
+		Ports: []PortBinding{{ContainerPort: 8080, HostPort: 80, Protocol: "TCP"}}}
 	diffs := DetailedContainerDiff(desired, actual)
 	if !hasDiffField(diffs, "ports") {
 		t.Errorf("expected ports diff, got %v", diffs)

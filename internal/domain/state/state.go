@@ -77,6 +77,8 @@ type IntentState struct {
 	LastTaskID         string                                  `json:"lastTaskID"`
 	LastError          *string                                 `json:"lastError,omitempty"`
 	PartitionMode      string                                  `json:"partitionMode,omitempty"`
+	RollbackTo         string                                  `json:"rollbackTo,omitempty"`
+	RollbackReason     string                                  `json:"rollbackReason,omitempty"`
 	Timestamps         StateTimestamps                         `json:"timestamps"`
 }
 

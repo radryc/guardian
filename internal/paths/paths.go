@@ -63,6 +63,12 @@ func EventState(partition, eventID string) string {
 	return normalize(StateEventsDir(partition), eventID+".json")
 }
 
+// PartitionReleaseLog is the per-partition authoritative pointer to the
+// latest release of each intent. Kept under .state/ alongside runtime.json.
+func PartitionReleaseLog(partition string) string {
+	return normalize(StateRoot(partition), "releases.json")
+}
+
 func QueueRoot() string { return "/.queues" }
 
 func QueueDir(pusher string) string { return normalize(QueueRoot(), pusher) }

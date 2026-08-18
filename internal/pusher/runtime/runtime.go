@@ -398,11 +398,24 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 	var aggregatedHealth *taskdomain.HealthObservation
 	var aggregatedApplyReadiness *taskdomain.ApplyReadiness
 	assetObservations := map[string]*taskdomain.AssetObservation{}
+	var dependencyBlock *dependencyBlockInfo
 	assetIndex := make(map[string]taskdomain.AbstractAsset, len(t.Assets))
 	for _, taskAsset := range t.Assets {
 		assetIndex[taskAsset.Name] = taskAsset
 	}
 	for _, asset := range assets {
+		if t.Op == taskdomain.OpApply {
+			if depName, depObservation, depReason, ok := blockingDependency(asset, assetObservations); ok {
+				dependencyBlock = &dependencyBlockInfo{
+					assetName:      asset.Name,
+					dependencyName: depName,
+					reason:         depReason,
+					observation:    depObservation,
+				}
+				result.Logs = append(result.Logs, logEntry("warn", asset.Name, fmt.Sprintf("waiting for dependency %s: %s", depName, depReason)))
+				break
+			}
+		}
 		driver, ok := r.Registry.Get(asset.Type)
 		if !ok {
 			return fail(fmt.Errorf("no driver registered for asset type %q", asset.Type))
@@ -513,6 +526,24 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 		}
 		assetSpan.SetStatus(codes.Ok, "")
 		assetSpan.End()
+	}
+
+	if dependencyBlock != nil {
+		result.Status = taskdomain.ResultSucceeded
+		result.Drift = &taskdomain.DriftReport{Status: "Changed", Summary: fmt.Sprintf("asset %s waiting for dependency %s: %s", dependencyBlock.assetName, dependencyBlock.dependencyName, dependencyBlock.reason), ChangedAssets: []string{dependencyBlock.assetName}}
+		result.Health = cloneHealthObservation(dependencyBlock.observation.Health)
+		result.ApplyReadiness = cloneApplyReadiness(dependencyBlock.observation.ApplyReadiness)
+		if len(outputs) > 0 {
+			result.Outputs = outputs
+		}
+		if len(assetObservations) > 0 {
+			result.AssetObservations = assetObservations
+		}
+		result.FinishedAt = time.Now().UTC()
+		annotateRuntimeTaskResultSpan(span, result)
+		span.SetStatus(codes.Ok, "dependency blocked")
+		telemetry.EmitWarn(ctx, runtimeScope, fmt.Sprintf("stopped %s task %s for %s/%s: dependency %s not ready", strings.ToLower(string(t.Op)), t.TaskID, t.Partition, t.Intent, dependencyBlock.dependencyName))
+		return result
 	}
 
 	result.Status = taskdomain.ResultSucceeded
@@ -867,6 +898,37 @@ func applyReadinessSeverity(status taskdomain.ApplyReadinessStatus) int {
 	default:
 		return 0
 	}
+}
+
+type dependencyBlockInfo struct {
+	assetName      string
+	dependencyName string
+	reason         string
+	observation    *taskdomain.AssetObservation
+}
+
+func blockingDependency(asset taskdomain.AbstractAsset, observations map[string]*taskdomain.AssetObservation) (string, *taskdomain.AssetObservation, string, bool) {
+	for _, depName := range asset.DependsOn {
+		observation := observations[depName]
+		if observation == nil {
+			continue
+		}
+		if observation.ApplyReadiness != nil && observation.ApplyReadiness.Status == taskdomain.ApplyReadinessBlocked {
+			reason := strings.TrimSpace(observation.ApplyReadiness.Summary)
+			if reason == "" {
+				reason = "dependency is blocked"
+			}
+			return depName, observation, reason, true
+		}
+		if observation.Health != nil && observation.Health.Status != taskdomain.HealthHealthy {
+			reason := strings.TrimSpace(observation.Health.Summary)
+			if reason == "" {
+				reason = "dependency is not healthy"
+			}
+			return depName, observation, reason, true
+		}
+	}
+	return "", nil, "", false
 }
 
 func marshalRuntimeTraceJSON(value any) string {

@@ -370,3 +370,42 @@ func cloneValue(in any) any {
 		return typed
 	}
 }
+
+// MergeOtelResourceAttrs injects guardian.partition, guardian.intent, and guardian.asset
+// into the OTEL_RESOURCE_ATTRIBUTES environment variable, preserving any existing value.
+// This allows OTEL-instrumented services to automatically tag their telemetry with
+// Guardian topology labels so Doctor's traces/logs/metrics can be correlated.
+func MergeOtelResourceAttrs(env map[string]string, partition, intent, asset string) map[string]string {
+	if partition == "" && intent == "" && asset == "" {
+		return env
+	}
+	var b strings.Builder
+	if partition != "" {
+		b.WriteString("guardian.partition=")
+		b.WriteString(partition)
+	}
+	if intent != "" {
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString("guardian.intent=")
+		b.WriteString(intent)
+	}
+	if asset != "" {
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString("guardian.asset=")
+		b.WriteString(asset)
+	}
+
+	if existing := strings.TrimSpace(env["OTEL_RESOURCE_ATTRIBUTES"]); existing != "" {
+		b.WriteByte(',')
+		b.WriteString(existing)
+	}
+	if env == nil {
+		env = map[string]string{}
+	}
+	env["OTEL_RESOURCE_ATTRIBUTES"] = b.String()
+	return env
+}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
+	releasedomain "github.com/rydzu/ainfra/guardian/internal/domain/release"
 	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
 	"github.com/rydzu/ainfra/guardian/internal/orchestrator/common"
@@ -43,6 +44,9 @@ type Dispatcher struct {
 	runtimeMu    sync.RWMutex
 	runtimeCache map[string]*statedomain.PartitionRuntime
 
+	releaseMu    sync.RWMutex
+	releaseCache map[string]*releasedomain.PartitionReleaseLog
+
 	partitionWriteMu    sync.Mutex
 	partitionWriteLocks map[string]*sync.Mutex
 }
@@ -53,6 +57,7 @@ func NewDispatcher(store guardianapi.Store, principalID string) *Dispatcher {
 		principalID:         principalID,
 		lastWriteHash:       make(map[string]uint64),
 		runtimeCache:        make(map[string]*statedomain.PartitionRuntime),
+		releaseCache:        make(map[string]*releasedomain.PartitionReleaseLog),
 		partitionWriteLocks: make(map[string]*sync.Mutex),
 	}
 }
@@ -493,6 +498,162 @@ func (d *Dispatcher) evictPartitionRuntime(partition string) {
 	delete(d.runtimeCache, partition)
 	d.runtimeMu.Unlock()
 	applyRuntimeMetricDelta(previous, nil)
+}
+
+// SeedPartitionReleaseLogs walks every known partition and hydrates the
+// in-memory release log cache from the durable store. Called once at process
+// startup so reads are non-I/O for the steady state.
+func (d *Dispatcher) SeedPartitionReleaseLogs(ctx context.Context) error {
+	runtimes, err := d.partitionNames(ctx)
+	if err != nil {
+		return err
+	}
+	seen := make(map[string]struct{}, len(runtimes))
+	for _, partition := range runtimes {
+		log, err := d.loadPartitionReleaseLogFromStore(ctx, partition)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		seen[partition] = struct{}{}
+		d.storePartitionReleaseLog(log)
+	}
+	for _, partition := range d.staleReleaseLogPartitions(seen) {
+		d.evictPartitionReleaseLog(partition)
+	}
+	return nil
+}
+
+// loadPartitionReleaseLog returns the dispatcher's cached release log for a
+// partition, hydrating from the store on miss. Missing file → empty log.
+func (d *Dispatcher) loadPartitionReleaseLog(ctx context.Context, partition string) (*releasedomain.PartitionReleaseLog, error) {
+	if partition == "" {
+		return nil, fmt.Errorf("dispatcher: release log partition is empty")
+	}
+	d.releaseMu.RLock()
+	cached, ok := d.releaseCache[partition]
+	d.releaseMu.RUnlock()
+	if ok {
+		return releasedomain.ClonePartitionReleaseLog(cached), nil
+	}
+	log, err := d.loadPartitionReleaseLogFromStore(ctx, partition)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		log = releasedomain.NewPartitionReleaseLog(partition)
+	}
+	d.storePartitionReleaseLog(log)
+	return releasedomain.ClonePartitionReleaseLog(log), nil
+}
+
+func (d *Dispatcher) loadPartitionReleaseLogFromStore(ctx context.Context, partition string) (*releasedomain.PartitionReleaseLog, error) {
+	var log releasedomain.PartitionReleaseLog
+	if err := common.ReadJSON(ctx, d.store, paths.PartitionReleaseLog(partition), &log); err != nil {
+		return nil, err
+	}
+	if log.Releases == nil {
+		log.Releases = map[string]releasedomain.ReleaseRecord{}
+	}
+	if log.Partition == "" {
+		log.Partition = partition
+	}
+	return releasedomain.ClonePartitionReleaseLog(&log), nil
+}
+
+func (d *Dispatcher) storePartitionReleaseLog(log *releasedomain.PartitionReleaseLog) {
+	if log == nil {
+		return
+	}
+	d.releaseMu.Lock()
+	d.releaseCache[log.Partition] = releasedomain.ClonePartitionReleaseLog(log)
+	d.releaseMu.Unlock()
+}
+
+func (d *Dispatcher) evictPartitionReleaseLog(partition string) {
+	d.releaseMu.Lock()
+	delete(d.releaseCache, partition)
+	d.releaseMu.Unlock()
+}
+
+func (d *Dispatcher) staleReleaseLogPartitions(seen map[string]struct{}) []string {
+	d.releaseMu.RLock()
+	stale := make([]string, 0, len(d.releaseCache))
+	for partition := range d.releaseCache {
+		if _, ok := seen[partition]; ok {
+			continue
+		}
+		stale = append(stale, partition)
+	}
+	d.releaseMu.RUnlock()
+	sort.Strings(stale)
+	return stale
+}
+
+// WriteRelease advances the per-partition release log so the entry for
+// rec.Intent points at rec. Writes are serialised by the per-partition
+// mutex used elsewhere; the FNV byte-equal short-circuit is intentionally
+// bypassed for this path so that a self-heal re-apply always re-emits the
+// file (UpdatedAt advances even when the asset map is identical).
+//
+// rec must be non-nil with Partition, Intent, DeploymentRevision, and
+// CreatedAt set. Older writes (CreatedAt <= existing) are no-ops so retries
+// converge to the most recent apply without reordering.
+func (d *Dispatcher) WriteRelease(ctx context.Context, rec *releasedomain.ReleaseRecord) error {
+	if rec == nil {
+		return fmt.Errorf("dispatcher: WriteRelease: record is nil")
+	}
+	if strings.TrimSpace(rec.Partition) == "" || strings.TrimSpace(rec.Intent) == "" {
+		return fmt.Errorf("dispatcher: WriteRelease: partition and intent are required")
+	}
+	if strings.TrimSpace(rec.DeploymentRevision) == "" {
+		return fmt.Errorf("dispatcher: WriteRelease: deployment revision is required")
+	}
+
+	unlock := d.lockPartitionWrites(rec.Partition)
+	defer unlock()
+
+	log, err := d.loadPartitionReleaseLog(ctx, rec.Partition)
+	if err != nil {
+		return fmt.Errorf("dispatcher: WriteRelease load: %w", err)
+	}
+
+	if existing, ok := log.Releases[rec.Intent]; ok {
+		// Monotonic guard: only overwrite if the new apply is strictly newer.
+		// Equal CreatedAt (e.g. retry of same finished timestamp) is treated
+		// as a no-op because the existing record already represents the apply.
+		if !existing.CreatedAt.IsZero() && !rec.CreatedAt.IsZero() && !rec.CreatedAt.After(existing.CreatedAt) {
+			guardianSkippedWritesTotal.WithLabelValues("write_release_log").Inc()
+			d.storePartitionReleaseLog(log)
+			return nil
+		}
+	}
+
+	log.Releases[rec.Intent] = releasedomain.CloneReleaseRecord(*rec)
+	log.UpdatedAt = nowUTC()
+
+	content, err := json.MarshalIndent(log, "", "  ")
+	if err != nil {
+		return fmt.Errorf("dispatcher: WriteRelease marshal: %w", err)
+	}
+	logicalPath := paths.PartitionReleaseLog(rec.Partition)
+	if _, err := d.store.UpsertFiles(ctx, guardianapi.MutationBatch{
+		Writes: []guardianapi.PathWrite{{LogicalPath: logicalPath, Content: content}},
+		Context: guardianapi.MutationContext{
+			PrincipalID: d.principalID,
+			Reason:      "write release log",
+		},
+	}); err != nil {
+		return err
+	}
+
+	guardianWritesTotal.WithLabelValues("write_release_log").Inc()
+	guardianWriteBytesTotal.WithLabelValues("write_release_log").Add(float64(len(content)))
+	d.publish(logicalPath, content, contentTypeJSON)
+	d.storePartitionReleaseLog(log)
+	return nil
 }
 
 type runtimeMetricSnapshot struct {

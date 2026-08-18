@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -715,5 +716,165 @@ func TestImageStateJSONOutput(t *testing.T) {
 	}
 	if loaded.Images["test"].Tag != "sha256-abc12345" {
 		t.Errorf("roundtrip mismatch")
+	}
+}
+
+func TestStampNodeRefsScalar(t *testing.T) {
+	state := &imageState{
+		Images: map[string]imageEntry{
+			"query-build": {
+				AssetName:  "query-build",
+				ImageRef:   "reg.strata.local:5000/query:sha256-abc12345",
+				Tag:        "sha256-abc12345",
+				Repository: "query",
+				Registry:   "reg.strata.local:5000",
+			},
+		},
+	}
+	yamlStr := `spec:
+  assets:
+    - name: query
+      type: Compute
+      properties:
+        image: ${intent.images.outputs.query-build.imageRef}
+`
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(yamlStr), &doc); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !stampNodeRefs(doc.Content[0], state) {
+		t.Fatal("expected modification for scalar property")
+	}
+	out, _ := yaml.Marshal(&doc)
+	if !strings.Contains(string(out), "reg.strata.local:5000/query:sha256-abc12345") {
+		t.Errorf("output should contain resolved imageRef, got:\n%s", string(out))
+	}
+	if strings.Contains(string(out), "${intent.images.outputs.") {
+		t.Error("output should not contain unresolved placeholder")
+	}
+}
+
+func TestStampNodeRefsNestedEnv(t *testing.T) {
+	state := &imageState{
+		Images: map[string]imageEntry{
+			"query-build": {
+				AssetName: "query-build",
+				ImageRef:   "reg.strata.local:5000/query:sha256-abc",
+			},
+			"ingest-build": {
+				AssetName: "ingest-build",
+				Tag:        "sha256-def",
+			},
+		},
+	}
+	yamlStr := `spec:
+  assets:
+    - name: query
+      type: Compute
+      properties:
+        env:
+          QUERY_IMAGE: ${intent.images.outputs.query-build.imageRef}
+          INGEST_TAG: ${intent.images.outputs.ingest-build.tag}
+          STATIC: keep-me
+`
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(yamlStr), &doc); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !stampNodeRefs(doc.Content[0], state) {
+		t.Fatal("expected modification for nested env")
+	}
+	out, _ := yaml.Marshal(&doc)
+	s := string(out)
+	if !strings.Contains(s, "reg.strata.local:5000/query:sha256-abc") {
+		t.Errorf("missing resolved QUERY_IMAGE, got:\n%s", s)
+	}
+	if !strings.Contains(s, "sha256-def") {
+		t.Errorf("missing resolved INGEST_TAG, got:\n%s", s)
+	}
+	if !strings.Contains(s, "keep-me") {
+		t.Errorf("missing STATIC, got:\n%s", s)
+	}
+	if strings.Contains(s, "${intent.images.outputs.") {
+		t.Error("output should not contain unresolved placeholders")
+	}
+}
+
+func TestStampNodeRefsNoMatch(t *testing.T) {
+	state := &imageState{Images: map[string]imageEntry{}}
+	yamlStr := `spec:
+  assets:
+    - name: query
+      type: Compute
+      properties:
+        image: ${intent.images.outputs.missing-build.imageRef}
+`
+	var doc yaml.Node
+	yaml.Unmarshal([]byte(yamlStr), &doc)
+	if stampNodeRefs(doc.Content[0], state) {
+		t.Error("should not modify when asset not in state")
+	}
+}
+
+func TestStampNodeRefsMultipleFields(t *testing.T) {
+	state := &imageState{
+		Images: map[string]imageEntry{
+			"query-build": {
+				AssetName:  "query-build",
+				ImageRef:   "reg/query:sha256-abc",
+				Tag:        "sha256-abc",
+				Repository: "query",
+				Registry:   "reg",
+				LocalTag:   "query:latest",
+			},
+		},
+	}
+	yamlStr := `spec:
+  assets:
+    - name: query
+      type: Compute
+      properties:
+        image: ${intent.images.outputs.query-build.imageRef}
+        env:
+          REPO: ${intent.images.outputs.query-build.repository}
+          REG: ${intent.images.outputs.query-build.registry}
+          TAG: ${intent.images.outputs.query-build.tag}
+          LOCAL: ${intent.images.outputs.query-build.localTag}
+`
+	var doc yaml.Node
+	yaml.Unmarshal([]byte(yamlStr), &doc)
+	if !stampNodeRefs(doc.Content[0], state) {
+		t.Fatal("expected modifications")
+	}
+	out, _ := yaml.Marshal(&doc)
+	s := string(out)
+	checks := []string{
+		"reg/query:sha256-abc", "sha256-abc", "query", "reg", "query:latest",
+	}
+	for _, want := range checks {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in output:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "${intent.images.outputs.") {
+		t.Error("output should not contain unresolved placeholders")
+	}
+}
+
+func TestStampNodeRefsEmptyState(t *testing.T) {
+	yamlStr := `spec:
+  assets:
+    - name: query
+      type: Compute
+      properties:
+        image: ${intent.images.outputs.query-build.imageRef}
+`
+	var doc yaml.Node
+	yaml.Unmarshal([]byte(yamlStr), &doc)
+	if stampNodeRefs(doc.Content[0], &imageState{}) {
+		t.Error("should not modify with empty state")
+	}
+	if stampNodeRefs(doc.Content[0], nil) {
+		t.Error("should not modify with nil state")
 	}
 }

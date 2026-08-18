@@ -41,6 +41,17 @@ func (d *ImageBuildDriver) Diff(ctx context.Context, in registry.AssetInput) (ta
 		return taskdomain.DriftReport{}, err
 	}
 	defer cleanup()
+	if req.ObserveExisting {
+		exists, checkErr := d.backend.ImageExists(ctx, req.ImageRef)
+		if checkErr != nil {
+			return taskdomain.DriftReport{}, checkErr
+		}
+		if exists {
+			return inSyncDrift(in.Asset.Name, "docker image exists in registry"), nil
+		}
+		log.Printf("[ImageBuild] drift asset=%s observeExisting ref=%q not found", in.Asset.Name, req.ImageRef)
+		return changedDrift(in.Asset.Name, "docker image not found in registry"), nil
+	}
 	currentRef, err := currentImageRef(ctx, in)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
@@ -50,6 +61,27 @@ func (d *ImageBuildDriver) Diff(ctx context.Context, in registry.AssetInput) (ta
 	}
 	log.Printf("[ImageBuild] drift asset=%s currentRef=%q desiredRef=%q", in.Asset.Name, currentRef, req.ImageRef)
 	return changedDrift(in.Asset.Name, "docker image build differs"), nil
+}
+
+func (d *ImageBuildDriver) ObserveState(ctx context.Context, in registry.AssetInput) (*taskdomain.HealthObservation, *taskdomain.ApplyReadiness, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	currentRef, err := currentImageRef(ctx, in)
+	if err != nil {
+		return nil, nil, err
+	}
+	if currentRef == "" {
+		return &taskdomain.HealthObservation{Status: taskdomain.HealthHealthy, Summary: "no prior image reference"}, readyObservation("image is ready for first push"), nil
+	}
+	exists, err := d.backend.ImageExists(ctx, currentRef)
+	if err != nil {
+		return nil, nil, err
+	}
+	if exists {
+		return &taskdomain.HealthObservation{Status: taskdomain.HealthHealthy, Summary: "docker image exists in registry"}, readyObservation("image is ready"), nil
+	}
+	return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: "docker image not found in registry"}, readyObservation("image is missing"), nil
 }
 
 func (d *ImageBuildDriver) Apply(ctx context.Context, in registry.AssetInput) (registry.AssetResult, error) {
@@ -81,10 +113,11 @@ func (d *ImageBuildDriver) Destroy(ctx context.Context, in registry.AssetInput) 
 }
 
 type preparedImageBuildRequest struct {
-	ImageRef   string
-	Repository string
-	Registry   string
-	Tag        string
+	ImageRef        string
+	Repository      string
+	Registry        string
+	Tag             string
+	ObserveExisting bool
 }
 
 func (d *ImageBuildDriver) buildRequest(ctx context.Context, in registry.AssetInput) (preparedImageBuildRequest, func(), error) {
@@ -124,10 +157,11 @@ func (d *ImageBuildDriver) buildRequest(ctx context.Context, in registry.AssetIn
 	}
 
 	return preparedImageBuildRequest{
-		ImageRef:   imageRef,
-		Repository: strings.TrimSpace(spec.Repository),
-		Registry:   registryHost,
-		Tag:        tag,
+		ImageRef:        imageRef,
+		Repository:      strings.TrimSpace(spec.Repository),
+		Registry:        registryHost,
+		Tag:             tag,
+		ObserveExisting: spec.ObserveExisting,
 	}, func() {}, nil
 }
 

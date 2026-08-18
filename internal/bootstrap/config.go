@@ -84,10 +84,12 @@ type LBConfig struct {
 }
 
 type GuardianConfig struct {
-	Namespace string `yaml:"namespace"`
-	UIPort    string `yaml:"uiPort"`
-	UIListen  string `yaml:"uiListen"`
-	UIBaseURL string `yaml:"uiBaseURL"`
+	Namespace          string `yaml:"namespace"`
+	UIPort             string `yaml:"uiPort"`
+	UIListen           string `yaml:"uiListen"`
+	UIBaseURL          string `yaml:"uiBaseURL"`
+	FlowMetricsURL     string `yaml:"flowMetricsURL"`
+	FlowMetricsTimeout string `yaml:"flowMetricsTimeout"`
 
 	Images        GuardianImages        `yaml:"images"`
 	Monofs        GuardianMonofs        `yaml:"monofs"`
@@ -216,10 +218,12 @@ func DefaultConfig() Config {
 			PinToControlPlane: true,
 		},
 		Guardian: GuardianConfig{
-			Namespace: "guardian",
-			UIPort:    "8090",
-			UIListen:  ":8090",
-			UIBaseURL: "",
+			Namespace:          "guardian",
+			UIPort:             "8090",
+			UIListen:           ":8090",
+			UIBaseURL:          "",
+			FlowMetricsURL:     "",
+			FlowMetricsTimeout: "2s",
 			Images: GuardianImages{
 				Guardiand:    "guardian:latest",
 				PusherK8s:    "guardian-pusher-k8s:latest",
@@ -443,6 +447,12 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("GUARDIAN_UI_BASE_URL"); v != "" {
 		cfg.Guardian.UIBaseURL = v
+	}
+	if v := os.Getenv("GUARDIAN_FLOW_METRICS_URL"); v != "" {
+		cfg.Guardian.FlowMetricsURL = v
+	}
+	if v := os.Getenv("GUARDIAN_FLOW_METRICS_TIMEOUT"); v != "" {
+		cfg.Guardian.FlowMetricsTimeout = v
 	}
 	if v := os.Getenv("GUARDIAN_DOCKER_PUSHER_NAME"); v != "" {
 		cfg.Guardian.Pushers.Docker.Name = v

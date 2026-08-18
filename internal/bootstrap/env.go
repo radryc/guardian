@@ -94,6 +94,10 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["MONOFS_OTEL_INSECURE"] = cfg.Storage.OTel.Insecure
 	env["MONOFS_OTEL_SERVICE_NAME"] = cfg.Storage.OTel.ServiceName
 	env["MONOFS_OTEL_METRIC_INTERVAL"] = cfg.Storage.OTel.MetricInterval
+	env["GUARDIAN_OTEL_ENDPOINT"] = cfg.Storage.OTel.Endpoint
+	env["GUARDIAN_OTEL_INSECURE"] = cfg.Storage.OTel.Insecure
+	env["GUARDIAN_OTEL_SERVICE_NAME"] = "guardian"
+	env["GUARDIAN_OTEL_METRIC_INTERVAL"] = cfg.Storage.OTel.MetricInterval
 
 	// --- Cluster ---
 	env["MONOFS_CLUSTER_ID"] = cfg.Storage.ClusterID
@@ -138,6 +142,8 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["GUARDIAN_UI_PORT"] = cfg.Guardian.UIPort
 	env["GUARDIAN_UI_LISTEN"] = cfg.Guardian.UIListen
 	env["GUARDIAN_UI_BASE_URL"] = cfg.Guardian.UIBaseURL
+	env["GUARDIAN_FLOW_METRICS_URL"] = cfg.Guardian.FlowMetricsURL
+	env["GUARDIAN_FLOW_METRICS_TIMEOUT"] = cfg.Guardian.FlowMetricsTimeout
 	env["GUARDIAN_CLIENT_DISCOVERY_TOKEN"] = clientDiscoveryToken
 	env["GUARDIAN_IMAGE_BUILD_REGISTRY"] = cfg.Guardian.ImageBuild.Registry
 	env["GUARDIAN_KANIKO_REGISTRY_MIRROR"] = cfg.Guardian.ImageBuild.KanikoMirror
@@ -167,6 +173,14 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["MONOFS_ROUTER_OIDC_REDIRECT_URL"] = envOrDefault("MONOFS_ROUTER_OIDC_REDIRECT_URL", "")
 	env["MONOFS_ROUTER_OIDC_AUTH_URL"] = envOrDefault("MONOFS_ROUTER_OIDC_AUTH_URL", "")
 	env["MONOFS_AUTHZ_ENFORCE_UI"] = envOrDefault("MONOFS_AUTHZ_ENFORCE_UI", "false")
+
+	// --- SSO warning ---
+	if env["MONOFS_OIDC_ISSUER"] == "" {
+		fmt.Fprintf(os.Stderr, "  WARNING: SSO authentication is not configured (MONOFS_OIDC_ISSUER is empty).\n"+
+			"           The UI and API will be accessible without authentication.\n"+
+			"           Run start.sh --with-dex or --with-authentik to enable SSO.\n\n")
+	}
+	env["MONOFS_SESSION_DIR"] = "/var/lib/monofs/sessions"
 
 	// --- AWS pusher ---
 	env["GUARDIAN_AWS_ACCOUNT"] = cfg.Guardian.Pushers.AWS.Account
@@ -724,6 +738,28 @@ func LoadOrGenerateEncryptionKey() (string, error) {
 		return "", fmt.Errorf("write persistent key: %w", err)
 	}
 	return key, nil
+}
+
+func sharedSecretsDir() string {
+	return filepath.Join(findRoot(), "stratatools", "partitions", "shared", "secrets")
+}
+
+func WriteSharedPartitionSecrets(key, token string) error {
+	dir := sharedSecretsDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create shared secrets dir: %w", err)
+	}
+	if key != "" {
+		if err := os.WriteFile(filepath.Join(dir, "encryption-key"), []byte(key+"\n"), 0644); err != nil {
+			return fmt.Errorf("write shared encryption-key: %w", err)
+		}
+	}
+	if token != "" {
+		if err := os.WriteFile(filepath.Join(dir, "guardian-token"), []byte(token+"\n"), 0644); err != nil {
+			return fmt.Errorf("write shared guardian-token: %w", err)
+		}
+	}
+	return nil
 }
 
 // WriteMonofsEnv writes an encryption key to ../monofs/.env.

@@ -39,14 +39,16 @@ var templateFS embed.FS
 var staticFS embed.FS
 
 type Options struct {
-	Store             guardianapi.Store
-	Dispatcher        *dispatcher.Dispatcher
-	PrincipalID       string
-	Pushers           []string
-	StaleTaskAfter    time.Duration
-	DataCacheTTL      time.Duration
-	ClientConfig      ClientConfig
-	ClientConfigToken string
+	Store              guardianapi.Store
+	Dispatcher         *dispatcher.Dispatcher
+	PrincipalID        string
+	Pushers            []string
+	StaleTaskAfter     time.Duration
+	DataCacheTTL       time.Duration
+	EnableFlowTopology bool
+	FlowEvaluator      FlowStateEvaluator
+	ClientConfig       ClientConfig
+	ClientConfigToken  string
 }
 
 type ClientConfig struct {
@@ -60,18 +62,20 @@ type MonoFSClientConfig struct {
 }
 
 type Server struct {
-	store             guardianapi.Store
-	dispatcher        *dispatcher.Dispatcher
-	principalID       string
-	pushers           []string
-	staleTaskAfter    time.Duration
-	partitionData     *partitionDataCache
-	rolloutCache      *rolloutCache
-	clientConfig      ClientConfig
-	clientConfigToken string
-	index             *template.Template
-	static            http.Handler
-	mux               http.Handler
+	store              guardianapi.Store
+	dispatcher         *dispatcher.Dispatcher
+	principalID        string
+	pushers            []string
+	staleTaskAfter     time.Duration
+	enableFlowTopology bool
+	flowEvaluator      FlowStateEvaluator
+	partitionData      *partitionDataCache
+	rolloutCache       *rolloutCache
+	clientConfig       ClientConfig
+	clientConfigToken  string
+	index              *template.Template
+	static             http.Handler
+	mux                http.Handler
 }
 
 const defaultUIDataCacheTTL = 3 * time.Second
@@ -219,17 +223,22 @@ func New(opts Options) (*Server, error) {
 		dataCacheTTL = defaultUIDataCacheTTL
 	}
 	s := &Server{
-		store:             opts.Store,
-		dispatcher:        opts.Dispatcher,
-		principalID:       strings.TrimSpace(opts.PrincipalID),
-		pushers:           pushers,
-		staleTaskAfter:    staleTaskAfter,
-		partitionData:     newPartitionDataCache(dataCacheTTL),
-		rolloutCache:      newRolloutCache(defaultRolloutTTL),
-		clientConfig:      opts.ClientConfig,
-		clientConfigToken: strings.TrimSpace(opts.ClientConfigToken),
-		index:             index,
-		static:            http.StripPrefix("/static/", http.FileServer(http.FS(staticRoot))),
+		store:              opts.Store,
+		dispatcher:         opts.Dispatcher,
+		principalID:        strings.TrimSpace(opts.PrincipalID),
+		pushers:            pushers,
+		staleTaskAfter:     staleTaskAfter,
+		enableFlowTopology: opts.EnableFlowTopology,
+		flowEvaluator:      opts.FlowEvaluator,
+		partitionData:      newPartitionDataCache(dataCacheTTL),
+		rolloutCache:       newRolloutCache(defaultRolloutTTL),
+		clientConfig:       opts.ClientConfig,
+		clientConfigToken:  strings.TrimSpace(opts.ClientConfigToken),
+		index:              index,
+		static:             http.StripPrefix("/static/", http.FileServer(http.FS(staticRoot))),
+	}
+	if s.flowEvaluator == nil {
+		s.flowEvaluator = defaultFlowStateEvaluator()
 	}
 	if s.principalID == "" {
 		s.principalID = "guardian-ui"
@@ -250,6 +259,9 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/api/v1/status/buildinfo", s.handleBuildInfo)
 	mux.HandleFunc("/api/client-config", s.handleClientConfig)
+	mux.HandleFunc("/api/m2m/overview", s.handleM2MOverview)
+	mux.HandleFunc("/api/m2m/partitions", s.handleM2MPartitions)
+	mux.HandleFunc("/api/m2m/partitions/", s.handleM2MPartitionRoute)
 	mux.HandleFunc("/api/overview", s.handleOverview)
 	mux.HandleFunc("/api/catalog", s.handleCatalog)
 	mux.HandleFunc("/api/partitions", s.handlePartitions)
@@ -358,6 +370,19 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, payload)
 }
 
+func (s *Server) handleM2MOverview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	payload, err := s.buildOverview(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
 func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w, http.MethodGet)
@@ -384,6 +409,28 @@ func (s *Server) handlePartitions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleM2MPartitions(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/api/m2m/partitions" {
+		http.NotFound(w, r)
+		return
+	}
+	cloned := r.Clone(r.Context())
+	cloned.URL.Path = "/api/partitions"
+	s.handlePartitions(w, cloned)
+}
+
+func (s *Server) handleM2MPartitionRoute(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.TrimPrefix(r.URL.Path, "/api/m2m/partitions/")
+	trimmed = strings.Trim(trimmed, "/")
+	if trimmed == "" {
+		http.NotFound(w, r)
+		return
+	}
+	cloned := r.Clone(r.Context())
+	cloned.URL.Path = "/api/partitions/" + trimmed
+	s.handlePartitionRoute(w, cloned)
+}
+
 func (s *Server) handlePartitionRoute(w http.ResponseWriter, r *http.Request) {
 	trimmed := strings.TrimPrefix(r.URL.Path, "/api/partitions/")
 	trimmed = strings.Trim(trimmed, "/")
@@ -396,7 +443,7 @@ func (s *Server) handlePartitionRoute(w http.ResponseWriter, r *http.Request) {
 	if len(parts) == 1 {
 		switch r.Method {
 		case http.MethodGet:
-			payload, err := s.loadPartitionDetail(r.Context(), name)
+			payload, err := s.loadPartitionDetailEnriched(r.Context(), name)
 			if err != nil {
 				status := http.StatusInternalServerError
 				if errors.Is(err, os.ErrNotExist) {
@@ -519,7 +566,14 @@ func (s *Server) handlePartitionRoute(w http.ResponseWriter, r *http.Request) {
 			writeMethodNotAllowed(w, http.MethodPost)
 			return
 		}
-		if err := s.reconcilePartition(r.Context(), name); err != nil {
+		forceApply := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("forceApply"))) == "true"
+		var err error
+		if forceApply {
+			err = s.reconcilePartitionForceApply(r.Context(), name)
+		} else {
+			err = s.reconcilePartition(r.Context(), name)
+		}
+		if err != nil {
 			status := http.StatusInternalServerError
 			if errors.Is(err, os.ErrNotExist) {
 				status = http.StatusNotFound
@@ -528,8 +582,9 @@ func (s *Server) handlePartitionRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"success":   true,
-			"partition": name,
+			"success":    true,
+			"partition":  name,
+			"forceApply": forceApply,
 		})
 	case "intents":
 		if len(parts) != 4 || parts[3] != "activity" {
@@ -755,6 +810,24 @@ func (s *Server) reconcilePartition(ctx context.Context, partitionName string) e
 		Partition: partitionName,
 		Type:      "ui.reconcile.requested",
 		Message:   "reconciliation triggered from ui",
+	})
+	return nil
+}
+
+func (s *Server) reconcilePartitionForceApply(ctx context.Context, partitionName string) error {
+	disp := s.dispatcher
+	if disp == nil {
+		disp = dispatcher.NewDispatcher(s.store, s.principalID)
+	}
+	recon := reconciler.NewReconciler(s.store, disp, time.Minute)
+	if err := recon.ForceApplyPartition(ctx, partitionName, true); err != nil {
+		return err
+	}
+	s.partitionData.invalidatePartition(partitionName)
+	s.writeEvent(ctx, &historydomain.EventRecord{
+		Partition: partitionName,
+		Type:      "ui.reconcile.force-apply",
+		Message:   "force-apply reconciliation triggered from ui",
 	})
 	return nil
 }

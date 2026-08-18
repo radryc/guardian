@@ -31,6 +31,7 @@ type Task struct {
 	AssetVersionIDs   map[string]string      `json:"assetVersionIDs"`
 	AssetVersions     map[string]string      `json:"assetVersions,omitempty"`
 	Assets            []AbstractAsset        `json:"assets"`
+	ForceApply        bool                   `json:"forceApply,omitempty"`
 	CreatedAt         time.Time              `json:"createdAt"`
 }
 

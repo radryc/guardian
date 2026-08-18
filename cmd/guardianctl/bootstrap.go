@@ -1435,5 +1435,9 @@ func runImageStampDir(ctx context.Context, dir string, dryRun bool) error {
 			}
 		}
 	}
+
+	// Cross-intent ${intent.NAME.outputs.ASSET.FIELD} refs are resolved
+	// in-memory at partition push time, not written back to disk,
+	// so that template refs are preserved for future builds.
 	return nil
 }

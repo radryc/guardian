@@ -25,6 +25,8 @@ import (
 	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
 	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
 	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
+	"github.com/rydzu/ainfra/guardian/internal/orchestrator/dispatcher"
+	"github.com/rydzu/ainfra/guardian/internal/orchestrator/reconciler"
 	"github.com/rydzu/ainfra/guardian/internal/paths"
 	"github.com/rydzu/ainfra/guardian/internal/versioning/revisions"
 	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
@@ -60,6 +62,7 @@ func partitionPushCommand(store guardianapi.Store, printer *output.Printer) *com
 	flags := flag.NewFlagSet("partition push", flag.ContinueOnError)
 	flags.SetOutput(ioDiscard{})
 	dir := flags.String("dir", "", "local partition directory")
+	forceReconcile := flags.Bool("force", false, "trigger a force reconcile after pushing manifests")
 	includeSecrets := flags.Bool("include-secrets", false, "include files under secrets/ in the managed bundle")
 	removeMissing := flags.Bool("remove-missing", true, "remove managed files not present locally")
 	return &command.Command{Description: "Push a whole partition directory", Flags: flags, Run: func(ctx context.Context, args []string) error {
@@ -73,6 +76,11 @@ func partitionPushCommand(store guardianapi.Store, printer *output.Printer) *com
 		result, err := pushPartitionBundle(ctx, store, bundle, *removeMissing)
 		if err != nil {
 			return err
+		}
+		if *forceReconcile {
+			if err := reconcilePushed(ctx, store, bundle); err != nil {
+				return err
+			}
 		}
 		printPartitionPushResult(printer, result)
 		return nil
@@ -112,6 +120,9 @@ func loadLocalPartitionBundle(dir string, includeSecrets bool) (*localPartitionB
 	intentFiles, err := loadIntentFiles(dir)
 	if err != nil {
 		return nil, err
+	}
+	if err := resolveIntentImageRefs(dir, intentFiles); err != nil {
+		return nil, fmt.Errorf("resolve intent image refs: %w", err)
 	}
 	knownIntents := make([]string, 0, len(intentFiles))
 	for _, intentFile := range intentFiles {
@@ -158,6 +169,35 @@ type localIntentFile struct {
 	Path    string
 	ModTime time.Time
 	Content []byte
+}
+
+// resolveIntentImageRefs applies ${intent.NAME.outputs.ASSET.FIELD} refs in-memory
+// using the partition's image state so templates are preserved on disk.
+func resolveIntentImageRefs(dir string, files []localIntentFile) error {
+	state, err := loadImageState(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load image state: %w", err)
+	}
+	for i, f := range files {
+		var doc yaml.Node
+		if err := yaml.Unmarshal(f.Content, &doc); err != nil {
+			return fmt.Errorf("parse intent %s: %w", f.Path, err)
+		}
+		if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+			continue
+		}
+		if stampNodeRefs(doc.Content[0], state) {
+			out, err := yaml.Marshal(&doc)
+			if err != nil {
+				return fmt.Errorf("marshal intent %s: %w", f.Path, err)
+			}
+			files[i].Content = out
+		}
+	}
+	return nil
 }
 
 func loadIntentFiles(dir string) ([]localIntentFile, error) {
@@ -619,4 +659,13 @@ func coalesceString(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func reconcilePushed(ctx context.Context, store guardianapi.Store, bundle *localPartitionBundle) error {
+	if bundle == nil || bundle.PartitionName == "" {
+		return fmt.Errorf("cannot reconcile: missing partition name")
+	}
+	disp := dispatcher.NewDispatcher(store, "guardianctl")
+	recon := reconciler.NewReconciler(store, disp, time.Minute)
+	return recon.ReconcilePartition(ctx, bundle.PartitionName, true)
 }

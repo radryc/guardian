@@ -28,6 +28,15 @@ func validateIntentAssets(assets []intentdomain.AssetSpec, intentHints []assetdo
 		if asset.Type == "" {
 			return fmt.Errorf("asset %q type is required", asset.Name)
 		}
+		for _, group := range asset.FlowMetricGroups {
+			trimmed := strings.TrimSpace(group)
+			if trimmed == "" {
+				return fmt.Errorf("asset %q flowMetricGroups must not contain empty values", asset.Name)
+			}
+			if !namePattern.MatchString(strings.ReplaceAll(trimmed, "_", "-")) {
+				return fmt.Errorf("asset %q has invalid flow metric group %q", asset.Name, group)
+			}
+		}
 		if _, ok := assetdefs.DefinitionFor(asset.Type); !ok {
 			return fmt.Errorf("asset %q has unsupported type %q", asset.Name, asset.Type)
 		}

@@ -323,6 +323,73 @@ func setBoolNode(parent *yaml.Node, key string, value bool) {
 // intentOutputRe matches ${intent.<name>.outputs.<asset>.<field>} placeholders.
 var intentOutputRe = regexp.MustCompile(`\$\{intent\.[^.]+\.outputs\.([^.]+)\.([^}]+)\}`)
 
+// stampNodeRefs recursively walks a YAML node tree and replaces ALL
+// ${intent.NAME.outputs.ASSET.FIELD} references with resolved values from
+// the image state. This ensures the pushed partition bundle is self-contained
+// without any unresolved cross-intent output references.
+func stampNodeRefs(node *yaml.Node, state *imageState) bool {
+	if node == nil || state == nil || len(state.Images) == 0 {
+		return false
+	}
+	modified := false
+	walkNodeRefs(node, state, &modified)
+	return modified
+}
+
+func walkNodeRefs(node *yaml.Node, state *imageState, modified *bool) {
+	if node == nil {
+		return
+	}
+	switch node.Kind {
+	case yaml.ScalarNode:
+		resolved := intentOutputRe.ReplaceAllStringFunc(node.Value, func(match string) string {
+			groups := intentOutputRe.FindStringSubmatch(match)
+			if len(groups) != 3 {
+				return match
+			}
+			entry, ok := state.Images[groups[1]]
+			if !ok {
+				return match
+			}
+			switch groups[2] {
+			case "imageRef":
+				if entry.ImageRef != "" {
+					return entry.ImageRef
+				}
+				return match
+			case "localTag":
+				if entry.LocalTag != "" {
+					return entry.LocalTag
+				}
+				return match
+			case "repository":
+				return entry.Repository
+			case "registry":
+				return entry.Registry
+			case "tag":
+				if entry.Tag != "" {
+					return entry.Tag
+				}
+				return match
+			default:
+				return match
+			}
+		})
+		if resolved != node.Value {
+			node.Value = resolved
+			*modified = true
+		}
+	case yaml.MappingNode:
+		for _, child := range node.Content {
+			walkNodeRefs(child, state, modified)
+		}
+	case yaml.SequenceNode:
+		for _, child := range node.Content {
+			walkNodeRefs(child, state, modified)
+		}
+	}
+}
+
 // stampBuildArgRefs replaces ${intent.<name>.outputs.<asset>.imageRef} placeholders
 // in a properties YAML node's buildArgs map with the pushed imageRef from state.
 // This ensures intent YAMLs pushed to Guardian contain resolved image references,

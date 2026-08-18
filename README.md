@@ -137,6 +137,10 @@ AWS CDK pusher setup notes live in:
 
   docs/aws-pusher.md
 
+Flow topology metrics overlay notes live in:
+
+  docs/flow-topology-metrics.md
+
 Delete a partition record from Guardian/MonoFS:
 
   ./guardianctl partition delete --partition my-partition

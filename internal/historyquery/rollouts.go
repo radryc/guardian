@@ -32,6 +32,9 @@ type RolloutRecord struct {
 	Current            bool                   `json:"current,omitempty"`
 	NewIntent          bool                   `json:"newIntent,omitempty"`
 	SelfHealing        bool                   `json:"selfHealing,omitempty"`
+	Rollback           bool                   `json:"rollback,omitempty"`
+	RollbackTo         string                 `json:"rollbackTo,omitempty"`
+	RollbackReason     string                 `json:"rollbackReason,omitempty"`
 	Summary            string                 `json:"summary"`
 	Assets             []RolloutAsset         `json:"assets"`
 }
@@ -121,11 +124,18 @@ func collapseEquivalentRollouts(archives []archivedRollout) []archivedRollout {
 	grouped := make([]archivedRollout, 0, len(archives))
 	for _, archive := range archives {
 		if len(grouped) > 0 && rolloutStateEqual(archive, grouped[len(grouped)-1]) && !hasChangedAssets(archive.record) {
+			if isRepeatableRollout(archive.record) {
+				grouped = append(grouped, archive)
+			}
 			continue
 		}
 		grouped = append(grouped, archive)
 	}
 	return grouped
+}
+
+func isRepeatableRollout(record historydomain.DeploymentRecord) bool {
+	return record.SelfHealing || record.Rollback
 }
 
 func buildRolloutRecord(current archivedRollout, previous *archivedRollout, currentRollout bool) (RolloutRecord, error) {
@@ -163,7 +173,10 @@ func buildRolloutRecord(current archivedRollout, previous *archivedRollout, curr
 		Current:            currentRollout,
 		NewIntent:          previous == nil,
 		SelfHealing:        selfHealing,
-		Summary:            summarizeRollout(previous == nil, selfHealing, assets),
+		Rollback:           current.record.Rollback,
+		RollbackTo:         current.record.RollbackTo,
+		RollbackReason:     current.record.RollbackReason,
+		Summary:            summarizeRollout(previous == nil, selfHealing, current.record.Rollback, current.record.RollbackTo, current.record.RollbackReason, assets),
 		Assets:             assets,
 	}, nil
 }
@@ -291,7 +304,7 @@ func listArchivePartitionEntries(ctx context.Context, store guardianapi.ReadStor
 	return entries, nil
 }
 
-func summarizeRollout(newIntent bool, selfHealing bool, assets []RolloutAsset) string {
+func summarizeRollout(newIntent bool, selfHealing bool, rollback bool, rollbackTo string, rollbackReason string, assets []RolloutAsset) string {
 	counts := map[string]int{}
 	for _, asset := range assets {
 		counts[asset.Change]++
@@ -310,8 +323,21 @@ func summarizeRollout(newIntent bool, selfHealing bool, assets []RolloutAsset) s
 		parts = append(parts, summarizeChangeCount(counts["removed"], "removed"))
 	}
 	if len(parts) == 0 {
+		if rollback && rollbackTo != "" {
+			s := fmt.Sprintf("Rolled back to %s", truncateRevision(rollbackTo))
+			if rollbackReason != "" {
+				s = fmt.Sprintf("%s: %s", s, rollbackReason)
+			}
+			return s
+		}
+		if rollback && rollbackReason != "" {
+			return fmt.Sprintf("Rollback: %s", rollbackReason)
+		}
 		if newIntent {
 			return "Initial rollout archived"
+		}
+		if rollback {
+			return "Rollback archived"
 		}
 		if selfHealing {
 			return "Self-heal archived"
@@ -321,10 +347,27 @@ func summarizeRollout(newIntent bool, selfHealing bool, assets []RolloutAsset) s
 	prefix := "Rollout"
 	if newIntent {
 		prefix = "Initial rollout"
+	} else if rollback {
+		if rollbackTo != "" {
+			prefix = fmt.Sprintf("Rollback to %s", truncateRevision(rollbackTo))
+		} else {
+			prefix = "Rollback recovery"
+		}
 	} else if selfHealing {
 		prefix = "Self-heal"
 	}
-	return fmt.Sprintf("%s: %s", prefix, strings.Join(parts, ", "))
+	summary := fmt.Sprintf("%s: %s", prefix, strings.Join(parts, ", "))
+	if rollback && rollbackReason != "" {
+		summary = fmt.Sprintf("%s (reason: %s)", summary, rollbackReason)
+	}
+	return summary
+}
+
+func truncateRevision(revision string) string {
+	if len(revision) <= 8 {
+		return revision
+	}
+	return revision[:8]
 }
 
 func summarizeChangeCount(count int, action string) string {

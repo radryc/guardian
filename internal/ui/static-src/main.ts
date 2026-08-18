@@ -774,6 +774,14 @@ function renderIntentCards(): void {
                   `intent-freshness:${state.selectedPartition}:${intent.name}`,
                 );
               })()}
+              ${intent.lastDeployment?.createdAt ? (() => {
+                const deployMs = new Date(intent.lastDeployment.createdAt).getTime();
+                const ageMs = Number.isFinite(deployMs) ? Date.now() - deployMs : null;
+                const deployLabel = ageMs !== null && ageMs >= 0
+                  ? `Applied ${formatAgeMs(ageMs)}`
+                  : `Applied ${formatDateTime(intent.lastDeployment.createdAt)}`;
+                return `<span class="pill" title="${escapeAttr(`Last deployment: ${formatDateTime(intent.lastDeployment.createdAt)}`)}">${escapeHtml(deployLabel)}</span>`;
+              })() : ""}
               <span class="pill">${escapeHtml(intent.targetSummary ?? "Unassigned")}</span>
               ${(intent.joined ?? []).map((j: string) => `<span class="pill">joins ${escapeHtml(j)}</span>`).join("")}
               ${catSummary.map((g: any) => `<span class="pill">${escapeHtml(`${g.category} ${g.count}`)}</span>`).join("")}
@@ -1076,6 +1084,28 @@ function renderHistory(): void {
   eContainer.innerHTML = groupedEvents.length ? groupedEvents.map(renderEventCard).join("") : "No events match the current filter.";
 }
 
+// ── Rollouts: shared time helpers ──────────────────────────────────────────
+
+function buildRolloutTimeWindow(rollouts: any[]): { minTime: number; paddedMaxTime: number; span: number } {
+  const createdTimes = rollouts
+    .map((item: any) => new Date(item.createdAt).getTime())
+    .filter((ms: number) => Number.isFinite(ms));
+  const appliedTimes = rollouts
+    .map((item: any) => parseTimestampMs(item.appliedAt))
+    .filter((v): v is number => v !== null);
+  const minTime = createdTimes.length ? Math.min(...createdTimes) : Date.now();
+  const maxTime = Math.max(...createdTimes, ...appliedTimes, Date.now());
+  const paddedMaxTime = maxTime + Math.max(60_000, Math.floor((maxTime - minTime || 60_000) * 0.08));
+  const span = Math.max(1, paddedMaxTime - minTime);
+  return { minTime, paddedMaxTime, span };
+}
+
+function pct(ms: number, minTime: number, span: number): number {
+  return Math.min(100, Math.max(0, ((ms - minTime) / span) * 100));
+}
+
+// ── Rollouts: main render ───────────────────────────────────────────────────
+
 function renderRollouts(): void {
   const container = document.getElementById("rolloutsTimeline");
   if (!container) return;
@@ -1101,37 +1131,15 @@ function renderRollouts(): void {
     return;
   }
 
-  const revisionCounts = new Map<string, number>();
-  for (const item of rollouts) {
-    const rev = item.deploymentRevision ?? "";
-    revisionCounts.set(rev, (revisionCounts.get(rev) ?? 0) + 1);
-  }
-  const seenInPass = new Set<string>();
-  const annotated = rollouts.map((item: any) => {
-    const rev = item.deploymentRevision ?? "";
-    const count = revisionCounts.get(rev) ?? 1;
-    const isRollback = count > 1 && !seenInPass.has(rev);
-    seenInPass.add(rev);
-    return { ...item, _rollback: isRollback };
-  });
+  const { minTime, paddedMaxTime, span } = buildRolloutTimeWindow(rollouts);
 
-  const createdTimes = annotated
-    .map((item: any) => new Date(item.createdAt).getTime())
-    .filter((ms: number) => Number.isFinite(ms));
-  const minTime = createdTimes.length ? Math.min(...createdTimes) : Date.now();
-  const maxTime = createdTimes.length ? Math.max(...createdTimes) : minTime;
-  const paddedMaxTime = maxTime + Math.max(60_000, Math.floor((maxTime - minTime || 1) * 0.1));
-  const span = Math.max(1, paddedMaxTime - minTime);
-
+  // Build per-intent lanes
   const laneMap = new Map<string, any[]>();
-  for (const item of annotated) {
+  for (const item of rollouts) {
     const lane = String(item.intent ?? "").trim() || "(unknown intent)";
     const existing = laneMap.get(lane);
-    if (existing) {
-      existing.push(item);
-    } else {
-      laneMap.set(lane, [item]);
-    }
+    if (existing) { existing.push(item); }
+    else { laneMap.set(lane, [item]); }
   }
   const lanes = Array.from(laneMap.entries())
     .map(([intent, items]) => ({
@@ -1144,18 +1152,49 @@ function renderRollouts(): void {
       return bLatest - aLatest;
     });
 
+  const nowPct = pct(Date.now(), minTime, span);
   const axisTicks = makeRolloutAxisTicks(minTime, paddedMaxTime, 6);
-  container.className = "rollout-graph";
+
+  // Chronological event stream (all rollouts sorted by time)
+  const allEvents = rollouts
+    .slice()
+    .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  container.className = "rollout-view";
   container.innerHTML = `
-    <div class="rollout-axis" role="presentation">
-      ${axisTicks.map((tick) => `
-        <div class="rollout-axis-tick" style="left:${tick.left}%">
-          <span>${escapeHtml(tick.label)}</span>
+    <div class="rollout-timeline-wrap">
+      <!-- Sticky shared axis header -->
+      <div class="rollout-axis-header">
+        <div class="rollout-axis-label-col"></div>
+        <div class="rollout-axis-track-col">
+          <div class="rollout-now-line" style="left:${nowPct}%" aria-hidden="true">
+            <span class="rollout-now-label">NOW</span>
+          </div>
+          <div class="rollout-axis-ticks" role="presentation">
+            ${axisTicks.map((tick) => `
+              <div class="rollout-axis-tick" style="left:${tick.left}%">
+                <span>${escapeHtml(tick.label)}</span>
+              </div>
+            `).join("")}
+          </div>
         </div>
-      `).join("")}
+      </div>
+
+      <!-- Per-intent lanes -->
+      <div class="rollout-lanes-body">
+        ${lanes.map((lane) => renderRolloutLane(lane, minTime, span)).join("")}
+      </div>
     </div>
-    <div class="rollout-lanes">
-      ${lanes.map((lane) => renderRolloutLane(lane, minTime, span)).join("")}
+
+    <!-- Event stream -->
+    <div class="rollout-event-stream">
+      <div class="rollout-event-stream-header">
+        <span class="rollout-event-stream-title">Event stream</span>
+        <span class="rollout-event-stream-count">${allEvents.length} event${allEvents.length === 1 ? "" : "s"}</span>
+      </div>
+      <div class="rollout-event-list">
+        ${allEvents.map((item: any) => renderRolloutEventRow(item)).join("")}
+      </div>
     </div>
   `;
 
@@ -1168,6 +1207,178 @@ function renderRollouts(): void {
     });
   });
 }
+
+// ── Rollout event row (event stream at the bottom) ─────────────────────────
+
+function renderRolloutEventRow(item: any): string {
+  const rollout = describeRollout(item);
+  const rolloutKey = makeRolloutKey(item);
+  const expanded = !!state.expandedRolloutKeys[rolloutKey];
+  const revShort = (item.deploymentRevision ?? "").slice(0, 8);
+  const assets = item.assets ?? [];
+
+  // Build event type label and icon color
+  let eventLabel = rollout.statusText;
+  let dotClass = rollout.pointClass;
+  if (item.newIntent) { eventLabel = "New intent"; dotClass = "point-new"; }
+  else if (item.rollback) { eventLabel = "Rollback"; dotClass = "point-rollback"; }
+  else if (item.selfHealing) { eventLabel = "Self-heal"; dotClass = "point-heal"; }
+  else if (item.current) {
+    if (item.healthStatus === "failing") { eventLabel = "Error"; dotClass = "point-failing"; }
+    else if (item.healthStatus === "attention") { eventLabel = "Degraded"; dotClass = "point-degraded"; }
+    else { eventLabel = "Deployed"; dotClass = "point-current"; }
+  } else {
+    eventLabel = "Deployed";
+  }
+
+  const changedAssets = assets.filter((a: any) => a.change && a.change !== "unchanged");
+  const assetSummary = changedAssets.length
+    ? changedAssets.slice(0, 3).map((a: any) => escapeHtml(a.name)).join(", ") + (changedAssets.length > 3 ? ` +${changedAssets.length - 3}` : "")
+    : assets.length ? `${assets.length} asset${assets.length === 1 ? "" : "s"}` : "";
+
+  return `
+    <div class="rollout-event-row${item.current ? " event-row-current" : ""}${expanded ? " event-row-expanded" : ""}">
+      <div class="rollout-event-row-main">
+        <div class="rollout-event-dot-col">
+          <span class="rollout-event-dot rollout-lane-point ${dotClass}" aria-hidden="true"></span>
+          <span class="rollout-event-line" aria-hidden="true"></span>
+        </div>
+        <div class="rollout-event-body">
+          <div class="rollout-event-top">
+            <span class="rollout-event-intent">${escapeHtml(item.intent ?? "—")}</span>
+            <span class="rollout-event-type rollout-type-${dotClass.replace("point-", "")}">${escapeHtml(eventLabel)}</span>
+            ${item.current ? '<span class="rollout-event-current-badge">current</span>' : ""}
+          </div>
+          <div class="rollout-event-meta">
+            <span class="rollout-event-time" title="${escapeAttr(formatDateTime(item.createdAt))}">${escapeHtml(formatRolloutShortTime(new Date(item.createdAt).getTime()))}</span>
+            <span class="rollout-event-rev" title="${escapeAttr(item.deploymentRevision ?? "")}">${escapeHtml(revShort)}</span>
+            ${item.target ? `<span class="rollout-event-target">${escapeHtml(item.target)}</span>` : ""}
+            ${assetSummary ? `<span class="rollout-event-assets">${assetSummary}</span>` : ""}
+          </div>
+          ${item.summary ? `<div class="rollout-event-summary">${escapeHtml(item.summary)}</div>` : ""}
+          ${item.rollback && item.rollbackTo ? `<div class="rollout-event-rollback-note">↩ rolled back to <code>${escapeHtml(item.rollbackTo.slice(0, 8))}</code>${item.rollbackReason ? ` — ${escapeHtml(item.rollbackReason)}` : ""}</div>` : ""}
+          ${item.healthSummary && item.current ? `<div class="rollout-event-health-note">${escapeHtml(item.healthSummary)}</div>` : ""}
+        </div>
+        <button
+          class="rollout-event-expand-btn"
+          type="button"
+          data-rollout-toggle="${escapeAttr(rolloutKey)}"
+          aria-expanded="${expanded ? "true" : "false"}"
+          title="${expanded ? "Hide assets" : `Show ${assets.length} asset${assets.length === 1 ? "" : "s"}`}"
+        >${expanded ? "▲" : "▼"}</button>
+      </div>
+      ${expanded && assets.length ? `
+        <div class="rollout-event-assets-detail">
+          ${assets.map((asset: any) => `
+            <div class="rollout-event-asset-row">
+              <span class="rollout-event-asset-type">${escapeHtml(asset.type || "Asset")}</span>
+              <span class="rollout-event-asset-name">${escapeHtml(asset.name)}</span>
+              <span class="rollout-event-asset-version">${escapeHtml(asset.version ? asset.version.slice(0, 8) : revShort)}</span>
+              ${renderBadge(rolloutChangeStatus(asset.change), humanize(asset.change || "updated"), undefined, undefined, undefined, rolloutChangeHint(asset.change))}
+            </div>
+          `).join("")}
+        </div>
+      ` : ""}
+    </div>
+  `;
+}
+
+// ── Rollout lane rendering ──────────────────────────────────────────────────
+
+function renderRolloutLane(
+  lane: { intent: string; items: any[] },
+  minTime: number,
+  span: number,
+): string {
+  const now = Date.now();
+  const currentItem = lane.items.find((it: any) => it.current) ?? lane.items[lane.items.length - 1];
+  const rolloutDesc = currentItem ? describeRollout(currentItem) : null;
+
+  // Segments
+  const segments: string[] = [];
+  for (let index = 0; index < lane.items.length; index++) {
+    const item = lane.items[index];
+    const isLast = index === lane.items.length - 1;
+    const start = new Date(item.createdAt).getTime();
+    const appliedAt = parseTimestamp(item.appliedAt);
+    const next = isLast ? Math.max(start, now) : new Date(lane.items[index + 1].createdAt).getTime();
+    const canSplit = isLast && appliedAt !== null && appliedAt > start && appliedAt < next;
+    if (canSplit) {
+      const left1 = pct(start, minTime, span);
+      const splitLeft = Math.max(left1 + 0.5, pct(appliedAt!, minTime, span));
+      const width1 = Math.max(0.5, splitLeft - left1);
+      segments.push(`<div class="rollout-lane-segment seg-deploying" style="left:${left1.toFixed(3)}%;width:${width1.toFixed(3)}%" title="Deploying: ${formatRolloutShortTime(start)}"></div>`);
+      const nextLeft = Math.max(splitLeft + 0.5, pct(next, minTime, span));
+      const width2 = Math.max(0.5, nextLeft - splitLeft);
+      const stableClass = describeRollout(item).segmentClass;
+      segments.push(`<div class="rollout-lane-segment ${stableClass}" style="left:${splitLeft.toFixed(3)}%;width:${width2.toFixed(3)}%"></div>`);
+    } else {
+      const left = pct(start, minTime, span);
+      const nextLeft = Math.max(left + 1, pct(next, minTime, span));
+      const width = Math.max(1, nextLeft - left);
+      const activeRollout = isLast ? describeRollout(item) : describeRollout(lane.items[index + 1]);
+      segments.push(`<div class="rollout-lane-segment ${activeRollout.segmentClass}" style="left:${left.toFixed(3)}%;width:${width.toFixed(3)}%"></div>`);
+    }
+  }
+
+  // Markers
+  const markers = lane.items.map((item: any, idx: number) => {
+    const rolloutKey = makeRolloutKey(item);
+    const expanded = !!state.expandedRolloutKeys[rolloutKey];
+    const at = new Date(item.createdAt).getTime();
+    const left = Math.max(0.5, Math.min(99.5, pct(at, minTime, span)));
+    const rollout = describeRollout(item);
+    const revShort = (item.deploymentRevision ?? "").slice(0, 7);
+    return `
+      <div class="rollout-point-group" style="left:${left.toFixed(3)}%">
+        <button
+          class="rollout-lane-point ${rollout.pointClass}${expanded ? " active" : ""}"
+          type="button"
+          data-rollout-toggle="${escapeAttr(rolloutKey)}"
+          aria-expanded="${expanded ? "true" : "false"}"
+          title="${escapeAttr(`${rollout.statusText}: ${item.deploymentRevision} — ${formatDateTime(item.createdAt)}`)}"
+        ></button>
+        <span class="rollout-point-label" title="${escapeAttr(item.deploymentRevision ?? "")}">${escapeHtml(revShort)}</span>
+        ${item.current && idx === lane.items.length - 1 ? '<span class="rollout-point-current-badge">now</span>' : ''}
+      </div>
+    `;
+  });
+
+  const phases = buildLanePhases(lane.items);
+  const phaseBar = renderPhaseBar(phases);
+
+  // Current status chip
+  const statusChip = rolloutDesc
+    ? `<span class="rollout-lane-status-chip chip-${rolloutDesc.pointClass.replace("point-", "")}" title="${escapeAttr(rolloutDesc.statusText)}">${escapeHtml(rolloutDesc.statusText)}</span>`
+    : "";
+
+  return `
+    <div class="rollout-lane-row">
+      <div class="rollout-lane-label-col">
+        <div class="rollout-lane-intent" title="${escapeAttr(lane.intent)}">${escapeHtml(lane.intent)}</div>
+        <div class="rollout-lane-label-meta">
+          ${statusChip}
+          <span class="rollout-lane-count">${lane.items.length}×</span>
+        </div>
+      </div>
+      <div class="rollout-lane-chart-col">
+        <div class="rollout-lane-track-wrap">
+          <div class="rollout-lane-track"></div>
+          <div class="rollout-lane-segments">${segments.join("")}</div>
+          <div class="rollout-lane-points">${markers.join("")}</div>
+        </div>
+        ${phaseBar}
+        ${lane.items
+          .filter((item: any) => state.expandedRolloutKeys[makeRolloutKey(item)])
+          .map((item: any) => renderRolloutCard(item))
+          .map((card) => `<div class="rollout-lane-card-wrap">${card}</div>`)
+          .join("")}
+      </div>
+    </div>
+  `;
+}
+
+// ── Rollout detail card (expanded from lane marker) ─────────────────────────
 
 function renderRolloutCard(item: any): string {
   const rollout = describeRollout(item);
@@ -1187,137 +1398,55 @@ function renderRolloutCard(item: any): string {
     rolloutStatusHint(rollout.statusText),
   );
 
+  const revShort = (item.deploymentRevision ?? "").slice(0, 8);
+  const revFull = item.deploymentRevision ?? "";
+
   return `
     <div class="rollout-detail-card ${rollout.cardClass}">
       <div class="rollout-detail-header">
-        <div class="rollout-tl-row">
-          <div>
-            <div class="rollout-tl-intent">${escapeHtml(item.intent)}</div>
-            <div class="rollout-tl-rev" title="Deployment revision">${escapeHtml(item.deploymentRevision)}</div>
+        <div class="rollout-card-top">
+          <div class="rollout-card-rev" title="${escapeAttr(revFull)}">
+            <span class="rollout-card-rev-hash">${escapeHtml(revShort)}</span>
           </div>
-          <div class="flex items-center gap-2 shrink-0">
-            ${assetCount ? `
-              <button
-                class="rollout-toggle${expanded ? " active" : ""}"
-                type="button"
-                data-rollout-toggle="${escapeAttr(rolloutKey)}"
-                aria-expanded="${expanded ? "true" : "false"}"
-                aria-label="${expanded ? "Hide asset details" : "Show asset details"}"
-              >
-                <span class="rollout-toggle-indicator" aria-hidden="true">${expanded ? "−" : "+"}</span>
-                <span>${expanded ? "Hide" : `${assetCount} asset${assetCount === 1 ? "" : "s"}`}</span>
-              </button>
-            ` : ""}
+          <div class="rollout-card-status-row">
             ${statusBadge}
+            ${item.rollbackTo ? `<span class="rollout-card-rollback-info" title="Rolled back to this revision">rolled back to <code>${escapeHtml(item.rollbackTo.slice(0, 8))}</code></span>` : ""}
           </div>
         </div>
 
-        <div class="rollout-tl-row">
-          <div class="rollout-tl-meta">
-            <span>${formatDateTime(item.createdAt)}</span>
-            ${item.target ? `<span>${escapeHtml(item.target)}</span>` : ""}
-            ${(item.taskIDs ?? []).length ? `<span>${escapeHtml((item.taskIDs ?? []).join(", "))}</span>` : ""}
-          </div>
+        <div class="rollout-card-meta">
+          <span title="${escapeAttr(formatDateTime(item.createdAt))}">${escapeHtml(formatRolloutShortTime(new Date(item.createdAt).getTime()))}</span>
+          ${item.target ? `<span>${escapeHtml(item.target)}</span>` : ""}
+          ${item.summary ? `<span class="rollout-card-summary-text">${escapeHtml(item.summary)}</span>` : ""}
         </div>
-        ${item.summary ? `<div class="rollout-tl-row"><div class="rollout-tl-summary">${escapeHtml(item.summary)}</div></div>` : ""}
+
+        ${buildRollbackDetail(item)}
       </div>
 
-        ${expanded && assetCount ? `
-          <div class="timeline-assets">
-            ${assets.map((asset: any) => `
-              <div class="timeline-asset">
-                <div class="flex justify-between items-start gap-2">
-                  <div>
-                    <strong class="text-[13px] text-[#E5ECF4]" title="Asset name from the intent manifest.">${escapeHtml(asset.name)}</strong>
-                    <div class="muted" title="Asset type from the intent specification.">${escapeHtml(asset.type || "Asset")}</div>
-                  </div>
-                  ${renderBadge(
-                    rolloutChangeStatus(asset.change),
-                    humanize(asset.change || "updated"),
-                    undefined,
-                    undefined,
-                    undefined,
-                    rolloutChangeHint(asset.change),
-                  )}
-                </div>
-                <div class="fact-row mt-1">
-                  <span class="fact fact-release">Version: ${escapeHtml(asset.version || item.deploymentRevision)}</span>
-                  ${asset.type ? `<span class="fact">${escapeHtml(asset.type)}</span>` : ""}
-                </div>
+      ${expanded && assetCount ? `
+        <div class="rollout-card-assets">
+          ${assets.map((asset: any) => `
+            <div class="rollout-card-asset">
+              <div class="rollout-card-asset-name">${escapeHtml(asset.name)}</div>
+              <div class="rollout-card-asset-meta">
+                <span>${escapeHtml(asset.type || "Asset")}</span>
+                <span class="rollout-card-asset-version">${escapeHtml(asset.version || item.deploymentRevision)}</span>
+                ${renderBadge(rolloutChangeStatus(asset.change), humanize(asset.change || "updated"), undefined, undefined, undefined, rolloutChangeHint(asset.change))}
               </div>
-            `).join("")}
-          </div>
-        ` : ""}
-    </div>
-  `;
-}
+            </div>
+          `).join("")}
+        </div>
+      ` : ""}
 
-function renderRolloutLane(
-  lane: { intent: string; items: any[] },
-  minTime: number,
-  span: number,
-): string {
-  const segments: string[] = [];
-  for (let index = 0; index < lane.items.length; index++) {
-    const item = lane.items[index];
-    const isLast = index === lane.items.length - 1;
-    const start = new Date(item.createdAt).getTime();
-    const next = isLast ? minTime + span : new Date(lane.items[index + 1].createdAt).getTime();
-    const appliedAt = parseTimestamp(item.appliedAt);
-    const canSplit = isLast && appliedAt !== null && appliedAt > start && appliedAt < next;
-    if (canSplit) {
-      const left1 = Math.max(0, Math.min(100, ((start - minTime) / span) * 100));
-      const splitLeft = Math.max(left1 + 0.5, Math.min(100, ((appliedAt! - minTime) / span) * 100));
-      const width1 = Math.max(0.5, splitLeft - left1);
-      segments.push(`<div class="rollout-lane-segment seg-deploying" style="left:${left1}%;width:${width1}%"></div>`);
-      const nextLeft = Math.max(splitLeft + 0.5, Math.min(100, ((next - minTime) / span) * 100));
-      const width2 = Math.max(0.5, nextLeft - splitLeft);
-      const stableClass = describeRollout(item).segmentClass;
-      segments.push(`<div class="rollout-lane-segment ${stableClass}" style="left:${splitLeft}%;width:${width2}%"></div>`);
-    } else {
-      const left = Math.max(0, Math.min(100, ((start - minTime) / span) * 100));
-      const nextLeft = Math.max(left + 1, Math.min(100, ((next - minTime) / span) * 100));
-      const width = Math.max(1, nextLeft - left);
-      const activeRollout = isLast ? describeRollout(item) : describeRollout(lane.items[index + 1]);
-      segments.push(`<div class="rollout-lane-segment ${activeRollout.segmentClass}" style="left:${left}%;width:${width}%"></div>`);
-    }
-  }
-
-  const markers = lane.items.map((item: any) => {
-    const rolloutKey = makeRolloutKey(item);
-    const expanded = !!state.expandedRolloutKeys[rolloutKey];
-    const at = new Date(item.createdAt).getTime();
-    const left = Math.max(0, Math.min(100, ((at - minTime) / span) * 100));
-    const rollout = describeRollout(item);
-    return `
       <button
-        class="rollout-lane-point ${rollout.pointClass}${expanded ? " active" : ""}"
+        class="rollout-card-toggle"
         type="button"
-        style="left:${left}%"
         data-rollout-toggle="${escapeAttr(rolloutKey)}"
         aria-expanded="${expanded ? "true" : "false"}"
-        title="${escapeAttr(`${rollout.statusText}: ${item.deploymentRevision}`)}"
-      ></button>
-    `;
-  });
-
-  const expandedCards = lane.items
-    .filter((item: any) => state.expandedRolloutKeys[makeRolloutKey(item)])
-    .map((item: any) => renderRolloutCard(item));
-
-  return `
-    <article class="rollout-lane">
-      <header class="rollout-lane-header">
-        <div class="rollout-lane-intent">${escapeHtml(lane.intent)}</div>
-        <div class="rollout-lane-count">${lane.items.length} rollout${lane.items.length === 1 ? "" : "s"}</div>
-      </header>
-      <div class="rollout-lane-track-wrap">
-        <div class="rollout-lane-track"></div>
-        <div class="rollout-lane-segments">${segments.join("")}</div>
-        <div class="rollout-lane-points">${markers.join("")}</div>
-      </div>
-      ${expandedCards.length ? `<div class="rollout-lane-details">${expandedCards.join("")}</div>` : ""}
-    </article>
+      >
+        <span>${expanded ? "Hide details" : assetCount ? `Show ${assetCount} asset${assetCount === 1 ? "" : "s"}` : "No assets"}</span>
+      </button>
+    </div>
   `;
 }
 
@@ -1345,8 +1474,203 @@ function formatRolloutAxisLabel(timestampMs: number): string {
   return `${datePart}, ${timePart}`;
 }
 
+function formatSplitTime(ms: number): string {
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+function formatRolloutShortTime(ms: number): string {
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+interface RolloutPhase {
+  type: string;
+  label: string;
+  startMs: number;
+  endMs: number;
+  cssClass: string;
+  rollout: any;
+}
+
+function buildLanePhases(items: any[]): RolloutPhase[] {
+  const phases: RolloutPhase[] = [];
+  const now = Date.now();
+  const MAX_PHASE_MS = 3600_000;
+
+  const rollbackItems = items.filter((it: any) => !!it.rollback);
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const nextItem = items[i + 1];
+
+    const createdAt = parseTimestamp(item.createdAt);
+    if (createdAt === null) continue;
+    const appliedAt = parseTimestamp(item.appliedAt);
+    const nextCreatedAt = nextItem ? parseTimestamp(nextItem.createdAt) : null;
+
+    const hasFailureAfter = nextItem != null
+      && !!nextItem.rollback
+      && nextItem.rollbackTo === item.deploymentRevision;
+
+    if (item.rollback) {
+      const recoverEnd = appliedAt || Math.min(createdAt + 60000, nextCreatedAt || createdAt + 60000);
+      if (recoverEnd > createdAt) {
+        phases.push({
+          type: "recovering",
+          label: "Recover",
+          startMs: createdAt,
+          endMs: recoverEnd,
+          cssClass: "phase-recovering",
+          rollout: item,
+        });
+      }
+      const stableEnd = nextCreatedAt || (item.current ? now : createdAt + 60000);
+      const clampedEnd = item.current ? stableEnd : Math.min(stableEnd, recoverEnd + MAX_PHASE_MS);
+      if (clampedEnd > recoverEnd) {
+        let pType = "healthy";
+        let cssClass = "phase-healthy";
+        if (item.healthStatus === "failing") {
+          pType = "failing"; cssClass = "phase-failing";
+        } else if (item.healthStatus === "attention") {
+          pType = "degraded"; cssClass = "phase-degraded";
+        }
+        const compressed = item.current && !nextItem && (clampedEnd - recoverEnd > 5 * 60 * 1000);
+        phases.push({
+          type: pType,
+          label: item.healthStatus === "failing" ? "Failed" : item.healthStatus === "attention" ? "Degraded" : "Healthy",
+          startMs: recoverEnd,
+          endMs: clampedEnd,
+          cssClass: compressed ? cssClass + " phase-compressed" : cssClass,
+          rollout: item,
+        });
+      }
+      continue;
+    }
+
+    if (hasFailureAfter) {
+      const failEnd = nextCreatedAt || createdAt + 30000;
+      phases.push({
+        type: "failing",
+        label: "Failed",
+        startMs: createdAt,
+        endMs: failEnd,
+        cssClass: "phase-failing",
+        rollout: item,
+      });
+      continue;
+    }
+
+    const deployEnd = appliedAt || Math.min(createdAt + 30000, nextCreatedAt || createdAt + 30000);
+
+    const failedDuring = rollbackItems.find((rb: any) => {
+      const rbAt = parseTimestamp(rb.createdAt);
+      return rbAt !== null && rbAt > createdAt && deployEnd !== null && rbAt < deployEnd;
+    });
+
+    if (failedDuring && appliedAt !== null) {
+      const failAt = parseTimestamp(failedDuring.createdAt)!;
+      const recoverGap = 2000;
+      if (failAt > createdAt + 2000) {
+        phases.push({
+          type: "deploying",
+          label: "Deploy",
+          startMs: createdAt,
+          endMs: failAt,
+          cssClass: "phase-deploying",
+          rollout: item,
+        });
+      }
+      phases.push({ type: "failing", label: "Failed", startMs: failAt, endMs: failAt + recoverGap, cssClass: "phase-failing", rollout: item });
+      phases.push({ type: "recovering", label: "Recover", startMs: failAt + recoverGap, endMs: appliedAt, cssClass: "phase-recovering", rollout: item });
+    } else if (deployEnd > createdAt) {
+      phases.push({
+        type: "deploying",
+        label: "Deploy",
+        startMs: createdAt,
+        endMs: deployEnd,
+        cssClass: "phase-deploying",
+        rollout: item,
+      });
+    }
+
+    const stableEnd = nextCreatedAt || (item.current ? now : createdAt + 60000);
+    const clampedEnd = item.current ? stableEnd : Math.min(stableEnd, deployEnd + MAX_PHASE_MS);
+    if (clampedEnd > deployEnd) {
+      let pType = "healthy";
+      let cssClass = "phase-healthy";
+      if (item.healthStatus === "failing") {
+        pType = "failing"; cssClass = "phase-failing";
+      } else if (item.healthStatus === "attention") {
+        pType = "degraded"; cssClass = "phase-degraded";
+      } else if (item.selfHealing) {
+        pType = "recovering"; cssClass = "phase-recovering";
+      }
+      const compressed = item.current && !nextItem && (clampedEnd - deployEnd > 5 * 60 * 1000);
+      phases.push({
+        type: pType,
+        label: item.selfHealing ? "Recover" : item.healthStatus === "failing" ? "Failed" : item.healthStatus === "attention" ? "Degraded" : "Healthy",
+        startMs: deployEnd,
+        endMs: clampedEnd,
+        cssClass: compressed ? cssClass + " phase-compressed" : cssClass,
+        rollout: item,
+      });
+    }
+  }
+
+  phases.sort((a, b) => a.startMs - b.startMs);
+  return phases;
+}
+
+function formatPhaseTime(ms: number): string {
+  if (ms <= 0) return "";
+  const sec = Math.round(ms / 1000);
+  if (sec < 120) return sec + "s";
+  if (sec < 3600) return Math.round(sec / 60) + "min";
+  if (sec < 86400) {
+    const h = Math.floor(sec / 3600);
+    const m = Math.round((sec % 3600) / 60);
+    return m > 0 ? h + "h " + m + "min" : h + "h";
+  }
+  const d = Math.floor(sec / 86400);
+  const h = Math.round((sec % 86400) / 3600);
+  if (d < 30) return h > 0 ? d + "d " + h + "h" : d + "d";
+  return Math.round(d / 30) + "mo";
+}
+
+function renderPhaseBar(phases: RolloutPhase[]): string {
+  if (!phases.length) return "";
+
+  const CAP_STEADY_SEC = 300;
+  const MIN_PHASE_SEC = 20;
+  const capped = phases.map((p) => {
+    const rawSec = (p.endMs - p.startMs) / 1000;
+    if (p.type === "healthy" || p.type === "degraded") {
+      return Math.min(rawSec, CAP_STEADY_SEC);
+    }
+    return Math.max(rawSec, MIN_PHASE_SEC);
+  });
+  const totalCapped = capped.reduce((s, v) => s + v, 0);
+
+  return `
+    <div class="rollout-phase-bar">
+      ${phases.map((p, idx) => {
+        const pct = totalCapped > 0 ? Math.max(2, (capped[idx] / totalCapped) * 100) : 100 / phases.length;
+        const duration = formatPhaseTime(p.endMs - p.startMs);
+        const label = duration ? `${p.label} ${duration}` : p.label;
+        return `<div class="rollout-phase ${p.cssClass}" style="flex:0 1 ${pct}%" title="${escapeAttr(p.label + ": " + formatSplitTime(p.startMs) + " \u2192 " + formatSplitTime(p.endMs) + (duration ? " (" + duration + ")" : ""))}"><span>${escapeHtml(p.label)}</span>${duration ? `<span class="rollout-phase-duration">${duration}</span>` : ""}</div>`;
+      }).join("")}
+    </div>
+  `;
+}
+
 function describeRollout(item: any): { statusText: string; statusKey: string; cardClass: string; segmentClass: string; pointClass: string } {
   if (item.current) {
+    if (item.rollback) {
+      return { statusText: "Current (rollback)", statusKey: "attention", cardClass: "card-current card-rollback", segmentClass: "seg-rollback", pointClass: "point-rollback" };
+    }
     if (item.healthStatus === "failing") {
       return { statusText: "Error", statusKey: "failing", cardClass: "card-current card-failing", segmentClass: "seg-failing", pointClass: "point-failing" };
     }
@@ -1364,11 +1688,11 @@ function describeRollout(item: any): { statusText: string; statusKey: string; ca
   if (item.newIntent) {
     return { statusText: "New intent", statusKey: "pending", cardClass: "card-new", segmentClass: "seg-new", pointClass: "point-new" };
   }
+  if (item.rollback) {
+    return { statusText: "Rollback", statusKey: "attention", cardClass: "card-rollback", segmentClass: "seg-rollback", pointClass: "point-rollback" };
+  }
   if (item.selfHealing) {
     return { statusText: "Self-heal", statusKey: "neutral", cardClass: "", segmentClass: "seg-heal", pointClass: "point-heal" };
-  }
-  if (item._rollback) {
-    return { statusText: "Rollback", statusKey: "attention", cardClass: "card-rollback", segmentClass: "seg-rollback", pointClass: "point-rollback" };
   }
   return { statusText: "Superseded", statusKey: "neutral", cardClass: "", segmentClass: "seg-old", pointClass: "point-old" };
 }
@@ -1377,6 +1701,8 @@ function rolloutStatusHint(statusText: string): string {
   switch (statusText) {
     case "Current":
       return "This is the latest successful rollout revision for the intent.";
+    case "Current (rollback)":
+      return "The intent was rolled back to this revision after a failed deploy.";
     case "Error":
       return "The current rollout has failing assets (e.g. ImagePullBackOff, CrashLoopBackOff).";
     case "Degraded":
@@ -1387,6 +1713,8 @@ function rolloutStatusHint(statusText: string): string {
       return "Guardian reconciled drift and re-applied the desired state without a new intent change.";
     case "Rollback":
       return "Guardian reverted to a previously known-good deployment revision.";
+    case "Recover":
+      return "Guardian is re-deploying after a failed APPLY attempt (auto-heal rollout).";
     default:
       return "An older rollout kept for history; it is no longer the active revision.";
   }
@@ -1418,6 +1746,20 @@ function toggleRolloutExpanded(rolloutKey: string): void {
 
 function makeRolloutKey(item: any): string {
   return `${item.intent ?? ""}::${item.deploymentRevision ?? ""}`;
+}
+
+function buildRollbackDetail(item: any): string {
+  if (!item.rollback) return "";
+  const details: string[] = [];
+  if (item.rollbackTo) {
+    details.push(`Rolled back to revision <code>${escapeHtml(item.rollbackTo)}</code>`);
+  }
+  const reason = String(item.rollbackReason ?? "").trim();
+  if (reason) {
+    details.push(`Reason: ${escapeHtml(reason)}`);
+  }
+  if (!details.length) return "";
+  return `<div class="rollout-tl-row"><div class="rollout-tl-rollback-detail">${details.join(" &middot; ")}</div></div>`;
 }
 
 function rolloutChangeStatus(change: string | undefined): string {

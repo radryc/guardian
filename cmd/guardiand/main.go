@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -96,6 +97,19 @@ func main() {
 	// Allow env override for stale task timeout without requiring a config file rebuild.
 	if v := strings.TrimSpace(os.Getenv("GUARDIAN_STALE_TASK_AFTER")); v != "" {
 		cfg.Guardian.StaleTaskAfter = v
+	}
+	if v := strings.TrimSpace(os.Getenv("GUARDIAN_ENABLE_FLOW_TOPOLOGY")); v != "" {
+		enabled, parseErr := strconv.ParseBool(v)
+		if parseErr != nil {
+			log.Fatalf("invalid GUARDIAN_ENABLE_FLOW_TOPOLOGY value %q: %v", v, parseErr)
+		}
+		cfg.Guardian.EnableFlowTopology = enabled
+	}
+	if v := strings.TrimSpace(os.Getenv("GUARDIAN_FLOW_METRICS_URL")); v != "" {
+		cfg.Guardian.FlowMetricsURL = v
+	}
+	if v := strings.TrimSpace(os.Getenv("GUARDIAN_FLOW_METRICS_TIMEOUT")); v != "" {
+		cfg.Guardian.FlowMetricsTimeout = v
 	}
 
 	telemetryCfg, err := telemetry.LoadConfig("guardiand", cfg.Guardian.PrincipalID)
@@ -190,6 +204,9 @@ func main() {
 	if err := dispatcher.SeedRuntimeMetrics(ctx); err != nil && ctx.Err() == nil {
 		log.Printf("dispatcher: seed runtime metrics: %v", err)
 	}
+	if err := dispatcher.SeedPartitionReleaseLogs(ctx); err != nil && ctx.Err() == nil {
+		log.Printf("dispatcher: seed release logs: %v", err)
+	}
 	staleTaskDuration, err := time.ParseDuration(cfg.Guardian.StaleTaskAfter)
 	if err != nil {
 		log.Fatalf("invalid stale task timeout: %v", err)
@@ -218,14 +235,30 @@ func main() {
 	var wg sync.WaitGroup
 
 	if strings.TrimSpace(cfg.Guardian.UIListenAddress) != "" {
+		flowMetricsTimeout := 2 * time.Second
+		if strings.TrimSpace(cfg.Guardian.FlowMetricsTimeout) != "" {
+			parsedTimeout, parseErr := time.ParseDuration(cfg.Guardian.FlowMetricsTimeout)
+			if parseErr != nil {
+				log.Fatalf("invalid guardian.flowMetricsTimeout %q: %v", cfg.Guardian.FlowMetricsTimeout, parseErr)
+			}
+			if parsedTimeout > 0 {
+				flowMetricsTimeout = parsedTimeout
+			}
+		}
+		var flowEvaluator uiuipkg.FlowStateEvaluator
+		if cfg.Guardian.EnableFlowTopology {
+			flowEvaluator = uiuipkg.NewMonofsMetricsFlowEvaluator(strings.TrimSpace(cfg.Guardian.FlowMetricsURL), flowMetricsTimeout, 5*time.Second)
+		}
 		uiServer, err := uiuipkg.New(uiuipkg.Options{
-			Store:             store,
-			Dispatcher:        dispatcher,
-			PrincipalID:       cfg.Guardian.PrincipalID,
-			Pushers:           pusherNames(cfg.Pushers),
-			StaleTaskAfter:    staleTaskDuration,
-			ClientConfig:      clientConfig,
-			ClientConfigToken: cfg.Guardian.ClientDiscoveryToken,
+			Store:              store,
+			Dispatcher:         dispatcher,
+			PrincipalID:        cfg.Guardian.PrincipalID,
+			Pushers:            pusherNames(cfg.Pushers),
+			StaleTaskAfter:     staleTaskDuration,
+			EnableFlowTopology: cfg.Guardian.EnableFlowTopology,
+			FlowEvaluator:      flowEvaluator,
+			ClientConfig:       clientConfig,
+			ClientConfigToken:  cfg.Guardian.ClientDiscoveryToken,
 		})
 		if err != nil {
 			log.Fatalf("build ui server: %v", err)
@@ -266,6 +299,7 @@ func main() {
 				RedirectURL:  redirectURL,
 				Verifier:     uiVerifier,
 				RequireLogin: strings.EqualFold(strings.TrimSpace(os.Getenv("MONOFS_AUTHZ_ENFORCE_UI")), "true"),
+				ExemptPaths:  []string{"/api/m2m"},
 			}
 			if publicAuthURL != "" {
 				waCfg.Endpoints.AuthURL = publicAuthURL
@@ -535,6 +569,20 @@ func processLiveResultFiles(ctx context.Context, store guardianapi.Store, proces
 			}
 			taskID := strings.TrimSuffix(entry.Name, ".json")
 			if !liveTaskIDs[taskID] {
+				taskPath := paths.QueueTask(pn, taskID)
+				if _, statErr := store.Stat(ctx, taskPath); os.IsNotExist(statErr) {
+					resultPath := paths.QueueResult(pn, taskID)
+					if _, delErr := store.DeletePaths(ctx, guardianapi.DeleteBatch{
+						Deletes: []guardianapi.PathDelete{{LogicalPath: resultPath}},
+						Context: guardianapi.MutationContext{
+							PrincipalID:   "guardiand",
+							Reason:        "cleanup stale result file",
+							CorrelationID: taskID,
+						},
+					}); delErr != nil && !os.IsNotExist(delErr) {
+						log.Printf("result-processor: %s cleanup stale result %s: %v", reason, resultPath, delErr)
+					}
+				}
 				continue
 			}
 			resultPath := paths.QueueResult(pn, taskID)

@@ -20,6 +20,9 @@ type DeploymentRecord struct {
 	TaskIDs            []string               `json:"taskIDs"`
 	ChangedAssets      []string               `json:"changedAssets,omitempty"`
 	SelfHealing        bool                   `json:"selfHealing,omitempty"`
+	Rollback           bool                   `json:"rollback,omitempty"`
+	RollbackTo         string                 `json:"rollbackTo,omitempty"`
+	RollbackReason     string                 `json:"rollbackReason,omitempty"`
 	Outputs            map[string]string      `json:"outputs"`
 	CreatedAt          time.Time              `json:"createdAt"`
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
+	releasedomain "github.com/rydzu/ainfra/guardian/internal/domain/release"
 	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
 	"github.com/rydzu/ainfra/guardian/internal/orchestrator/common"
@@ -30,10 +31,10 @@ import (
 const processorScope = "guardian/results"
 
 var (
-	resultMetricsOnce   sync.Once
-	resultCounter       metricapi.Int64Counter
-	resultFailCounter   metricapi.Int64Counter
-	resultDuration      metricapi.Float64Histogram
+	resultMetricsOnce sync.Once
+	resultCounter     metricapi.Int64Counter
+	resultFailCounter metricapi.Int64Counter
+	resultDuration    metricapi.Float64Histogram
 )
 
 type Processor struct {
@@ -173,7 +174,8 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		state.ApplyReadiness = cloneApplyReadiness(result.ApplyReadiness)
 		state.AssetObservations = cloneAssetObservationMap(result.AssetObservations)
 		state.LastError = nil
-		if result.Drift == nil || result.Drift.Status == "InSync" || len(result.Drift.ChangedAssets) == 0 {
+		driftSettled := result.Drift == nil || result.Drift.Status == "InSync" || len(result.Drift.ChangedAssets) == 0
+		if driftSettled && applyResultSettled(result) {
 			state.Status = statedomain.StatusHealthy
 			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
 				return fail(err)
@@ -184,6 +186,31 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
 			span.SetStatus(codes.Ok, "")
 			telemetry.EmitInfo(ctx, processorScope, fmt.Sprintf("intent %s/%s is healthy", state.Partition, state.Intent))
+			return nil
+		}
+		if driftSettled {
+			state.LastError = nil
+			state.Status = common.QueuedStatus(state.Status, taskdomain.OpDiff)
+			state.Drift = cloneDriftReport(result.Drift)
+			if state.Drift == nil || state.Drift.Status == "InSync" || len(state.Drift.ChangedAssets) == 0 {
+				state.Drift = &taskdomain.DriftReport{Status: "Changed", Summary: applyNotReadySummary(result)}
+			}
+			next, err := p.nextTask(ctx, taskFile, state, taskdomain.OpDiff)
+			if err != nil {
+				return fail(err)
+			}
+			state.LastTaskID = next.TaskID
+			state.Timestamps.LastQueuedAt = next.CreatedAt
+			state.Timestamps.LastDiffAt = next.CreatedAt
+			if err := p.dispatcher.QueueTask(ctx, next); err != nil {
+				return fail(err)
+			}
+			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+				return fail(err)
+			}
+			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
+			span.SetStatus(codes.Ok, "awaiting observation readiness")
+			telemetry.EmitWarn(ctx, processorScope, fmt.Sprintf("diff for %s/%s is waiting on observation readiness", state.Partition, state.Intent))
 			return nil
 		}
 		if state.Locked || state.PartitionMode == "readonly" {
@@ -248,7 +275,8 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 				TaskID:    result.TaskID,
 				Details:   map[string]string{"op": "APPLY", "error": errMsg},
 			})
-			if state.LastAppliedSpecHash != "" && state.IntentSpecHash != state.LastAppliedSpecHash {
+			skipRollback := taskFile != nil && taskFile.ForceApply
+			if state.LastAppliedSpecHash != "" && state.IntentSpecHash != state.LastAppliedSpecHash && !skipRollback {
 				if err := p.rollbackIntent(ctx, state, result); err != nil {
 					return fail(err)
 				}
@@ -256,15 +284,42 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
 			return nil
 		}
-		preDrift := state.Drift
-		selfHealing := state.LastAppliedSpecHash != "" && state.IntentSpecHash == state.LastAppliedSpecHash
-		state.LastAppliedSpecHash = state.IntentSpecHash
-		state.Status = statedomain.StatusHealthy
-		state.LastError = nil
 		state.Health = cloneHealthObservation(result.Health)
 		state.ApplyReadiness = cloneApplyReadiness(result.ApplyReadiness)
 		state.AssetObservations = cloneAssetObservationMap(result.AssetObservations)
 		state.Outputs = copyStringMap(result.Outputs)
+		if !applyResultSettled(result) {
+			state.LastError = nil
+			state.Status = common.QueuedStatus(state.Status, taskdomain.OpDiff)
+			state.Drift = cloneDriftReport(result.Drift)
+			if state.Drift == nil {
+				state.Drift = &taskdomain.DriftReport{Status: "Changed", Summary: applyNotReadySummary(result)}
+			}
+			next, err := p.nextTask(ctx, taskFile, state, taskdomain.OpDiff)
+			if err != nil {
+				return fail(err)
+			}
+			state.LastTaskID = next.TaskID
+			state.Timestamps.LastQueuedAt = next.CreatedAt
+			state.Timestamps.LastDiffAt = next.CreatedAt
+			if err := p.dispatcher.QueueTask(ctx, next); err != nil {
+				return fail(err)
+			}
+			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+				return fail(err)
+			}
+			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
+			span.SetStatus(codes.Ok, "awaiting dependency readiness")
+			telemetry.EmitWarn(ctx, processorScope, fmt.Sprintf("apply for %s/%s is waiting on dependency readiness", state.Partition, state.Intent))
+			return nil
+		}
+		preDrift := state.Drift
+		rollbackTo := state.RollbackTo
+		selfHealing := state.LastAppliedSpecHash != "" && state.IntentSpecHash == state.LastAppliedSpecHash
+		state.LastAppliedSpecHash = state.IntentSpecHash
+		state.Status = statedomain.StatusHealthy
+		state.LastError = nil
+		state.RollbackTo = ""
 		state.Drift = &taskdomain.DriftReport{Status: "InSync", Summary: "apply completed"}
 		state.DeploymentRevision = revisions.DeploymentRevisionID(state.PartitionRevision, state.IntentVersionID, result.FinishedAt)
 		if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
@@ -284,6 +339,9 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			TaskIDs:            collectTaskIDs(taskFile, result.TaskID),
 			ChangedAssets:      preDriftAssets(preDrift),
 			SelfHealing:        selfHealing,
+			Rollback:           rollbackTo != "",
+			RollbackTo:         rollbackTo,
+			RollbackReason:     state.RollbackReason,
 			Outputs:            copyStringMap(result.Outputs),
 			CreatedAt:          result.FinishedAt,
 		}
@@ -292,6 +350,29 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			return fail(err)
 		}
 		if err := p.dispatcher.ArchiveDeployment(ctx, rec, manifestContent, result.Logs); err != nil {
+			return fail(err)
+		}
+		// Advance the canonical partition release log so the UI's latest-release
+		// view reads from one source instead of walking the archive directory.
+		relRec := &releasedomain.ReleaseRecord{
+			APIVersion:         "guardian/v1alpha1",
+			Kind:               "ReleaseRecord",
+			DeploymentRevision: rec.DeploymentRevision,
+			Partition:          rec.Partition,
+			Intent:             rec.Intent,
+			PartitionRevision:  rec.PartitionRevision,
+			IntentVersionID:    rec.IntentVersionID,
+			AssetVersionIDs:    copyStringMap(rec.AssetVersionIDs),
+			AssetVersions:      copyStringMap(rec.AssetVersions),
+			TaskIDs:            append([]string(nil), rec.TaskIDs...),
+			SelfHealing:        rec.SelfHealing,
+			Rollback:           rec.Rollback,
+			RollbackTo:         rec.RollbackTo,
+			RollbackReason:     rec.RollbackReason,
+			Outputs:            copyStringMap(rec.Outputs),
+			CreatedAt:          rec.CreatedAt,
+		}
+		if err := p.dispatcher.WriteRelease(ctx, relRec); err != nil {
 			return fail(err)
 		}
 		if releaseTag := releaseTagFromAssetVersions(rec.AssetVersions); releaseTag != "" {
@@ -387,6 +468,7 @@ func (p *Processor) cleanupQueueArtifacts(ctx context.Context, pusher, taskID st
 		Deletes: []guardianapi.PathDelete{
 			{LogicalPath: paths.QueueTask(pusher, taskID)},
 			{LogicalPath: paths.QueueClaim(pusher, taskID)},
+			{LogicalPath: paths.QueueResult(pusher, taskID)},
 		},
 		Context: guardianapi.MutationContext{
 			PrincipalID:   "guardiand",
@@ -429,7 +511,7 @@ func (p *Processor) nextTask(ctx context.Context, currentTask *taskdomain.Task, 
 		states = map[string]*statedomain.IntentState{}
 	}
 	states[state.Intent] = state
-	return common.BuildTask(ctx, p.store, state, op, common.IntentOutputs(states))
+	return common.BuildTask(ctx, p.store, state, op, common.IntentOutputs(states), false)
 }
 
 func (p *Processor) loadIntentManifest(ctx context.Context, state *statedomain.IntentState) ([]byte, error) {
@@ -470,7 +552,7 @@ func (p *Processor) queueDependents(ctx context.Context, partition string) error
 			continue
 		}
 		prevStatus := state.Status
-		next, err := common.BuildTask(ctx, p.store, state, taskdomain.OpDiff, outputs)
+		next, err := common.BuildTask(ctx, p.store, state, taskdomain.OpDiff, outputs, false)
 		if err != nil {
 			return err
 		}
@@ -525,8 +607,10 @@ func (p *Processor) rollbackIntent(ctx context.Context, state *statedomain.Inten
 	if err != nil {
 		return fmt.Errorf("rollback %s/%s: write manifest: %w", state.Partition, state.Intent, err)
 	}
+	rollbackReason := derefErr(result.Error)
 	state.Status = statedomain.StatusReady
-	state.IntentSpecHash = state.LastAppliedSpecHash
+	state.RollbackTo = state.DeploymentRevision
+	state.RollbackReason = rollbackReason
 	state.LastError = nil
 	state.Drift = nil
 	state.Health = nil
@@ -539,15 +623,17 @@ func (p *Processor) rollbackIntent(ctx context.Context, state *statedomain.Inten
 		Partition:          state.Partition,
 		Intent:             state.Intent,
 		Type:               "rollback.triggered",
-		Message:            fmt.Sprintf("rolled back to deployment %s", state.DeploymentRevision),
+		Message:            fmt.Sprintf("rolled back to deployment %s after %s failure: %s", state.DeploymentRevision, result.Op, rollbackReason),
 		TaskID:             result.TaskID,
 		DeploymentRevision: state.DeploymentRevision,
 		CorrelationID:      correlationID,
 		Details: map[string]string{
 			"failed_task_id": result.TaskID,
+			"failed_op":      string(result.Op),
+			"error":          rollbackReason,
 		},
 	})
-	log.Printf("results: rolled back %s/%s to deployment %s after %s failure", state.Partition, state.Intent, state.DeploymentRevision, result.Op)
+	log.Printf("results: rolled back %s/%s to deployment %s after %s failure: %s", state.Partition, state.Intent, state.DeploymentRevision, result.Op, rollbackReason)
 	return nil
 }
 
@@ -599,6 +685,43 @@ func cloneApplyReadiness(in *taskdomain.ApplyReadiness) *taskdomain.ApplyReadine
 	}
 	out := *in
 	return &out
+}
+
+func cloneDriftReport(in *taskdomain.DriftReport) *taskdomain.DriftReport {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if len(in.ChangedAssets) > 0 {
+		out.ChangedAssets = append([]string(nil), in.ChangedAssets...)
+	}
+	return &out
+}
+
+func applyResultSettled(result *taskdomain.TaskResult) bool {
+	if result == nil {
+		return true
+	}
+	if result.Health != nil && result.Health.Status != taskdomain.HealthHealthy {
+		return false
+	}
+	if result.ApplyReadiness != nil && result.ApplyReadiness.Status != taskdomain.ApplyReadinessReady {
+		return false
+	}
+	return true
+}
+
+func applyNotReadySummary(result *taskdomain.TaskResult) string {
+	if result == nil {
+		return "apply completed but asset is not ready"
+	}
+	if result.ApplyReadiness != nil && strings.TrimSpace(result.ApplyReadiness.Summary) != "" {
+		return result.ApplyReadiness.Summary
+	}
+	if result.Health != nil && strings.TrimSpace(result.Health.Summary) != "" {
+		return result.Health.Summary
+	}
+	return "apply completed but asset is not ready"
 }
 
 func cloneAssetObservationMap(in map[string]*taskdomain.AssetObservation) map[string]*taskdomain.AssetObservation {

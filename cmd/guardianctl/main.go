@@ -623,6 +623,7 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 	}()))
 
 	reg.Register("partition", "push", storeCommand(partitionPushCommand(store, printer)))
+	reg.Register("partition", "validate-local", partitionValidateLocalCommand(printer))
 	reg.Register("partition", "reconcile", storeCommand(partitionReconcileCommand(store, printer)))
 	reg.Register("partition", "tag", partitionTagCommand(printer))
 	reg.Register("partition", "tags", storeCommand(partitionTagsCommand(store, printer)))

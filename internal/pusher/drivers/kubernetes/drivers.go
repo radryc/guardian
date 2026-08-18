@@ -429,7 +429,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
-	container.Env = env
+	container.Env = driverutil.MergeOtelResourceAttrs(env, in.PartitionName, in.IntentName, in.Asset.Name)
 	container.Image = spec.Image
 	deployment := Deployment{
 		Namespace:         namespace(in),
@@ -1096,8 +1096,8 @@ func (d *baseDriver) observeComputeHealth(ctx context.Context, in registry.Asset
 		}
 		return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: summary}, nil
 	}
-	if deployment.ReadyReplicas < deployment.Replicas || deployment.AvailableReplicas < deployment.Replicas {
-		return &taskdomain.HealthObservation{Status: taskdomain.HealthDegraded, Summary: "kubernetes deployment is not ready"}, nil
+	if deployment.ReadyReplicas < deployment.Replicas {
+		return &taskdomain.HealthObservation{Status: taskdomain.HealthDegraded, Summary: fmt.Sprintf("kubernetes deployment %s is not ready", deploymentName)}, nil
 	}
 	if !expectService {
 		return &taskdomain.HealthObservation{Status: taskdomain.HealthHealthy, Summary: "kubernetes workload is ready"}, nil
@@ -1149,8 +1149,8 @@ func (d *baseDriver) observeServiceBackedHealth(ctx context.Context, in registry
 		}
 		return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: summary}, nil
 	}
-	if deployment.ReadyReplicas < deployment.Replicas || deployment.AvailableReplicas < deployment.Replicas {
-		return &taskdomain.HealthObservation{Status: taskdomain.HealthDegraded, Summary: "kubernetes deployment is not ready"}, nil
+	if deployment.ReadyReplicas < deployment.Replicas {
+		return &taskdomain.HealthObservation{Status: taskdomain.HealthDegraded, Summary: fmt.Sprintf("kubernetes deployment %s is not ready", deploymentName)}, nil
 	}
 	service, ok, err := d.backend.GetService(namespace(in), svcName)
 	if err != nil {

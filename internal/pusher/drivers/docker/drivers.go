@@ -440,6 +440,20 @@ func (d *ComputeDriver) ObserveState(ctx context.Context, in registry.AssetInput
 	if err != nil {
 		return nil, nil, err
 	}
+	if spec.ObserveExisting {
+		name := dockerObserveContainerName(in, spec)
+		container, ok, err := d.backend.GetContainer(name)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !ok {
+			return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: fmt.Sprintf("observed container %s is missing", name)}, readiness, nil
+		}
+		if !container.Running {
+			return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: fmt.Sprintf("observed container %s is not running", name)}, readiness, nil
+		}
+		return &taskdomain.HealthObservation{Status: taskdomain.HealthHealthy, Summary: "docker compute observed, running"}, readiness, nil
+	}
 	containers, err := d.backend.ListContainersByAsset(in.PartitionName, in.IntentName, in.Asset.Name)
 	if err != nil {
 		return nil, nil, err
@@ -476,6 +490,17 @@ func (d *ComputeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskd
 	spec, err := decodeCompute(in)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
+	}
+	if spec.ObserveExisting {
+		name := dockerObserveContainerName(in, spec)
+		_, ok, err := d.backend.GetContainer(name)
+		if err != nil {
+			return taskdomain.DriftReport{}, err
+		}
+		if !ok {
+			return changedDrift(in.Asset.Name, "docker compute container not found"), nil
+		}
+		return inSyncDrift(in.Asset.Name, "docker compute observed, in sync"), nil
 	}
 	payload, err := loadContainerPayload(ctx, in)
 	if err != nil {
@@ -537,6 +562,21 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
+	if spec.ObserveExisting {
+		name := dockerObserveContainerName(in, spec)
+		container, ok, err := d.backend.GetContainer(name)
+		if err != nil {
+			return registry.AssetResult{}, err
+		}
+		if !ok {
+			return registry.AssetResult{}, fmt.Errorf("observed container %s is missing", name)
+		}
+		outputs := map[string]string{"id": name, "image": container.Image, "running": "true"}
+		if port := firstContainerPort(container.Ports); port > 0 {
+			outputs["address"] = fmt.Sprintf("%s:%d", in.Asset.Name, port)
+		}
+		return registry.AssetResult{Outputs: outputs}, nil
+	}
 	payload, err := loadContainerPayload(ctx, in)
 	if err != nil {
 		return registry.AssetResult{}, err
@@ -550,6 +590,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
+	env = driverutil.MergeOtelResourceAttrs(env, in.PartitionName, in.IntentName, in.Asset.Name)
 	desired := computeContainerNames(in, spec)
 	var primary Container
 	for idx, name := range desired {
@@ -585,6 +626,13 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 func (d *ComputeDriver) Destroy(ctx context.Context, in registry.AssetInput) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	spec, err := decodeCompute(in)
+	if err != nil {
+		return err
+	}
+	if spec.ObserveExisting {
+		return nil
 	}
 	containers, err := d.backend.ListContainersByAsset(in.PartitionName, in.IntentName, in.Asset.Name)
 	if err != nil {
@@ -1468,6 +1516,13 @@ func computeContainerNames(in registry.AssetInput, spec *assetdefs.ComputeSpec) 
 		names = append(names, driverutil.ResourceName("docker-ct", in.Target, in.PartitionName, in.IntentName, in.Asset.Name, strconv.Itoa(i)))
 	}
 	return names
+}
+
+func dockerObserveContainerName(in registry.AssetInput, spec *assetdefs.ComputeSpec) string {
+	if spec != nil && strings.TrimSpace(spec.ExistingDeploymentName) != "" {
+		return spec.ExistingDeploymentName
+	}
+	return in.Asset.Name
 }
 
 func objectStoreVolumeMounts(in registry.AssetInput, spec *assetdefs.ObjectStoreSpec) []VolumeMount {

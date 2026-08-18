@@ -221,27 +221,26 @@
 
       <!-- ── Rollouts panel ─────────────────────────── -->
       <section id="rolloutsPanel" class="panel hidden px-6 py-5">
-        <article class="card">
-          <div class="card-header">
-            <div class="flex items-start justify-between gap-2">
-              <div>
-                <h2 class="card-title">Rollouts</h2>
-                <p class="text-muted text-[13px]">New intents and asset releases archived for the selected partition.</p>
-                <div class="flex flex-wrap items-center gap-3 mt-2 text-[11px] text-[#9BB0CF]">
-                  <span class="inline-flex items-center gap-1.5" title="Latest successful rollout revision for an intent."><span class="status-dot status-dot-healthy"></span>Current</span>
-                  <span class="inline-flex items-center gap-1.5" title="The current rollout has failing assets (ImagePullBackOff, CrashLoopBackOff, etc)."><span class="status-dot status-dot-failing"></span>Error</span>
-                  <span class="inline-flex items-center gap-1.5" title="The current rollout has assets that are not fully ready."><span class="status-dot status-dot-attention"></span>Degraded</span>
-                  <span class="inline-flex items-center gap-1.5" title="Intent appeared for the first time in this rollout."><span class="status-dot status-dot-pending"></span>New intent</span>
-                  <span class="inline-flex items-center gap-1.5" title="Guardian reconciled drift and re-applied desired state."><span class="status-dot" style="background:#A78BFA"></span>Self-heal</span>
-                  <span class="inline-flex items-center gap-1.5" title="Guardian reverted to a previous deployment revision."><span class="status-dot status-dot-attention"></span>Rollback</span>
-                  <span class="inline-flex items-center gap-1.5" title="Older rollout kept for history; not currently active."><span class="status-dot status-dot-neutral"></span>Superseded</span>
-                </div>
-              </div>
-              <button id="refreshRolloutsButton" class="btn-secondary">Refresh</button>
-            </div>
+        <div class="flex items-center justify-between gap-3 mb-4">
+          <div>
+            <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-[#00ADE4] mb-0.5">Release timeline</p>
+            <h2 class="text-[18px] font-bold text-[#E5ECF4]">Rollouts</h2>
+            <p class="text-[13px] text-[#9BB0CF] mt-0.5">Per-intent deployment history — when each rollout deployed, what changed, what failed, and what recovered.</p>
           </div>
-          <div id="rolloutsTimeline" class="loading-state text-sm text-[#566778]">Loading rollouts…</div>
-        </article>
+          <div class="flex items-center gap-2 flex-wrap justify-end shrink-0">
+            <!-- Inline legend -->
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[#9BB0CF] px-3 py-2 rounded-lg bg-[#0D1220] border border-white/[0.07]">
+              <span class="inline-flex items-center gap-1.5"><span class="inline-block w-2 h-2 rounded-full bg-[#00C369]"></span>Healthy</span>
+              <span class="inline-flex items-center gap-1.5"><span class="inline-block w-2 h-2 rounded-full bg-[#E5484D]"></span>Failed</span>
+              <span class="inline-flex items-center gap-1.5"><span class="inline-block w-2 h-2 rounded-full bg-[#FCB519]"></span>Degraded</span>
+              <span class="inline-flex items-center gap-1.5"><span class="inline-block w-2 h-2 rounded-full bg-[#00ADE4]"></span>New / Deploy</span>
+              <span class="inline-flex items-center gap-1.5"><span class="inline-block w-2 h-2 rounded-full bg-[#F97316]"></span>Self-heal</span>
+              <span class="inline-flex items-center gap-1.5"><span class="inline-block w-2 h-2 rounded-full bg-[#566778]/60"></span>Superseded</span>
+            </div>
+            <button id="refreshRolloutsButton" class="btn-secondary shrink-0">Refresh</button>
+          </div>
+        </div>
+        <div id="rolloutsTimeline" class="loading-state text-sm text-[#566778]">Loading rollouts…</div>
       </section>
 
       <!-- ── History panel ─────────────────────────── -->

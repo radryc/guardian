@@ -25,6 +25,7 @@ func partitionReconcileCommand(store guardianapi.Store, printer *output.Printer)
 	flags := flag.NewFlagSet("partition reconcile", flag.ContinueOnError)
 	flags.SetOutput(ioDiscard{})
 	partitionName := flags.String("partition", "", "partition name")
+	forceApply := flags.Bool("force-apply", false, "bypass health checks and queue apply directly")
 	wait := flags.Bool("wait", false, "wait for the partition to reach the requested status after reconcile")
 	waitStatus := flags.String("wait-status", "Healthy", "desired partition status when --wait is set")
 	waitTimeout := flags.Duration("wait-timeout", defaultPartitionWaitTimeout, "maximum time to wait when --wait is set")
@@ -33,7 +34,7 @@ func partitionReconcileCommand(store guardianapi.Store, printer *output.Printer)
 		if *partitionName == "" {
 			return fmt.Errorf("--partition is required")
 		}
-		if err := reconcilePartition(ctx, store, *partitionName); err != nil {
+		if err := reconcilePartition(ctx, store, *partitionName, *forceApply); err != nil {
 			return err
 		}
 		result := partitionReconcileResult{Success: true, Partition: *partitionName}
@@ -50,9 +51,12 @@ func partitionReconcileCommand(store guardianapi.Store, printer *output.Printer)
 	}}
 }
 
-func reconcilePartition(ctx context.Context, store guardianapi.Store, partitionName string) error {
+func reconcilePartition(ctx context.Context, store guardianapi.Store, partitionName string, forceApply bool) error {
 	disp := dispatcher.NewDispatcher(store, "guardianctl")
 	recon := reconciler.NewReconciler(store, disp, time.Minute)
+	if forceApply {
+		return recon.ForceApplyPartition(ctx, partitionName, true)
+	}
 	return recon.ReconcilePartition(ctx, partitionName, true)
 }
 

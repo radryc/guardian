@@ -16,8 +16,10 @@ import (
 	"github.com/rydzu/ainfra/guardian/internal/compiler/manifest"
 	"github.com/rydzu/ainfra/guardian/internal/compiler/planner"
 	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
+	releasedomain "github.com/rydzu/ainfra/guardian/internal/domain/release"
 	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
+	"github.com/rydzu/ainfra/guardian/internal/historyquery"
 	"github.com/rydzu/ainfra/guardian/internal/orchestrator/common"
 	"github.com/rydzu/ainfra/guardian/internal/orchestrator/dispatcher"
 	"github.com/rydzu/ainfra/guardian/internal/paths"
@@ -85,7 +87,7 @@ func NewReconcilerWithOptions(store guardianapi.Store, dispatcher *dispatcher.Di
 		intervalStr = "10m"
 	}
 	if staleTaskAfter <= 0 {
-		staleTaskAfter = 5 * time.Minute
+		staleTaskAfter = 30 * time.Minute
 	}
 	return &Reconciler{
 		store:                 store,
@@ -169,10 +171,25 @@ func (r *Reconciler) ReconcilePartition(ctx context.Context, partitionName strin
 	partitionLock := r.partitionLock(partitionName)
 	partitionLock.Lock()
 	defer partitionLock.Unlock()
-	return r.reconcilePartition(ctx, partitionName, force)
+	return r.reconcilePartition(ctx, partitionName, force, false)
 }
 
-func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName string, force bool) error {
+func (r *Reconciler) ForceApplyPartition(ctx context.Context, partitionName string, force bool) error {
+	r.runMu.Lock()
+	authorizer := r.authorize
+	r.runMu.Unlock()
+	if authorizer != nil {
+		if err := authorizer(ctx, partitionName); err != nil {
+			return fmt.Errorf("reconcile %s: %w", partitionName, err)
+		}
+	}
+	partitionLock := r.partitionLock(partitionName)
+	partitionLock.Lock()
+	defer partitionLock.Unlock()
+	return r.reconcilePartition(ctx, partitionName, force, true)
+}
+
+func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName string, force bool, forceApply bool) error {
 	attrs := []attribute.KeyValue{attribute.String("guardian.partition", partitionName)}
 	count, failures, duration := reconcileInstruments()
 	if count != nil {
@@ -400,21 +417,17 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 			specHashChanged := oldSpecHash != "" && oldSpecHash != compiledIntent.IntentSpecHash
 			specNeedsApply := current.LastAppliedSpecHash != "" && current.LastAppliedSpecHash != compiledIntent.IntentSpecHash
 			nextOp := taskdomain.OpDiff
-			// If compiled spec diverges from last applied spec, force CHECK so the
-			// result processor can queue APPLY even when DIFF reports InSync.
-			if specNeedsApply {
+			if forceApply {
+				nextOp = taskdomain.OpApply
+			} else if specNeedsApply {
 				nextOp = taskdomain.OpCheck
 			}
-			// Recovery path: if we already know the intent is drifted and no task
-			// is active, resume at CHECK instead of repeatedly running DIFF.
-			// Apply/Check failures need the same recovery path once the operator
-			// has corrected the underlying issue and asks Guardian to reconcile again.
 			if current.Status == statedomain.StatusDrifted ||
 				current.Status == statedomain.StatusApplyFailed ||
 				current.Status == statedomain.StatusCheckFailed {
 				nextOp = taskdomain.OpCheck
 			}
-			next, err := common.BuildTask(ctx, r.store, current, nextOp, outputs)
+			next, err := common.BuildTask(ctx, r.store, current, nextOp, outputs, forceApply)
 			if err != nil {
 				log.Printf("reconciler: partition=%s intent=%s build task failed: %v", partitionName, name, err)
 				current.Status = statedomain.StatusBlocked
@@ -444,10 +457,12 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 			// Spec changed while task in-flight — cancel old task and queue new one.
 			log.Printf("reconciler: partition=%s intent=%s spec changed while task in-flight, re-queuing", partitionName, name)
 			nextOp := taskdomain.OpDiff
-			if current.LastAppliedSpecHash != "" && current.LastAppliedSpecHash != compiledIntent.IntentSpecHash {
+			if forceApply {
+				nextOp = taskdomain.OpApply
+			} else if current.LastAppliedSpecHash != "" && current.LastAppliedSpecHash != compiledIntent.IntentSpecHash {
 				nextOp = taskdomain.OpCheck
 			}
-			next, err := common.BuildTask(ctx, r.store, current, nextOp, outputs)
+			next, err := common.BuildTask(ctx, r.store, current, nextOp, outputs, false)
 			if err != nil {
 				return fail(err)
 			}
@@ -466,10 +481,73 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 		existingStates[name] = current
 		outputs[name] = copyStringMap(current.Outputs)
 	}
+	if err := r.recoverReleaseLog(ctx, partitionName, existingStates); err != nil {
+		return fail(err)
+	}
 	span.SetStatus(codes.Ok, "")
 	log.Printf("reconciler: partition=%s reconcile complete", partitionName)
 	telemetry.EmitInfo(ctx, reconcilerScope, fmt.Sprintf("reconciled partition %s", partitionName))
 	r.updateScheduleFromSpec(partitionName, partitionSpec.Spec.Reconciliation.Interval, partitionSpec.Spec.Reconciliation.JitterPercent)
+	return nil
+}
+
+// recoverReleaseLog re-emits the authoritative partition release log when the
+// live intent state is strictly ahead of the log. This catches the failure
+// mode where an APPLY succeeded, WriteIntentState landed, but a later write
+// (ArchiveDeployment or WriteRelease) failed or its result was dropped as
+// stale — leaving the UI to surface the previous release.
+//
+// Gating on Healthy + non-zero DeploymentRevision ensures we only re-emit
+// releases that genuinely came from a successful apply; in-flight intent
+// states never overwrite the log.
+func (r *Reconciler) recoverReleaseLog(ctx context.Context, partitionName string, states map[string]*statedomain.IntentState) error {
+	if len(states) == 0 {
+		return nil
+	}
+	recoveryStart := time.Now().UTC()
+	latestByIntent, err := historyquery.LoadLatestDeploymentsForPartition(ctx, r.store, partitionName)
+	if err != nil {
+		return fmt.Errorf("recover release log: %w", err)
+	}
+	for name, state := range states {
+		if state == nil {
+			continue
+		}
+		if state.Status != statedomain.StatusHealthy {
+			continue
+		}
+		if state.DeploymentRevision == "" {
+			continue
+		}
+		if state.Timestamps.LastApplyAt.IsZero() {
+			continue
+		}
+		existing, ok := latestByIntent[name]
+		if ok &&
+			existing.DeploymentRevision == state.DeploymentRevision &&
+			!existing.CreatedAt.Before(state.Timestamps.LastApplyAt) {
+			continue
+		}
+		relRec := &releasedomain.ReleaseRecord{
+			APIVersion:         "guardian/v1alpha1",
+			Kind:               "ReleaseRecord",
+			DeploymentRevision: state.DeploymentRevision,
+			Partition:          state.Partition,
+			Intent:             name,
+			PartitionRevision:  state.PartitionRevision,
+			IntentVersionID:    state.IntentVersionID,
+			AssetVersionIDs:    copyStringMap(state.AssetVersionIDs),
+			AssetVersions:      copyStringMap(state.AssetVersions),
+			TaskIDs:            nil,
+			SelfHealing:        state.LastAppliedSpecHash != "" && state.LastAppliedSpecHash == state.IntentSpecHash,
+			Outputs:            copyStringMap(state.Outputs),
+			CreatedAt:          state.Timestamps.LastApplyAt,
+		}
+		if err := r.dispatcher.WriteRelease(ctx, relRec); err != nil {
+			return fmt.Errorf("recover release log %s/%s: %w", partitionName, name, err)
+		}
+		telemetry.EmitInfo(ctx, reconcilerScope, fmt.Sprintf("recovered release log for %s/%s at %s", partitionName, name, recoveryStart.Format(time.RFC3339)))
+	}
 	return nil
 }
 
@@ -523,7 +601,7 @@ func (r *Reconciler) reconcileRemovedIntents(ctx context.Context, partitionName,
 				}
 				continue
 			}
-			next, err := common.BuildTaskFromManifest(state, manifestContent, taskdomain.OpDestroy, common.IntentOutputs(existingStates))
+			next, err := common.BuildTaskFromManifest(state, manifestContent, taskdomain.OpDestroy, common.IntentOutputs(existingStates), false)
 			if err != nil {
 				return err
 			}

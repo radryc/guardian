@@ -618,6 +618,57 @@ func TestPartitionListRequiresStoreInsteadOfPanicking(t *testing.T) {
 	}
 }
 
+func TestPartitionValidateLocalParsesAllPartitionYAML(t *testing.T) {
+	ctx := context.Background()
+	var buf bytes.Buffer
+	printer := &output.Printer{Format: cliformat.FormatJSON, Writer: &buf}
+	reg := registerCommands(nil, printer)
+
+	root := filepath.Join(t.TempDir(), "partitions")
+	writePartitionFixture(t, root, "alpha")
+	writePartitionFixture(t, root, "beta")
+
+	if err := reg.Run(ctx, []string{"partition", "validate-local", "--root", root}); err != nil {
+		t.Fatalf("Run(partition validate-local) error = %v", err)
+	}
+
+	var result partitionValidateLocalResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("Unmarshal(partition validate-local output) error = %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("expected success, got %+v", result)
+	}
+	if got, want := result.PartitionsChecked, 2; got != want {
+		t.Fatalf("partitions checked = %d, want %d", got, want)
+	}
+	if got, want := result.YAMLFilesParsed, 6; got != want {
+		t.Fatalf("yaml files parsed = %d, want %d", got, want)
+	}
+}
+
+func TestPartitionValidateLocalReturnsErrorsForInvalidYAML(t *testing.T) {
+	ctx := context.Background()
+	var buf bytes.Buffer
+	printer := &output.Printer{Format: cliformat.FormatText, Writer: &buf}
+	reg := registerCommands(nil, printer)
+
+	root := filepath.Join(t.TempDir(), "partitions")
+	partitionDir := writePartitionFixture(t, root, "broken")
+	brokenPath := filepath.Join(partitionDir, "payloads", "app", "app", "payload.docker.yaml")
+	if err := os.WriteFile(brokenPath, []byte("ports:\n  - host: [\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(broken payload) error = %v", err)
+	}
+
+	err := reg.Run(ctx, []string{"partition", "validate-local", "--root", root})
+	if err == nil {
+		t.Fatalf("Run(partition validate-local) expected error")
+	}
+	if !strings.Contains(buf.String(), "broken/payloads/app/app/payload.docker.yaml") {
+		t.Fatalf("expected error output to mention broken payload path, got %q", buf.String())
+	}
+}
+
 func TestAssetCatalogWorksWithoutStore(t *testing.T) {
 	ctx := context.Background()
 	var buf bytes.Buffer
@@ -1588,6 +1639,30 @@ spec:
 		if err := os.WriteFile(fullPath, content, 0o644); err != nil {
 			t.Fatalf("WriteFile(%s) error = %v", relativePath, err)
 		}
+	}
+	return dir
+}
+
+func writePartitionFixture(t *testing.T, rootDir, partitionName string) string {
+	t.Helper()
+	dir := filepath.Join(rootDir, partitionName)
+	if err := os.MkdirAll(filepath.Join(dir, "intents"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(intents) error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "payloads", "app", "app"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(payloads) error = %v", err)
+	}
+	config := []byte("\napiVersion: guardian/v1alpha1\nkind: Partition\nmetadata:\n  name: " + partitionName + "\nspec:\n  deletionPolicy: orphan\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), config, 0o644); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+	intent := []byte("\napiVersion: guardian/v1alpha1\nkind: Intent\nmetadata:\n  name: app\nspec:\n  targetPusher: docker-main\n  target:\n    cluster: docker-main\n  assets:\n    - type: Compute\n      name: app\n      payload:\n        docker: /partitions/" + partitionName + "/payloads/app/app/payload.docker.yaml\n      properties:\n        image: demo:v1\n")
+	if err := os.WriteFile(filepath.Join(dir, "intents", "01-app.yaml"), intent, 0o644); err != nil {
+		t.Fatalf("WriteFile(intent) error = %v", err)
+	}
+	payload := []byte("ports:\n  - host: 18080\n    container: 8080\n")
+	if err := os.WriteFile(filepath.Join(dir, "payloads", "app", "app", "payload.docker.yaml"), payload, 0o644); err != nil {
+		t.Fatalf("WriteFile(payload) error = %v", err)
 	}
 	return dir
 }

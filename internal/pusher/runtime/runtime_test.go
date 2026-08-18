@@ -286,7 +286,9 @@ func TestRuntimeDiffAfterApply(t *testing.T) {
 	}
 }
 
-type applyObservedDriver struct{}
+type applyObservedDriver struct {
+	applyCount int
+}
 
 func (d *applyObservedDriver) Type() string { return "ObservedApply" }
 
@@ -299,6 +301,7 @@ func (d *applyObservedDriver) Diff(context.Context, registry.AssetInput) (taskdo
 }
 
 func (d *applyObservedDriver) Apply(context.Context, registry.AssetInput) (registry.AssetResult, error) {
+	d.applyCount++
 	return registry.AssetResult{Outputs: map[string]string{"id": "observed-asset"}}, nil
 }
 
@@ -345,6 +348,57 @@ func TestRuntimeApplyIncludesObservedState(t *testing.T) {
 	}
 	if got := result.AssetObservations["web"].Health; got == nil || got.Status != taskdomain.HealthUnhealthy {
 		t.Fatalf("web health = %+v, want unhealthy", got)
+	}
+}
+
+func TestRuntimeApplyStopsBeforeDependentAssetWhenDependencyIsUnhealthy(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	reg := registry.New()
+	driver := &applyObservedDriver{}
+	reg.Register(driver)
+
+	r := &Runtime{QueuePath: paths.QueueDir("local"), WorkerID: "w1", Store: store, Registry: reg}
+	task := &taskdomain.Task{
+		APIVersion:   "guardian/v1alpha1",
+		Kind:         "Task",
+		TaskID:       "task-apply-blocked",
+		Partition:    "demo",
+		Intent:       "svc",
+		Op:           taskdomain.OpApply,
+		TargetPusher: "local",
+		Target:       targetdomain.Placement{Cluster: "local"},
+		Assets: []taskdomain.AbstractAsset{
+			{
+				Type: "ObservedApply",
+				Name: "primary",
+			},
+			{
+				Type:      "ObservedApply",
+				Name:      "dependent",
+				DependsOn: []string{"primary"},
+			},
+		},
+	}
+
+	result := r.executeTask(ctx, task)
+	if result.Status != taskdomain.ResultSucceeded {
+		t.Fatalf("executeTask() status = %q, want %q", result.Status, taskdomain.ResultSucceeded)
+	}
+	if result.Drift == nil || result.Drift.Status != "Changed" {
+		t.Fatalf("Drift = %+v, want changed", result.Drift)
+	}
+	if result.Health == nil || result.Health.Status != taskdomain.HealthUnhealthy {
+		t.Fatalf("Health = %+v, want unhealthy", result.Health)
+	}
+	if result.AssetObservations == nil || result.AssetObservations["primary"] == nil {
+		t.Fatalf("AssetObservations = %+v, want primary observation", result.AssetObservations)
+	}
+	if _, ok := result.AssetObservations["dependent"]; ok {
+		t.Fatalf("dependent asset should not have been observed: %+v", result.AssetObservations["dependent"])
+	}
+	if got, want := driver.applyCount, 1; got != want {
+		t.Fatalf("apply count = %d, want %d", got, want)
 	}
 }
 

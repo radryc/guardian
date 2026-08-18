@@ -273,7 +273,7 @@ func ConfigureKindRegistryForContainerd(ctx context.Context, kindClusterName, re
 	hostsToml := fmt.Sprintf(`server = "http://%s:5000"
 
 [host."http://%s:5000"]
-  capabilities = ["pull", "resolve"]
+  capabilities = ["pull"]
   skip_verify = true
 `, clusterIP, clusterIP)
 

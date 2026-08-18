@@ -14,6 +14,7 @@ import (
 	"time"
 
 	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
+	releasedomain "github.com/rydzu/ainfra/guardian/internal/domain/release"
 	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
 	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
@@ -157,6 +158,34 @@ spec:
 		t.Fatalf("archive index should not exist, got err=%v", err)
 	}
 
+	// The authoritative per-partition release log must be present and point
+	// at the new deployment revision so the UI's latest-release fast path
+	// can read it without falling back to the archive scan.
+	releaseLogRaw, err := store.ReadFile(ctx, paths.PartitionReleaseLog("payments"))
+	if err != nil {
+		t.Fatalf("ReadFile(release log) error = %v", err)
+	}
+	var releaseLog releasedomain.PartitionReleaseLog
+	if err := json.Unmarshal(releaseLogRaw, &releaseLog); err != nil {
+		t.Fatalf("Unmarshal(release log) error = %v", err)
+	}
+	apiRelease, ok := releaseLog.Releases["api"]
+	if !ok {
+		t.Fatalf("release log missing entry for api: %+v", releaseLog.Releases)
+	}
+	if apiRelease.DeploymentRevision != updatedState.DeploymentRevision {
+		t.Fatalf("release log deployment revision = %q, want %q", apiRelease.DeploymentRevision, updatedState.DeploymentRevision)
+	}
+	if apiRelease.AssetVersions["backend"] != "v1.2.3-abc123-20260429" {
+		t.Fatalf("release log asset versions = %v, want backend=v1.2.3-abc123-20260429", apiRelease.AssetVersions)
+	}
+	if !apiRelease.CreatedAt.Equal(finishedAt) {
+		t.Fatalf("release log CreatedAt = %v, want %v", apiRelease.CreatedAt, finishedAt)
+	}
+	if len(apiRelease.TaskIDs) != 1 || apiRelease.TaskIDs[0] != task.TaskID {
+		t.Fatalf("release log TaskIDs = %v, want [%s]", apiRelease.TaskIDs, task.TaskID)
+	}
+
 	archivedManifest, err := store.ReadFile(ctx, paths.ArchiveManifest("payments", "api", updatedState.DeploymentRevision))
 	if err != nil {
 		t.Fatalf("ReadFile(archive manifest) error = %v", err)
@@ -249,8 +278,8 @@ spec:
 	}
 
 	got := loadState(t, ctx, store, "demo", "svc")
-	if got.Status != statedomain.StatusHealthy {
-		t.Fatalf("status = %q, want Healthy", got.Status)
+	if got.Status != statedomain.StatusDiffing {
+		t.Fatalf("status = %q, want Diffing", got.Status)
 	}
 	if got.Health == nil || got.Health.Status != taskdomain.HealthUnhealthy {
 		t.Fatalf("Health = %+v, want unhealthy", got.Health)
@@ -263,6 +292,100 @@ spec:
 	}
 	if got.AssetObservations["web"].Health == nil || got.AssetObservations["web"].Health.Status != taskdomain.HealthUnhealthy {
 		t.Fatalf("web asset health = %+v, want unhealthy", got.AssetObservations["web"])
+	}
+	if got.DeploymentRevision != "" {
+		t.Fatalf("DeploymentRevision = %q, want unset until healthy", got.DeploymentRevision)
+	}
+	if got.LastTaskID == "" {
+		t.Fatal("expected follow-up diff task to be queued")
+	}
+	queuedTaskContent, err := store.ReadFile(ctx, paths.QueueTask("local", got.LastTaskID))
+	if err != nil {
+		t.Fatalf("ReadFile(queued task) error = %v", err)
+	}
+	var queuedTask taskdomain.Task
+	if err := json.Unmarshal(queuedTaskContent, &queuedTask); err != nil {
+		t.Fatalf("Unmarshal(queued task) error = %v", err)
+	}
+	if queuedTask.Op != taskdomain.OpDiff {
+		t.Fatalf("queued task op = %s, want DIFF", queuedTask.Op)
+	}
+}
+
+func TestProcessorDiffInSyncButUnhealthyStaysProgressing(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	dispatch := dispatcher.NewDispatcher(store, "guardiand")
+	processor := NewProcessor(store, dispatch)
+
+	initialState := baseState("demo", "svc", statedomain.StatusDiffing)
+	writeJSONFile(t, ctx, store, paths.IntentState("demo", "svc"), initialState)
+	seedRawFile(t, ctx, store, paths.IntentManifest("demo", "svc"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: svc
+spec:
+  intentType: standard
+  targetPusher: local
+  target:
+    cluster: local
+  assets:
+    - type: Compute
+      name: web
+      properties:
+        image: nginx:latest
+`))
+
+	writeJSONFile(t, ctx, store, paths.QueueTask("local", "diff-observed"), taskdomain.Task{
+		TaskID:       "diff-observed",
+		Partition:    "demo",
+		Intent:       "svc",
+		Op:           taskdomain.OpDiff,
+		TargetPusher: "local",
+	})
+
+	if err := processor.ProcessResult(ctx, &taskdomain.TaskResult{
+		TaskID:         "diff-observed",
+		Op:             taskdomain.OpDiff,
+		Status:         taskdomain.ResultSucceeded,
+		Partition:      "demo",
+		Intent:         "svc",
+		Pusher:         "local",
+		Drift:          &taskdomain.DriftReport{Status: "InSync", Summary: "no drift detected"},
+		Health:         &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: "web not ready"},
+		ApplyReadiness: &taskdomain.ApplyReadiness{Status: taskdomain.ApplyReadinessReady, Summary: "dependencies resolved"},
+		AssetObservations: map[string]*taskdomain.AssetObservation{
+			"web": {
+				Health:         &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: "web not ready"},
+				ApplyReadiness: &taskdomain.ApplyReadiness{Status: taskdomain.ApplyReadinessReady, Summary: "dependencies resolved"},
+			},
+		},
+		FinishedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("ProcessResult: %v", err)
+	}
+
+	got := loadState(t, ctx, store, "demo", "svc")
+	if got.Status != statedomain.StatusDiffing {
+		t.Fatalf("status = %q, want Diffing", got.Status)
+	}
+	if got.DeploymentRevision != "" {
+		t.Fatalf("DeploymentRevision = %q, want unset until healthy", got.DeploymentRevision)
+	}
+	if got.LastTaskID == "" {
+		t.Fatal("expected follow-up diff task to be queued")
+	}
+	queuedTaskContent, err := store.ReadFile(ctx, paths.QueueTask("local", got.LastTaskID))
+	if err != nil {
+		t.Fatalf("ReadFile(queued task) error = %v", err)
+	}
+	var queuedTask taskdomain.Task
+	if err := json.Unmarshal(queuedTaskContent, &queuedTask); err != nil {
+		t.Fatalf("Unmarshal(queued task) error = %v", err)
+	}
+	if queuedTask.Op != taskdomain.OpDiff {
+		t.Fatalf("queued task op = %s, want DIFF", queuedTask.Op)
 	}
 }
 
@@ -506,8 +629,8 @@ func TestProcessorDestroySuccess(t *testing.T) {
 	}
 }
 
-// TestProcessorDiffNoChange verifies that DIFF with InSync drift marks Healthy
-// without queuing APPLY.
+// TestProcessorDiffNoChange verifies that DIFF with InSync drift and settled
+// observations marks Healthy without queuing APPLY.
 func TestProcessorDiffNoChange(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
@@ -524,11 +647,11 @@ func TestProcessorDiffNoChange(t *testing.T) {
 		Intent:         "stable",
 		Pusher:         "local",
 		Drift:          &taskdomain.DriftReport{Status: "InSync", Summary: "all good"},
-		Health:         &taskdomain.HealthObservation{Status: taskdomain.HealthDegraded, Summary: "web: waiting for ready replicas"},
+		Health:         &taskdomain.HealthObservation{Status: taskdomain.HealthHealthy, Summary: "web is ready"},
 		ApplyReadiness: &taskdomain.ApplyReadiness{Status: taskdomain.ApplyReadinessReady, Summary: "dependencies resolved"},
 		AssetObservations: map[string]*taskdomain.AssetObservation{
 			"web": {
-				Health:         &taskdomain.HealthObservation{Status: taskdomain.HealthDegraded, Summary: "waiting for ready replicas"},
+				Health:         &taskdomain.HealthObservation{Status: taskdomain.HealthHealthy, Summary: "web is ready"},
 				ApplyReadiness: &taskdomain.ApplyReadiness{Status: taskdomain.ApplyReadinessReady, Summary: "dependencies resolved"},
 			},
 		},
@@ -540,8 +663,8 @@ func TestProcessorDiffNoChange(t *testing.T) {
 	if got.Status != statedomain.StatusHealthy {
 		t.Fatalf("status = %q, want Healthy", got.Status)
 	}
-	if got.Health == nil || got.Health.Status != taskdomain.HealthDegraded {
-		t.Fatalf("Health = %+v, want degraded", got.Health)
+	if got.Health == nil || got.Health.Status != taskdomain.HealthHealthy {
+		t.Fatalf("Health = %+v, want healthy", got.Health)
 	}
 	if got.ApplyReadiness == nil || got.ApplyReadiness.Status != taskdomain.ApplyReadinessReady {
 		t.Fatalf("ApplyReadiness = %+v, want ready", got.ApplyReadiness)
@@ -738,8 +861,8 @@ spec:
 	if got.Status != statedomain.StatusReady {
 		t.Fatalf("status = %q, want Ready", got.Status)
 	}
-	if got.IntentSpecHash != "hash-prev-version" {
-		t.Fatalf("IntentSpecHash = %q, want hash-prev-version", got.IntentSpecHash)
+	if got.RollbackTo != deploymentRev {
+		t.Fatalf("RollbackTo = %q, want %q", got.RollbackTo, deploymentRev)
 	}
 	if got.LastError != nil {
 		t.Fatalf("LastError = %v, want nil after rollback", got.LastError)
@@ -822,8 +945,8 @@ spec:
 	if got.Status != statedomain.StatusReady {
 		t.Fatalf("status = %q, want Ready", got.Status)
 	}
-	if got.IntentSpecHash != "hash-prev-v1" {
-		t.Fatalf("IntentSpecHash = %q, want hash-prev-v1", got.IntentSpecHash)
+	if got.RollbackTo != deploymentRev {
+		t.Fatalf("RollbackTo = %q, want %q", got.RollbackTo, deploymentRev)
 	}
 
 	rolledBackManifest, err := store.ReadFile(ctx, paths.IntentManifest("demo", "svc"))
@@ -884,8 +1007,8 @@ spec:
 	if got.Status != statedomain.StatusReady {
 		t.Fatalf("status = %q, want Ready", got.Status)
 	}
-	if got.IntentSpecHash != "hash-prev-v1" {
-		t.Fatalf("IntentSpecHash = %q, want hash-prev-v1", got.IntentSpecHash)
+	if got.RollbackTo != deploymentRev {
+		t.Fatalf("RollbackTo = %q, want %q", got.RollbackTo, deploymentRev)
 	}
 
 	rolledBackManifest, err := store.ReadFile(ctx, paths.IntentManifest("demo", "svc"))

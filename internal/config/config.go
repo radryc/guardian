@@ -43,6 +43,9 @@ type GuardianConfig struct {
 	UIBaseURL            string `yaml:"uiBaseURL"`
 	ClientDiscoveryToken string `yaml:"clientDiscoveryToken"`
 	StaleTaskAfter       string `yaml:"staleTaskAfter"`
+	EnableFlowTopology   bool   `yaml:"enableFlowTopology"`
+	FlowMetricsURL       string `yaml:"flowMetricsURL"`
+	FlowMetricsTimeout   string `yaml:"flowMetricsTimeout"`
 }
 
 type ComplianceConfig struct {
@@ -84,6 +87,9 @@ func Default() *Config {
 			UIBaseURL:            "",
 			ClientDiscoveryToken: "",
 			StaleTaskAfter:       "30m",
+			EnableFlowTopology:   false,
+			FlowMetricsURL:       "",
+			FlowMetricsTimeout:   "2s",
 		},
 		Compliance: ComplianceConfig{},
 		Pushers: []PusherConfig{{

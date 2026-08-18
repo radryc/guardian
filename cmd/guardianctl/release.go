@@ -24,6 +24,7 @@ func releaseCommand(printer *output.Printer) *command.Command {
 	waitFlag := flags.Bool("wait", false, "wait for partition convergence")
 	reconcile := flags.Bool("reconcile", false, "run reconcile after push")
 	dryRun := flags.Bool("dry-run", false, "print commands without executing")
+	registry := flags.String("registry", "", "target container registry for image push")
 	monofsRouter := flags.String("monofs-router", os.Getenv("GUARDIAN_MONOFS_ROUTER"), "MonoFS router address for partition push")
 	monofsToken := flags.String("monofs-token", os.Getenv("GUARDIAN_MONOFS_TOKEN"), "MonoFS token for partition push")
 
@@ -33,7 +34,7 @@ func releaseCommand(printer *output.Printer) *command.Command {
 		Run: func(ctx context.Context, args []string) error {
 			storeArgs := storeFlags(*monofsRouter, *monofsToken)
 			if *allFlag {
-				return releaseAll(ctx, printer, *build, *bump, *includeSecrets, *waitFlag, *reconcile, *dryRun, storeArgs)
+				return releaseAll(ctx, printer, *build, *bump, *includeSecrets, *waitFlag, *reconcile, *dryRun, *registry, storeArgs)
 			}
 
 			if *partition == "" && *dirFlag == "" {
@@ -52,12 +53,12 @@ func releaseCommand(printer *output.Printer) *command.Command {
 				return fmt.Errorf("partition directory not found (set ST_ROOT or use --dir)")
 			}
 
-			return releaseOne(ctx, printer, partName, partDir, *build, *bump, *includeSecrets, *waitFlag, *reconcile, *dryRun, storeArgs)
+			return releaseOne(ctx, printer, partName, partDir, *build, *bump, *includeSecrets, *waitFlag, *reconcile, *dryRun, *registry, storeArgs)
 		},
 	}
 }
 
-func releaseOne(ctx context.Context, printer *output.Printer, name, dir string, build, bump, includeSecrets, wait, reconcile, dryRun bool, storeArgs []string) error {
+func releaseOne(ctx context.Context, printer *output.Printer, name, dir string, build, bump, includeSecrets, wait, reconcile, dryRun bool, registry string, storeArgs []string) error {
 	fmt.Fprintf(os.Stderr, "=== releasing partition %s ===\n", name)
 
 	self := selfBinary()
@@ -65,6 +66,9 @@ func releaseOne(ctx context.Context, printer *output.Printer, name, dir string, 
 	if build {
 		fmt.Fprintf(os.Stderr, "=== building images ===\n")
 		imgArgs := []string{"image", "release", "--dir", dir}
+		if registry != "" {
+			imgArgs = append(imgArgs, "--registry", registry)
+		}
 		if dryRun {
 			imgArgs = append(imgArgs, "--dry-run")
 		}
@@ -123,7 +127,7 @@ func releaseOne(ctx context.Context, printer *output.Printer, name, dir string, 
 	return nil
 }
 
-func releaseAll(ctx context.Context, printer *output.Printer, build, bump, includeSecrets, wait, reconcile, dryRun bool, storeArgs []string) error {
+func releaseAll(ctx context.Context, printer *output.Printer, build, bump, includeSecrets, wait, reconcile, dryRun bool, registry string, storeArgs []string) error {
 	partitions := []string{
 		"shared",
 		"guardian-configs", "opentelemetry", "k8s-top",
@@ -136,7 +140,7 @@ func releaseAll(ctx context.Context, printer *output.Printer, build, bump, inclu
 			fmt.Fprintf(os.Stderr, "skipping %s: partition dir not found\n", name)
 			continue
 		}
-		if err := releaseOne(ctx, printer, name, dir, build, bump, includeSecrets, wait, reconcile, dryRun, storeArgs); err != nil {
+		if err := releaseOne(ctx, printer, name, dir, build, bump, includeSecrets, wait, reconcile, dryRun, registry, storeArgs); err != nil {
 			return fmt.Errorf("partition %s: %w", name, err)
 		}
 		fmt.Fprintln(os.Stderr)

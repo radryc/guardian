@@ -104,6 +104,7 @@ type PartitionHealth struct {
 	Attention     int             `json:"attention"`
 	Failing       int             `json:"failing"`
 	Pending       int             `json:"pending"`
+	Locked        int             `json:"locked"`
 	Services      []ServiceHealth `json:"services"`
 }
 
@@ -147,28 +148,33 @@ type IntentDocument struct {
 }
 
 type AssetDocument struct {
-	ID             string                        `json:"id"`
-	Name           string                        `json:"name"`
-	Type           string                        `json:"type"`
-	Version        string                        `json:"version,omitempty"`
-	DependsOn      []string                      `json:"dependsOn"`
-	ObservedHealth *taskdomain.HealthObservation `json:"observedHealth,omitempty"`
-	ApplyReadiness *taskdomain.ApplyReadiness    `json:"applyReadiness,omitempty"`
-	Status         string                        `json:"status"`
-	DisplayStatus  string                        `json:"displayStatus"`
-	Health         string                        `json:"health"`
-	Summary        string                        `json:"summary"`
-	TaskActive     bool                          `json:"taskActive"`
-	TaskTimedOut   bool                          `json:"taskTimedOut"`
-	Outputs        map[string]string             `json:"outputs,omitempty"`
-	QuickFacts     []Fact                        `json:"quickFacts,omitempty"`
-	References     []string                      `json:"references,omitempty"`
-	Service        bool                          `json:"service"`
-	Ports          []string                      `json:"ports,omitempty"`
-	Replicas       int                           `json:"replicas,omitempty"`
-	Properties     map[string]any                `json:"properties,omitempty"`
-	Payload        map[string]string             `json:"payload,omitempty"`
-	Hints          []assetdefs.CatalogHint       `json:"hints,omitempty"`
+	ID               string                        `json:"id"`
+	Name             string                        `json:"name"`
+	Type             string                        `json:"type"`
+	Version          string                        `json:"version,omitempty"`
+	DependsOn        []string                      `json:"dependsOn"`
+	FlowMetricGroups []string                      `json:"flowMetricGroups,omitempty"`
+	FlowState        string                        `json:"flowState,omitempty"`
+	FlowSummary      string                        `json:"flowSummary,omitempty"`
+	FlowSource       string                        `json:"flowSource,omitempty"`
+	FlowUpdatedAt    time.Time                     `json:"flowUpdatedAt,omitempty"`
+	ObservedHealth   *taskdomain.HealthObservation `json:"observedHealth,omitempty"`
+	ApplyReadiness   *taskdomain.ApplyReadiness    `json:"applyReadiness,omitempty"`
+	Status           string                        `json:"status"`
+	DisplayStatus    string                        `json:"displayStatus"`
+	Health           string                        `json:"health"`
+	Summary          string                        `json:"summary"`
+	TaskActive       bool                          `json:"taskActive"`
+	TaskTimedOut     bool                          `json:"taskTimedOut"`
+	Outputs          map[string]string             `json:"outputs,omitempty"`
+	QuickFacts       []Fact                        `json:"quickFacts,omitempty"`
+	References       []string                      `json:"references,omitempty"`
+	Service          bool                          `json:"service"`
+	Ports            []string                      `json:"ports,omitempty"`
+	Replicas         int                           `json:"replicas,omitempty"`
+	Properties       map[string]any                `json:"properties,omitempty"`
+	Payload          map[string]string             `json:"payload,omitempty"`
+	Hints            []assetdefs.CatalogHint       `json:"hints,omitempty"`
 }
 
 type Fact struct {
@@ -191,19 +197,23 @@ type TopologyData struct {
 }
 
 type TopologyNode struct {
-	ID            string            `json:"id"`
-	Label         string            `json:"label"`
-	Kind          string            `json:"kind"`
-	ParentID      string            `json:"parentID,omitempty"`
-	Intent        string            `json:"intent,omitempty"`
-	Asset         string            `json:"asset,omitempty"`
-	AssetType     string            `json:"assetType,omitempty"`
-	Status        string            `json:"status"`
-	DisplayStatus string            `json:"displayStatus"`
-	Health        string            `json:"health"`
-	Level         int               `json:"level"`
-	Description   string            `json:"description,omitempty"`
-	Meta          map[string]string `json:"meta,omitempty"`
+	ID               string            `json:"id"`
+	Label            string            `json:"label"`
+	Kind             string            `json:"kind"`
+	ParentID         string            `json:"parentID,omitempty"`
+	Intent           string            `json:"intent,omitempty"`
+	Asset            string            `json:"asset,omitempty"`
+	AssetType        string            `json:"assetType,omitempty"`
+	Status           string            `json:"status"`
+	DisplayStatus    string            `json:"displayStatus"`
+	Health           string            `json:"health"`
+	FlowState        string            `json:"flowState,omitempty"`
+	FlowSource       string            `json:"flowSource,omitempty"`
+	FlowUpdatedAt    time.Time         `json:"flowUpdatedAt,omitempty"`
+	FlowMetricGroups []string          `json:"flowMetricGroups,omitempty"`
+	Level            int               `json:"level"`
+	Description      string            `json:"description,omitempty"`
+	Meta             map[string]string `json:"meta,omitempty"`
 }
 
 type TopologyEdge struct {
@@ -233,6 +243,9 @@ type RolloutView struct {
 	Current            bool               `json:"current,omitempty"`
 	NewIntent          bool               `json:"newIntent,omitempty"`
 	SelfHealing        bool               `json:"selfHealing,omitempty"`
+	Rollback           bool               `json:"rollback,omitempty"`
+	RollbackTo         string             `json:"rollbackTo,omitempty"`
+	RollbackReason     string             `json:"rollbackReason,omitempty"`
 	HealthStatus       string             `json:"healthStatus,omitempty"`
 	HealthText         string             `json:"healthText,omitempty"`
 	HealthSummary      string             `json:"healthSummary,omitempty"`
@@ -240,6 +253,9 @@ type RolloutView struct {
 	Assets             []RolloutAssetView `json:"assets"`
 	AppliedAt          time.Time          `json:"appliedAt,omitempty"`
 	StatusSince        time.Time          `json:"statusSince,omitempty"`
+	LastQueuedAt       time.Time          `json:"lastQueuedAt,omitempty"`
+	LastDiffAt         time.Time          `json:"lastDiffAt,omitempty"`
+	LastCheckAt        time.Time          `json:"lastCheckAt,omitempty"`
 }
 
 type RolloutAssetView struct {
@@ -492,6 +508,10 @@ func (s *Server) loadPartitionDetail(ctx context.Context, partitionName string) 
 	return s.loadPartitionDataCached(ctx, partitionName, false, false)
 }
 
+func (s *Server) loadPartitionDetailEnriched(ctx context.Context, partitionName string) (*PartitionDetailResponse, error) {
+	return s.loadPartitionDataCached(ctx, partitionName, true, false)
+}
+
 func (s *Server) loadPartitionOverviewDetail(ctx context.Context, partitionName string) (*PartitionDetailResponse, error) {
 	return s.loadPartitionDataCached(ctx, partitionName, false, false)
 }
@@ -599,7 +619,7 @@ func (s *Server) loadPartitionData(ctx context.Context, partitionName string, in
 				assetOrder = mergeAssetOrder(compiledIntent.AssetOrder, manifest.Spec.Assets)
 			}
 		}
-		intents = append(intents, buildIntentDocument(*manifest, intentVersions[name], intentStates[name], intentRuntimes[name], assetOrder, latestDeployments[name], intentStates))
+		intents = append(intents, buildIntentDocument(ctx, *manifest, partitionName, intentVersions[name], intentStates[name], intentRuntimes[name], assetOrder, latestDeployments[name], intentStates, s.enableFlowTopology, s.flowEvaluator))
 	}
 
 	health := buildPartitionHealth(intents, partitionState)
@@ -696,6 +716,15 @@ func (s *Server) loadPartitionRollouts(ctx context.Context, partitionName string
 		ts := istate.Timestamps
 		if !ts.LastApplyAt.IsZero() {
 			views[i].AppliedAt = ts.LastApplyAt
+		}
+		if !ts.LastQueuedAt.IsZero() {
+			views[i].LastQueuedAt = ts.LastQueuedAt
+		}
+		if !ts.LastDiffAt.IsZero() {
+			views[i].LastDiffAt = ts.LastDiffAt
+		}
+		if !ts.LastCheckAt.IsZero() {
+			views[i].LastCheckAt = ts.LastCheckAt
 		}
 		candidates := []time.Time{ts.LastApplyAt, ts.LastDiffAt, ts.LastCheckAt, ts.LastQueuedAt}
 		var latest time.Time
@@ -902,7 +931,7 @@ func blockedSummary(state *statedomain.IntentState, deps map[string]*statedomain
 	return "Waiting for " + strings.Join(unhealthy, ", ") + " to become healthy"
 }
 
-func buildIntentDocument(manifest intentdomain.Intent, versionID string, state *statedomain.IntentState, runtime intentTaskRuntime, assetOrder []string, latest *DeploymentView, deps map[string]*statedomain.IntentState) IntentDocument {
+func buildIntentDocument(ctx context.Context, manifest intentdomain.Intent, partitionName, versionID string, state *statedomain.IntentState, runtime intentTaskRuntime, assetOrder []string, latest *DeploymentView, deps map[string]*statedomain.IntentState, enableFlowTopology bool, evaluator FlowStateEvaluator) IntentDocument {
 	status, displayStatus, health, summary := deriveIntentPresentation(state, runtime)
 	if status == string(statedomain.StatusBlocked) {
 		if s := blockedSummary(state, deps); s != "" {
@@ -956,12 +985,12 @@ func buildIntentDocument(manifest intentdomain.Intent, versionID string, state *
 		if !ok {
 			continue
 		}
-		doc.Assets = append(doc.Assets, buildAssetDocument(manifest.Metadata.Name, spec, manifest.Spec.Hints, state, runtime, latest, deps))
+		doc.Assets = append(doc.Assets, buildAssetDocument(ctx, partitionName, manifest.Metadata.Name, spec, manifest.Spec.Hints, state, runtime, latest, deps, enableFlowTopology, evaluator))
 	}
 	return doc
 }
 
-func buildAssetDocument(intentName string, spec assetdomain.Spec, intentHints []assetdomain.Hint, state *statedomain.IntentState, runtime intentTaskRuntime, latest *DeploymentView, deps map[string]*statedomain.IntentState) AssetDocument {
+func buildAssetDocument(ctx context.Context, partitionName, intentName string, spec assetdomain.Spec, intentHints []assetdomain.Hint, state *statedomain.IntentState, runtime intentTaskRuntime, latest *DeploymentView, deps map[string]*statedomain.IntentState, enableFlowTopology bool, evaluator FlowStateEvaluator) AssetDocument {
 	status, displayStatus, health, summary := deriveAssetPresentation(state, spec.Name, runtime)
 	if status == string(statedomain.StatusBlocked) {
 		if s := blockedSummary(state, deps); s != "" {
@@ -983,29 +1012,64 @@ func buildAssetDocument(intentName string, spec assetdomain.Spec, intentHints []
 		facts = append([]Fact{{Label: "Release", Value: version}}, facts...)
 	}
 	refs := uniqueRefs(spec.Properties)
+	flowMetricGroups := normalizeFlowMetricGroups(spec.FlowMetricGroups)
+	flowState := ""
+	flowSummary := ""
+	flowSource := ""
+	var flowUpdatedAt time.Time
+	if enableFlowTopology && len(flowMetricGroups) > 0 {
+		flowState = "unknown"
+		flowSummary = "Awaiting flow telemetry"
+		if evaluator != nil {
+			flow := evaluator.Evaluate(ctx, FlowAssetContext{
+				Partition:      partitionName,
+				Intent:         intentName,
+				Asset:          spec.Name,
+				IntentState:    state,
+				Runtime:        runtime,
+				MetricGroups:   flowMetricGroups,
+				ObservedHealth: stateAssetHealth(state, spec.Name),
+				ApplyReadiness: stateAssetApplyReadiness(state, spec.Name),
+				Now:            time.Now().UTC(),
+			})
+			if v := strings.TrimSpace(flow.State); v != "" {
+				flowState = v
+			}
+			if v := strings.TrimSpace(flow.Summary); v != "" {
+				flowSummary = v
+			}
+			flowSource = strings.TrimSpace(flow.Source)
+			flowUpdatedAt = flow.UpdatedAt
+		}
+	}
 	return AssetDocument{
-		ID:             intentName + "/" + spec.Name,
-		Name:           spec.Name,
-		Type:           spec.Type,
-		Version:        version,
-		DependsOn:      append([]string(nil), spec.DependsOn...),
-		ObservedHealth: cloneHealthObservation(stateAssetHealth(state, spec.Name)),
-		ApplyReadiness: cloneApplyReadiness(stateAssetApplyReadiness(state, spec.Name)),
-		Status:         status,
-		DisplayStatus:  displayStatus,
-		Health:         health,
-		Summary:        summary,
-		TaskActive:     runtime.Active,
-		TaskTimedOut:   runtime.TimedOut,
-		Outputs:        redactAssetOutputsForUI(spec.Type, assetOutputs(state, spec.Name)),
-		QuickFacts:     facts,
-		References:     refs,
-		Service:        service,
-		Ports:          ports,
-		Replicas:       replicas,
-		Properties:     cloneMap(spec.Properties),
-		Payload:        copyStringMap(spec.Payload),
-		Hints:          assetdefs.ResolveAssetHints(spec.Type, spec.Name, spec.Hints, intentHints),
+		ID:               intentName + "/" + spec.Name,
+		Name:             spec.Name,
+		Type:             spec.Type,
+		Version:          version,
+		DependsOn:        append([]string(nil), spec.DependsOn...),
+		FlowMetricGroups: append([]string(nil), flowMetricGroups...),
+		FlowState:        flowState,
+		FlowSummary:      flowSummary,
+		FlowSource:       flowSource,
+		FlowUpdatedAt:    flowUpdatedAt,
+		ObservedHealth:   cloneHealthObservation(stateAssetHealth(state, spec.Name)),
+		ApplyReadiness:   cloneApplyReadiness(stateAssetApplyReadiness(state, spec.Name)),
+		Status:           status,
+		DisplayStatus:    displayStatus,
+		Health:           health,
+		Summary:          summary,
+		TaskActive:       runtime.Active,
+		TaskTimedOut:     runtime.TimedOut,
+		Outputs:          redactAssetOutputsForUI(spec.Type, assetOutputs(state, spec.Name)),
+		QuickFacts:       facts,
+		References:       refs,
+		Service:          service,
+		Ports:            ports,
+		Replicas:         replicas,
+		Properties:       cloneMap(spec.Properties),
+		Payload:          copyStringMap(spec.Payload),
+		Hints:            assetdefs.ResolveAssetHints(spec.Type, spec.Name, spec.Hints, intentHints),
 	}
 }
 
@@ -1015,10 +1079,13 @@ func buildPartitionHealth(intents []IntentDocument, partitionState *statedomain.
 	assetCount := 0
 	intentAttention := 0
 	intentFailing := 0
+	intentLocked := 0
 	for _, intent := range intents {
 		switch intent.Health {
-		case "attention", "drifted", "drifted-locked":
+		case "attention", "drifted":
 			intentAttention++
+		case "drifted-locked":
+			intentLocked++
 		case "failing":
 			intentFailing++
 		}
@@ -1045,8 +1112,10 @@ func buildPartitionHealth(intents []IntentDocument, partitionState *statedomain.
 			switch asset.Health {
 			case "healthy":
 				health.Healthy++
-			case "attention", "drifted", "drifted-locked":
+			case "attention", "drifted":
 				health.Attention++
+			case "drifted-locked":
+				health.Locked++
 			case "failing":
 				health.Failing++
 			default:
@@ -1072,6 +1141,9 @@ func buildPartitionHealth(intents []IntentDocument, partitionState *statedomain.
 	case health.Pending > 0:
 		health.Status = "pending"
 		health.DisplayStatus = "Progressing"
+	case health.Locked > 0 || intentLocked > 0:
+		health.Status = "locked"
+		health.DisplayStatus = "Locked"
 	default:
 		health.Status = "healthy"
 		health.DisplayStatus = "Stable"
@@ -1155,22 +1227,33 @@ func buildTopology(partition partitiondomain.Partition, intents []IntentDocument
 		assetLevels := computeAssetLevels(intent.Assets)
 		for _, asset := range intent.Assets {
 			assetNodeID := "asset:" + intent.Name + ":" + asset.Name
+			assetMeta := map[string]string{
+				"type": asset.Type,
+			}
+			if asset.FlowSummary != "" {
+				assetMeta["flowSummary"] = asset.FlowSummary
+			}
+			if asset.FlowSource != "" {
+				assetMeta["flowSource"] = asset.FlowSource
+			}
 			nodes = append(nodes, TopologyNode{
-				ID:            assetNodeID,
-				Label:         asset.Name,
-				Kind:          "asset",
-				ParentID:      intentNodeID,
-				Intent:        intent.Name,
-				Asset:         asset.Name,
-				AssetType:     asset.Type,
-				Status:        asset.Status,
-				DisplayStatus: asset.DisplayStatus,
-				Health:        asset.Health,
-				Level:         intentLevels[intent.Name] + assetLevels[asset.Name] + 2,
-				Description:   asset.Summary,
-				Meta: map[string]string{
-					"type": asset.Type,
-				},
+				ID:               assetNodeID,
+				Label:            asset.Name,
+				Kind:             "asset",
+				ParentID:         intentNodeID,
+				Intent:           intent.Name,
+				Asset:            asset.Name,
+				AssetType:        asset.Type,
+				Status:           asset.Status,
+				DisplayStatus:    asset.DisplayStatus,
+				Health:           asset.Health,
+				FlowState:        asset.FlowState,
+				FlowSource:       asset.FlowSource,
+				FlowUpdatedAt:    asset.FlowUpdatedAt,
+				FlowMetricGroups: append([]string(nil), asset.FlowMetricGroups...),
+				Level:            intentLevels[intent.Name] + assetLevels[asset.Name] + 2,
+				Description:      asset.Summary,
+				Meta:             assetMeta,
 			})
 			edges = append(edges, TopologyEdge{From: intentNodeID, To: assetNodeID, Kind: "contains"})
 			for _, dep := range asset.DependsOn {
@@ -1196,6 +1279,30 @@ func buildTopology(partition partitiondomain.Partition, intents []IntentDocument
 		Nodes:     nodes,
 		Edges:     edges,
 	}
+}
+
+func normalizeFlowMetricGroups(groups []string) []string {
+	if len(groups) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(groups))
+	for _, raw := range groups {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
+	return out
 }
 
 func computeIntentLevels(intents []IntentDocument) map[string]int {
@@ -1439,6 +1546,9 @@ func buildRolloutView(record historyquery.RolloutRecord) RolloutView {
 		Current:            record.Current,
 		NewIntent:          record.NewIntent,
 		SelfHealing:        record.SelfHealing,
+		Rollback:           record.Rollback,
+		RollbackTo:         record.RollbackTo,
+		RollbackReason:     record.RollbackReason,
 		Summary:            record.Summary,
 		Assets:             assets,
 	}

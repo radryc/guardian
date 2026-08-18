@@ -1,6 +1,7 @@
 package validator
 
 import (
+	"strings"
 	"testing"
 
 	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
@@ -8,6 +9,54 @@ import (
 	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
 	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
 )
+
+func TestValidateIntentFlowMetricGroups(t *testing.T) {
+	intent := &intentdomain.Intent{
+		Metadata: intentdomain.Metadata{Name: "worker"},
+		Spec: intentdomain.IntentSpec{
+			IntentType:   "standard",
+			TargetPusher: "local",
+			Target:       targetdomain.Placement{Cluster: "local"},
+			Assets: []intentdomain.AssetSpec{{
+				Type:             "Compute",
+				Name:             "worker",
+				FlowMetricGroups: []string{"ingest", "error_rate", "latency-bucket"},
+				Properties: map[string]any{
+					"image": "worker:v1",
+				},
+			}},
+		},
+	}
+	if err := ValidateIntent(intent, []string{"worker"}, []string{"local"}); err != nil {
+		t.Fatalf("ValidateIntent() error = %v", err)
+	}
+}
+
+func TestValidateIntentRejectsInvalidFlowMetricGroup(t *testing.T) {
+	intent := &intentdomain.Intent{
+		Metadata: intentdomain.Metadata{Name: "worker"},
+		Spec: intentdomain.IntentSpec{
+			IntentType:   "standard",
+			TargetPusher: "local",
+			Target:       targetdomain.Placement{Cluster: "local"},
+			Assets: []intentdomain.AssetSpec{{
+				Type:             "Compute",
+				Name:             "worker",
+				FlowMetricGroups: []string{"BAD.GROUP"},
+				Properties: map[string]any{
+					"image": "worker:v1",
+				},
+			}},
+		},
+	}
+	err := ValidateIntent(intent, []string{"worker"}, []string{"local"})
+	if err == nil {
+		t.Fatalf("ValidateIntent() expected invalid flowMetricGroups error")
+	}
+	if !strings.Contains(err.Error(), "invalid flow metric group") {
+		t.Fatalf("ValidateIntent() error = %v, want invalid flow metric group", err)
+	}
+}
 
 func TestValidatePartitionName(t *testing.T) {
 	part := &partitiondomain.Partition{

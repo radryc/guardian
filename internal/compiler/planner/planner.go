@@ -3,6 +3,7 @@ package planner
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -96,12 +97,17 @@ func Compile(ctx context.Context, input CompileInput) (*CompiledPartition, error
 		joinGraph.AddNode(parsed.Metadata.Name, parsed.Spec.Joins)
 
 		resolvedIntent := *parsed
-		resolvedAssets := make([]intentdomain.AssetSpec, len(parsed.Spec.Assets))
+		resolvedAssets := make([]intentdomain.AssetSpec, 0, len(parsed.Spec.Assets))
 		assetGraph := dag.New()
 		assetVersionIDs := make(map[string]string, len(parsed.Spec.Assets))
 		assetVersions := make(map[string]string, len(parsed.Spec.Assets))
+		skippedAssetNames := map[string]bool{}
 		refs := make([]resolver.OutputRef, 0)
-		for idx, asset := range parsed.Spec.Assets {
+		for _, asset := range parsed.Spec.Assets {
+			if asset.Skip {
+				skippedAssetNames[asset.Name] = true
+				continue
+			}
 			refs = append(refs, resolver.FindRefs(asset.Properties)...)
 			resolvedAsset := asset
 			resolvedProps, err := resolver.ResolveProperties(asset.Properties, input.CurrentOutputs)
@@ -111,8 +117,9 @@ func Compile(ctx context.Context, input CompileInput) (*CompiledPartition, error
 				resolvedAsset.Properties = cloneProperties(asset.Properties)
 			}
 			resolvedAsset.Version = strings.TrimSpace(resolvedAsset.Version)
-			resolvedAssets[idx] = resolvedAsset
-			assetGraph.AddNode(asset.Name, asset.DependsOn)
+			resolvedAssets = append(resolvedAssets, resolvedAsset)
+			filteredDeps := filterSkippedDeps(asset.DependsOn, skippedAssetNames)
+			assetGraph.AddNode(asset.Name, filteredDeps)
 			assetVersionID := revisions.AssetVersionID(parsed.Metadata.Name, resolvedAsset)
 			assetVersionIDs[asset.Name] = assetVersionID
 			assetVersion := resolvedAsset.Version
@@ -120,6 +127,9 @@ func Compile(ctx context.Context, input CompileInput) (*CompiledPartition, error
 				assetVersion = revisions.DerivedAssetVersionAt(assetVersionID, input.IntentModTimes[parsed.Metadata.Name])
 			}
 			assetVersions[asset.Name] = assetVersion
+		}
+		if len(skippedAssetNames) > 0 {
+			log.Printf("planner: intent %s skipped %d assets, removing from dependency graph", parsed.Metadata.Name, len(skippedAssetNames))
 		}
 		assetOrder, err := assetGraph.TopologicalSort()
 		if err != nil {
@@ -203,4 +213,17 @@ func cloneValue(in any) any {
 	default:
 		return typed
 	}
+}
+
+func filterSkippedDeps(deps []string, skipped map[string]bool) []string {
+	if len(skipped) == 0 {
+		return deps
+	}
+	filtered := make([]string, 0, len(deps))
+	for _, dep := range deps {
+		if !skipped[dep] {
+			filtered = append(filtered, dep)
+		}
+	}
+	return filtered
 }

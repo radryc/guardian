@@ -183,7 +183,7 @@ func pathExists(ctx context.Context, store guardianapi.ReadStore, logicalPath st
 	return true, nil
 }
 
-func BuildTask(ctx context.Context, store guardianapi.ReadStore, intentState *statedomain.IntentState, op taskdomain.Operation, outputs map[string]map[string]string) (*taskdomain.Task, error) {
+func BuildTask(ctx context.Context, store guardianapi.ReadStore, intentState *statedomain.IntentState, op taskdomain.Operation, outputs map[string]map[string]string, forceApply bool) (*taskdomain.Task, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -193,26 +193,42 @@ func BuildTask(ctx context.Context, store guardianapi.ReadStore, intentState *st
 	if err != nil {
 		return nil, err
 	}
-	return BuildTaskFromManifest(intentState, manifestContent, op, outputs)
+	return BuildTaskFromManifest(intentState, manifestContent, op, outputs, forceApply)
 }
 
-func BuildTaskFromManifest(intentState *statedomain.IntentState, manifestContent []byte, op taskdomain.Operation, outputs map[string]map[string]string) (*taskdomain.Task, error) {
+func BuildTaskFromManifest(intentState *statedomain.IntentState, manifestContent []byte, op taskdomain.Operation, outputs map[string]map[string]string, forceApply bool) (*taskdomain.Task, error) {
 	parsed, err := manifest.ParseIntent(manifestContent)
 	if err != nil {
 		return nil, err
 	}
 	graph := dag.New()
 	assetByName := map[string]taskdomain.AbstractAsset{}
+	skippedAssetNames := map[string]bool{}
 	for _, asset := range parsed.Spec.Assets {
+		if asset.Skip {
+			skippedAssetNames[asset.Name] = true
+			continue
+		}
+	}
+	for _, asset := range parsed.Spec.Assets {
+		if asset.Skip {
+			continue
+		}
 		resolved, err := resolver.ResolveProperties(asset.Properties, outputs)
 		if err != nil {
 			return nil, err
 		}
-		graph.AddNode(asset.Name, asset.DependsOn)
+		filteredDeps := make([]string, 0, len(asset.DependsOn))
+		for _, dep := range asset.DependsOn {
+			if !skippedAssetNames[dep] {
+				filteredDeps = append(filteredDeps, dep)
+			}
+		}
+		graph.AddNode(asset.Name, filteredDeps)
 		assetByName[asset.Name] = taskdomain.AbstractAsset{
 			Type:       asset.Type,
 			Name:       asset.Name,
-			DependsOn:  append([]string(nil), asset.DependsOn...),
+			DependsOn:  filteredDeps,
 			Payload:    copyStringMap(asset.Payload),
 			Properties: resolved,
 		}
@@ -240,6 +256,7 @@ func BuildTaskFromManifest(intentState *statedomain.IntentState, manifestContent
 		IntentSpecHash:    intentState.IntentSpecHash,
 		AssetVersionIDs:   copyStringMap(intentState.AssetVersionIDs),
 		AssetVersions:     copyStringMap(intentState.AssetVersions),
+		ForceApply:        forceApply,
 		Assets:            assets,
 		CreatedAt:         time.Now().UTC(),
 	}, nil
@@ -255,6 +272,7 @@ func BuildTaskFromExisting(current *taskdomain.Task, op taskdomain.Operation) *t
 	}
 	next.TaskID = revisions.NewTaskID()
 	next.Op = op
+	next.ForceApply = false
 	next.CreatedAt = time.Now().UTC()
 	next.AssetVersionIDs = copyStringMap(current.AssetVersionIDs)
 	next.AssetVersions = copyStringMap(current.AssetVersions)

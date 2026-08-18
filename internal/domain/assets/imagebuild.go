@@ -9,15 +9,16 @@ import (
 )
 
 type ImageBuildSpec struct {
-	Repository  string            `json:"repository" yaml:"repository"`
-	Registry    string            `json:"registry,omitempty" yaml:"registry,omitempty"`
-	BuildContext string           `json:"buildContext,omitempty" yaml:"buildContext,omitempty"`
-	SourceImage string            `json:"sourceImage,omitempty" yaml:"sourceImage,omitempty"`
-	Dockerfile  string            `json:"dockerfile,omitempty" yaml:"dockerfile,omitempty"`
-	Target      string            `json:"target,omitempty" yaml:"target,omitempty"`
-	Platform    string            `json:"platform,omitempty" yaml:"platform,omitempty"`
-	BuildArgs   map[string]string `json:"buildArgs,omitempty" yaml:"buildArgs,omitempty"`
-	Insecure    *bool             `json:"insecure,omitempty" yaml:"insecure,omitempty"`
+	Repository      string            `json:"repository" yaml:"repository"`
+	Registry        string            `json:"registry,omitempty" yaml:"registry,omitempty"`
+	ObserveExisting bool              `json:"observeExisting,omitempty" yaml:"observeExisting,omitempty"`
+	BuildContext    string            `json:"buildContext,omitempty" yaml:"buildContext,omitempty"`
+	SourceImage     string            `json:"sourceImage,omitempty" yaml:"sourceImage,omitempty"`
+	Dockerfile      string            `json:"dockerfile,omitempty" yaml:"dockerfile,omitempty"`
+	Target          string            `json:"target,omitempty" yaml:"target,omitempty"`
+	Platform        string            `json:"platform,omitempty" yaml:"platform,omitempty"`
+	BuildArgs       map[string]string `json:"buildArgs,omitempty" yaml:"buildArgs,omitempty"`
+	Insecure        *bool             `json:"insecure,omitempty" yaml:"insecure,omitempty"`
 }
 
 type imageBuildDefinition struct{}

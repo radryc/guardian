@@ -35,9 +35,10 @@ func TestServerSaveBundleAndReadBack(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
 	srv, err := New(Options{
-		Store:       store,
-		PrincipalID: "test-ui",
-		Pushers:     []string{"local"},
+		Store:              store,
+		PrincipalID:        "test-ui",
+		Pushers:            []string{"local"},
+		EnableFlowTopology: true,
 	})
 	if err != nil {
 		t.Fatalf("create server: %v", err)
@@ -53,6 +54,7 @@ func TestServerSaveBundleAndReadBack(t *testing.T) {
 		}},
 		RemoveMissingIntents: true,
 	}
+	req.Intents[0].Manifest.Spec.Assets[0].FlowMetricGroups = []string{"ingest", "health", "ingest"}
 
 	var saveResp SaveBundleResponse
 	requestJSON(t, httpSrv, http.MethodPut, "/api/partitions/demo/bundle", req, &saveResp)
@@ -96,8 +98,37 @@ func TestServerSaveBundleAndReadBack(t *testing.T) {
 	if asset := detail.Intents[0].Assets[0]; asset.Name != "app-config" || asset.Type != assetdomain.TypeConfig {
 		t.Fatalf("unexpected asset details: %+v", asset)
 	}
+	if got, want := detail.Intents[0].Assets[0].FlowState, "unknown"; got != want {
+		t.Fatalf("flow state = %q, want %q", got, want)
+	}
+	if got, want := detail.Intents[0].Assets[0].FlowSource, "guardian-observation"; got != want {
+		t.Fatalf("flow source = %q, want %q", got, want)
+	}
+	if got := detail.Intents[0].Assets[0].FlowMetricGroups; !slices.Equal(got, []string{"health", "ingest"}) {
+		t.Fatalf("flow metric groups = %+v, want [health ingest]", got)
+	}
 	if len(detail.Topology.Nodes) < 3 {
 		t.Fatalf("expected partition, intent, and asset nodes, got %+v", detail.Topology.Nodes)
+	}
+	var topologyAsset *TopologyNode
+	for i := range detail.Topology.Nodes {
+		n := &detail.Topology.Nodes[i]
+		if n.Kind == "asset" && n.Asset == "app-config" {
+			topologyAsset = n
+			break
+		}
+	}
+	if topologyAsset == nil {
+		t.Fatalf("expected asset node in topology, got %+v", detail.Topology.Nodes)
+	}
+	if got, want := topologyAsset.FlowState, "unknown"; got != want {
+		t.Fatalf("topology flow state = %q, want %q", got, want)
+	}
+	if got, want := topologyAsset.FlowSource, "guardian-observation"; got != want {
+		t.Fatalf("topology flow source = %q, want %q", got, want)
+	}
+	if got := topologyAsset.FlowMetricGroups; !slices.Equal(got, []string{"health", "ingest"}) {
+		t.Fatalf("topology flow metric groups = %+v, want [health ingest]", got)
 	}
 
 	var overview OverviewResponse
@@ -261,7 +292,7 @@ func TestBuildIntentDocumentRedactsSecretOutputs(t *testing.T) {
 		},
 	}
 
-	doc := buildIntentDocument(manifest, "ver-1", state, intentTaskRuntime{}, []string{"monofs-encryption-key"}, nil, nil)
+	doc := buildIntentDocument(context.Background(), manifest, "demo", "ver-1", state, intentTaskRuntime{}, []string{"monofs-encryption-key"}, nil, nil, false, nil)
 
 	if got := doc.Outputs["monofs-encryption-key.value"]; got != redactedSecretValue {
 		t.Fatalf("intent output value = %q, want %q", got, redactedSecretValue)
@@ -1466,7 +1497,7 @@ func TestBuildIntentDocumentMergesYamlHintOverrides(t *testing.T) {
 			}},
 		},
 	}
-	doc := buildIntentDocument(manifest, "", nil, intentTaskRuntime{}, []string{"api"}, nil, nil)
+	doc := buildIntentDocument(context.Background(), manifest, "demo", "", nil, intentTaskRuntime{}, []string{"api"}, nil, nil, false, nil)
 	if len(doc.OutputHints) != 1 || doc.OutputHints[0].Path != "outputs.url" {
 		t.Fatalf("unexpected output hints: %+v", doc.OutputHints)
 	}

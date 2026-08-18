@@ -37,6 +37,7 @@ func imageStampCommand() *command.Command {
 				return fmt.Errorf("read intents directory: %w", err)
 			}
 
+			// Pass 1: stamp ImageBuild asset versions and sourceImage
 			for _, entry := range entries {
 				if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
 					continue
@@ -107,6 +108,11 @@ func imageStampCommand() *command.Command {
 					}
 				}
 			}
+
+			// Pass 2: cross-intent ${intent.NAME.outputs.ASSET.FIELD} refs are
+			// resolved in-memory at partition push time, not written back to disk,
+			// so that template refs are preserved for future builds.
+			fmt.Fprintf(os.Stderr, "Resolving cross-intent output references...\n")
 
 			if *dryRun {
 				fmt.Fprintln(os.Stderr, "dry-run: no files modified")

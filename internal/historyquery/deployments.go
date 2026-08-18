@@ -56,6 +56,16 @@ func LoadDeploymentRecords(ctx context.Context, store guardianapi.ReadStore, par
 	if err := filter.Validate(); err != nil {
 		return nil, err
 	}
+	// Fast path for the dominant call site (UI tile: latest release per
+	// intent): read the authoritative per-partition release log directly.
+	// Time filters push us back into the full archive scan because the log
+	// only carries the most recent apply and can therefore answer the filter
+	// incorrectly when Since > log's CreatedAt.
+	if filter.Limit == 1 && filter.Since == nil && filter.Until == nil {
+		if records, ok := loadLatestFromReleaseLog(ctx, store, partitionName, intentName); ok {
+			return records, nil
+		}
+	}
 	records, err := loadDeploymentRecordsFromIndex(ctx, store, partitionName, intentName)
 	if err == nil {
 		return filterAndLimitRecords(records, filter), nil
@@ -68,6 +78,22 @@ func LoadDeploymentRecords(ctx context.Context, store guardianapi.ReadStore, par
 		return nil, err
 	}
 	return filterAndLimitRecords(records, filter), nil
+}
+
+// loadLatestFromReleaseLog returns the latest release as a single
+// DeploymentRecord when the partition release log has an entry for intent.
+// Returns ok=false (no error) when the log is missing so callers fall through
+// to the archive/index paths.
+func loadLatestFromReleaseLog(ctx context.Context, store guardianapi.ReadStore, partitionName, intentName string) ([]historydomain.DeploymentRecord, bool) {
+	rec, err := LoadLatestRelease(ctx, store, partitionName, intentName)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || IsReleaseNotFound(err) {
+			return nil, false
+		}
+		// Surface unexpected errors: caller will surface to UI.
+		return nil, false
+	}
+	return []historydomain.DeploymentRecord{ReleaseRecordToDeploymentRecord(rec)}, true
 }
 
 func PrepareArchiveIndexContent(ctx context.Context, store guardianapi.ReadStore, record historydomain.DeploymentRecord) ([]byte, error) {
