@@ -1,0 +1,13 @@
+*
+!Dockerfile
+!go.mod
+!go.sum
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+!pkg/
+!pkg/**
+!docker/
+!docker/**
+**/*:Zone.Identifier

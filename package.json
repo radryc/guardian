@@ -1,0 +1,13 @@
+{
+  "private": true,
+  "scripts": {
+    "build:ui": "vite build",
+    "dev:ui": "vite"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.4",
+    "tailwindcss": "^4.2.4",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.10"
+  }
+}

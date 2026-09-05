@@ -1,0 +1,19 @@
+# Triggers MonoFS injection and Guardian partition push/reconcile on every merge to main.
+# Calls the reusable workflow from the ainfra repo.
+name: Deploy to MonoFS & Guardian
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  deploy:
+    uses: rydzu/ainfra/.github/workflows/monofs-inject.yml@main
+    secrets:
+      MONOFS_TOKEN: ${{ secrets.MONOFS_TOKEN }}
+    # Override if your self-hosted runner uses different paths:
+    # with:
+    #   guardian_dir: /home/rydzu/ainfra/guardian
+    #   monofs_router: localhost:9090

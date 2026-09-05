@@ -1,0 +1,372 @@
+================================================================================
+  IMAGEBUILD ASSET — OPTIONS REFERENCE
+================================================================================
+
+An ImageBuild asset defines how Guardian builds or retrieves a container
+image for a partition.  It lives inside a YAML intent file under
+spec.assets, with type: ImageBuild.
+
+  Example skeleton:
+
+    spec:
+      intentType: standard
+      targetPusher: k8s-main
+      assets:
+        - type: ImageBuild
+          name: my-image
+          version: dev
+          properties:
+            ...
+
+Properties are described below.
+
+================================================================================
+  MODES (MUTUALLY EXCLUSIVE — PICK EXACTLY ONE)
+================================================================================
+
+The ImageBuild asset MUST specify one (and only one) of the following
+source modes.  The mode determines where Guardian finds the image.
+
+  Mode 1 — sourceDir          Build from staged source tree
+  Mode 2 — imageTar           Load a pre-built OCI tar file
+  Mode 3 — buildContext        Build from a local filesystem directory
+  Mode 4 — stampOnly + sourceImage  Retag an already-pushed image
+  Mode 5 — imageFromUpstream   Pull an image from an upstream registry
+                                (CLI-only; not supported by pusher
+                                drivers at runtime)
+
+Each mode has its own required and optional sub-options, detailed below.
+
+================================================================================
+  ALL PROPERTIES
+================================================================================
+
+----------------------------------------------------------------------
+  repository          REQUIRED (all modes)
+----------------------------------------------------------------------
+  Image repository name (the path segment after the registry host).
+
+    Example:  repository: myapp
+    Example:  repository: team/service-api
+
+  The final image reference is <registry>/<repository>:<tag>.
+
+----------------------------------------------------------------------
+  registry            OPTIONAL (all modes)
+----------------------------------------------------------------------
+  Registry host and port (e.g. "registry.strata.local:5000").
+
+  If omitted, Guardian uses the GUARDIAN_IMAGE_BUILD_REGISTRY
+  environment variable, or the driver-specific default.
+
+    Example:  registry: registry.strata.local:5000
+
+----------------------------------------------------------------------
+  MODE 1: sourceDir    (build from staged source tree in MonoFS)
+----------------------------------------------------------------------
+
+  sourceDir          REQUIRED
+    Absolute Guardian logical path to the staged build context
+    directory.  Guardian resolves this path from the MonoFS store
+    and stages the files into a temporary workspace before running
+    docker build.
+
+    Constraints:
+      - Must start with "/" (absolute logical path)
+      - Mutually exclusive with imageTar, buildContext,
+        stampOnly+sourceImage, and imageFromUpstream
+
+    Example:  sourceDir: /partitions/demo/payloads/sources/api
+
+  dockerfile         OPTIONAL (with sourceDir)
+    Path to the Dockerfile, relative to sourceDir.
+    If omitted, defaults to "Dockerfile" inside sourceDir.
+
+    Constraints:
+      - Must be relative (no leading "/") when used with sourceDir.
+
+    Example:  dockerfile: build/Dockerfile.prod
+
+  target             OPTIONAL
+    Dockerfile build target stage.
+    Passed as --target to docker build.
+
+    Example:  target: builder
+
+  platform           OPTIONAL
+    Target platform for the build.
+    Passed as --platform to docker build.
+
+    Example:  platform: linux/amd64
+    Example:  platform: linux/arm64
+
+  buildArgs          OPTIONAL
+    Key-value pairs passed as --build-arg to docker build.
+    Keys and values must be non-empty after trimming whitespace.
+
+    Example:
+      buildArgs:
+        GO_VERSION: "1.22"
+        NODE_VERSION: "20"
+
+  insecure           OPTIONAL
+    Allow insecure registry access during the build.
+    Must be true or false (boolean).
+    Defaults to true for the Kubernetes pusher driver.
+
+    Example:  insecure: true
+
+----------------------------------------------------------------------
+  MODE 2: imageTar    (load a pre-built OCI tar)
+----------------------------------------------------------------------
+
+  imageTar           REQUIRED
+    Absolute Guardian logical path to a pre-built OCI image tar file.
+    Guardian copies the tar, loads it into the container runtime,
+    and retags it.
+
+    Constraints:
+      - Must start with "/" (absolute logical path)
+      - Mutually exclusive with sourceDir, buildContext,
+        stampOnly+sourceImage
+      - Requires sourceImage to also be set
+
+    Example:  imageTar: /partitions/demo/payloads/images/demo-api.tar
+
+  sourceImage        REQUIRED (with imageTar)
+    Source image name to retag the loaded image to.
+    Format: <repository>:<tag> or <registry>/<repository>:<tag>.
+
+    Example:  sourceImage: myapp:latest
+    Example:  sourceImage: hub.docker.com/library/nginx:1.25
+
+----------------------------------------------------------------------
+  MODE 3: buildContext    (build from a local filesystem directory)
+----------------------------------------------------------------------
+
+  buildContext       REQUIRED
+    Local filesystem path to the Docker build context directory.
+    Supports "~" and "$HOME" expansion.
+
+    Constraints:
+      - Mutually exclusive with sourceDir, imageTar,
+        stampOnly+sourceImage, imageFromUpstream
+      - Requires dockerfile to also be set
+
+    Example:  buildContext: ~/src/myapp
+    Example:  buildContext: /home/user/projects/api
+
+  buildContexts      OPTIONAL
+    Named additional build contexts passed as --build-context.
+    Each value is a local filesystem path (supports ~ and $HOME).
+
+    Example:
+      buildContexts:
+        monofs: ../monofs
+        kvs:    ../kvs
+
+    This produces: docker build --build-context monofs=../monofs ...
+
+  dockerfile         REQUIRED (with buildContext)
+    Path to the Dockerfile.  If relative, resolved against
+    buildContext.
+
+    Example:  dockerfile: Dockerfile
+    Example:  dockerfile: docker/Dockerfile.prod
+
+  target             OPTIONAL
+    See description under Mode 1.
+
+  platform           OPTIONAL
+    See description under Mode 1.
+
+  buildArgs          OPTIONAL
+    See description under Mode 1.
+    Additionally, the guardianctl CLI auto-injects three build
+    args from git:
+      VERSION    — git tag at HEAD (or commit hash if no tag)
+      COMMIT     — git rev-parse --short HEAD
+      BUILD_TIME — RFC3339 timestamp
+
+    These auto-injected args can be consumed in your Dockerfile:
+
+      ARG VERSION
+      ARG COMMIT
+      ARG BUILD_TIME
+
+----------------------------------------------------------------------
+  MODE 4: stampOnly + sourceImage    (retag an existing image)
+----------------------------------------------------------------------
+
+  stampOnly          REQUIRED (set to true)
+    When true, Guardian skips any build step.  The asset is treated
+    as a pre-existing image that only needs to be retagged/stamped.
+
+    Example:  stampOnly: true
+
+  sourceImage        REQUIRED (with stampOnly)
+    Fully-qualified image reference to retag.
+    Format: <registry>/<repository>:<tag>.
+
+    When combined with stampOnly: true, this is the only valid
+    source mode — sourceDir, imageTar, and buildContext must all
+    be absent.
+
+    Example:
+      stampOnly: true
+      sourceImage: registry.strata.local:5000/myapp:abc123
+
+  buildArgs          OPTIONAL
+    See description under Mode 1.
+
+----------------------------------------------------------------------
+  MODE 5: imageFromUpstream    (pull from upstream registry)
+----------------------------------------------------------------------
+
+  imageFromUpstream  REQUIRED
+    Fully-qualified image reference to pull from an upstream
+    registry.  Guardian runs "docker pull" then "docker tag".
+
+    NOTE: This mode is CLI-only (guardianctl image build).
+    It is NOT supported by pusher drivers (docker, k8s, aws)
+    at runtime.  Use stampOnly+sourceImage for runtime retagging,
+    or buildContext/sourceDir for runtime building.
+
+    Example:  imageFromUpstream: docker.io/library/nginx:1.25
+
+  sourceImage        OPTIONAL
+    Tag to apply after pulling.  If omitted, defaults to
+    <repository>:latest.
+
+    Example:  sourceImage: myapp:v1.0
+
+================================================================================
+  COMPLETE YAML EXAMPLES
+================================================================================
+
+--- Example A: Build from local directory --------------------------------
+
+  spec:
+    assets:
+      - type: ImageBuild
+        name: api-server
+        version: dev
+        properties:
+          buildContext: ~/projects/api-server
+          dockerfile: Dockerfile
+          registry: registry.strata.local:5000
+          repository: api-server
+          target: production
+          platform: linux/amd64
+          buildArgs:
+            GO_VERSION: "1.22"
+          buildContexts:
+            monofs: ../monofs
+
+--- Example B: Build from MonoFS-staged source ---------------------------
+
+  spec:
+    assets:
+      - type: ImageBuild
+        name: worker
+        version: dev
+        properties:
+          sourceDir: /partitions/prod/payloads/sources/worker
+          dockerfile: build/Dockerfile
+          registry: registry.strata.local:5000
+          repository: worker
+          buildArgs:
+            APP_ENV: production
+          insecure: true
+
+--- Example C: Load pre-built tar ----------------------------------------
+
+  spec:
+    assets:
+      - type: ImageBuild
+        name: prebuilt
+        version: dev
+        properties:
+          imageTar: /partitions/prod/payloads/images/prebuilt.tar
+          sourceImage: prebuilt:latest
+          registry: registry.strata.local:5000
+          repository: prebuilt
+
+--- Example D: Stamp a pre-pushed image ----------------------------------
+
+  spec:
+    assets:
+      - type: ImageBuild
+        name: external-image
+        version: dev
+        properties:
+          stampOnly: true
+          sourceImage: hub.docker.com/team/external-service:v2.3.1
+          registry: registry.strata.local:5000
+          repository: external-service
+
+--- Example E: Pull from upstream (CLI only) -----------------------------
+
+  spec:
+    assets:
+      - type: ImageBuild
+        name: nginx
+        version: dev
+        properties:
+          imageFromUpstream: docker.io/library/nginx:1.25
+          sourceImage: nginx:1.25
+          repository: nginx
+
+================================================================================
+  LIFECYCLE — FROM BUILD TO DEPLOY
+================================================================================
+
+  1. guardianctl image build  — reads intent files, runs docker
+     build/pull, writes state to .state/images.json.
+
+  2. guardianctl image push   — pushes built images to registry
+     (or exports tarballs with --tar).
+
+  3. guardianctl image stamp  — modifies intent YAML in place:
+     - Sets version to the image digest tag (sha256-xxx).
+     - For pushed images: sets stampOnly: true and sourceImage.
+     - For tar exports: sets imageTar and sourceImage.
+     - Removes buildContext, sourceDir, and imageFromUpstream
+       (no longer needed at deploy time).
+
+  4. guardianctl image release --dir <partition>  — runs the full
+     build+push+stamp pipeline for a partition.  Use --all to
+     process all known partitions in one go.
+
+  After stamping, the intent file is ready for "guardianctl apply"
+  to push the partition through the Guardian pipeline.
+
+================================================================================
+  ENVIRONMENT VARIABLES
+================================================================================
+
+  GUARDIAN_IMAGE_BUILD_REGISTRY    Default registry (used when
+                                   registry property is omitted).
+                                   Required when using the
+                                   Kubernetes pusher driver.
+
+  GUARDIAN_BUILDKIT_IMAGE          BuildKit container image for
+                                   K8s in-cluster builds.
+                                   Default: moby/buildkit:latest
+
+  GUARDIAN_NAMESPACE               Kubernetes namespace for build
+                                   jobs.  Default: guardian
+
+================================================================================
+  VALIDATION RULES (code: internal/domain/assets/imagebuild.go)
+================================================================================
+
+  - repository is always required.
+  - sourceDir, imageTar, buildContext, and stampOnly+sourceImage
+    are mutually exclusive.  Pick exactly one.
+  - When imageTar is set: sourceImage is required, and imageTar
+    must start with "/".
+  - When buildContext is set: dockerfile is required.
+  - When sourceDir is set: must start with "/".  If dockerfile is
+    present, it must be relative (no leading "/").
+  - buildArgs keys and values must be non-empty after trimming.
