@@ -1,0 +1,33 @@
+*:Zone.Identifier
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-workspace
+
+# Go binaries (anchored to repo root so they don't match cmd/<name>/ source dirs)
+/guardiand
+/guardianctl
+/guardian-pusher-local
+/guardian-pusher-docker
+/guardian-pusher-k8s
+/guardian-pusher-aws
+
+# Build artifacts
+dist/
+ui/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Local dogfood and test state
+/tmp/guardian-dogfood/
+*.log
