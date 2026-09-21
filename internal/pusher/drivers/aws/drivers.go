@@ -74,6 +74,16 @@ func (d *SecretDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 	if !ok {
 		return taskdomain.DriftReport{}, fmt.Errorf("expected SecretSpec, got %T", specAny)
 	}
+	if adopted := strings.TrimSpace(spec.ExistingSecret); adopted != "" {
+		_, exists, err := d.backend.GetSecret(ctx, adopted)
+		if err != nil {
+			return taskdomain.DriftReport{}, err
+		}
+		if !exists {
+			return changedDrift(in.Asset.Name, "adopted secret is missing"), nil
+		}
+		return inSyncDrift(in.Asset.Name, "adopted secret is in sync"), nil
+	}
 	value := spec.Value
 	if strings.TrimSpace(spec.SecretRef) != "" {
 		value, err = d.resolver.Resolve(ctx, spec.SecretRef)
@@ -106,6 +116,10 @@ func (d *SecretDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 	if !ok {
 		return registry.AssetResult{}, fmt.Errorf("expected SecretSpec, got %T", specAny)
 	}
+	adopted := strings.TrimSpace(spec.ExistingSecret)
+	if adopted != "" && strings.TrimSpace(spec.Value) == "" && strings.TrimSpace(spec.SecretRef) == "" {
+		return registry.AssetResult{}, fmt.Errorf("adopted secret %q requires value or secretRef before apply", adopted)
+	}
 	value := spec.Value
 	if strings.TrimSpace(spec.SecretRef) != "" {
 		value, err = d.resolver.Resolve(ctx, spec.SecretRef)
@@ -115,6 +129,9 @@ func (d *SecretDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 	}
 
 	secretName := awsSecretName(in, in.Asset.Name)
+	if adopted != "" {
+		secretName = adopted
+	}
 	hash := driverutil.CompositeHash(in)
 	tags := awsTags(in, hash)
 
@@ -139,6 +156,14 @@ func (d *SecretDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 }
 
 func (d *SecretDriver) Destroy(ctx context.Context, in registry.AssetInput) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if specAny, err := driverutil.DecodeAsset(in); err == nil {
+		if spec, ok := specAny.(*assetdefs.SecretSpec); ok && strings.TrimSpace(spec.ExistingSecret) != "" {
+			return nil
+		}
+	}
 	return ctx.Err()
 }
 

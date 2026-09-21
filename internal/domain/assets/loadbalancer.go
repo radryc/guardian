@@ -2,6 +2,7 @@ package assets
 
 import (
 	"fmt"
+	"strings"
 
 	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
 )
@@ -24,12 +25,13 @@ type ListenerSpec struct {
 }
 
 type LoadBalancerSpec struct {
-	Config      string         `json:"config,omitempty" yaml:"config,omitempty"`
-	Image       string         `json:"image,omitempty" yaml:"image,omitempty"`
-	Targets     []string       `json:"targets" yaml:"targets"`
-	Listeners   []ListenerSpec `json:"listeners" yaml:"listeners"`
-	Networks    []string       `json:"networks,omitempty" yaml:"networks,omitempty"`
-	ServiceType string         `json:"serviceType,omitempty" yaml:"serviceType,omitempty"`
+	Config       string         `json:"config,omitempty" yaml:"config,omitempty"`
+	Image        string         `json:"image,omitempty" yaml:"image,omitempty"`
+	ExistingName string         `json:"existingName,omitempty" yaml:"existingName,omitempty"`
+	Targets      []string       `json:"targets" yaml:"targets"`
+	Listeners    []ListenerSpec `json:"listeners" yaml:"listeners"`
+	Networks     []string       `json:"networks,omitempty" yaml:"networks,omitempty"`
+	ServiceType  string         `json:"serviceType,omitempty" yaml:"serviceType,omitempty"`
 }
 
 type loadBalancerDefinition struct{}
@@ -47,8 +49,10 @@ func (loadBalancerDefinition) Validate(spec any, ctx ValidationContext) error {
 	if !ok {
 		return fmt.Errorf("internal load balancer spec type mismatch")
 	}
-	if len(typed.Targets) == 0 {
-		return fmt.Errorf("property targets requires at least one referenced compute asset")
+	if strings.TrimSpace(typed.ExistingName) == "" {
+		if len(typed.Targets) == 0 {
+			return fmt.Errorf("property targets requires at least one referenced compute asset")
+		}
 	}
 	for idx, target := range typed.Targets {
 		if err := validateAssetRef(ctx, target, assetdomain.TypeCompute, fmt.Sprintf("targets[%d]", idx)); err != nil {

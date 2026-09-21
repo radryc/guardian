@@ -11,6 +11,7 @@ type VolumeSpec struct {
 	Class      string `json:"class,omitempty" yaml:"class,omitempty"`
 	AccessMode string `json:"accessMode,omitempty" yaml:"accessMode,omitempty"`
 	Ephemeral  *bool  `json:"ephemeral,omitempty" yaml:"ephemeral,omitempty"`
+	ExistingID string `json:"existingID,omitempty" yaml:"existingID,omitempty"`
 }
 
 type volumeDefinition struct{}

@@ -495,6 +495,247 @@ ports:
 	}
 }
 
+func TestDockerSingleContainerApplyRevivesStoppedContainer(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	backend := NewBackend()
+	reg := registry.New()
+	Register(reg, backend, secrets.NewStoreResolver(store))
+
+	driver, ok := reg.Get("ObjectStore")
+	if !ok {
+		t.Fatal("object store driver not registered")
+	}
+	in := registry.AssetInput{
+		PartitionName: "demo",
+		IntentName:    "stack",
+		Asset: taskdomain.AbstractAsset{
+			Type:       "ObjectStore",
+			Name:       "blob",
+			Properties: map[string]any{"engine": "minio"},
+		},
+		Assets: map[string]taskdomain.AbstractAsset{},
+		Target: targetdomain.Placement{Cluster: "main"},
+		Store:  store,
+	}
+
+	if _, err := driver.Apply(ctx, in); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	name := objectStoreName(in)
+	container, ok, err := backend.GetContainer(name)
+	if err != nil {
+		t.Fatalf("get container: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected container")
+	}
+	container.Running = false
+	if err := backend.UpsertContainer(container); err != nil {
+		t.Fatalf("stop container: %v", err)
+	}
+
+	drift, err := driver.Diff(ctx, in)
+	if err != nil {
+		t.Fatalf("diff after stop: %v", err)
+	}
+	if drift.Status != "Changed" {
+		t.Fatalf("expected drift after stop, got %+v", drift)
+	}
+
+	if _, err := driver.Apply(ctx, in); err != nil {
+		t.Fatalf("revive apply: %v", err)
+	}
+	container, ok, err = backend.GetContainer(name)
+	if err != nil {
+		t.Fatalf("get container after revive: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected container after revive")
+	}
+	if !container.Running {
+		t.Fatalf("expected container to be running after revive")
+	}
+
+	drift, err = driver.Diff(ctx, in)
+	if err != nil {
+		t.Fatalf("diff after revive: %v", err)
+	}
+	if drift.Status != "InSync" {
+		t.Fatalf("expected in sync after revive, got %+v", drift)
+	}
+}
+
+func TestDockerSingleContainerDiffDetectsStoppedContainer(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	backend := NewBackend()
+	reg := registry.New()
+	Register(reg, backend, secrets.NewStoreResolver(store))
+
+	cases := []struct {
+		name       string
+		assetType  string
+		assetName  string
+		properties map[string]any
+	}{
+		{
+			name:      "ObjectStore",
+			assetType: "ObjectStore",
+			assetName: "blob",
+			properties: map[string]any{
+				"engine": "minio",
+			},
+		},
+		{
+			name:      "SQLDatabase",
+			assetType: "SQLDatabase",
+			assetName: "db",
+			properties: map[string]any{
+				"engine": "postgres",
+			},
+		},
+		{
+			name:      "Observability",
+			assetType: "Observability",
+			assetName: "otel",
+			properties: map[string]any{
+				"endpoint":  "0.0.0.0:4317",
+				"exporters": []any{"logging"},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			driver, ok := reg.Get(tc.assetType)
+			if !ok {
+				t.Fatalf("driver not registered for %s", tc.assetType)
+			}
+			in := registry.AssetInput{
+				PartitionName: "demo",
+				IntentName:    "stack",
+				Asset: taskdomain.AbstractAsset{
+					Type:       tc.assetType,
+					Name:       tc.assetName,
+					Properties: tc.properties,
+				},
+				Assets: map[string]taskdomain.AbstractAsset{},
+				Target: targetdomain.Placement{Cluster: "main"},
+				Store:  store,
+			}
+
+			if _, err := driver.Apply(ctx, in); err != nil {
+				t.Fatalf("apply: %v", err)
+			}
+
+			drift, err := driver.Diff(ctx, in)
+			if err != nil {
+				t.Fatalf("diff: %v", err)
+			}
+			if drift.Status != "InSync" {
+				t.Fatalf("expected in sync while running, got %+v", drift)
+			}
+
+			var containerName string
+			switch tc.assetType {
+			case "ObjectStore":
+				containerName = objectStoreName(in)
+			case "SQLDatabase":
+				containerName = sqlDatabaseName(in)
+			case "Observability":
+				containerName = observabilityName(in)
+			}
+			container, ok, err := backend.GetContainer(containerName)
+			if err != nil {
+				t.Fatalf("get container: %v", err)
+			}
+			if !ok {
+				t.Fatalf("expected %s container to exist", tc.assetType)
+			}
+			container.Running = false
+			if err := backend.UpsertContainer(container); err != nil {
+				t.Fatalf("stop container: %v", err)
+			}
+
+			drift, err = driver.Diff(ctx, in)
+			if err != nil {
+				t.Fatalf("diff after stop: %v", err)
+			}
+			if drift.Status != "Changed" {
+				t.Fatalf("expected drift after container stopped, got %+v", drift)
+			}
+		})
+	}
+}
+
+func TestDockerLoadBalancerDiffDetectsStoppedContainer(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	backend := NewBackend()
+	reg := registry.New()
+	Register(reg, backend, secrets.NewStoreResolver(store))
+
+	driver, ok := reg.Get("LoadBalancer")
+	if !ok {
+		t.Fatal("load balancer driver not registered")
+	}
+	in := registry.AssetInput{
+		PartitionName: "demo",
+		IntentName:    "stack",
+		Asset: taskdomain.AbstractAsset{
+			Type: "LoadBalancer",
+			Name: "edge",
+			Properties: map[string]any{
+				"targets":   []any{"app"},
+				"listeners": []any{map[string]any{"name": "http", "port": 8080, "protocol": "TCP"}},
+			},
+		},
+		Assets: map[string]taskdomain.AbstractAsset{
+			"app": {
+				Type:       "Compute",
+				Name:       "app",
+				Properties: map[string]any{"ports": []any{map[string]any{"containerPort": 8080}}},
+			},
+		},
+		Target: targetdomain.Placement{Cluster: "main"},
+		Store:  store,
+	}
+
+	if _, err := driver.Apply(ctx, in); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	drift, err := driver.Diff(ctx, in)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if drift.Status != "InSync" {
+		t.Fatalf("expected in sync while running, got %+v", drift)
+	}
+
+	container, ok, err := backend.GetContainer(loadBalancerName(in))
+	if err != nil {
+		t.Fatalf("get container: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected load balancer container to exist")
+	}
+	container.Running = false
+	if err := backend.UpsertContainer(container); err != nil {
+		t.Fatalf("stop container: %v", err)
+	}
+
+	drift, err = driver.Diff(ctx, in)
+	if err != nil {
+		t.Fatalf("diff after stop: %v", err)
+	}
+	if drift.Status != "Changed" {
+		t.Fatalf("expected drift after container stopped, got %+v", drift)
+	}
+}
+
 func writeFile(t *testing.T, ctx context.Context, store *memory.Store, path string, content []byte) {
 	t.Helper()
 	if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{

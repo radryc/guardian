@@ -7,9 +7,10 @@ import (
 )
 
 type ConfigSpec struct {
-	Format  string            `json:"format,omitempty" yaml:"format,omitempty"`
-	Content string            `json:"content,omitempty" yaml:"content,omitempty"`
-	Data    map[string]string `json:"data,omitempty" yaml:"data,omitempty"`
+	Format            string            `json:"format,omitempty" yaml:"format,omitempty"`
+	Content           string            `json:"content,omitempty" yaml:"content,omitempty"`
+	Data              map[string]string `json:"data,omitempty" yaml:"data,omitempty"`
+	ExistingParameter string            `json:"existingParameter,omitempty" yaml:"existingParameter,omitempty"`
 }
 
 type configDefinition struct{}

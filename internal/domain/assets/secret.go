@@ -2,13 +2,15 @@ package assets
 
 import (
 	"fmt"
+	"strings"
 
 	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
 )
 
 type SecretSpec struct {
-	Value     string `json:"value,omitempty" yaml:"value,omitempty"`
-	SecretRef string `json:"secretRef,omitempty" yaml:"secretRef,omitempty"`
+	Value          string `json:"value,omitempty" yaml:"value,omitempty"`
+	SecretRef      string `json:"secretRef,omitempty" yaml:"secretRef,omitempty"`
+	ExistingSecret string `json:"existingSecret,omitempty" yaml:"existingSecret,omitempty"`
 }
 
 type secretDefinition struct{}
@@ -25,6 +27,12 @@ func (secretDefinition) Validate(spec any, _ ValidationContext) error {
 	typed, ok := spec.(*SecretSpec)
 	if !ok {
 		return fmt.Errorf("internal secret spec type mismatch")
+	}
+	if strings.TrimSpace(typed.ExistingSecret) != "" {
+		if strings.TrimSpace(typed.Value) != "" && strings.TrimSpace(typed.SecretRef) != "" {
+			return fmt.Errorf("property value and property secretRef are mutually exclusive")
+		}
+		return nil
 	}
 	hasValue := typed.Value != ""
 	hasSecretRef := typed.SecretRef != ""

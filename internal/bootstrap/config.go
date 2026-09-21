@@ -177,7 +177,7 @@ func DefaultConfig() Config {
 				Search:     "monofs-search:latest",
 				Registry:   "monofs-registry:latest",
 				LB:         "lb:latest",
-				Minio:      "mirror.gcr.io/minio/minio:latest",
+				Minio:      "quay.io/minio/minio:latest",
 				PullPolicy: "IfNotPresent",
 			},
 			PVC: StoragePVC{

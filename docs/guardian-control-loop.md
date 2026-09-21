@@ -32,6 +32,9 @@ Relevant logical paths:
 - `/.queues/<pusher>/<taskID>.json`: queued task file.
 - `/.queues/<pusher>/.claims/<taskID>.json`: optimistic task lease/claim.
 - `/.queues/<pusher>/.results/<taskID>.json`: completed task result written by the worker.
+- `/.scans/<pusher>/requests/<scanID>.json`: AWS scan request written by the UI (see docs/aws-scan.md).
+- `/.scans/<pusher>/.claims/<scanID>.json`: optimistic scan lease/claim.
+- `/.scans/<pusher>/.results/<scanID>.json`: completed scan result written by the AWS pusher.
 - `/.archive/<partition>/<intent>/<deployment>/...`: archived successful deployment state, manifest, and logs.
 
 The store can be memory-backed, filesystem-backed, or MonoFS-backed, but the daemon, CLI, and pushers all use the same logical contract.
@@ -78,6 +81,8 @@ Pushers poll one queue namespace each.
 - `guardian-pusher-aws`
 
 Each pusher watches `/.queues/<pusher>/`, claims tasks via `/.claims/<taskID>.json`, executes the provider-specific drivers, and writes `TaskResult` JSON into `/.results/<taskID>.json`.
+
+`guardian-pusher-aws` additionally runs a second, separate loop that watches `/.scans/<pusher>/requests/` for account scan requests, executes the account scan, and writes the result into `/.scans/<pusher>/.results/`. Scan requests never enter the task state machine. See `docs/aws-scan.md`.
 
 The AWS pusher's asset surface is a `CDKStack` asset. It stages a TypeScript CDK app from the logical store, runs CDK synth/deploy for one stack, and returns CloudFormation outputs back into intent outputs.
 

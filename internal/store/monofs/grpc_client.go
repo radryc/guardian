@@ -25,6 +25,14 @@ import (
 const defaultClientHeartbeatInterval = 30 * time.Second
 const defaultTopologyRefreshInterval = 5 * time.Second
 
+// defaultGRPCKeepaliveTime is the interval between HTTP/2 PING frames sent by
+// the gRPC client to keep the underlying connection alive. It must be no
+// smaller than the server's keepalive enforcement policy MinTime. The default
+// gRPC Go server minimum is 5 minutes; sending PINGs more frequently causes the
+// server to reply with GOAWAY ENHANCE_YOUR_CALM "too_many_pings" and tear down
+// the connection, which aborts in-flight operations such as APPLY tasks.
+const defaultGRPCKeepaliveTime = 5 * time.Minute
+
 // cliBearerCreds attaches the cached `guardianctl login` token (if any) as an
 // Authorization: Bearer header on outgoing RPCs, so human CLI calls carry an
 // SSO identity. It is a no-op when no token is cached (machines/services keep
@@ -114,7 +122,7 @@ func dialRouter(addr string) (*grpc.ClientConn, error) {
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithPerRPCCredentials(cliBearerCreds{}),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                30 * time.Second,
+			Time:                defaultGRPCKeepaliveTime,
 			Timeout:             10 * time.Second,
 			PermitWithoutStream: true,
 		}),
@@ -821,7 +829,7 @@ func (c *GRPCClient) refreshNodes(ctx context.Context) error {
 			nodeAddr,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			grpc.WithKeepaliveParams(keepalive.ClientParameters{
-				Time:                30 * time.Second,
+				Time:                defaultGRPCKeepaliveTime,
 				Timeout:             10 * time.Second,
 				PermitWithoutStream: true,
 			}),

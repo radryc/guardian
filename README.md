@@ -137,6 +137,10 @@ AWS CDK pusher setup notes live in:
 
   docs/aws-pusher.md
 
+AWS account scan and import notes live in:
+
+  docs/aws-scan.md
+
 Flow topology metrics overlay notes live in:
 
   docs/flow-topology-metrics.md

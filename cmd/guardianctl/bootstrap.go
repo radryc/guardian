@@ -781,10 +781,12 @@ func createMinioBucket(ctx context.Context, storageNamespace string, dryRun bool
 	}
 
 	// Pre-load the mc image into kind so the ephemeral pod can use it.
+	// Use quay.io because Docker Hub requires authentication for minio/mc.
+	mcImage := "quay.io/minio/mc:latest"
 	ctxName, _ := bootstrap.RunCapture(ctx, "kubectl", "config", "current-context")
 	if strings.HasPrefix(ctxName, "kind-") && !dryRun {
-		fmt.Fprintf(os.Stderr, "  loading minio/mc:latest into kind...\n")
-		if err := bootstrap.EnsureKindImage(ctx, "minio/mc:latest", ""); err != nil {
+		fmt.Fprintf(os.Stderr, "  loading %s into kind...\n", mcImage)
+		if err := bootstrap.EnsureKindImage(ctx, mcImage, ""); err != nil {
 			fmt.Fprintf(os.Stderr, "  WARNING: could not load minio/mc into kind: %v\n", err)
 		}
 	}
@@ -796,7 +798,7 @@ func createMinioBucket(ctx context.Context, storageNamespace string, dryRun bool
 	if dryRun {
 		_ = bootstrap.Run(ctx, dryRun, "kubectl", "-n", storageNamespace,
 			"run", "minio-init-bucket", "--rm", "-i", "--restart=Never",
-			"--image=minio/mc:latest", "--command", "--", "sh", "-c", script)
+			"--image="+mcImage, "--command", "--", "sh", "-c", script)
 		return
 	}
 
@@ -813,7 +815,7 @@ func createMinioBucket(ctx context.Context, storageNamespace string, dryRun bool
 		}
 		lastErr = bootstrap.Run(ctx, dryRun, "kubectl", "-n", storageNamespace,
 			"run", "minio-init-bucket", "--rm", "-i", "--restart=Never",
-			"--image=minio/mc:latest", "--command", "--", "sh", "-c", script)
+			"--image="+mcImage, "--command", "--", "sh", "-c", script)
 		if lastErr == nil {
 			fmt.Fprintf(os.Stderr, "  minio bucket monofs ready\n")
 			return

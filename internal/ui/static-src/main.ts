@@ -16,6 +16,7 @@ import {
   truncate,
 } from "./utils";
 import { renderTopology, renderTopologyLegend } from "./topology";
+import { initScanPanel, renderScanPanel } from "./scan";
 
 // ── Bootstrap ────────────────────────────────────────
 const state: AppState = createState();
@@ -231,6 +232,7 @@ function activatePanel(panelId: string): void {
   renderPartitionDetail();
   renderHistory();
   renderRollouts();
+  renderScanPanel();
   renderPageChrome();
 
   if (panelId === "historyPanel" && state.selectedPartition) {
@@ -251,7 +253,7 @@ function hydrateStateFromLocation(): void {
   const partition = params.get("partition");
   if (partition) state.selectedPartition = partition.trim();
   const panel = params.get("panel");
-  if (["overviewPanel", "topologyPanel", "rolloutsPanel", "historyPanel"].includes(panel ?? "")) {
+  if (["overviewPanel", "topologyPanel", "rolloutsPanel", "historyPanel", "scanPanel"].includes(panel ?? "")) {
     state.activePanel = panel!;
   }
   const rawLimit = Number.parseInt(params.get("historyLimit") ?? "", 10);
@@ -2463,6 +2465,7 @@ function wireEvents(): void {
   document.querySelectorAll<HTMLElement>("[data-tab-target]").forEach((btn) => {
     btn.addEventListener("click", () => activatePanel(btn.dataset.tabTarget!));
   });
+  initScanPanel(handleError);
   document.getElementById("partitionSearch")?.addEventListener("input", renderPartitionList);
   document.getElementById("refreshButton")?.addEventListener("click", () => refreshOverview(true).catch(handleError));
   document.getElementById("reconcileButton")?.addEventListener("click", reconcileSelected);

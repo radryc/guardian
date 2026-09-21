@@ -755,6 +755,9 @@ func (d *LoadBalancerDriver) Diff(ctx context.Context, in registry.AssetInput) (
 	if !ok {
 		return changedDrift(in.Asset.Name, "docker load balancer differs"), nil
 	}
+	if !actual.Running {
+		return changedDrift(in.Asset.Name, "docker load balancer is not running"), nil
+	}
 	desired := d.buildLoadBalancerContainer(in, spec, payload, bootstrapConfig)
 	if drifted, reason := StructuralContainerDrift(desired, actual); drifted {
 		return changedDrift(in.Asset.Name, "docker load balancer differs: "+reason), nil
@@ -896,7 +899,7 @@ func (d *ObjectStoreDriver) Apply(ctx context.Context, in registry.AssetInput) (
 	container := Container{
 		Name:         objectStoreName(in),
 		Kind:         "ObjectStore",
-		Image:        "minio/minio:latest",
+		Image:        "quay.io/minio/minio:latest",
 		Hash:         hash,
 		Labels:       driverutil.Labels("docker", in, hash),
 		Network:      network,
@@ -1125,6 +1128,9 @@ func (d *baseDriver) diffSingleContainer(ctx context.Context, in registry.AssetI
 	}
 	if !ok || container.Hash != hash {
 		return changedDrift(in.Asset.Name, "docker container differs"), nil
+	}
+	if !container.Running {
+		return changedDrift(in.Asset.Name, "docker container is not running"), nil
 	}
 	return inSyncDrift(in.Asset.Name, "docker resource is in sync"), nil
 }
