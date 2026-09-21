@@ -266,6 +266,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/catalog", s.handleCatalog)
 	mux.HandleFunc("/api/partitions", s.handlePartitions)
 	mux.HandleFunc("/api/partitions/", s.handlePartitionRoute)
+	mux.HandleFunc("/api/scans", s.handleScans)
+	mux.HandleFunc("/api/scans/", s.handleScanRoute)
 	return mux
 }
 

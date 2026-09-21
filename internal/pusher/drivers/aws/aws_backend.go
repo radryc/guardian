@@ -3,6 +3,7 @@ package awsdriver
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	awsroot "github.com/aws/aws-sdk-go-v2/aws"
@@ -80,7 +81,14 @@ func (b *AWSBackend) UpsertFileSystem(ctx context.Context, fs FileSystem) (strin
 			if len(desc.FileSystems) == 0 {
 				return "", fmt.Errorf("EFS exists but not found by creation token")
 			}
-			return awsroot.ToString(desc.FileSystems[0].FileSystemId), nil
+			fsID := awsroot.ToString(desc.FileSystems[0].FileSystemId)
+			if len(fs.Tags) > 0 {
+				_, _ = client.TagResource(ctx, &efs.TagResourceInput{
+					ResourceId: awsroot.String(fsID),
+					Tags:       toEFSTags(fs.Tags),
+				})
+			}
+			return fsID, nil
 		}
 		return "", fmt.Errorf("create EFS filesystem: %w", err)
 	}
@@ -110,9 +118,12 @@ func (b *AWSBackend) GetFileSystem(ctx context.Context, fsID string) (FileSystem
 		return FileSystem{}, false, nil
 	}
 	f := out.FileSystems[0]
+	tags := tagsFromEFSDescription(f.Tags)
 	return FileSystem{
-		ID:   awsroot.ToString(f.FileSystemId),
-		Name: awsroot.ToString(f.Name),
+		ID:        awsroot.ToString(f.FileSystemId),
+		Name:      awsroot.ToString(f.Name),
+		Tags:      tags,
+		Hash:      tags["guardian.hash"],
 	}, true, nil
 }
 
@@ -163,6 +174,7 @@ func (b *AWSBackend) UpsertParameter(ctx context.Context, param Parameter) error
 				Name:      awsroot.String(param.Name),
 				Value:     awsroot.String(param.Value),
 				Type:      paramType,
+				Tags:      toSSMTags(param.Tags),
 				Overwrite: awsroot.Bool(true),
 			})
 		}
@@ -192,10 +204,21 @@ func (b *AWSBackend) GetParameter(ctx context.Context, name string) (Parameter, 
 		}
 		return Parameter{}, false, err
 	}
+	tags := map[string]string{}
+	if tagsOut, tagsErr := client.ListTagsForResource(ctx, &ssm.ListTagsForResourceInput{
+		ResourceType: ssmtypes.ResourceTypeForTaggingParameter,
+		ResourceId:   awsroot.String(name),
+	}); tagsErr == nil {
+		for _, tag := range tagsOut.TagList {
+			tags[awsroot.ToString(tag.Key)] = awsroot.ToString(tag.Value)
+		}
+	}
 	return Parameter{
 		Name:  awsroot.ToString(out.Parameter.Name),
 		Value: awsroot.ToString(out.Parameter.Value),
 		Type:  string(out.Parameter.Type),
+		Hash:  tags["guardian.hash"],
+		Tags:  tags,
 	}, true, nil
 }
 
@@ -452,11 +475,37 @@ func (b *AWSBackend) GetService(ctx context.Context, cluster, name string) (ECSS
 	if len(out.Services) == 0 || out.Services[0].Status == nil || *out.Services[0].Status == "INACTIVE" {
 		return ECSService{}, false, nil
 	}
-	return ECSService{
-		Name:         awsroot.ToString(out.Services[0].ServiceName),
-		Cluster:      awsroot.ToString(out.Services[0].ClusterArn),
-		DesiredCount: int(out.Services[0].DesiredCount),
-	}, true, nil
+	svc := out.Services[0]
+	service := ECSService{
+		Name:         awsroot.ToString(svc.ServiceName),
+		Cluster:      awsroot.ToString(svc.ClusterArn),
+		DesiredCount: int(svc.DesiredCount),
+		TaskFamily:   taskFamilyFromDefinitionARN(awsroot.ToString(svc.TaskDefinition)),
+	}
+	if serviceArn := awsroot.ToString(svc.ServiceArn); serviceArn != "" {
+		if tagsOut, tagsErr := client.ListTagsForResource(ctx, &ecs.ListTagsForResourceInput{
+			ResourceArn: awsroot.String(serviceArn),
+		}); tagsErr == nil {
+			service.Tags = tagsFromECSTags(tagsOut.Tags)
+			service.Hash = service.Tags["guardian.hash"]
+		}
+	}
+	return service, true, nil
+}
+
+func taskFamilyFromDefinitionARN(arn string) string {
+	if arn == "" {
+		return ""
+	}
+	idx := strings.LastIndex(arn, "/")
+	if idx < 0 {
+		return ""
+	}
+	rest := arn[idx+1:]
+	if rev := strings.LastIndex(rest, ":"); rev >= 0 {
+		return rest[:rev]
+	}
+	return rest
 }
 
 func (b *AWSBackend) DeleteService(ctx context.Context, cluster, name string) error {
@@ -555,13 +604,27 @@ func (b *AWSBackend) GetLoadBalancer(ctx context.Context, name string) (LoadBala
 		return LoadBalancer{}, false, nil
 	}
 	lb := out.LoadBalancers[0]
-	return LoadBalancer{
+	result := LoadBalancer{
 		ARN:     awsroot.ToString(lb.LoadBalancerArn),
 		Name:    awsroot.ToString(lb.LoadBalancerName),
 		DNSName: awsroot.ToString(lb.DNSName),
 		Type:    string(lb.Type),
 		Scheme:  string(lb.Scheme),
-	}, true, nil
+	}
+	if result.ARN != "" {
+		if tagsOut, tagsErr := client.DescribeTags(ctx, &elasticloadbalancingv2.DescribeTagsInput{
+			ResourceArns: []string{result.ARN},
+		}); tagsErr == nil {
+			for _, desc := range tagsOut.TagDescriptions {
+				if awsroot.ToString(desc.ResourceArn) != result.ARN {
+					continue
+				}
+				result.Tags = tagsFromELBv2(desc.Tags)
+				result.Hash = result.Tags["guardian.hash"]
+			}
+		}
+	}
+	return result, true, nil
 }
 
 func (b *AWSBackend) DeleteLoadBalancer(ctx context.Context, arn string) error {
@@ -793,7 +856,7 @@ func (b *AWSBackend) UpsertBucket(ctx context.Context, bucket BucketSpec) error 
 	createIn := &s3.CreateBucketInput{
 		Bucket: awsroot.String(bucket.Name),
 	}
-	if bucket.Region != "us-east-1" {
+	if bucket.Region != "" && bucket.Region != "us-east-1" {
 		createIn.CreateBucketConfiguration = &s3types.CreateBucketConfiguration{
 			LocationConstraint: s3types.BucketLocationConstraint(bucket.Region),
 		}
@@ -801,10 +864,46 @@ func (b *AWSBackend) UpsertBucket(ctx context.Context, bucket BucketSpec) error 
 
 	_, err = client.CreateBucket(ctx, createIn)
 	if err != nil {
-		if strings.Contains(err.Error(), "BucketAlreadyOwnedByYou") || strings.Contains(err.Error(), "already exists") {
-			return nil
+		if !strings.Contains(err.Error(), "BucketAlreadyOwnedByYou") && !strings.Contains(err.Error(), "already exists") {
+			return fmt.Errorf("create bucket: %w", err)
 		}
-		return fmt.Errorf("create bucket: %w", err)
+	}
+
+	if bucket.Versioning {
+		if _, err := client.PutBucketVersioning(ctx, &s3.PutBucketVersioningInput{
+			Bucket: awsroot.String(bucket.Name),
+			VersioningConfiguration: &s3types.VersioningConfiguration{
+				Status: s3types.BucketVersioningStatusEnabled,
+			},
+		}); err != nil {
+			return fmt.Errorf("enable bucket versioning: %w", err)
+		}
+	}
+
+	if len(bucket.Tags) > 0 {
+		existing := map[string]string{}
+		if tagsOut, tagsErr := client.GetBucketTagging(ctx, &s3.GetBucketTaggingInput{
+			Bucket: awsroot.String(bucket.Name),
+		}); tagsErr == nil {
+			for _, tag := range tagsOut.TagSet {
+				existing[awsroot.ToString(tag.Key)] = awsroot.ToString(tag.Value)
+			}
+		}
+		merged := make(map[string]string, len(existing)+len(bucket.Tags))
+		for key, value := range existing {
+			merged[key] = value
+		}
+		for key, value := range bucket.Tags {
+			merged[key] = value
+		}
+		if _, err := client.PutBucketTagging(ctx, &s3.PutBucketTaggingInput{
+			Bucket: awsroot.String(bucket.Name),
+			Tagging: &s3types.Tagging{
+				TagSet: toS3Tags(merged),
+			},
+		}); err != nil {
+			return fmt.Errorf("tag bucket: %w", err)
+		}
 	}
 	return nil
 }
@@ -828,7 +927,23 @@ func (b *AWSBackend) GetBucket(ctx context.Context, name string) (BucketSpec, bo
 		}
 		return BucketSpec{}, false, err
 	}
-	return BucketSpec{Name: name}, true, nil
+	result := BucketSpec{Name: name}
+	tags := map[string]string{}
+	if tagsOut, tagsErr := client.GetBucketTagging(ctx, &s3.GetBucketTaggingInput{
+		Bucket: awsroot.String(name),
+	}); tagsErr == nil {
+		for _, tag := range tagsOut.TagSet {
+			tags[awsroot.ToString(tag.Key)] = awsroot.ToString(tag.Value)
+		}
+		result.Tags = tags
+		result.Hash = tags["guardian.hash"]
+	}
+	if versioningOut, versioningErr := client.GetBucketVersioning(ctx, &s3.GetBucketVersioningInput{
+		Bucket: awsroot.String(name),
+	}); versioningErr == nil {
+		result.Versioning = versioningOut.Status == s3types.BucketVersioningStatusEnabled
+	}
+	return result, true, nil
 }
 
 func (b *AWSBackend) DeleteBucket(ctx context.Context, name string) error {
@@ -996,6 +1111,25 @@ func toEFSTags(tags map[string]string) []efstypes.Tag {
 	return out
 }
 
+func tagsFromEFSDescription(tags []efstypes.Tag) map[string]string {
+	out := make(map[string]string, len(tags))
+	for _, tag := range tags {
+		out[awsroot.ToString(tag.Key)] = awsroot.ToString(tag.Value)
+	}
+	return out
+}
+
+func toS3Tags(tags map[string]string) []s3types.Tag {
+	out := make([]s3types.Tag, 0, len(tags))
+	for k, v := range tags {
+		out = append(out, s3types.Tag{Key: awsroot.String(k), Value: awsroot.String(v)})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return awsroot.ToString(out[i].Key) < awsroot.ToString(out[j].Key)
+	})
+	return out
+}
+
 func toSSMTags(tags map[string]string) []ssmtypes.Tag {
 	var out []ssmtypes.Tag
 	for k, v := range tags {
@@ -1016,6 +1150,22 @@ func toECSTags(tags map[string]string) []ecstypes.Tag {
 	var out []ecstypes.Tag
 	for k, v := range tags {
 		out = append(out, ecstypes.Tag{Key: awsroot.String(k), Value: awsroot.String(v)})
+	}
+	return out
+}
+
+func tagsFromECSTags(tags []ecstypes.Tag) map[string]string {
+	out := make(map[string]string, len(tags))
+	for _, tag := range tags {
+		out[awsroot.ToString(tag.Key)] = awsroot.ToString(tag.Value)
+	}
+	return out
+}
+
+func tagsFromELBv2(tags []elbv2types.Tag) map[string]string {
+	out := make(map[string]string, len(tags))
+	for _, tag := range tags {
+		out[awsroot.ToString(tag.Key)] = awsroot.ToString(tag.Value)
 	}
 	return out
 }

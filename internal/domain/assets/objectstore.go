@@ -8,6 +8,7 @@ import (
 
 type ObjectStoreSpec struct {
 	Engine          string   `json:"engine" yaml:"engine"`
+	ExistingBucket  string   `json:"existingBucket,omitempty" yaml:"existingBucket,omitempty"`
 	Endpoint        string   `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
 	Volume          string   `json:"volume,omitempty" yaml:"volume,omitempty"`
 	Config          string   `json:"config,omitempty" yaml:"config,omitempty"`

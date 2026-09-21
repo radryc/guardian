@@ -3,6 +3,7 @@ package awsdriver
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
@@ -12,15 +13,25 @@ import (
 
 type ConfigDriver struct{ baseDriver }
 
-func (d *ConfigDriver) Type() string                { return "Config" }
+func (d *ConfigDriver) Type() string                    { return "Config" }
 func (d *ConfigDriver) Validate(p map[string]any) error { return nil }
+
+func configParameterName(spec *assetdefs.ConfigSpec, in registry.AssetInput) string {
+	if name := strings.TrimSpace(spec.ExistingParameter); name != "" {
+		return name
+	}
+	return awsSSMParameterName(in, in.Asset.Name)
+}
 
 func (d *ConfigDriver) Check(ctx context.Context, in registry.AssetInput) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	name := awsSSMParameterName(in, in.Asset.Name)
-	_, _, err := d.backend.GetParameter(ctx, name)
+	spec, err := decodeConfig(in)
+	if err != nil {
+		return err
+	}
+	_, _, err = d.backend.GetParameter(ctx, configParameterName(spec, in))
 	return err
 }
 
@@ -36,12 +47,21 @@ func (d *ConfigDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 	hash := driverutil.CompositeHash(in)
 	data := driverutil.ConfigFiles(spec)
 
-	name := awsSSMParameterName(in, in.Asset.Name)
+	name := configParameterName(spec, in)
 	param, ok, err := d.backend.GetParameter(ctx, name)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	if !ok || param.Hash != hash || param.Value != contentAsString(data) {
+	if !ok {
+		if spec.ExistingParameter != "" {
+			return changedDrift(in.Asset.Name, "adopted SSM parameter is missing"), nil
+		}
+		return changedDrift(in.Asset.Name, "SSM parameter differs"), nil
+	}
+	if param.Hash != "" && param.Hash != hash {
+		return changedDrift(in.Asset.Name, "SSM parameter differs"), nil
+	}
+	if param.Value != contentAsString(data) {
 		return changedDrift(in.Asset.Name, "SSM parameter differs"), nil
 	}
 	return inSyncDrift(in.Asset.Name, "SSM parameter is in sync"), nil
@@ -62,7 +82,7 @@ func (d *ConfigDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 	paramType := "String"
 	isSensitive := containsSensitiveKeys(data)
 
-	name := awsSSMParameterName(in, in.Asset.Name)
+	name := configParameterName(spec, in)
 	if isSensitive {
 		paramType = "SecureString"
 	}
@@ -85,7 +105,11 @@ func (d *ConfigDriver) Destroy(ctx context.Context, in registry.AssetInput) erro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return d.backend.DeleteParameter(ctx, awsSSMParameterName(in, in.Asset.Name))
+	spec, err := decodeConfig(in)
+	if err != nil {
+		return err
+	}
+	return d.backend.DeleteParameter(ctx, configParameterName(spec, in))
 }
 
 func decodeConfig(in registry.AssetInput) (*assetdefs.ConfigSpec, error) {

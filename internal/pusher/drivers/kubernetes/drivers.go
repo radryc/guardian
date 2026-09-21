@@ -718,7 +718,7 @@ func (d *ObjectStoreDriver) Apply(ctx context.Context, in registry.AssetInput) (
 	hash := hashWithPayload(objectStoreHash(in), payload)
 	container := Container{
 		Name:         "minio",
-		Image:        "minio/minio:latest",
+		Image:        "quay.io/minio/minio:latest",
 		Command:      []string{"minio"},
 		Args:         []string{"server", "/data", "--console-address=:9001"},
 		Env:          map[string]string{"MINIO_ROOT_USER": "minio", "MINIO_ROOT_PASSWORD": "minio123"},

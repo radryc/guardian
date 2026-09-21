@@ -13,8 +13,33 @@ import (
 
 type ComputeDriver struct{ baseDriver }
 
-func (d *ComputeDriver) Type() string                { return "Compute" }
+func (d *ComputeDriver) Type() string                    { return "Compute" }
 func (d *ComputeDriver) Validate(p map[string]any) error { return nil }
+
+func computeAdopted(spec *assetdefs.ComputeSpec) bool {
+	return spec.ObserveExisting && strings.TrimSpace(spec.ExistingServiceName) != ""
+}
+
+func computeCluster(spec *assetdefs.ComputeSpec, in registry.AssetInput) string {
+	if cluster := strings.TrimSpace(spec.Cluster); cluster != "" {
+		return cluster
+	}
+	return awsAccount(in)
+}
+
+func computeServiceName(spec *assetdefs.ComputeSpec, in registry.AssetInput) string {
+	if computeAdopted(spec) {
+		return strings.TrimSpace(spec.ExistingServiceName)
+	}
+	return awsServiceName(in)
+}
+
+func computeDesiredReplicas(spec *assetdefs.ComputeSpec) int {
+	if spec.Replicas != nil {
+		return *spec.Replicas
+	}
+	return 1
+}
 
 func (d *ComputeDriver) Check(ctx context.Context, in registry.AssetInput) error {
 	if err := ctx.Err(); err != nil {
@@ -51,18 +76,30 @@ func (d *ComputeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskd
 		return taskdomain.DriftReport{}, err
 	}
 
+	adopted := computeAdopted(spec)
 	hash := driverutil.CompositeHash(in)
-	svcName := awsServiceName(in)
-	cluster := awsAccount(in)
+	svcName := computeServiceName(spec, in)
+	cluster := computeCluster(spec, in)
 
 	svc, ok, err := d.backend.GetService(ctx, cluster, svcName)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	if !ok || svc.Hash != hash {
+	if !ok {
+		if adopted {
+			return changedDrift(in.Asset.Name, "observed ECS service is missing"), nil
+		}
 		return changedDrift(in.Asset.Name, "ECS service differs"), nil
 	}
-	_ = spec
+	if adopted {
+		if svc.DesiredCount != computeDesiredReplicas(spec) {
+			return changedDrift(in.Asset.Name, "observed ECS service desired count differs"), nil
+		}
+		return inSyncDrift(in.Asset.Name, "observed ECS service is in sync"), nil
+	}
+	if svc.Hash != hash {
+		return changedDrift(in.Asset.Name, "ECS service differs"), nil
+	}
 	return inSyncDrift(in.Asset.Name, "ECS service is in sync"), nil
 }
 
@@ -127,17 +164,19 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	logGroup := awsLogGroupName(in)
 	tags := awsTags(in, hash)
 
-	_ = d.backend.UpsertLogGroup(ctx, LogGroup{
-		Name: logGroup,
-		Hash: hash,
-		Tags: tags,
-	})
+	if !computeAdopted(spec) {
+		_ = d.backend.UpsertLogGroup(ctx, LogGroup{
+			Name: logGroup,
+			Hash: hash,
+			Tags: tags,
+		})
+	}
 
 	cpu, mem := resolveResources(spec)
 
 	svc := ECSService{
-		Name:           awsServiceName(in),
-		Cluster:        awsAccount(in),
+		Name:           computeServiceName(spec, in),
+		Cluster:        computeCluster(spec, in),
 		Hash:           hash,
 		Tags:           tags,
 		DesiredCount:   replicas,
@@ -164,7 +203,10 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 		return registry.AssetResult{}, fmt.Errorf("upsert ECS service: %w", err)
 	}
 
-	outputs := map[string]string{"service": awsServiceName(in), "launchType": launchType}
+	outputs := map[string]string{"service": svc.Name, "launchType": launchType}
+	if svc.Cluster != "" {
+		outputs["cluster"] = svc.Cluster
+	}
 	return registry.AssetResult{Outputs: outputs}, nil
 }
 
@@ -172,7 +214,11 @@ func (d *ComputeDriver) Destroy(ctx context.Context, in registry.AssetInput) err
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return d.backend.DeleteService(ctx, awsAccount(in), awsServiceName(in))
+	spec, err := decodeCompute(in)
+	if err != nil {
+		return err
+	}
+	return d.backend.DeleteService(ctx, computeCluster(spec, in), computeServiceName(spec, in))
 }
 
 func decodeCompute(in registry.AssetInput) (*assetdefs.ComputeSpec, error) {

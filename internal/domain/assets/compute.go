@@ -64,6 +64,7 @@ type ComputeSpec struct {
 	ObserveExisting        bool                `json:"observeExisting,omitempty" yaml:"observeExisting,omitempty"`
 	ExistingDeploymentName string              `json:"existingDeploymentName,omitempty" yaml:"existingDeploymentName,omitempty"`
 	ExistingServiceName    string              `json:"existingServiceName,omitempty" yaml:"existingServiceName,omitempty"`
+	Cluster                string              `json:"cluster,omitempty" yaml:"cluster,omitempty"`
 	Replicas               *int                `json:"replicas,omitempty" yaml:"replicas,omitempty"`
 	Command                StringList          `json:"command,omitempty" yaml:"command,omitempty"`
 	Args                   StringList          `json:"args,omitempty" yaml:"args,omitempty"`

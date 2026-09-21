@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
+	"github.com/rydzu/ainfra/guardian/internal/awsscan"
 	"github.com/rydzu/ainfra/guardian/internal/paths"
 	awsdriver "github.com/rydzu/ainfra/guardian/internal/pusher/drivers/aws"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
@@ -154,9 +156,46 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	if err := runtime.Run(ctx); err != nil && err != context.Canceled {
-		log.Fatal(err)
+	scanRunner := &awsscan.ScanRunner{
+		PusherName:           pusherName,
+		Account:              account,
+		Region:               region,
+		AssumeRoleName:       assumeRoleName,
+		AssumeRoleExternalID: assumeRoleExternalID,
+		WorkerID:             workerID,
+		PrincipalID:          monofsPrincipalID,
+		Store:                store,
+	}
+
+	taskErr := make(chan error, 1)
+	scanErr := make(chan error, 1)
+	go func() {
+		taskErr <- runtime.Run(ctx)
+	}()
+	go func() {
+		scanErr <- scanRunner.Run(ctx)
+	}()
+
+	var runErr error
+	for received := 0; received < 2; received++ {
+		select {
+		case err := <-taskErr:
+			if err != nil && !errors.Is(err, context.Canceled) && runErr == nil {
+				runErr = err
+				cancel()
+			}
+		case err := <-scanErr:
+			if err != nil && !errors.Is(err, context.Canceled) && runErr == nil {
+				runErr = err
+				cancel()
+			}
+		}
+	}
+	if runErr != nil {
+		log.Fatal(runErr)
 	}
 }
 

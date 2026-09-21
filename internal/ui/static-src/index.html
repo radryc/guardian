@@ -73,6 +73,12 @@
           </svg>
           <span>History</span>
         </button>
+        <button class="nav-item" data-tab-target="scanPanel">
+          <svg class="w-4 h-4 shrink-0 opacity-85" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="10" cy="10" r="2"/><path d="M10 4a6 6 0 0 1 6 6"/><path d="M10 1.5a8.5 8.5 0 0 1 8.5 8.5"/><path d="M10 16a6 6 0 0 1-6-6"/><path d="M10 18.5A8.5 8.5 0 0 1 1.5 10"/>
+          </svg>
+          <span>Scan &amp; Import</span>
+        </button>
       </nav>
 
       <section id="sidebarPartitionSection" class="flex-1 min-h-0 overflow-y-auto px-2.5 pb-4">
@@ -137,6 +143,7 @@
         <button class="tab-button" data-tab-target="topologyPanel">Topology</button>
         <button class="tab-button" data-tab-target="rolloutsPanel">Rollouts</button>
         <button class="tab-button" data-tab-target="historyPanel">History</button>
+        <button class="tab-button" data-tab-target="scanPanel">Scan &amp; Import</button>
       </div>
 
       <!-- ── Overview panel ────────────────────────── -->
@@ -292,6 +299,82 @@
               </div>
             </div>
             <div id="eventTimeline" class="loading-state text-sm text-[#566778]">Loading event timeline…</div>
+          </article>
+        </div>
+      </section>
+      <!-- ── Scan & import panel ─────────────────────── -->
+      <section id="scanPanel" class="panel hidden px-6 py-5 space-y-5">
+        <article class="card">
+          <div class="card-header">
+            <h2 class="card-title">AWS account scan</h2>
+            <p class="text-muted text-[13px]">Scan an AWS account through its guardian-pusher-aws worker and import discovered resources as partition intents.</p>
+          </div>
+          <div class="flex flex-wrap items-end gap-3">
+            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+              <span>Pusher</span>
+              <select id="scanPusher" class="search-input w-56"></select>
+            </label>
+            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+              <span>Regions</span>
+              <input id="scanRegions" class="search-input w-56" type="text" placeholder="all or eu-west-1,us-east-1" />
+            </label>
+            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+              <span>Include types</span>
+              <input id="scanIncludeTypes" class="search-input w-44" type="text" placeholder="AWS::EC2::*" />
+            </label>
+            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+              <span>Exclude types</span>
+              <input id="scanExcludeTypes" class="search-input w-44" type="text" placeholder="AWS::IAM::*" />
+            </label>
+            <label class="flex items-center gap-1.5 text-[12px] text-[#9BB0CF] cursor-pointer pb-2">
+              <input id="scanInventory" type="checkbox" class="accent-[#00ADE4]" /> Full inventory
+            </label>
+            <button id="scanStartButton" class="btn-primary mb-0.5">Start scan</button>
+          </div>
+          <p class="text-[12px] text-[#566778] mt-2">The scan executes on the AWS pusher worker using its credentials. Mappable resources (S3, EFS, SSM, Secrets Manager, ECS, ELBv2) become adoption intents; everything else is shown as inventory.</p>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <h2 class="card-title">Scans</h2>
+            <p class="text-muted text-[13px]">Recent account scans and their results.</p>
+          </div>
+          <div id="scanList" class="loading-state text-sm text-[#566778]">No scans yet.</div>
+        </article>
+
+        <div id="scanDetailWrap" class="hidden space-y-5">
+          <article class="card">
+            <div class="card-header">
+              <h2 class="card-title" id="scanDetailTitle">Scan result</h2>
+              <p class="text-muted text-[13px]" id="scanDetailSubtitle"></p>
+            </div>
+            <div id="scanSummary" class="pill-row mb-3"></div>
+            <div id="scanManagedList" class="mb-3"></div>
+            <div id="scanUnmappedList" class="mb-3"></div>
+            <div id="scanInventoryList" class="mb-3"></div>
+            <div id="scanErrorsList"></div>
+          </article>
+
+          <article class="card">
+            <div class="card-header">
+              <h2 class="card-title">Build partition bundle</h2>
+              <p class="text-muted text-[13px]">Generate adoption intents from the scan, review them, and save the bundle. Saved intents report in-sync on their first reconcile and only mutate AWS when you later change them.</p>
+            </div>
+            <div class="flex flex-wrap items-end gap-3 mb-3">
+              <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+                <span>Partition</span>
+                <input id="scanPartitionName" class="search-input w-56" type="text" placeholder="aws-imports" />
+              </label>
+              <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+                <span>Grouping</span>
+                <select id="scanGrouping" class="search-input w-52">
+                  <option value="stack">By CloudFormation stack</option>
+                  <option value="resource">One per resource</option>
+                </select>
+              </label>
+              <button id="scanGenerateButton" class="btn-secondary mb-0.5">Generate bundle</button>
+            </div>
+            <div id="scanBundleResult"></div>
           </article>
         </div>
       </section>

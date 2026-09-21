@@ -87,6 +87,28 @@ func QueueResult(pusher, taskID string) string {
 	return normalize(QueueResultsDir(pusher), taskID+".json")
 }
 
+func ScansRoot() string { return "/.scans" }
+
+func ScanDir(pusher string) string { return normalize(ScansRoot(), pusher) }
+
+func ScanRequestsDir(pusher string) string { return normalize(ScanDir(pusher), "requests") }
+
+func ScanRequest(pusher, scanID string) string {
+	return normalize(ScanRequestsDir(pusher), scanID+".json")
+}
+
+func ScanClaimsDir(pusher string) string { return normalize(ScanDir(pusher), ".claims") }
+
+func ScanClaim(pusher, scanID string) string {
+	return normalize(ScanClaimsDir(pusher), scanID+".json")
+}
+
+func ScanResultsDir(pusher string) string { return normalize(ScanDir(pusher), ".results") }
+
+func ScanResult(pusher, scanID string) string {
+	return normalize(ScanResultsDir(pusher), scanID+".json")
+}
+
 func ArchiveRoot() string { return "/.archive" }
 
 func ArchiveIntentRoot(partition, intent string) string {

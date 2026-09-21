@@ -3,6 +3,7 @@ package awsdriver
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
@@ -13,11 +14,15 @@ import (
 
 type VolumeDriver struct{ baseDriver }
 
-func (d *VolumeDriver) Type() string                     { return "Volume" }
-func (d *VolumeDriver) Validate(p map[string]any) error  { return nil }
+func (d *VolumeDriver) Type() string                    { return "Volume" }
+func (d *VolumeDriver) Validate(p map[string]any) error { return nil }
 
 func (d *VolumeDriver) Check(ctx context.Context, in registry.AssetInput) error {
 	return ctx.Err()
+}
+
+func volumeAdopted(spec *assetdefs.VolumeSpec) bool {
+	return strings.TrimSpace(spec.ExistingID) != ""
 }
 
 func (d *VolumeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdomain.DriftReport, error) {
@@ -32,8 +37,15 @@ func (d *VolumeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 		return inSyncDrift(in.Asset.Name, "ephemeral storage is in sync"), nil
 	}
 
+	adopted := volumeAdopted(spec)
 	fsID := loadSavedOutput(ctx, in, in.Asset.Name+".efsId")
+	if adopted {
+		fsID = strings.TrimSpace(spec.ExistingID)
+	}
 	if fsID == "" {
+		if adopted {
+			return changedDrift(in.Asset.Name, "adopted EFS filesystem is missing"), nil
+		}
 		return changedDrift(in.Asset.Name, "EFS filesystem not yet created"), nil
 	}
 
@@ -42,8 +54,17 @@ func (d *VolumeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	if !ok || fs.Hash != hash {
+	if !ok {
+		if adopted {
+			return changedDrift(in.Asset.Name, "adopted EFS filesystem is missing"), nil
+		}
 		return changedDrift(in.Asset.Name, "EFS filesystem differs"), nil
+	}
+	if !adopted && fs.Hash != hash {
+		return changedDrift(in.Asset.Name, "EFS filesystem differs"), nil
+	}
+	if adopted {
+		return inSyncDrift(in.Asset.Name, "adopted EFS filesystem is in sync"), nil
 	}
 	return inSyncDrift(in.Asset.Name, "EFS filesystem is in sync"), nil
 }
@@ -58,6 +79,16 @@ func (d *VolumeDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 	}
 	if driverutil.BoolValue(spec.Ephemeral) {
 		return registry.AssetResult{Outputs: map[string]string{"type": "ephemeral"}}, nil
+	}
+
+	if volumeAdopted(spec) {
+		fsID := strings.TrimSpace(spec.ExistingID)
+		if _, ok, err := d.backend.GetFileSystem(ctx, fsID); err != nil {
+			return registry.AssetResult{}, err
+		} else if !ok {
+			return registry.AssetResult{}, fmt.Errorf("adopted EFS filesystem %s not found", fsID)
+		}
+		return registry.AssetResult{Outputs: map[string]string{"efsId": fsID, "type": "efs"}}, nil
 	}
 
 	hash := driverutil.CompositeHash(in)
@@ -82,6 +113,13 @@ func (d *VolumeDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 func (d *VolumeDriver) Destroy(ctx context.Context, in registry.AssetInput) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	spec, err := decodeVolume(in)
+	if err != nil {
+		return err
+	}
+	if volumeAdopted(spec) {
+		return nil
 	}
 	fsID := loadSavedOutput(ctx, in, in.Asset.Name+".efsId")
 	if fsID == "" {
