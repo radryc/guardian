@@ -136,6 +136,18 @@ and optionally protect it with `--awsread-token` / `GUARDIAN_AWSREAD_TOKEN`
 | `GET /v1/aws/xray/services` | List X-Ray service names |
 | `GET /v1/aws/xray/traces?service=&from=&to=&limit=` | List X-Ray trace summaries |
 | `GET /v1/aws/xray/trace/{traceId}` | Fetch an X-Ray trace as spans |
+| `GET/POST /v1/aws/promql/query` | Proxy to CloudWatch's `/api/v1/query` (PromQL instant) |
+| `GET/POST /v1/aws/promql/query_range` | Proxy to CloudWatch's `/api/v1/query_range` |
+| `GET/POST /v1/aws/promql/series` | Proxy to CloudWatch's `/api/v1/series` |
+| `GET/POST /v1/aws/promql/labels` | Proxy to CloudWatch's `/api/v1/labels` |
+| `GET /v1/aws/promql/label/{name}/values` | Proxy to CloudWatch's `/api/v1/label/{name}/values` |
+
+The PromQL endpoints proxy CloudWatch's [Prometheus-compatible
+API](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-PromQL.html)
+using SigV4 (service `monitoring`). This gives Doctor full PromQL over
+CloudWatch metrics instead of a lossy `GetMetricData` translation. An optional
+`region` parameter selects the region (defaults to the pusher's region); it is
+not forwarded to CloudWatch.
 
 The task role needs `cloudwatch:GetMetricData`, `cloudwatch:ListMetrics`,
 `logs:StartQuery`, `logs:GetQueryResults`, `logs:DescribeLogGroups`,
