@@ -117,6 +117,31 @@ Or with MonoFS:
   --monofs-token '...'
 ```
 
+## Read-only CloudWatch / X-Ray API
+
+The pusher also serves a read-only observability API so Doctor can federate AWS
+telemetry into the same Grafana dataspace as OTLP data.
+
+Enable it with `--awsread-addr` (default `:19090`, or `GUARDIAN_AWSREAD_ADDR`)
+and optionally protect it with `--awsread-token` / `GUARDIAN_AWSREAD_TOKEN`
+(`Authorization: Bearer <token>`). Disable with `--awsread-disabled`.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /healthz` | Liveness |
+| `GET /v1/aws/metrics?namespace=&metric=` | Discover CloudWatch metrics |
+| `GET /v1/aws/metrics/query?namespace=&metric=&stat=&period=&from=&to=&dim.<Name>=<Value>` | Query a CloudWatch metric series |
+| `GET /v1/aws/log-groups` | List CloudWatch log groups |
+| `POST /v1/aws/logs/query` | Run a Logs Insights query (`{"log_groups":[...],"query":"...","limit":N}`) |
+| `GET /v1/aws/xray/services` | List X-Ray service names |
+| `GET /v1/aws/xray/traces?service=&from=&to=&limit=` | List X-Ray trace summaries |
+| `GET /v1/aws/xray/trace/{traceId}` | Fetch an X-Ray trace as spans |
+
+The task role needs `cloudwatch:GetMetricData`, `cloudwatch:ListMetrics`,
+`logs:StartQuery`, `logs:GetQueryResults`, `logs:DescribeLogGroups`,
+`xray:GetServiceGraph`, `xray:GetTraceSummaries` and `xray:BatchGetTraces`
+(`ReadOnlyAccess` plus the explicit statement added in `aws-pusher-stack.ts`).
+
 ## CDK asset shape
 
 Example intent asset:

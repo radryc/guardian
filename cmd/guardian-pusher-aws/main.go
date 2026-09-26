@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"regexp"
@@ -14,8 +15,9 @@ import (
 	"syscall"
 	"time"
 
-	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
+	"github.com/rydzu/ainfra/guardian/internal/awsread"
 	"github.com/rydzu/ainfra/guardian/internal/awsscan"
+	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
 	"github.com/rydzu/ainfra/guardian/internal/paths"
 	awsdriver "github.com/rydzu/ainfra/guardian/internal/pusher/drivers/aws"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
@@ -44,6 +46,9 @@ func main() {
 	var assumeRoleExternalID string
 	var bootstrapStackName string
 	var unclaimedTaskRetryDelay time.Duration
+	var awsReadAddr string
+	var awsReadToken string
+	var awsReadDisabled bool
 	flag.StringVar(&pusherName, "pusher-name", "", "pusher name (default: aws-<account>)")
 	flag.StringVar(&account, "account", "", "target account handled by this worker")
 	flag.StringVar(&region, "region", "", "optional target region filter handled by this worker (empty = all regions in account)")
@@ -59,6 +64,9 @@ func main() {
 	flag.StringVar(&assumeRoleExternalID, "assume-role-external-id", "", "optional external ID passed to target-account role assumption")
 	flag.StringVar(&bootstrapStackName, "bootstrap-stack-name", "CDKToolkit", "expected CDK bootstrap stack name in target accounts")
 	flag.DurationVar(&unclaimedTaskRetryDelay, "unclaimed-task-retry-delay", 15*time.Second, "minimum delay before retrying a task that could not be claimed; 0 disables backoff")
+	flag.StringVar(&awsReadAddr, "awsread-addr", envOr("GUARDIAN_AWSREAD_ADDR", ":19090"), "HTTP listen address for the read-only CloudWatch/X-Ray API (empty disables)")
+	flag.StringVar(&awsReadToken, "awsread-token", os.Getenv("GUARDIAN_AWSREAD_TOKEN"), "bearer token required by the AWS read API (empty disables auth)")
+	flag.BoolVar(&awsReadDisabled, "awsread-disabled", false, "disable the read-only CloudWatch/X-Ray API")
 	flag.Parse()
 
 	if account == "" || (storeDir == "" && monofsRouter == "") || (storeDir != "" && monofsRouter != "") {
@@ -172,6 +180,8 @@ func main() {
 
 	taskErr := make(chan error, 1)
 	scanErr := make(chan error, 1)
+	readErr := make(chan error, 1)
+	goroutines := 2
 	go func() {
 		taskErr <- runtime.Run(ctx)
 	}()
@@ -179,8 +189,33 @@ func main() {
 		scanErr <- scanRunner.Run(ctx)
 	}()
 
+	if !awsReadDisabled && strings.TrimSpace(awsReadAddr) != "" {
+		reader := awsread.NewAWSReader(awsread.Config{
+			Account:       account,
+			DefaultRegion: region,
+			Regions:       splitRegions(region),
+		})
+		readServer := &http.Server{
+			Addr:    awsReadAddr,
+			Handler: awsread.NewHandler(reader, awsReadToken),
+		}
+		goroutines++
+		go func() {
+			log.Printf("aws read API listening on %s", awsReadAddr)
+			go func() {
+				<-ctx.Done()
+				_ = readServer.Shutdown(context.Background())
+			}()
+			if err := readServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				readErr <- err
+				return
+			}
+			readErr <- nil
+		}()
+	}
+
 	var runErr error
-	for received := 0; received < 2; received++ {
+	for received := 0; received < goroutines; received++ {
 		select {
 		case err := <-taskErr:
 			if err != nil && !errors.Is(err, context.Canceled) && runErr == nil {
@@ -192,11 +227,38 @@ func main() {
 				runErr = err
 				cancel()
 			}
+		case err := <-readErr:
+			if err != nil && !errors.Is(err, context.Canceled) && runErr == nil {
+				runErr = err
+				cancel()
+			}
 		}
 	}
 	if runErr != nil {
 		log.Fatal(runErr)
 	}
+}
+
+func envOr(key, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func splitRegions(region string) []string {
+	region = strings.TrimSpace(region)
+	if region == "" {
+		return nil
+	}
+	parts := strings.Split(region, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 var scopeLabelSanitizer = regexp.MustCompile(`[^a-z0-9-]+`)

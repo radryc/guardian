@@ -35,7 +35,12 @@ fi
 : "${GUARDIAN_MONOFS_USE_EXTERNAL_ADDRESSES:=true}"
 : "${GUARDIAN_CDK_BINARY:=${cdk_binary:-cdk}}"
 : "${GUARDIAN_AWS_STATE_DIR:=${aws_state_dir:-/var/lib/guardian/pusher-aws}}"
-: "${GUARDIAN_ASSUME_ROLE_NAME:=${assume_role_name:-GuardianCdkDeployRole}}"
+# Only default the assume-role name when it is unset. An explicit empty value
+# disables assume-role (needed for IAM Roles Anywhere, where the certificate
+# already yields the target role).
+if [ -z "${GUARDIAN_ASSUME_ROLE_NAME+x}" ]; then
+  GUARDIAN_ASSUME_ROLE_NAME="${assume_role_name:-GuardianCdkDeployRole}"
+fi
 : "${GUARDIAN_ASSUME_ROLE_EXTERNAL_ID:=${assume_role_external_id}}"
 : "${GUARDIAN_BOOTSTRAP_STACK_NAME:=${bootstrap_stack_name:-CDKToolkit}}"
 
@@ -67,6 +72,14 @@ fi
 
 if [ -n "$GUARDIAN_ASSUME_ROLE_EXTERNAL_ID" ]; then
   set -- "$@" --assume-role-external-id "$GUARDIAN_ASSUME_ROLE_EXTERNAL_ID"
+fi
+
+if [ -n "${GUARDIAN_AWSREAD_ADDR:-}" ]; then
+  set -- "$@" --awsread-addr "$GUARDIAN_AWSREAD_ADDR"
+fi
+
+if [ -n "${GUARDIAN_AWSREAD_TOKEN:-}" ]; then
+  set -- "$@" --awsread-token "$GUARDIAN_AWSREAD_TOKEN"
 fi
 
 exec /usr/local/bin/guardian-pusher-aws "$@"
