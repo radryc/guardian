@@ -5,10 +5,77 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 )
+
+type fakePromQL struct {
+	lastPath   string
+	lastRegion string
+	lastParams url.Values
+	payload    []byte
+	status     int
+}
+
+func (f *fakePromQL) Do(_ context.Context, region, path string, params url.Values) ([]byte, int, error) {
+	f.lastPath = path
+	f.lastRegion = region
+	f.lastParams = params
+	if f.payload == nil {
+		f.payload = []byte(`{"status":"success","data":{"resultType":"vector","result":[]}}`)
+	}
+	return f.payload, f.status, nil
+}
+
+func TestHandlerProxiesCloudWatchPromQL(t *testing.T) {
+	promql := &fakePromQL{}
+	h := NewHandler(&fakeReader{}, "").WithPromQL(promql)
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/aws/promql/query_range?region=eu-west-1&query=sum(%7BCPUUtilization%7D)&start=1&end=2&step=60s",
+		nil,
+	)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if promql.lastPath != "/api/v1/query_range" {
+		t.Fatalf("path = %q, want /api/v1/query_range", promql.lastPath)
+	}
+	if promql.lastRegion != "eu-west-1" {
+		t.Fatalf("region = %q, want eu-west-1", promql.lastRegion)
+	}
+	if promql.lastParams.Get("query") != "sum({CPUUtilization})" {
+		t.Fatalf("query param = %q", promql.lastParams.Get("query"))
+	}
+	if _, ok := promql.lastParams["region"]; ok {
+		t.Fatalf("region leaked into forwarded params: %#v", promql.lastParams)
+	}
+}
+
+func TestPromQLOperationPath(t *testing.T) {
+	cases := map[string]string{
+		"/query":                 "/api/v1/query",
+		"/query_range":           "/api/v1/query_range",
+		"/series":                "/api/v1/series",
+		"/labels":                "/api/v1/labels",
+		"/label/__name__/values": "/api/v1/label/__name__/values",
+	}
+	for suffix, want := range cases {
+		got, err := promqlOperationPath(suffix)
+		if err != nil || got != want {
+			t.Fatalf("promqlOperationPath(%q) = %q, %v; want %q", suffix, got, err, want)
+		}
+	}
+	if _, err := promqlOperationPath("/bogus"); err == nil {
+		t.Fatalf("expected error for unknown operation")
+	}
+}
 
 type fakeReader struct {
 	metrics   []MetricSeries

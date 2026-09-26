@@ -190,14 +190,16 @@ func main() {
 	}()
 
 	if !awsReadDisabled && strings.TrimSpace(awsReadAddr) != "" {
-		reader := awsread.NewAWSReader(awsread.Config{
+		readerConfig := awsread.Config{
 			Account:       account,
 			DefaultRegion: region,
 			Regions:       splitRegions(region),
-		})
+		}
+		reader := awsread.NewAWSReader(readerConfig)
+		promQL := awsread.NewPromQLClient(readerConfig)
 		readServer := &http.Server{
 			Addr:    awsReadAddr,
-			Handler: awsread.NewHandler(reader, awsReadToken),
+			Handler: awsread.NewHandler(reader, awsReadToken).WithPromQL(promQL),
 		}
 		goroutines++
 		go func() {
