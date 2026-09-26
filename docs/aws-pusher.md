@@ -117,6 +117,10 @@ Or with MonoFS:
   --monofs-token '...'
 ```
 
+For the full account enablement flow (what the pusher stack provisions
+automatically and how to wire Doctor), see
+[`aws-observability-enablement.md`](aws-observability-enablement.md).
+
 ## Read-only CloudWatch / X-Ray API
 
 The pusher also serves a read-only observability API so Doctor can federate AWS
