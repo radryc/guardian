@@ -79,7 +79,10 @@ func releaseOne(ctx context.Context, printer *output.Printer, name, dir string, 
 
 	if bump {
 		fmt.Fprintf(os.Stderr, "=== bumping versions ===\n")
-		if err := bootstrap.Run(ctx, dryRun, self, "partition", "tag", "--dir", dir); err != nil {
+		intentFiles, _ := loadIntentFiles(dir)
+		if len(intentFiles) == 0 {
+			fmt.Fprintf(os.Stderr, "=== no intent manifests under %s; skipping version bump ===\n", filepath.Join(dir, "intents"))
+		} else if err := bootstrap.Run(ctx, dryRun, self, "partition", "tag", "--dir", dir); err != nil {
 			return fmt.Errorf("bump: %w", err)
 		}
 	}

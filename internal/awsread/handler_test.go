@@ -102,7 +102,13 @@ func (f *fakeReader) QueryLogs(_ context.Context, q LogQuery) ([]LogRecord, erro
 	return f.logs, nil
 }
 
-func (f *fakeReader) ListServices(context.Context) ([]string, error) { return f.services, nil }
+func (f *fakeReader) ListServices(context.Context) ([]ServiceInfo, error) {
+	services := make([]ServiceInfo, 0, len(f.services))
+	for _, name := range f.services {
+		services = append(services, ServiceInfo{Name: name})
+	}
+	return services, nil
+}
 
 func (f *fakeReader) QueryTraces(context.Context, TraceQuery) ([]TraceSummary, error) {
 	return f.traces, nil

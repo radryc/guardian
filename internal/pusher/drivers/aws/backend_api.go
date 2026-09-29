@@ -34,11 +34,13 @@ type BackendAPI interface {
 	UpsertService(ctx context.Context, svc ECSService) error
 	GetService(ctx context.Context, cluster, name string) (ECSService, bool, error)
 	DeleteService(ctx context.Context, cluster, name string) error
+	AttachServiceToTargetGroup(ctx context.Context, cluster, service, container, tgARN string, port int, sgID string) error
 
 	// ELBv2 (ALB/NLB)
 	UpsertLoadBalancer(ctx context.Context, lb LoadBalancer) (string, error)
 	GetLoadBalancer(ctx context.Context, name string) (LoadBalancer, bool, error)
 	DeleteLoadBalancer(ctx context.Context, arn string) error
+	EnsureLoadBalancerSecurityGroup(ctx context.Context, name, scheme string, ports []int) (string, error)
 
 	UpsertTargetGroup(ctx context.Context, tg TargetGroup) (string, error)
 	GetTargetGroup(ctx context.Context, name string) (TargetGroup, bool, error)
@@ -61,64 +63,64 @@ type BackendAPI interface {
 // --- Resource types ---
 
 type FileSystem struct {
-	ID             string
-	Name           string
-	Hash           string
-	Tags           map[string]string
-	Encrypted      bool
-	AccessPoints   map[string]string
+	ID           string
+	Name         string
+	Hash         string
+	Tags         map[string]string
+	Encrypted    bool
+	AccessPoints map[string]string
 }
 
 type Parameter struct {
-	Name    string
-	Type    string
-	Value   string
-	Hash    string
-	Tags    map[string]string
+	Name  string
+	Type  string
+	Value string
+	Hash  string
+	Tags  map[string]string
 }
 
 type Secret struct {
-	ID       string
-	Name     string
-	Value    string
-	Hash     string
-	Tags     map[string]string
+	ID    string
+	Name  string
+	Value string
+	Hash  string
+	Tags  map[string]string
 }
 
 type ECSService struct {
-	Name          string
-	Cluster       string
-	Hash          string
-	Tags          map[string]string
-	DesiredCount  int
-	LaunchType    string
-	TaskFamily    string
-	TaskRole      string
-	ExecRole      string
-	Subnets       []string
+	Name           string
+	Cluster        string
+	Hash           string
+	Tags           map[string]string
+	DesiredCount   int
+	LaunchType     string
+	TaskFamily     string
+	TaskRole       string
+	ExecRole       string
+	Subnets        []string
 	SecurityGroups []string
 	AssignPublicIP bool
-	Container     ContainerDef
+	Container      ContainerDef
 	TargetGroupARN string
 	LogGroup       string
 }
 
 type ContainerDef struct {
-	Name         string
-	Image        string
-	Command      []string
-	Args         []string
-	Env          map[string]string
-	Secrets      map[string]string
-	Ports        []PortDef
-	CPU          int
-	Memory       int
-	GPUs         int
-	HealthCheck  *HealthCheckDef
-	Privileged   bool
-	Volumes      []VolumeDef
-	LogDriver    string
-	LogOptions   map[string]string
+	Name        string
+	Image       string
+	Command     []string
+	Args        []string
+	Env         map[string]string
+	Secrets     map[string]string
+	Ports       []PortDef
+	CPU         int
+	Memory      int
+	GPUs        int
+	HealthCheck *HealthCheckDef
+	Privileged  bool
+	Volumes     []VolumeDef
+	LogDriver   string
+	LogOptions  map[string]string
 }
 
 type PortDef struct {
@@ -137,22 +139,22 @@ type HealthCheckDef struct {
 }
 
 type VolumeDef struct {
-	Name       string
+	Name            string
 	EFSFileSystemID string
 	AccessPointID   string
-	RootPath   string
+	RootPath        string
 }
 
 type LoadBalancer struct {
-	ARN          string
-	Name         string
-	Hash         string
-	Tags         map[string]string
-	Type         string
-	Scheme       string
-	Subnets      []string
+	ARN            string
+	Name           string
+	Hash           string
+	Tags           map[string]string
+	Type           string
+	Scheme         string
+	Subnets        []string
 	SecurityGroups []string
-	DNSName      string
+	DNSName        string
 }
 
 type TargetGroup struct {
@@ -170,12 +172,12 @@ type TargetGroup struct {
 }
 
 type Listener struct {
-	ARN          string
-	Hash         string
-	Tags         map[string]string
-	LoadBalancerARN string
-	Port        int
-	Protocol    string
+	ARN              string
+	Hash             string
+	Tags             map[string]string
+	LoadBalancerARN  string
+	Port             int
+	Protocol         string
 	DefaultActionARN string
 }
 
@@ -188,9 +190,9 @@ type BucketSpec struct {
 }
 
 type LogGroup struct {
-	Name       string
-	Hash       string
-	Tags       map[string]string
+	Name string
+	Hash string
+	Tags map[string]string
 }
 
 // --- CDK types (unchanged) ---

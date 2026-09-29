@@ -288,6 +288,18 @@ var catalogTemplates = map[string]CatalogTemplate{
 		Fields: observabilityCatalogFields(),
 		Hints:  hints(observabilityCatalogFields()),
 	},
+	assetdomain.TypeK8sResource: {
+		Type:        assetdomain.TypeK8sResource,
+		Title:       "Kubernetes resource",
+		Description: "Apply a raw Kubernetes manifest (ServiceAccount, RBAC, CRDs) verbatim through the Kubernetes pusher.",
+		Icon:        "📦",
+		Category:    "Compute",
+		Template: map[string]any{
+			"namespace": "",
+		},
+		Fields: k8sResourceCatalogFields(),
+		Hints:  hints(k8sResourceCatalogFields()),
+	},
 }
 
 func Catalog() []CatalogTemplate {
@@ -406,7 +418,7 @@ func ValidateIntentHints(hints []assetdomain.Hint, assetNames map[string]struct{
 				return fmt.Errorf("hints[%d].path references unknown asset %q", idx, parts[0])
 			}
 		default:
-			return fmt.Errorf("hints[%d].path must start with outputs. or assets.<asset>.", idx)
+			return fmt.Errorf("hints[%d].path must start with outputs. or assets.<asset>", idx)
 		}
 	}
 	return nil
@@ -558,6 +570,12 @@ func configCatalogFields() []CatalogField {
 		{Path: "format", Title: "Format", Control: "select", Options: []string{"text", "json", "yaml"}, Description: "Serialization format for generated config files."},
 		{Path: "content", Title: "Inline content", Control: "textarea", Description: "Single inline config blob rendered as one file."},
 		{Path: "data", Title: "Data files JSON", Control: "json", Description: "Multiple named file contents keyed by filename."},
+	}
+}
+
+func k8sResourceCatalogFields() []CatalogField {
+	return []CatalogField{
+		{Path: "namespace", Title: "Namespace", Control: "text", Description: "Optional namespace for the applied manifest documents; defaults to the target namespace."},
 	}
 }
 

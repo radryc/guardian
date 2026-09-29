@@ -21,9 +21,9 @@ import (
 )
 
 type CertPaths struct {
-	CADir    string
-	CA       string
-	Client   string
+	CADir     string
+	CA        string
+	Client    string
 	ClientKey string
 }
 
@@ -31,10 +31,10 @@ func DefaultCertPaths() CertPaths {
 	home, _ := os.UserHomeDir()
 	base := filepath.Join(home, ".guardian", "certs")
 	return CertPaths{
-		CADir:      base,
-		CA:         filepath.Join(base, "ca.pem"),
-		Client:     filepath.Join(base, "client.pem"),
-		ClientKey:  filepath.Join(base, "client.key"),
+		CADir:     base,
+		CA:        filepath.Join(base, "ca.pem"),
+		Client:    filepath.Join(base, "client.pem"),
+		ClientKey: filepath.Join(base, "client.key"),
 	}
 }
 
@@ -172,16 +172,16 @@ func EnsureCerts(paths CertPaths, forceNew bool) (caPEM string, clientPEM string
 }
 
 type RolesAnywhereConfig struct {
-	Profile          string
-	Region           string
-	TrustAnchorARN   string
-	ProfileARN       string
-	RoleARN          string
-	RoleName         string
-	Certificate      string
-	CertificatePath  string
-	PrivateKeyPath   string
-	CertDir          string
+	Profile         string
+	Region          string
+	TrustAnchorARN  string
+	ProfileARN      string
+	RoleARN         string
+	RoleName        string
+	Certificate     string
+	CertificatePath string
+	PrivateKeyPath  string
+	CertDir         string
 }
 
 func EnsureRolesAnywhere(ctx context.Context, cfg RolesAnywhereConfig, caPEM string, sourceProfile string) (*RolesAnywhereConfig, error) {
@@ -290,7 +290,7 @@ credential_process = aws_signing_helper credential-process \\
   --profile-arn %s \\
   --role-arn %s
 region = %s
-`, 
+`,
 		cfg.CertificatePath,
 		cfg.PrivateKeyPath,
 		cfg.TrustAnchorARN,

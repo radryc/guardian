@@ -312,6 +312,9 @@ func (b *CLIBackend) UpsertContainer(container Container) error {
 	for _, key := range sortedStringKeys(container.Env) {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", key, container.Env[key]))
 	}
+	if container.User != "" {
+		args = append(args, "--user", container.User)
+	}
 	if container.Privileged {
 		args = append(args, "--privileged")
 	}

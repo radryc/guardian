@@ -97,6 +97,9 @@ func (b *adoptionBackend) UpsertService(ctx context.Context, svc ECSService) err
 	b.services[svc.Cluster+"/"+svc.Name] = svc
 	return nil
 }
+func (b *adoptionBackend) AttachServiceToTargetGroup(ctx context.Context, cluster, service, container, tgARN string, port int, sgID string) error {
+	return nil
+}
 func (b *adoptionBackend) GetService(ctx context.Context, cluster, name string) (ECSService, bool, error) {
 	svc, ok := b.services[cluster+"/"+name]
 	return svc, ok, nil
@@ -121,6 +124,9 @@ func (b *adoptionBackend) DeleteLoadBalancer(ctx context.Context, arn string) er
 		}
 	}
 	return nil
+}
+func (b *adoptionBackend) EnsureLoadBalancerSecurityGroup(ctx context.Context, name, scheme string, ports []int) (string, error) {
+	return "sg-test", nil
 }
 
 func (b *adoptionBackend) UpsertTargetGroup(ctx context.Context, tg TargetGroup) (string, error) {
@@ -172,7 +178,7 @@ func adoptionInput(assetType, assetName string, properties map[string]any) regis
 			Account: "123456789012",
 			Region:  "eu-west-1",
 		},
-		Store:   memory.New(),
+		Store:    memory.New(),
 		WorkerID: "test-worker",
 	}
 }

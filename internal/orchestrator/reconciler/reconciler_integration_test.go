@@ -568,6 +568,105 @@ spec:
 	}
 }
 
+func TestReconcilePartitionPicksUpPushedSpecWhileStaleTaskInFlight(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "test")
+	recon := reconciler.NewReconciler(store, disp, time.Minute)
+
+	seedRaw(t, ctx, store, paths.PartitionConfig("demo"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Partition
+metadata:
+  name: demo
+spec:
+  deletionPolicy: orphan
+  reconciliation:
+    mode: auto
+    interval: 30s
+`))
+	seedRaw(t, ctx, store, paths.IntentManifest("demo", "api"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: api
+spec:
+  intentType: standard
+  targetPusher: local
+  target:
+    cluster: local
+  locked: false
+  assets:
+    - type: Compute
+      name: web
+      properties:
+        image: api:v2
+`))
+
+	// First reconcile computes and stores the current (v2) spec hash.
+	if err := recon.ReconcilePartition(ctx, "demo", true); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	current, err := common.LoadIntentState(ctx, store, "demo", "api")
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	compiledHash := current.IntentSpecHash
+	if compiledHash == "" {
+		t.Fatalf("expected compiled intent spec hash")
+	}
+
+	// Simulate a task still running against the previous spec while the stored
+	// state has already advanced to the compiled hash. Comparing only the stored
+	// hash would hide the change and deadlock the rollout.
+	staleTask := &taskdomain.Task{
+		APIVersion:      "guardian/v1alpha1",
+		Kind:            "Task",
+		TaskID:          "t-stale-old-spec",
+		Partition:       "demo",
+		Intent:          "api",
+		Op:              taskdomain.OpDiff,
+		TargetPusher:    "local",
+		Target:          targetdomain.Placement{Cluster: "local"},
+		IntentSpecHash:  "spec-hash-old",
+		IntentVersionID: "intent-v1",
+		Assets: []taskdomain.AbstractAsset{{
+			Type:       "Compute",
+			Name:       "web",
+			Properties: map[string]any{"image": "api:v1"},
+		}},
+		CreatedAt: time.Now().UTC(),
+	}
+	seedRaw(t, ctx, store, paths.QueueTask("local", staleTask.TaskID), mustJSON(t, staleTask))
+
+	current.Status = statedomain.StatusDiffing
+	current.LastTaskID = staleTask.TaskID
+	current.TargetPusher = "local"
+	current.IntentSpecHash = compiledHash
+	if err := disp.WriteIntentState(ctx, current); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	if err := recon.ReconcilePartition(ctx, "demo", true); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+
+	after, err := common.LoadIntentState(ctx, store, "demo", "api")
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if after.LastTaskID == staleTask.TaskID {
+		t.Fatalf("expected reconcile to re-queue despite advanced stored hash")
+	}
+	var next taskdomain.Task
+	if err := loadJSON(ctx, store, paths.QueueTask("local", after.LastTaskID), &next); err != nil {
+		t.Fatalf("load queued task: %v", err)
+	}
+	if next.IntentSpecHash != compiledHash {
+		t.Fatalf("queued task hash = %q, want %q", next.IntentSpecHash, compiledHash)
+	}
+}
+
 func mustJSON(t *testing.T, value any) []byte {
 	t.Helper()
 	content, err := json.Marshal(value)

@@ -177,7 +177,7 @@ func DefaultConfig() Config {
 				Search:     "monofs-search:latest",
 				Registry:   "monofs-registry:latest",
 				LB:         "lb:latest",
-				Minio:      "quay.io/minio/minio:latest",
+				Minio:      "docker.io/bitnamilegacy/minio:latest",
 				PullPolicy: "IfNotPresent",
 			},
 			PVC: StoragePVC{
@@ -523,14 +523,4 @@ func RunCapture(ctx context.Context, name string, args ...string) (string, error
 	cmd := exec.CommandContext(ctx, name, args...)
 	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
-}
-
-// Kubectl runs a kubectl command with the given args.
-func Kubectl(ctx context.Context, dryRun bool, args ...string) error {
-	return Run(ctx, dryRun, "kubectl", args...)
-}
-
-// KubectlCapture runs kubectl and captures stdout.
-func KubectlCapture(ctx context.Context, args ...string) (string, error) {
-	return RunCapture(ctx, "kubectl", args...)
 }

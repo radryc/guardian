@@ -28,15 +28,6 @@ func AssetVersionID(intentName string, assetSpec any) string {
 	return "asset_" + digest.ContentHash([]byte(intentName + "|" + digest.MustNormalizedHash(assetSpec)))[:16]
 }
 
-func DerivedAssetVersion(assetVersionID string) string {
-	return DerivedAssetVersionAt(assetVersionID, time.Time{})
-}
-
-func DerivedNamedAssetVersion(assetName, assetVersionID string) string {
-	_ = assetName
-	return DerivedAssetVersionAt(assetVersionID, time.Time{})
-}
-
 func DerivedAssetVersionAt(assetVersionID string, modifiedAt time.Time) string {
 	trimmed := strings.TrimSpace(assetVersionID)
 	if trimmed == "" {

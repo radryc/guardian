@@ -39,7 +39,11 @@ func main() {
 	var kubectlBinary string
 	var kubeconfig string
 	var kubeContext string
+	var backendMode string
 	var unclaimedTaskRetryDelay time.Duration
+	var maxConcurrency int
+	var shardIndex int
+	var shardCount int
 	flag.StringVar(&pusherName, "pusher-name", "", "pusher name (default: k8s-<cluster>)")
 	flag.StringVar(&cluster, "cluster", "", "target cluster handled by this worker")
 	flag.StringVar(&storeDir, "store-dir", "", "filesystem-backed Guardian store")
@@ -51,7 +55,11 @@ func main() {
 	flag.StringVar(&kubectlBinary, "kubectl-binary", "kubectl", "kubectl binary to use for apply/diff/destroy")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "optional kubeconfig path for kubectl")
 	flag.StringVar(&kubeContext, "kube-context", "", "optional kubectl context override")
+	flag.StringVar(&backendMode, "backend", "auto", "kubernetes backend: auto|client|kubectl (auto prefers client-go and falls back to kubectl)")
 	flag.DurationVar(&unclaimedTaskRetryDelay, "unclaimed-task-retry-delay", 15*time.Second, "minimum delay before retrying a task that could not be claimed; 0 disables backoff")
+	flag.IntVar(&maxConcurrency, "max-concurrency", 0, "maximum tasks executed concurrently (0 = auto from CPU count)")
+	flag.IntVar(&shardIndex, "shard-index", 0, "shard index for this replica when sharding a shared queue")
+	flag.IntVar(&shardCount, "shard-count", 1, "number of shards sharing the queue; 1 disables sharding")
 	flag.Parse()
 
 	if cluster == "" || (storeDir == "" && monofsRouter == "") || (storeDir != "" && monofsRouter != "") {
@@ -120,7 +128,7 @@ func main() {
 		}()
 	}
 
-	kubeBackend, err := kubernetesdriver.NewCLIBackend(kubectlBinary, kubeconfig, kubeContext)
+	kubeBackend, err := newKubeBackend(backendMode, kubectlBinary, kubeconfig, kubeContext)
 	if err != nil {
 		log.Fatalf("configure kubernetes backend: %v", err)
 	}
@@ -134,6 +142,9 @@ func main() {
 		Registry:                reg,
 		PollInterval:            5 * time.Second,
 		UnclaimedTaskRetryDelay: unclaimedTaskRetryDelay,
+		MaxConcurrency:          maxConcurrency,
+		ShardIndex:              shardIndex,
+		ShardCount:              shardCount,
 		CanHandle: func(t *taskdomain.Task) bool {
 			return strings.EqualFold(strings.TrimSpace(t.Target.Cluster), cluster) &&
 				strings.EqualFold(strings.TrimSpace(t.TargetPusher), pusherName)
@@ -149,6 +160,23 @@ func main() {
 }
 
 var scopeLabelSanitizer = regexp.MustCompile(`[^a-z0-9-]+`)
+
+func newKubeBackend(mode, kubectlBinary, kubeconfig, kubeContext string) (kubernetesdriver.BackendAPI, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "kubectl":
+		return kubernetesdriver.NewCLIBackend(kubectlBinary, kubeconfig, kubeContext)
+	case "client", "client-go", "clientgo":
+		return kubernetesdriver.NewClientBackend(kubeconfig, kubeContext)
+	default:
+		backend, err := kubernetesdriver.NewClientBackend(kubeconfig, kubeContext)
+		if err == nil {
+			log.Printf("kubernetes: using client-go backend (kubeconfig=%q context=%q)", kubeconfig, kubeContext)
+			return backend, nil
+		}
+		log.Printf("kubernetes: client-go backend unavailable (%v); falling back to kubectl", err)
+		return kubernetesdriver.NewCLIBackend(kubectlBinary, kubeconfig, kubeContext)
+	}
+}
 
 func scopeLabel(input string) string {
 	value := strings.ToLower(strings.TrimSpace(input))

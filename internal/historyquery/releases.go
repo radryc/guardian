@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"time"
 
 	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
 	releasedomain "github.com/rydzu/ainfra/guardian/internal/domain/release"
@@ -119,15 +118,4 @@ func ReleaseRecordToDeploymentRecord(rec *releasedomain.ReleaseRecord) historydo
 		Outputs:            rec.Outputs,
 		CreatedAt:          rec.CreatedAt,
 	}
-}
-
-// AsOf returns the CreatedAt value of the latest release for an intent, or the
-// zero time when the release log is missing/empty. Cheap helper used in
-// diagnostics and recovery probes.
-func AsOf(ctx context.Context, store guardianapi.ReadStore, partition, intent string) time.Time {
-	rec, err := LoadLatestRelease(ctx, store, partition, intent)
-	if err != nil || rec == nil {
-		return time.Time{}
-	}
-	return rec.CreatedAt
 }

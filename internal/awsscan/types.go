@@ -47,12 +47,12 @@ type ScanClaim struct {
 }
 
 type ManagedInfo struct {
-	Managed             bool   `json:"managed"`
-	Partition           string `json:"partition,omitempty"`
-	Intent              string `json:"intent,omitempty"`
-	Asset               string `json:"asset,omitempty"`
-	AssetType           string `json:"assetType,omitempty"`
-	Hash                string `json:"hash,omitempty"`
+	Managed   bool   `json:"managed"`
+	Partition string `json:"partition,omitempty"`
+	Intent    string `json:"intent,omitempty"`
+	Asset     string `json:"asset,omitempty"`
+	AssetType string `json:"assetType,omitempty"`
+	Hash      string `json:"hash,omitempty"`
 }
 
 type BucketResource struct {
@@ -196,26 +196,26 @@ type ScanSummary struct {
 }
 
 type ScanResult struct {
-	APIVersion    string                                   `json:"apiVersion"`
-	Kind          string                                   `json:"kind"`
-	ScanID        string                                   `json:"scanID"`
-	Pusher        string                                   `json:"pusher"`
-	Account       string                                   `json:"account"`
-	Status        ScanStatus                               `json:"status"`
-	StartedAt     time.Time                                `json:"startedAt"`
-	FinishedAt    time.Time                                `json:"finishedAt"`
-	Request       *ScanRequest                             `json:"request,omitempty"`
-	Regions       []string                                 `json:"regions,omitempty"`
-	Buckets       []BucketResource                         `json:"buckets,omitempty"`
-	FileSystems   []FileSystemResource                     `json:"fileSystems,omitempty"`
-	Parameters    []ParameterResource                      `json:"parameters,omitempty"`
-	Secrets       []SecretResource                         `json:"secrets,omitempty"`
-	Services      []ServiceResource                        `json:"services,omitempty"`
-	LoadBalancers []LoadBalancerResource                   `json:"loadBalancers,omitempty"`
-	Stacks        []StackResource                          `json:"stacks,omitempty"`
+	APIVersion    string                                    `json:"apiVersion"`
+	Kind          string                                    `json:"kind"`
+	ScanID        string                                    `json:"scanID"`
+	Pusher        string                                    `json:"pusher"`
+	Account       string                                    `json:"account"`
+	Status        ScanStatus                                `json:"status"`
+	StartedAt     time.Time                                 `json:"startedAt"`
+	FinishedAt    time.Time                                 `json:"finishedAt"`
+	Request       *ScanRequest                              `json:"request,omitempty"`
+	Regions       []string                                  `json:"regions,omitempty"`
+	Buckets       []BucketResource                          `json:"buckets,omitempty"`
+	FileSystems   []FileSystemResource                      `json:"fileSystems,omitempty"`
+	Parameters    []ParameterResource                       `json:"parameters,omitempty"`
+	Secrets       []SecretResource                          `json:"secrets,omitempty"`
+	Services      []ServiceResource                         `json:"services,omitempty"`
+	LoadBalancers []LoadBalancerResource                    `json:"loadBalancers,omitempty"`
+	Stacks        []StackResource                           `json:"stacks,omitempty"`
 	Inventory     map[string]map[string][]InventoryResource `json:"inventory,omitempty"`
-	Errors        []ScanError                              `json:"errors,omitempty"`
-	Summary       ScanSummary                              `json:"summary"`
+	Errors        []ScanError                               `json:"errors,omitempty"`
+	Summary       ScanSummary                               `json:"summary"`
 }
 
 func (r *ScanResult) CountManaged() int {

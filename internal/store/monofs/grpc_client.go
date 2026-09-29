@@ -13,6 +13,7 @@ import (
 	"time"
 
 	pb "github.com/radryc/monofs/api/proto"
+	"github.com/radryc/monofs/pkg/grpcx"
 	"github.com/rydzu/ainfra/guardian/internal/clitoken"
 	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
 	"google.golang.org/grpc"
@@ -102,9 +103,8 @@ type GRPCClient struct {
 	lastRefresh time.Time
 	refreshTTL  time.Duration
 
-	refreshMu      sync.Mutex
-	refreshing     bool
-	refreshRequest chan struct{}
+	refreshMu  sync.Mutex
+	refreshing bool
 
 	stopHeartbeat chan struct{}
 	stopOnce      sync.Once
@@ -120,11 +120,12 @@ func dialRouter(addr string) (*grpc.ClientConn, error) {
 	return grpc.NewClient(
 		addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpcx.IPv4DialerOption(),
 		grpc.WithPerRPCCredentials(cliBearerCreds{}),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                defaultGRPCKeepaliveTime,
 			Timeout:             10 * time.Second,
-			PermitWithoutStream: true,
+			PermitWithoutStream: false,
 		}),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(1024*1024*1024),
@@ -828,6 +829,7 @@ func (c *GRPCClient) refreshNodes(ctx context.Context) error {
 		nodeConn, dialErr := grpc.NewClient(
 			nodeAddr,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpcx.IPv4DialerOption(),
 			grpc.WithKeepaliveParams(keepalive.ClientParameters{
 				Time:                defaultGRPCKeepaliveTime,
 				Timeout:             10 * time.Second,
@@ -1111,7 +1113,7 @@ func wrapDNSHint(err error) error {
 	}
 	if strings.Contains(msg, "connection refused") || strings.Contains(msg, "\"TRANSIENT_FAILURE\"") {
 		return fmt.Errorf("%w\n\n  Connection to a MonoFS node was refused.\n"+
-			"  Verify the node's gRPC port is reachable from this host.", err)
+			"  Verify the node's gRPC port is reachable from this host", err)
 	}
 	return err
 }

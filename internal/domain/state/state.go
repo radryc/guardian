@@ -53,33 +53,33 @@ type PartitionRuntime struct {
 }
 
 type IntentState struct {
-	APIVersion           string                                  `json:"apiVersion"`
-	Kind                 string                                  `json:"kind"`
-	Partition            string                                  `json:"partition"`
-	Intent               string                                  `json:"intent"`
-	Status               IntentStatus                            `json:"status"`
-	Locked               bool                                    `json:"locked"`
-	IntentVersionID      string                                  `json:"intentVersionID"`
-	IntentSpecHash       string                                  `json:"intentSpecHash"`
-	LastAppliedSpecHash  string                                  `json:"lastAppliedSpecHash,omitempty"`
-	PartitionRevision    string                                  `json:"partitionRevision"`
-	DeploymentRevision   string                                  `json:"deploymentRevision"`
-	TargetPusher       string                                  `json:"targetPusher"`
-	Target             targetdomain.Placement                  `json:"target,omitempty"`
-	Joins              []string                                `json:"joins"`
-	AssetVersionIDs    map[string]string                       `json:"assetVersionIDs"`
-	AssetVersions      map[string]string                       `json:"assetVersions,omitempty"`
-	Outputs            map[string]string                       `json:"outputs"`
-	Drift              *taskdomain.DriftReport                 `json:"drift,omitempty"`
-	Health             *taskdomain.HealthObservation           `json:"health,omitempty"`
-	ApplyReadiness     *taskdomain.ApplyReadiness              `json:"applyReadiness,omitempty"`
-	AssetObservations  map[string]*taskdomain.AssetObservation `json:"assetObservations,omitempty"`
-	LastTaskID         string                                  `json:"lastTaskID"`
-	LastError          *string                                 `json:"lastError,omitempty"`
-	PartitionMode      string                                  `json:"partitionMode,omitempty"`
-	RollbackTo         string                                  `json:"rollbackTo,omitempty"`
-	RollbackReason     string                                  `json:"rollbackReason,omitempty"`
-	Timestamps         StateTimestamps                         `json:"timestamps"`
+	APIVersion          string                                  `json:"apiVersion"`
+	Kind                string                                  `json:"kind"`
+	Partition           string                                  `json:"partition"`
+	Intent              string                                  `json:"intent"`
+	Status              IntentStatus                            `json:"status"`
+	Locked              bool                                    `json:"locked"`
+	IntentVersionID     string                                  `json:"intentVersionID"`
+	IntentSpecHash      string                                  `json:"intentSpecHash"`
+	LastAppliedSpecHash string                                  `json:"lastAppliedSpecHash,omitempty"`
+	PartitionRevision   string                                  `json:"partitionRevision"`
+	DeploymentRevision  string                                  `json:"deploymentRevision"`
+	TargetPusher        string                                  `json:"targetPusher"`
+	Target              targetdomain.Placement                  `json:"target,omitempty"`
+	Joins               []string                                `json:"joins"`
+	AssetVersionIDs     map[string]string                       `json:"assetVersionIDs"`
+	AssetVersions       map[string]string                       `json:"assetVersions,omitempty"`
+	Outputs             map[string]string                       `json:"outputs"`
+	Drift               *taskdomain.DriftReport                 `json:"drift,omitempty"`
+	Health              *taskdomain.HealthObservation           `json:"health,omitempty"`
+	ApplyReadiness      *taskdomain.ApplyReadiness              `json:"applyReadiness,omitempty"`
+	AssetObservations   map[string]*taskdomain.AssetObservation `json:"assetObservations,omitempty"`
+	LastTaskID          string                                  `json:"lastTaskID"`
+	LastError           *string                                 `json:"lastError,omitempty"`
+	PartitionMode       string                                  `json:"partitionMode,omitempty"`
+	RollbackTo          string                                  `json:"rollbackTo,omitempty"`
+	RollbackReason      string                                  `json:"rollbackReason,omitempty"`
+	Timestamps          StateTimestamps                         `json:"timestamps"`
 }
 
 type StateTimestamps struct {
@@ -103,7 +103,7 @@ func ClonePartitionState(in *PartitionState) *PartitionState {
 		return nil
 	}
 	out := *in
-	out.IntentVersions = cloneStringMap(in.IntentVersions)
+	out.IntentVersions = CloneStringMap(in.IntentVersions)
 	out.Errors = append([]string(nil), in.Errors...)
 	out.Metrics = ClonePartitionStatusMetrics(in.Metrics)
 	return &out
@@ -115,13 +115,13 @@ func CloneIntentState(in *IntentState) *IntentState {
 	}
 	out := *in
 	out.Joins = append([]string(nil), in.Joins...)
-	out.AssetVersionIDs = cloneStringMap(in.AssetVersionIDs)
-	out.AssetVersions = cloneStringMap(in.AssetVersions)
-	out.Outputs = cloneStringMap(in.Outputs)
-	out.Drift = cloneDriftReport(in.Drift)
-	out.Health = cloneHealthObservation(in.Health)
-	out.ApplyReadiness = cloneApplyReadiness(in.ApplyReadiness)
-	out.AssetObservations = cloneAssetObservationMap(in.AssetObservations)
+	out.AssetVersionIDs = CloneStringMap(in.AssetVersionIDs)
+	out.AssetVersions = CloneStringMap(in.AssetVersions)
+	out.Outputs = CloneStringMap(in.Outputs)
+	out.Drift = CloneDriftReport(in.Drift)
+	out.Health = CloneHealthObservation(in.Health)
+	out.ApplyReadiness = CloneApplyReadiness(in.ApplyReadiness)
+	out.AssetObservations = CloneAssetObservationMap(in.AssetObservations)
 	out.LastError = cloneStringPtr(in.LastError)
 	return &out
 }
@@ -139,7 +139,7 @@ func ClonePartitionRuntime(in *PartitionRuntime) *PartitionRuntime {
 	return &out
 }
 
-func cloneStringMap(in map[string]string) map[string]string {
+func CloneStringMap(in map[string]string) map[string]string {
 	if in == nil {
 		return nil
 	}
@@ -158,7 +158,7 @@ func cloneStringPtr(in *string) *string {
 	return &value
 }
 
-func cloneDriftReport(in *taskdomain.DriftReport) *taskdomain.DriftReport {
+func CloneDriftReport(in *taskdomain.DriftReport) *taskdomain.DriftReport {
 	if in == nil {
 		return nil
 	}
@@ -167,7 +167,7 @@ func cloneDriftReport(in *taskdomain.DriftReport) *taskdomain.DriftReport {
 	return &out
 }
 
-func cloneHealthObservation(in *taskdomain.HealthObservation) *taskdomain.HealthObservation {
+func CloneHealthObservation(in *taskdomain.HealthObservation) *taskdomain.HealthObservation {
 	if in == nil {
 		return nil
 	}
@@ -175,7 +175,7 @@ func cloneHealthObservation(in *taskdomain.HealthObservation) *taskdomain.Health
 	return &out
 }
 
-func cloneApplyReadiness(in *taskdomain.ApplyReadiness) *taskdomain.ApplyReadiness {
+func CloneApplyReadiness(in *taskdomain.ApplyReadiness) *taskdomain.ApplyReadiness {
 	if in == nil {
 		return nil
 	}
@@ -183,23 +183,23 @@ func cloneApplyReadiness(in *taskdomain.ApplyReadiness) *taskdomain.ApplyReadine
 	return &out
 }
 
-func cloneAssetObservationMap(in map[string]*taskdomain.AssetObservation) map[string]*taskdomain.AssetObservation {
+func CloneAssetObservationMap(in map[string]*taskdomain.AssetObservation) map[string]*taskdomain.AssetObservation {
 	if in == nil {
 		return nil
 	}
 	out := make(map[string]*taskdomain.AssetObservation, len(in))
 	for key, value := range in {
-		out[key] = cloneAssetObservation(value)
+		out[key] = CloneAssetObservation(value)
 	}
 	return out
 }
 
-func cloneAssetObservation(in *taskdomain.AssetObservation) *taskdomain.AssetObservation {
+func CloneAssetObservation(in *taskdomain.AssetObservation) *taskdomain.AssetObservation {
 	if in == nil {
 		return nil
 	}
 	out := *in
-	out.Health = cloneHealthObservation(in.Health)
-	out.ApplyReadiness = cloneApplyReadiness(in.ApplyReadiness)
+	out.Health = CloneHealthObservation(in.Health)
+	out.ApplyReadiness = CloneApplyReadiness(in.ApplyReadiness)
 	return &out
 }

@@ -464,7 +464,6 @@ servicePorts:
 }
 
 func TestCLIBackendContainerVolumesRendersHostPathMounts(t *testing.T) {
-	backend := &CLIBackend{}
 	deployment := Deployment{
 		Name: "workspace",
 		Container: Container{
@@ -474,7 +473,7 @@ func TestCLIBackendContainerVolumesRendersHostPathMounts(t *testing.T) {
 		},
 	}
 
-	volumes, mounts := backend.containerVolumes(deployment)
+	volumes, mounts := containerVolumes(deployment)
 	if len(volumes) != 1 {
 		t.Fatalf("expected one volume, got %+v", volumes)
 	}
@@ -720,6 +719,63 @@ func TestKubernetesDiffIgnoresUnreadyReplicas(t *testing.T) {
 	}
 	if diff.ApplyReadiness == nil || diff.ApplyReadiness.Status != taskdomain.ApplyReadinessReady {
 		t.Fatalf("expected ready apply-readiness observation, got %+v", diff.ApplyReadiness)
+	}
+}
+
+func TestKubernetesComputeCheckAllowsRolloutOverCrashLoop(t *testing.T) {
+	ctx := context.Background()
+	backend := NewBackend()
+	driver := &ComputeDriver{baseDriver{backend: backend, resolver: secrets.NoopResolver{}}}
+
+	input := func(image string) registry.AssetInput {
+		return registry.AssetInput{
+			PartitionName: "demo",
+			IntentName:    "stack",
+			Asset: taskdomain.AbstractAsset{
+				Type:       "Compute",
+				Name:       "app",
+				Properties: map[string]any{"image": image, "replicas": 1},
+			},
+			Assets: map[string]taskdomain.AbstractAsset{},
+			Target: targetdomain.Placement{Cluster: "main", Namespace: "platform"},
+		}
+	}
+
+	applied, err := driver.Apply(ctx, input("demo:v1"))
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	deploymentName := applied.Outputs["id"]
+	deployment, ok, err := backend.GetDeployment("platform", deploymentName)
+	if err != nil || !ok {
+		t.Fatalf("get deployment (ok=%v): %v", ok, err)
+	}
+	deployment.CrashLoopBackOff = true
+	deployment.PodFailureReason = "CrashLoopBackOff"
+	deployment.PodFailureMessage = "back-off restarting failed container"
+	deployment.PodFailurePodName = "app-abc"
+	if err := backend.UpsertDeployment(deployment); err != nil {
+		t.Fatalf("upsert deployment: %v", err)
+	}
+
+	// cloneDeployment must round-trip the crash-loop detail (regression: the
+	// message and pod name used to be dropped).
+	roundTrip, _, err := backend.GetDeployment("platform", deploymentName)
+	if err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	if roundTrip.PodFailureMessage != "back-off restarting failed container" || roundTrip.PodFailurePodName != "app-abc" {
+		t.Fatalf("crash-loop detail lost in backend clone: %+v", roundTrip)
+	}
+
+	// Steady state: the crashing deployment is the desired revision, so CHECK fails.
+	if err := driver.Check(ctx, input("demo:v1")); err == nil {
+		t.Fatalf("expected steady-state check to fail on crash loop")
+	}
+
+	// Rollout: a new spec must not be blocked by the previous crashing revision.
+	if err := driver.Check(ctx, input("demo:v2")); err != nil {
+		t.Fatalf("expected rollout check to proceed despite crash loop, got %v", err)
 	}
 }
 

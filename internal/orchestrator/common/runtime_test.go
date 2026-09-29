@@ -11,11 +11,10 @@ import (
 	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
 )
 
-func TestLoadAllIntentStatesUsesPartitionRuntimeSnapshot(t *testing.T) {
+func TestLoadAllIntentStatesScansAuthoritativeIntentFiles(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
-	runtime := statedomain.NewPartitionRuntime("demo")
-	runtime.Intents["api"] = &statedomain.IntentState{
+	seedJSON(t, ctx, store, paths.IntentState("demo", "api"), &statedomain.IntentState{
 		APIVersion:        "guardian/v1alpha1",
 		Kind:              "IntentState",
 		Partition:         "demo",
@@ -26,8 +25,7 @@ func TestLoadAllIntentStatesUsesPartitionRuntimeSnapshot(t *testing.T) {
 		PartitionRevision: "partition-rev-v1",
 		TargetPusher:      "local",
 		Outputs:           map[string]string{"url": "https://demo.example"},
-	}
-	seedJSON(t, ctx, store, paths.PartitionRuntime("demo"), runtime)
+	})
 
 	states, err := LoadAllIntentStates(ctx, store, "demo")
 	if err != nil {

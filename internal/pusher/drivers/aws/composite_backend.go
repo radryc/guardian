@@ -66,6 +66,9 @@ func (b *CompositeBackend) GetService(ctx context.Context, cluster, name string)
 func (b *CompositeBackend) DeleteService(ctx context.Context, cluster, name string) error {
 	return b.SDK.DeleteService(ctx, cluster, name)
 }
+func (b *CompositeBackend) AttachServiceToTargetGroup(ctx context.Context, cluster, service, container, tgARN string, port int, sgID string) error {
+	return b.SDK.AttachServiceToTargetGroup(ctx, cluster, service, container, tgARN, port, sgID)
+}
 func (b *CompositeBackend) UpsertLoadBalancer(ctx context.Context, lb LoadBalancer) (string, error) {
 	return b.SDK.UpsertLoadBalancer(ctx, lb)
 }
@@ -74,6 +77,9 @@ func (b *CompositeBackend) GetLoadBalancer(ctx context.Context, name string) (Lo
 }
 func (b *CompositeBackend) DeleteLoadBalancer(ctx context.Context, arn string) error {
 	return b.SDK.DeleteLoadBalancer(ctx, arn)
+}
+func (b *CompositeBackend) EnsureLoadBalancerSecurityGroup(ctx context.Context, name, scheme string, ports []int) (string, error) {
+	return b.SDK.EnsureLoadBalancerSecurityGroup(ctx, name, scheme, ports)
 }
 func (b *CompositeBackend) UpsertTargetGroup(ctx context.Context, tg TargetGroup) (string, error) {
 	return b.SDK.UpsertTargetGroup(ctx, tg)

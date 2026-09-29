@@ -33,19 +33,7 @@ func (b *CLIBackend) UpsertConfigMap(cm ConfigMap) error {
 	if err := b.ensureNamespace(cm.Namespace); err != nil {
 		return err
 	}
-	return b.applyManifest(cm.Namespace, map[string]any{
-		"apiVersion": "v1",
-		"kind":       "ConfigMap",
-		"metadata": map[string]any{
-			"name":      cm.Name,
-			"namespace": cm.Namespace,
-			"labels":    cloneStringMap(cm.Labels),
-			"annotations": map[string]string{
-				fullHashAnnotation: cm.Hash,
-			},
-		},
-		"data": cloneStringMap(cm.Data),
-	})
+	return b.applyManifest(cm.Namespace, configMapManifest(cm))
 }
 
 func (b *CLIBackend) GetConfigMap(namespace, name string) (ConfigMap, bool, error) {
@@ -53,28 +41,11 @@ func (b *CLIBackend) GetConfigMap(namespace, name string) (ConfigMap, bool, erro
 	if err != nil || !ok {
 		return ConfigMap{}, ok, err
 	}
-	var payload struct {
-		Metadata struct {
-			Name        string            `json:"name"`
-			Labels      map[string]string `json:"labels"`
-			Annotations map[string]string `json:"annotations"`
-		} `json:"metadata"`
-		Data map[string]string `json:"data"`
+	cm, err := decodeConfigMap(namespace, raw)
+	if err != nil {
+		return ConfigMap{}, false, err
 	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return ConfigMap{}, false, fmt.Errorf("decode configmap %s/%s: %w", namespace, name, err)
-	}
-	hash := payload.Metadata.Annotations[fullHashAnnotation]
-	if hash == "" {
-		hash = payload.Metadata.Labels["guardian.hash"]
-	}
-	return ConfigMap{
-		Namespace: namespace,
-		Name:      payload.Metadata.Name,
-		Hash:      hash,
-		Labels:    cloneStringMap(payload.Metadata.Labels),
-		Data:      cloneStringMap(payload.Data),
-	}, true, nil
+	return cm, true, nil
 }
 
 func (b *CLIBackend) DeleteConfigMap(namespace, name string) error {
@@ -85,30 +56,7 @@ func (b *CLIBackend) UpsertClaim(claim PersistentVolumeClaim) error {
 	if err := b.ensureNamespace(claim.Namespace); err != nil {
 		return err
 	}
-	spec := map[string]any{
-		"accessModes": []string{firstNonEmpty(claim.AccessMode, "ReadWriteOnce")},
-		"resources": map[string]any{
-			"requests": map[string]string{
-				"storage": firstNonEmpty(claim.Size, "1Gi"),
-			},
-		},
-	}
-	if claim.StorageClass != "" {
-		spec["storageClassName"] = claim.StorageClass
-	}
-	return b.applyManifest(claim.Namespace, map[string]any{
-		"apiVersion": "v1",
-		"kind":       "PersistentVolumeClaim",
-		"metadata": map[string]any{
-			"name":      claim.Name,
-			"namespace": claim.Namespace,
-			"labels":    cloneStringMap(claim.Labels),
-			"annotations": map[string]string{
-				fullHashAnnotation: claim.Hash,
-			},
-		},
-		"spec": spec,
-	})
+	return b.applyManifest(claim.Namespace, claimManifest(claim))
 }
 
 func (b *CLIBackend) GetClaim(namespace, name string) (PersistentVolumeClaim, bool, error) {
@@ -116,40 +64,11 @@ func (b *CLIBackend) GetClaim(namespace, name string) (PersistentVolumeClaim, bo
 	if err != nil || !ok {
 		return PersistentVolumeClaim{}, ok, err
 	}
-	var payload struct {
-		Metadata struct {
-			Name        string            `json:"name"`
-			Labels      map[string]string `json:"labels"`
-			Annotations map[string]string `json:"annotations"`
-		} `json:"metadata"`
-		Spec struct {
-			AccessModes      []string `json:"accessModes"`
-			StorageClassName string   `json:"storageClassName"`
-			Resources        struct {
-				Requests map[string]string `json:"requests"`
-			} `json:"resources"`
-		} `json:"spec"`
+	claim, err := decodeClaim(namespace, raw)
+	if err != nil {
+		return PersistentVolumeClaim{}, false, err
 	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return PersistentVolumeClaim{}, false, fmt.Errorf("decode pvc %s/%s: %w", namespace, name, err)
-	}
-	accessMode := ""
-	if len(payload.Spec.AccessModes) > 0 {
-		accessMode = payload.Spec.AccessModes[0]
-	}
-	hash := payload.Metadata.Annotations[fullHashAnnotation]
-	if hash == "" {
-		hash = payload.Metadata.Labels["guardian.hash"]
-	}
-	return PersistentVolumeClaim{
-		Namespace:    namespace,
-		Name:         payload.Metadata.Name,
-		Hash:         hash,
-		Labels:       cloneStringMap(payload.Metadata.Labels),
-		Size:         payload.Spec.Resources.Requests["storage"],
-		AccessMode:   accessMode,
-		StorageClass: payload.Spec.StorageClassName,
-	}, true, nil
+	return claim, true, nil
 }
 
 func (b *CLIBackend) DeleteClaim(namespace, name string) error {
@@ -160,127 +79,7 @@ func (b *CLIBackend) UpsertDeployment(deployment Deployment) error {
 	if err := b.ensureNamespace(deployment.Namespace); err != nil {
 		return err
 	}
-	items := []map[string]any{}
-	volumeItems, volumeMounts := b.containerVolumes(deployment)
-	if len(deployment.Container.InlineFiles) > 0 {
-		items = append(items, map[string]any{
-			"apiVersion": "v1",
-			"kind":       "ConfigMap",
-			"metadata": map[string]any{
-				"name":      inlineConfigMapName(deployment.Name),
-				"namespace": deployment.Namespace,
-				"labels":    cloneStringMap(deployment.Labels),
-			},
-			"data": cloneStringMap(deployment.Container.InlineFiles),
-		})
-	}
-	selector := selectorForLabels(deployment.Labels)
-	replicas := deployment.Replicas
-	if replicas < 1 {
-		replicas = 1
-	}
-	containerSpec := map[string]any{
-		"name":            firstNonEmpty(deployment.Container.Name, deployment.Name),
-		"image":           deployment.Container.Image,
-		"env":             envList(deployment.Container.Env),
-		"ports":           containerPorts(deployment.Container.Ports),
-		"volumeMounts":    volumeMounts,
-		"securityContext": containerSecurityContext(deployment.Container),
-	}
-	if len(deployment.Container.Command) > 0 {
-		containerSpec["command"] = append([]string(nil), deployment.Container.Command...)
-	}
-	if len(deployment.Container.Args) > 0 {
-		containerSpec["args"] = append([]string(nil), deployment.Container.Args...)
-	}
-	if deployment.Container.ImagePullPolicy != "" {
-		containerSpec["imagePullPolicy"] = deployment.Container.ImagePullPolicy
-	}
-	if probe := deployment.Container.ReadinessProbe; probe != nil {
-		containerSpec["readinessProbe"] = probeSpec(probe)
-	}
-	if r := deployment.Container.Resources; r.CPURequest != "" || r.CPULimit != "" || r.MemoryRequest != "" || r.MemoryLimit != "" || len(r.ExtendedResources) > 0 {
-		resources := map[string]any{}
-		if req := map[string]string{}; r.CPURequest != "" || r.MemoryRequest != "" {
-			if r.CPURequest != "" {
-				req["cpu"] = r.CPURequest
-			}
-			if r.MemoryRequest != "" {
-				req["memory"] = r.MemoryRequest
-			}
-			resources["requests"] = req
-		}
-		if lim := map[string]string{}; r.CPULimit != "" || r.MemoryLimit != "" {
-			if r.CPULimit != "" {
-				lim["cpu"] = r.CPULimit
-			}
-			if r.MemoryLimit != "" {
-				lim["memory"] = r.MemoryLimit
-			}
-			resources["limits"] = lim
-		}
-		for k, v := range r.ExtendedResources {
-			parts := strings.SplitN(k, ".", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			category, resourceName := parts[0], parts[1]
-			switch category {
-			case "limits":
-				if resources["limits"] == nil {
-					resources["limits"] = map[string]string{}
-				}
-				resources["limits"].(map[string]string)[resourceName] = v
-			case "requests":
-				if resources["requests"] == nil {
-					resources["requests"] = map[string]string{}
-				}
-				resources["requests"].(map[string]string)[resourceName] = v
-			}
-		}
-		containerSpec["resources"] = resources
-	}
-	items = append(items, map[string]any{
-		"apiVersion": "apps/v1",
-		"kind":       "Deployment",
-		"metadata": map[string]any{
-			"name":      deployment.Name,
-			"namespace": deployment.Namespace,
-			"labels":    cloneStringMap(deployment.Labels),
-			"annotations": map[string]string{
-				fullHashAnnotation: deployment.Hash,
-			},
-		},
-		"spec": map[string]any{
-			"replicas": replicas,
-			"selector": map[string]any{
-				"matchLabels": selector,
-			},
-			"template": map[string]any{
-				"metadata": map[string]any{
-					"labels": cloneStringMap(deployment.Labels),
-				},
-				"spec": func() map[string]any {
-					podSpec := map[string]any{
-						"containers": []map[string]any{containerSpec},
-						"volumes":    volumeItems,
-					}
-				if deployment.ServiceAccountName != "" {
-					podSpec["serviceAccountName"] = deployment.ServiceAccountName
-				}
-				if deployment.HostUsers != nil {
-					podSpec["hostUsers"] = *deployment.HostUsers
-				}
-				return podSpec
-				}(),
-			},
-		},
-	})
-	return b.applyManifest(deployment.Namespace, map[string]any{
-		"apiVersion": "v1",
-		"kind":       "List",
-		"items":      items,
-	})
+	return b.applyManifest(deployment.Namespace, listManifest(deploymentManifestItems(deployment)))
 }
 
 func (b *CLIBackend) GetDeployment(namespace, name string) (Deployment, bool, error) {
@@ -288,67 +87,18 @@ func (b *CLIBackend) GetDeployment(namespace, name string) (Deployment, bool, er
 	if err != nil || !ok {
 		return Deployment{}, ok, err
 	}
-	var payload struct {
-		Metadata struct {
-			Name        string            `json:"name"`
-			Labels      map[string]string `json:"labels"`
-			Annotations map[string]string `json:"annotations"`
-		} `json:"metadata"`
-		Spec struct {
-			Replicas *int `json:"replicas"`
-			Template struct {
-				Spec struct {
-					Containers []struct {
-						Name            string `json:"name"`
-						Image           string `json:"image"`
-						ImagePullPolicy string `json:"imagePullPolicy"`
-					} `json:"containers"`
-				} `json:"spec"`
-			} `json:"template"`
-		} `json:"spec"`
-		Status struct {
-			ReadyReplicas     int `json:"readyReplicas"`
-			AvailableReplicas int `json:"availableReplicas"`
-		} `json:"status"`
+	deployment, err := decodeDeployment(namespace, raw)
+	if err != nil {
+		return Deployment{}, false, err
 	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return Deployment{}, false, fmt.Errorf("decode deployment %s/%s: %w", namespace, name, err)
+	if deployment.ReadyReplicas < deployment.Replicas {
+		reason, message, podName := b.podsTerminalFailure(namespace, deployment.Labels)
+		deployment.CrashLoopBackOff = reason != ""
+		deployment.PodFailureReason = reason
+		deployment.PodFailureMessage = message
+		deployment.PodFailurePodName = podName
 	}
-	container := Container{}
-	if len(payload.Spec.Template.Spec.Containers) > 0 {
-		container.Name = payload.Spec.Template.Spec.Containers[0].Name
-		container.Image = payload.Spec.Template.Spec.Containers[0].Image
-		container.ImagePullPolicy = payload.Spec.Template.Spec.Containers[0].ImagePullPolicy
-	}
-	replicas := 1
-	if payload.Spec.Replicas != nil && *payload.Spec.Replicas > 0 {
-		replicas = *payload.Spec.Replicas
-	}
-	labels := cloneStringMap(payload.Metadata.Labels)
-	var podFailureReason string
-	var podFailureMessage string
-	var podFailurePodName string
-	if payload.Status.ReadyReplicas < replicas {
-		podFailureReason, podFailureMessage, podFailurePodName = b.podsTerminalFailure(namespace, labels)
-	}
-	hash := payload.Metadata.Annotations[fullHashAnnotation]
-	if hash == "" {
-		hash = payload.Metadata.Labels["guardian.hash"]
-	}
-	return Deployment{
-		Namespace:         namespace,
-		Name:              payload.Metadata.Name,
-		Hash:              hash,
-		Labels:            labels,
-		Replicas:          replicas,
-		ReadyReplicas:     payload.Status.ReadyReplicas,
-		AvailableReplicas: payload.Status.AvailableReplicas,
-		Container:         container,
-		CrashLoopBackOff:  podFailureReason != "",
-		PodFailureReason:  podFailureReason,
-		PodFailureMessage: podFailureMessage,
-		PodFailurePodName: podFailurePodName,
-	}, true, nil
+	return deployment, true, nil
 }
 
 // transientPodWaitingReasons are waiting states that represent normal startup
@@ -454,12 +204,6 @@ func (b *CLIBackend) containerWaitingFailure(statuses []struct {
 	return "", "", false
 }
 
-// podsCrashLoopBackOff is kept for backward compatibility; prefer podsTerminalFailure.
-func (b *CLIBackend) podsCrashLoopBackOff(namespace string, labels map[string]string) bool {
-	reason, _, _ := b.podsTerminalFailure(namespace, labels)
-	return reason != ""
-}
-
 func (b *CLIBackend) GetPodEvents(namespace, podName string) ([]string, error) {
 	if podName == "" {
 		return nil, nil
@@ -515,27 +259,7 @@ func (b *CLIBackend) UpsertService(service Service) error {
 	if err := b.ensureNamespace(service.Namespace); err != nil {
 		return err
 	}
-	annotations := cloneStringMap(service.Annotations)
-	if annotations == nil {
-		annotations = map[string]string{}
-	}
-	annotations[fullHashAnnotation] = service.Hash
-	meta := map[string]any{
-		"name":        service.Name,
-		"namespace":   service.Namespace,
-		"labels":      cloneStringMap(service.Labels),
-		"annotations": annotations,
-	}
-	return b.applyManifest(service.Namespace, map[string]any{
-		"apiVersion": "v1",
-		"kind":       "Service",
-		"metadata":   meta,
-		"spec": map[string]any{
-			"type":     firstNonEmpty(service.Type, "ClusterIP"),
-			"selector": cloneStringMap(service.Selector),
-			"ports":    servicePorts(service.Ports),
-		},
-	})
+	return b.applyManifest(service.Namespace, serviceManifest(service))
 }
 
 func (b *CLIBackend) GetService(namespace, name string) (Service, bool, error) {
@@ -543,53 +267,28 @@ func (b *CLIBackend) GetService(namespace, name string) (Service, bool, error) {
 	if err != nil || !ok {
 		return Service{}, ok, err
 	}
-	var payload struct {
-		Metadata struct {
-			Name        string            `json:"name"`
-			Labels      map[string]string `json:"labels"`
-			Annotations map[string]string `json:"annotations"`
-		} `json:"metadata"`
-		Spec struct {
-			Type     string            `json:"type"`
-			Selector map[string]string `json:"selector"`
-			Ports    []struct {
-				Name       string      `json:"name"`
-				Protocol   string      `json:"protocol"`
-				Port       int         `json:"port"`
-				TargetPort interface{} `json:"targetPort"`
-			} `json:"ports"`
-		} `json:"spec"`
+	service, err := decodeService(namespace, raw)
+	if err != nil {
+		return Service{}, false, err
 	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return Service{}, false, fmt.Errorf("decode service %s/%s: %w", namespace, name, err)
-	}
-	ports := make([]ServicePort, 0, len(payload.Spec.Ports))
-	for _, port := range payload.Spec.Ports {
-		ports = append(ports, ServicePort{
-			Name:       port.Name,
-			Protocol:   port.Protocol,
-			Port:       port.Port,
-			TargetPort: parseTargetPort(port.TargetPort, port.Port),
-		})
-	}
-	hash := payload.Metadata.Annotations[fullHashAnnotation]
-	if hash == "" {
-		hash = payload.Metadata.Labels["guardian.hash"]
-	}
-	return Service{
-		Namespace:   namespace,
-		Name:        payload.Metadata.Name,
-		Hash:        hash,
-		Type:        payload.Spec.Type,
-		Labels:      cloneStringMap(payload.Metadata.Labels),
-		Annotations: cloneStringMap(payload.Metadata.Annotations),
-		Selector:    cloneStringMap(payload.Spec.Selector),
-		Ports:       ports,
-	}, true, nil
+	return service, true, nil
 }
 
 func (b *CLIBackend) DeleteService(namespace, name string) error {
 	return b.deleteResource(namespace, "service", name)
+}
+
+// ApplyManifest applies a raw (possibly multi-document) Kubernetes manifest
+// supplied as YAML bytes. When namespace is non-empty it is passed to kubectl,
+// otherwise each document's own namespace is honoured.
+func (b *CLIBackend) ApplyManifest(namespace string, manifest []byte) error {
+	args := b.baseArgs()
+	if strings.TrimSpace(namespace) != "" {
+		args = append(args, "-n", namespace)
+	}
+	args = append(args, "apply", "-f", "-")
+	_, err := b.runWithInput(manifest, args...)
+	return err
 }
 
 func (b *CLIBackend) applyManifest(namespace string, manifest any) error {
@@ -671,43 +370,6 @@ func (b *CLIBackend) baseArgs() []string {
 	return args
 }
 
-func (b *CLIBackend) containerVolumes(deployment Deployment) ([]map[string]any, []map[string]any) {
-	volumes := make([]map[string]any, 0, len(deployment.Container.VolumeMounts)+1)
-	mounts := make([]map[string]any, 0, len(deployment.Container.VolumeMounts))
-	inlineName := inlineConfigMapName(deployment.Name)
-	for idx, mount := range deployment.Container.VolumeMounts {
-		name := fmt.Sprintf("vol-%d", idx)
-		volume := map[string]any{"name": name}
-		switch mount.SourceKind {
-		case "ConfigMap":
-			volume["configMap"] = map[string]any{"name": mount.SourceName}
-		case "PersistentVolumeClaim":
-			volume["persistentVolumeClaim"] = map[string]any{"claimName": mount.SourceName}
-		case "HostPath":
-			volume["hostPath"] = map[string]any{"path": mount.SourceName}
-		case "EmptyDir":
-			volume["emptyDir"] = map[string]any{}
-		case "InlineFile":
-			volume["configMap"] = map[string]any{"name": inlineName}
-		default:
-			continue
-		}
-		volumes = append(volumes, volume)
-		mountSpec := map[string]any{
-			"name":      name,
-			"mountPath": mount.MountPath,
-			"readOnly":  mount.ReadOnly,
-		}
-		if mount.SubPath != "" {
-			mountSpec["subPath"] = mount.SubPath
-		} else if mount.SourceKind == "InlineFile" && mount.SourceName != "" {
-			mountSpec["subPath"] = mount.SourceName
-		}
-		mounts = append(mounts, mountSpec)
-	}
-	return volumes, mounts
-}
-
 func envList(env map[string]string) []map[string]string {
 	if len(env) == 0 {
 		return nil
@@ -773,7 +435,7 @@ func servicePorts(ports []ServicePort) []map[string]any {
 }
 
 func containerSecurityContext(container Container) map[string]any {
-	if !container.Privileged && len(container.Capabilities) == 0 {
+	if !container.Privileged && len(container.Capabilities) == 0 && container.RunAsUser == nil {
 		return nil
 	}
 	ctx := map[string]any{}
@@ -782,6 +444,9 @@ func containerSecurityContext(container Container) map[string]any {
 	}
 	if len(container.Capabilities) > 0 {
 		ctx["capabilities"] = map[string]any{"add": append([]string(nil), container.Capabilities...)}
+	}
+	if container.RunAsUser != nil {
+		ctx["runAsUser"] = *container.RunAsUser
 	}
 	return ctx
 }

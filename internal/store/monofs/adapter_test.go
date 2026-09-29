@@ -39,6 +39,14 @@ func TestPathMappingRoundTrip(t *testing.T) {
 			logical:  "/.archive/payments/api/rev-1/record.json",
 			physical: "guardian-system/.archive/payments/api/rev-1/record.json",
 		},
+		{
+			logical:  "/.scans",
+			physical: "guardian-system/.scans",
+		},
+		{
+			logical:  "/.scans/aws-123456789012/requests/scan-1.json",
+			physical: "guardian-system/.scans/aws-123456789012/requests/scan-1.json",
+		},
 	}
 
 	for _, tc := range cases {

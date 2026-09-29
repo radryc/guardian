@@ -37,10 +37,6 @@ func awsEFSName(in registry.AssetInput, assetName string) string {
 	return awsResourceName("efs", in.Target, in.PartitionName, in.IntentName, assetName)
 }
 
-func awsEFSAccessPointName(in registry.AssetInput, assetName string) string {
-	return awsResourceName("ap", in.Target, in.PartitionName, in.IntentName, assetName)
-}
-
 func awsSSMParameterName(in registry.AssetInput, assetName string) string {
 	name := awsResourceName("ssm", in.Target, in.PartitionName, in.IntentName, assetName)
 	return "/guardian/" + strings.ReplaceAll(name, "-", "/")

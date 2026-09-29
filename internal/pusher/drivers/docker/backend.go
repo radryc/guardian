@@ -81,6 +81,7 @@ type Container struct {
 	Command           []string
 	Args              []string
 	Env               map[string]string
+	User              string
 	Ports             []PortBinding
 	VolumeMounts      []VolumeMount
 	ConfigMounts      []ConfigMount

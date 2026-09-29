@@ -89,9 +89,9 @@ func GetRole(ctx context.Context, cfg Config, accountID string) (*RoleInfo, erro
 	}
 
 	info := &RoleInfo{
-		Name:    cfg.RoleName,
-		ARN:     awsroot.ToString(out.Role.Arn),
-		Exists:  true,
+		Name:      cfg.RoleName,
+		ARN:       awsroot.ToString(out.Role.Arn),
+		Exists:    true,
 		CreatedAt: awsroot.ToTime(out.Role.CreateDate),
 	}
 

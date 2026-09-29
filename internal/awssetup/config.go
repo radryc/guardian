@@ -14,17 +14,6 @@ type Config struct {
 	DryRun             bool
 }
 
-func DefaultConfig() Config {
-	return Config{
-		Profile:            os.Getenv("AWS_PROFILE"),
-		Region:             "us-east-1",
-		RoleName:           "GuardianCdkDeployRole",
-		BootstrapStackName: "CDKToolkit",
-		PolicyName:         "AdministratorAccess",
-		DryRun:             false,
-	}
-}
-
 func (c Config) Validate() error {
 	if c.Region == "" {
 		return fmt.Errorf("region is required")

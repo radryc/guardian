@@ -180,18 +180,18 @@ func TestImageStateRoundtrip(t *testing.T) {
 	state := &imageState{
 		Images: map[string]imageEntry{
 			"my-build": {
-				AssetName:   "my-build",
-				IntentFile:  "/tmp/intents/images.yaml",
-				LocalTag:    "myapp:abc123",
-				Repository:  "myapp",
-				Registry:    "registry.strata.local:5000",
-				Dockerfile:  "/src/app/Dockerfile",
-				Context:     "/src/app",
-				ImageRef:    "registry.strata.local:5000/myapp:sha256-abc12345",
-				Tag:         "sha256-abc12345",
-				BuildArgs:   map[string]string{"GO_VERSION": "1.22"},
-				Target:      "",
-				Platform:    "linux/amd64",
+				AssetName:  "my-build",
+				IntentFile: "/tmp/intents/images.yaml",
+				LocalTag:   "myapp:abc123",
+				Repository: "myapp",
+				Registry:   "registry.strata.local:5000",
+				Dockerfile: "/src/app/Dockerfile",
+				Context:    "/src/app",
+				ImageRef:   "registry.strata.local:5000/myapp:sha256-abc12345",
+				Tag:        "sha256-abc12345",
+				BuildArgs:  map[string]string{"GO_VERSION": "1.22"},
+				Target:     "",
+				Platform:   "linux/amd64",
 			},
 		},
 	}
@@ -759,11 +759,11 @@ func TestStampNodeRefsNestedEnv(t *testing.T) {
 		Images: map[string]imageEntry{
 			"query-build": {
 				AssetName: "query-build",
-				ImageRef:   "reg.strata.local:5000/query:sha256-abc",
+				ImageRef:  "reg.strata.local:5000/query:sha256-abc",
 			},
 			"ingest-build": {
 				AssetName: "ingest-build",
-				Tag:        "sha256-def",
+				Tag:       "sha256-def",
 			},
 		},
 	}

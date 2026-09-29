@@ -189,13 +189,6 @@ func resolveDockerfile(dockerfile, buildContext, partitionDir string) string {
 	return filepath.Join(buildContext, dockerfile)
 }
 
-func tagFromSourceImage(sourceImage string) string {
-	if idx := strings.LastIndex(sourceImage, ":"); idx >= 0 {
-		return sourceImage[idx+1:]
-	}
-	return "latest"
-}
-
 func gitVersion(dir string) (tag, commit, buildTime string) {
 	buildTime = time.Now().UTC().Format(time.RFC3339)
 	if cmd := exec.Command("git", "-C", dir, "rev-parse", "--short", "HEAD"); cmd != nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"os"
 	"strings"
@@ -21,17 +22,21 @@ const (
 )
 
 type ScanRunner struct {
-	PusherName            string
-	Account               string
-	Region                string
-	AssumeRoleName        string
-	AssumeRoleExternalID  string
-	WorkerID              string
-	PrincipalID           string
-	Store                 guardianapi.Store
-	PollInterval          time.Duration
-	ScanTimeout           time.Duration
-	NewScanner            func() Scanner
+	PusherName           string
+	Account              string
+	Region               string
+	AssumeRoleName       string
+	AssumeRoleExternalID string
+	WorkerID             string
+	PrincipalID          string
+	Store                guardianapi.Store
+	PollInterval         time.Duration
+	ScanTimeout          time.Duration
+	// ShardIndex/ShardCount split scan requests across replicas by scan-ID hash.
+	// ShardCount <= 1 disables sharding.
+	ShardIndex int
+	ShardCount int
+	NewScanner func() Scanner
 }
 
 func (r *ScanRunner) Run(ctx context.Context) error {
@@ -91,6 +96,20 @@ func (r *ScanRunner) principal() string {
 	return r.WorkerID
 }
 
+// ownsScan reports whether this replica is responsible for scanID when sharded.
+func (r *ScanRunner) ownsScan(scanID string) bool {
+	if r.ShardCount <= 1 {
+		return true
+	}
+	shard := r.ShardIndex % r.ShardCount
+	if shard < 0 {
+		shard += r.ShardCount
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(scanID))
+	return int(h.Sum32()%uint32(r.ShardCount)) == shard
+}
+
 func (r *ScanRunner) ProcessPending(ctx context.Context) error {
 	if r.Store == nil {
 		return fmt.Errorf("scan runner store is required")
@@ -108,6 +127,9 @@ func (r *ScanRunner) ProcessPending(ctx context.Context) error {
 			continue
 		}
 		scanID := strings.TrimSuffix(entry.Name, ".json")
+		if !r.ownsScan(scanID) {
+			continue
+		}
 		if done, err := pathExists(ctx, r.Store, paths.ScanResult(pusher, scanID)); err != nil {
 			return err
 		} else if done {

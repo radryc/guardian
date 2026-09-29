@@ -18,4 +18,6 @@ type BackendAPI interface {
 	UpsertService(service Service) error
 	GetService(namespace, name string) (Service, bool, error)
 	DeleteService(namespace, name string) error
+
+	ApplyManifest(namespace string, manifest []byte) error
 }

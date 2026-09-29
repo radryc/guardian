@@ -18,13 +18,13 @@ import (
 )
 
 type CreateScanRequest struct {
-	Pusher                string   `json:"pusher"`
-	Account               string   `json:"account,omitempty"`
-	Regions               []string `json:"regions,omitempty"`
-	IncludeResourceTypes  []string `json:"includeResourceTypes,omitempty"`
-	ExcludeResourceTypes  []string `json:"excludeResourceTypes,omitempty"`
-	Inventory             bool     `json:"inventory,omitempty"`
-	InventoryDetail       string   `json:"inventoryDetail,omitempty"`
+	Pusher               string   `json:"pusher"`
+	Account              string   `json:"account,omitempty"`
+	Regions              []string `json:"regions,omitempty"`
+	IncludeResourceTypes []string `json:"includeResourceTypes,omitempty"`
+	ExcludeResourceTypes []string `json:"excludeResourceTypes,omitempty"`
+	Inventory            bool     `json:"inventory,omitempty"`
+	InventoryDetail      string   `json:"inventoryDetail,omitempty"`
 }
 
 type CreateScanResponse struct {
@@ -35,13 +35,13 @@ type CreateScanResponse struct {
 }
 
 type ScanListEntry struct {
-	ScanID     string              `json:"scanID"`
-	Pusher     string              `json:"pusher"`
-	Account    string              `json:"account,omitempty"`
-	Status     string              `json:"status"`
-	Regions    []string            `json:"regions,omitempty"`
-	CreatedAt  *time.Time          `json:"createdAt,omitempty"`
-	FinishedAt *time.Time          `json:"finishedAt,omitempty"`
+	ScanID     string               `json:"scanID"`
+	Pusher     string               `json:"pusher"`
+	Account    string               `json:"account,omitempty"`
+	Status     string               `json:"status"`
+	Regions    []string             `json:"regions,omitempty"`
+	CreatedAt  *time.Time           `json:"createdAt,omitempty"`
+	FinishedAt *time.Time           `json:"finishedAt,omitempty"`
 	Summary    *awsscan.ScanSummary `json:"summary,omitempty"`
 }
 
@@ -51,9 +51,9 @@ type ScanListResponse struct {
 }
 
 type ScanBundleResponse struct {
-	ScanID  string            `json:"scanID"`
-	Bundle  SaveBundleRequest `json:"bundle"`
-	Draft   *awsgen.Draft     `json:"draft"`
+	ScanID string            `json:"scanID"`
+	Bundle SaveBundleRequest `json:"bundle"`
+	Draft  *awsgen.Draft     `json:"draft"`
 }
 
 func (s *Server) scanPushers() []string {
@@ -329,8 +329,8 @@ func (s *Server) locateScan(ctx context.Context, scanID string) (*awsscan.ScanRe
 func (s *Server) handleScanGet(w http.ResponseWriter, r *http.Request, scanID string) {
 	result, _, ok := s.locateScan(r.Context(), scanID)
 	if !ok {
-	for _, pusher := range s.scanPushers() {
-		if _, claimOK, _ := s.readScanClaim(r.Context(), pusher, scanID); claimOK {
+		for _, pusher := range s.scanPushers() {
+			if _, claimOK, _ := s.readScanClaim(r.Context(), pusher, scanID); claimOK {
 				writeJSON(w, http.StatusOK, map[string]any{
 					"scanID": scanID,
 					"pusher": pusher,
@@ -377,6 +377,13 @@ func (s *Server) handleScanBundle(w http.ResponseWriter, r *http.Request, scanID
 		for _, region := range strings.Split(raw, ",") {
 			if region = strings.TrimSpace(region); region != "" {
 				opts.Regions = append(opts.Regions, region)
+			}
+		}
+	}
+	if raw := strings.TrimSpace(query.Get("stacks")); raw != "" {
+		for _, stack := range strings.Split(raw, ",") {
+			if stack = strings.TrimSpace(stack); stack != "" {
+				opts.Stacks = append(opts.Stacks, stack)
 			}
 		}
 	}
