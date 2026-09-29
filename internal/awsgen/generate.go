@@ -20,23 +20,23 @@ import (
 )
 
 const (
-	APIVersion         = "guardian/v1alpha1"
-	GroupingStack      = "stack"
-	GroupingResource   = "resource"
-	defaultInterval    = "10m"
-	importNamePrefix   = "import-"
-	maxNameLen         = 40
+	APIVersion       = "guardian/v1alpha1"
+	GroupingStack    = "stack"
+	GroupingResource = "resource"
+	defaultInterval  = "10m"
+	importNamePrefix = "import-"
+	maxNameLen       = 40
 )
 
 const (
-	KindBucket        = "bucket"
-	KindFileSystem    = "fileSystem"
-	KindParameter     = "parameter"
-	KindSecret        = "secret"
-	KindService       = "service"
-	KindLoadBalancer  = "loadBalancer"
-	KindStack         = "stack"
-	KindInventory     = "inventory"
+	KindBucket       = "bucket"
+	KindFileSystem   = "fileSystem"
+	KindParameter    = "parameter"
+	KindSecret       = "secret"
+	KindService      = "service"
+	KindLoadBalancer = "loadBalancer"
+	KindStack        = "stack"
+	KindInventory    = "inventory"
 )
 
 var allImportKinds = []string{KindBucket, KindFileSystem, KindParameter, KindSecret, KindService, KindLoadBalancer}
@@ -46,6 +46,7 @@ type Options struct {
 	Grouping      string
 	IncludeTypes  []string
 	Regions       []string
+	Stacks        []string
 	TargetPusher  string
 }
 
@@ -76,9 +77,9 @@ type Draft struct {
 }
 
 type resourceGroup struct {
-	baseName  string
-	region    string
-	assets    []assetdomain.Spec
+	baseName string
+	region   string
+	assets   []assetdomain.Spec
 }
 
 func Generate(result *awsscan.ScanResult, opts Options, store guardianapi.ReadStore) (*Draft, error) {
@@ -138,6 +139,20 @@ func Generate(result *awsscan.ScanResult, opts Options, store guardianapi.ReadSt
 		return ok
 	}
 
+	stackFilter := make(map[string]struct{})
+	for _, stack := range opts.Stacks {
+		if name := strings.TrimSpace(stack); name != "" {
+			stackFilter[name] = struct{}{}
+		}
+	}
+	inStack := func(stack string) bool {
+		if len(stackFilter) == 0 {
+			return true
+		}
+		_, ok := stackFilter[strings.TrimSpace(stack)]
+		return ok
+	}
+
 	draft := &Draft{}
 	if count := len(result.Errors); count > 0 {
 		draft.Warnings = append(draft.Warnings, fmt.Sprintf("scan reported %d errors; affected resources may be missing", count))
@@ -185,6 +200,9 @@ func Generate(result *awsscan.ScanResult, opts Options, store guardianapi.ReadSt
 		if stack == "" {
 			stack = stacksByPhysical[bucket.Region+"/"+bucket.Name]
 		}
+		if !inStack(stack) {
+			continue
+		}
 		asset := assetdomain.Spec{
 			Type: assetdomain.TypeObjectStore,
 			Name: sanitizeName(bucket.Name),
@@ -222,6 +240,9 @@ func Generate(result *awsscan.ScanResult, opts Options, store guardianapi.ReadSt
 		stack := fs.Stack
 		if stack == "" {
 			stack = stacksByPhysical[fs.Region+"/"+fs.ID]
+		}
+		if !inStack(stack) {
+			continue
 		}
 		assetName := sanitizeName(fs.Name)
 		if assetName == "" {
@@ -262,6 +283,9 @@ func Generate(result *awsscan.ScanResult, opts Options, store guardianapi.ReadSt
 		if stack == "" {
 			stack = stacksByPhysical[param.Region+"/"+param.Name]
 		}
+		if !inStack(stack) {
+			continue
+		}
 		asset := assetdomain.Spec{
 			Type: assetdomain.TypeConfig,
 			Name: sanitizeName(param.Name),
@@ -290,6 +314,9 @@ func Generate(result *awsscan.ScanResult, opts Options, store guardianapi.ReadSt
 		stack := secret.Stack
 		if stack == "" {
 			stack = stacksByPhysical[secret.Region+"/"+secret.Name]
+		}
+		if !inStack(stack) {
+			continue
 		}
 		asset := assetdomain.Spec{
 			Type: assetdomain.TypeSecret,
@@ -326,6 +353,9 @@ func Generate(result *awsscan.ScanResult, opts Options, store guardianapi.ReadSt
 		stack := svc.Stack
 		if stack == "" {
 			stack = stacksByPhysical[svc.Region+"/"+svc.Name]
+		}
+		if !inStack(stack) {
+			continue
 		}
 		properties := map[string]any{
 			"image":               svc.Image,
@@ -398,6 +428,9 @@ func Generate(result *awsscan.ScanResult, opts Options, store guardianapi.ReadSt
 		stack := lb.Stack
 		if stack == "" {
 			stack = stacksByPhysical[lb.Region+"/"+lb.Name]
+		}
+		if !inStack(stack) {
+			continue
 		}
 		properties := map[string]any{
 			"existingName": lb.Name,
@@ -495,12 +528,12 @@ func buildStacksByPhysical(result *awsscan.ScanResult) map[string]string {
 }
 
 type existingAdoptions struct {
-	buckets        map[string]bool
-	fileSystems    map[string]bool
-	parameters     map[string]bool
-	secrets        map[string]bool
-	loadBalancers  map[string]bool
-	services       map[string]bool
+	buckets       map[string]bool
+	fileSystems   map[string]bool
+	parameters    map[string]bool
+	secrets       map[string]bool
+	loadBalancers map[string]bool
+	services      map[string]bool
 }
 
 func loadExistingAdoptions(store guardianapi.ReadStore, partition string) (*existingAdoptions, error) {

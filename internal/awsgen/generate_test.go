@@ -281,6 +281,38 @@ func writeIntent(t *testing.T, store guardianapi.Store, partition, name, content
 	}
 }
 
+func TestGenerateStackFilterSelectsIndividualStacks(t *testing.T) {
+	result := scanResult()
+	result.Buckets = []awsscan.BucketResource{
+		{Name: "analytics-data", Region: "eu-west-1", Stack: "analytics"},
+		{Name: "billing-data", Region: "eu-west-1", Stack: "billing"},
+	}
+	result.Services = []awsscan.ServiceResource{
+		{Region: "eu-west-1", ClusterName: "tools", Name: "etl", Stack: "analytics", Image: "public.ecr.aws/etl/worker:1"},
+		{Region: "eu-west-1", ClusterName: "tools", Name: "invoice", Stack: "billing", Image: "public.ecr.aws/billing/invoice:1"},
+	}
+	draft, err := Generate(result, Options{PartitionName: "imported", Stacks: []string{"billing"}}, nil)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if len(draft.Intents) != 1 || draft.Intents[0].Metadata.Name != "import-billing" {
+		t.Fatalf("expected only the billing stack, got %+v", draft.Intents)
+	}
+	for _, asset := range draft.Intents[0].Spec.Assets {
+		if asset.Name != "billing-data" && asset.Name != "invoice" {
+			t.Fatalf("unexpected asset from unselected stack: %+v", asset)
+		}
+	}
+
+	all, err := Generate(result, Options{PartitionName: "imported"}, nil)
+	if err != nil {
+		t.Fatalf("generate all: %v", err)
+	}
+	if len(all.Intents) != 2 {
+		t.Fatalf("expected both stacks without a filter, got %d", len(all.Intents))
+	}
+}
+
 func TestSanitizeName(t *testing.T) {
 	cases := []struct {
 		input string

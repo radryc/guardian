@@ -25,14 +25,14 @@ const (
 )
 
 type partitionStatusResult struct {
-	Partition        string                       `json:"partition"`
-	Status           string                       `json:"status"`
-	DisplayStatus    string                       `json:"displayStatus"`
-	Summary          string                       `json:"summary,omitempty"`
-	LastReconciledAt time.Time                    `json:"lastReconciledAt,omitempty"`
+	Partition        string                             `json:"partition"`
+	Status           string                             `json:"status"`
+	DisplayStatus    string                             `json:"displayStatus"`
+	Summary          string                             `json:"summary,omitempty"`
+	LastReconciledAt time.Time                          `json:"lastReconciledAt,omitempty"`
 	Metrics          statedomain.PartitionStatusMetrics `json:"metrics,omitempty"`
-	IntentStatuses   map[string]string            `json:"intentStatuses,omitempty"`
-	Errors           []string                     `json:"errors,omitempty"`
+	IntentStatuses   map[string]string                  `json:"intentStatuses,omitempty"`
+	Errors           []string                           `json:"errors,omitempty"`
 }
 
 func partitionStatusCommand(store guardianapi.Store, printer *output.Printer) *command.Command {

@@ -17,8 +17,6 @@ type PartitionStatusMetrics struct {
 	IntentStatusCounts map[string]int `json:"intentStatusCounts,omitempty"`
 }
 
-var knownPartitionStatuses = []string{"Compiled", "Healthy", "Progressing", "Attention", "Failing", "Invalid"}
-
 var knownIntentStatuses = []string{
 	string(StatusInvalid),
 	string(StatusBlocked),
@@ -35,10 +33,6 @@ var knownIntentStatuses = []string{
 	string(StatusDestroying),
 	string(StatusDestroyed),
 	string(StatusOrphaned),
-}
-
-func KnownPartitionStatuses() []string {
-	return append([]string(nil), knownPartitionStatuses...)
 }
 
 func KnownIntentStatuses() []string {
@@ -271,4 +265,60 @@ func cloneIntMap(in map[string]int) map[string]int {
 		out[key] = value
 	}
 	return out
+}
+
+// PartitionSelectsIntent reports whether base counts the named intent. A base
+// with no compiled intent set counts every live intent.
+func PartitionSelectsIntent(base *PartitionState, intent string) bool {
+	if base == nil || len(base.IntentVersions) == 0 {
+		return true
+	}
+	_, ok := base.IntentVersions[intent]
+	return ok
+}
+
+// AdjustIntentMetrics applies a +/-1 delta to the partition metrics for an
+// intent transition. before may be nil for a newly added intent and after may
+// be nil for a removed one. It is O(1), so callers can update one intent
+// without recomputing metrics from every intent in the partition.
+func AdjustIntentMetrics(metrics *PartitionStatusMetrics, base *PartitionState, intent string, before, after *IntentState) {
+	if metrics == nil || !PartitionSelectsIntent(base, intent) {
+		return
+	}
+	if metrics.IntentStatusCounts == nil {
+		metrics.IntentStatusCounts = map[string]int{}
+	}
+	apply := func(state *IntentState, sign int) {
+		if state == nil {
+			return
+		}
+		metrics.TotalIntents += sign
+		status := state.Status
+		if status == "" {
+			status = StatusReady
+		}
+		key := string(status)
+		metrics.IntentStatusCounts[key] += sign
+		if metrics.IntentStatusCounts[key] <= 0 {
+			delete(metrics.IntentStatusCounts, key)
+		}
+		switch intentHealthBucket(state) {
+		case "healthy":
+			metrics.HealthyIntents += sign
+		case "pending":
+			metrics.PendingIntents += sign
+		case "attention":
+			metrics.AttentionIntents += sign
+		case "failing":
+			metrics.FailingIntents += sign
+		}
+	}
+	apply(before, -1)
+	apply(after, 1)
+}
+
+// DerivePartitionPresentation recomputes the partition-level status strings from
+// already-maintained metrics. O(1) in the number of intents.
+func DerivePartitionPresentation(base *PartitionState, metrics PartitionStatusMetrics) (string, string, string) {
+	return derivePartitionPresentation(base, metrics)
 }

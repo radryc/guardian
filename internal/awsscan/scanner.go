@@ -35,6 +35,19 @@ import (
 const scanRegionConcurrency = 4
 const defaultInventoryDetail = InventoryDetailSummary
 
+const (
+	// inventoryRegionTimeout bounds the CloudControl inventory sweep for a
+	// single region. AWS exposes ~1500 resource types; enumerating every type in
+	// every region takes far longer than a scan lease, which previously left
+	// scans stuck at "Running · 0 ...". The sweep keeps whatever completed
+	// before the deadline and reports the truncation.
+	inventoryRegionTimeout = 45 * time.Second
+	// maxInventoryErrors bounds the per-region error detail produced by
+	// unsupported CloudControl resource types (many of the 1500 types do not
+	// support ListResources).
+	maxInventoryErrors = 25
+)
+
 type Scanner interface {
 	Scan(ctx context.Context, req *ScanRequest) *ScanResult
 }
@@ -60,8 +73,15 @@ func NewScanner(account, assumeRoleName, externalID, regionPin string) Scanner {
 }
 
 func (s *awsScanner) awsConfig(ctx context.Context, region string) (awsroot.Config, error) {
+	// Cache the config per region so its aws.CredentialsCache is shared across
+	// scans. Concurrent scans then single-flight credential resolution instead
+	// of each triggering a fresh SSO refresh / assume-role / credential_process
+	// (which fails intermittently with "failed to refresh cached credentials").
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.cfgs == nil {
+		s.cfgs = make(map[string]awsroot.Config)
+	}
 	if cfg, ok := s.cfgs[region]; ok {
 		return cfg, nil
 	}
@@ -246,14 +266,14 @@ func (s *awsScanner) resolveRegions(ctx context.Context, req *ScanRequest) ([]st
 }
 
 type regionScanData struct {
-	fileSystems    []FileSystemResource
-	parameters     []ParameterResource
-	secrets        []SecretResource
-	services       []ServiceResource
-	loadBalancers  []LoadBalancerResource
-	stacks         []StackResource
-	inventory      map[string]map[string][]InventoryResource
-	errors         []ScanError
+	fileSystems   []FileSystemResource
+	parameters    []ParameterResource
+	secrets       []SecretResource
+	services      []ServiceResource
+	loadBalancers []LoadBalancerResource
+	stacks        []StackResource
+	inventory     map[string]map[string][]InventoryResource
+	errors        []ScanError
 }
 
 func (d *regionScanData) addError(region, resourceType, message string) {
@@ -706,6 +726,11 @@ var directCoveredInventoryExcludes = []string{
 }
 
 func (s *awsScanner) scanInventory(ctx context.Context, cfg awsroot.Config, region string, req *ScanRequest, data *regionScanData) map[string]map[string][]InventoryResource {
+	// Bound the whole sweep: a hung or slow CloudControl type must not stall the
+	// region (and therefore the scan) indefinitely.
+	sweepCtx, cancel := context.WithTimeout(ctx, inventoryRegionTimeout)
+	defer cancel()
+
 	cfClient := cloudformation.NewFromConfig(cfg)
 	include := req.IncludeResourceTypes
 	if len(include) == 0 {
@@ -713,7 +738,7 @@ func (s *awsScanner) scanInventory(ctx context.Context, cfg awsroot.Config, regi
 	}
 	exclude := append(append([]string(nil), req.ExcludeResourceTypes...), directCoveredInventoryExcludes...)
 
-	supported, err := listSupportedResourceTypes(ctx, cfClient, commonTypePrefix(include, exclude))
+	supported, err := listSupportedResourceTypes(sweepCtx, cfClient, commonTypePrefix(include, exclude))
 	if err != nil {
 		data.addError(region, "", fmt.Sprintf("list cloudformation resource types: %v", err))
 		return nil
@@ -730,10 +755,17 @@ func (s *awsScanner) scanInventory(ctx context.Context, cfg awsroot.Config, regi
 
 	client := cloudcontrol.NewFromConfig(cfg)
 	out := make(map[string][]InventoryResource)
+	scanned := 0
 	for _, typeName := range enabled {
-		resources, err := listCloudControlResources(ctx, client, typeName)
+		if sweepCtx.Err() != nil {
+			break
+		}
+		scanned++
+		resources, err := listCloudControlResources(sweepCtx, client, typeName)
 		if err != nil {
-			data.addError(region, typeName, err.Error())
+			if len(data.errors) < maxInventoryErrors {
+				data.addError(region, typeName, err.Error())
+			}
 			continue
 		}
 		for _, resource := range resources {
@@ -747,6 +779,9 @@ func (s *awsScanner) scanInventory(ctx context.Context, cfg awsroot.Config, regi
 			}
 			out[typeName] = append(out[typeName], entry)
 		}
+	}
+	if scanned < len(enabled) {
+		data.addError(region, "", fmt.Sprintf("inventory sweep truncated at %s: scanned %d of %d resource types", inventoryRegionTimeout, scanned, len(enabled)))
 	}
 	for typeName := range out {
 		entries := out[typeName]
@@ -775,11 +810,11 @@ func listSupportedResourceTypes(ctx context.Context, client *cloudformation.Clie
 		cfntypes.ProvisioningTypeImmutable,
 	} {
 		paginator := cloudformation.NewListTypesPaginator(client, &cloudformation.ListTypesInput{
-			Type:              cfntypes.RegistryTypeResource,
-			Visibility:        cfntypes.VisibilityPublic,
-			ProvisioningType:  provisioningType,
-			DeprecatedStatus:  cfntypes.DeprecatedStatusLive,
-			Filters:           filters,
+			Type:             cfntypes.RegistryTypeResource,
+			Visibility:       cfntypes.VisibilityPublic,
+			ProvisioningType: provisioningType,
+			DeprecatedStatus: cfntypes.DeprecatedStatusLive,
+			Filters:          filters,
 		})
 		for paginator.HasMorePages() {
 			page, err := paginator.NextPage(ctx)

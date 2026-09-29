@@ -348,6 +348,15 @@
               <h2 class="card-title">Build partition bundle</h2>
               <p class="muted text-[13px]">Generate adoption intents from the scan, review them, and save the bundle. Saved intents report in-sync on their first reconcile and only mutate AWS when you later change them.</p>
             </div>
+            <div class="mb-3">
+              <div class="flex items-center gap-2 mb-1.5">
+                <span class="text-[11px] font-bold uppercase tracking-[0.09em] text-[#566778]">CloudFormation stacks</span>
+                <button id="scanStackAll" type="button" class="btn-ghost text-[11px] px-2 py-0.5">Select all</button>
+                <button id="scanStackNone" type="button" class="btn-ghost text-[11px] px-2 py-0.5">Clear</button>
+                <span id="scanStackCount" class="text-[11px] text-[#566778]"></span>
+              </div>
+              <div id="scanStackSelect" class="grid gap-1 max-h-56 overflow-y-auto"></div>
+            </div>
             <div class="flex flex-wrap items-end gap-3 mb-3">
               <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
                 <span>Partition</span>

@@ -31,6 +31,9 @@ func main() {
 	var monofsToken string
 	var monofsPrincipalID string
 	var unclaimedTaskRetryDelay time.Duration
+	var maxConcurrency int
+	var shardIndex int
+	var shardCount int
 	flag.StringVar(&pusherName, "pusher-name", "", "pusher name")
 	flag.StringVar(&storeDir, "store-dir", "", "filesystem-backed Guardian store")
 	flag.StringVar(&workerID, "worker-id", "", "worker identifier")
@@ -38,6 +41,9 @@ func main() {
 	flag.StringVar(&monofsToken, "monofs-token", "", "MonoFS guardian token")
 	flag.StringVar(&monofsPrincipalID, "monofs-principal-id", "", "MonoFS guardian principal ID (defaults to guardian-pusher-<pusher-name>)")
 	flag.DurationVar(&unclaimedTaskRetryDelay, "unclaimed-task-retry-delay", 15*time.Second, "minimum delay before retrying a task that could not be claimed; 0 disables backoff")
+	flag.IntVar(&maxConcurrency, "max-concurrency", 0, "maximum tasks executed concurrently (0 = auto from CPU count)")
+	flag.IntVar(&shardIndex, "shard-index", 0, "shard index for this replica when sharding a shared queue")
+	flag.IntVar(&shardCount, "shard-count", 1, "number of shards sharing the queue; 1 disables sharding")
 	flag.Parse()
 
 	if pusherName == "" || (storeDir == "" && monofsRouter == "") || (storeDir != "" && monofsRouter != "") {
@@ -116,6 +122,9 @@ func main() {
 		Registry:                reg,
 		PollInterval:            5 * time.Second,
 		UnclaimedTaskRetryDelay: unclaimedTaskRetryDelay,
+		MaxConcurrency:          maxConcurrency,
+		ShardIndex:              shardIndex,
+		ShardCount:              shardCount,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

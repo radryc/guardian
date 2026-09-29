@@ -11,18 +11,13 @@ import (
 	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
 )
 
+// LoadPartitionRuntime builds the partition runtime by reading the partition
+// state file and scanning the authoritative per-intent state files. There is no
+// persisted aggregate snapshot: writing one on every intent transition caused
+// O(intents) write amplification, so per-intent files are the source of truth
+// and the aggregate is derived on read.
 func LoadPartitionRuntime(ctx context.Context, store guardianapi.ReadStore, partition string) (*statedomain.PartitionRuntime, error) {
-	runtime, err := loadPartitionRuntimeSnapshot(ctx, store, partition)
-	if err == nil {
-		runtime = statedomain.NormalizePartitionRuntime(runtime)
-		partitionRuntimeLoadsTotal.WithLabelValues("snapshot").Inc()
-		partitionRuntimeIntentStatesTotal.WithLabelValues("snapshot").Add(float64(len(runtime.Intents)))
-		return runtime, nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	runtime, err = scanPartitionRuntime(ctx, store, partition)
+	runtime, err := scanPartitionRuntime(ctx, store, partition)
 	if err != nil {
 		return nil, err
 	}
@@ -30,26 +25,6 @@ func LoadPartitionRuntime(ctx context.Context, store guardianapi.ReadStore, part
 	partitionRuntimeLoadsTotal.WithLabelValues("scan").Inc()
 	partitionRuntimeIntentStatesTotal.WithLabelValues("scan").Add(float64(len(runtime.Intents)))
 	return runtime, nil
-}
-
-func loadPartitionRuntimeSnapshot(ctx context.Context, store guardianapi.ReadStore, partition string) (*statedomain.PartitionRuntime, error) {
-	var runtime statedomain.PartitionRuntime
-	if err := ReadJSON(ctx, store, paths.PartitionRuntime(partition), &runtime); err != nil {
-		return nil, err
-	}
-	if runtime.APIVersion == "" {
-		runtime.APIVersion = "guardian/v1alpha1"
-	}
-	if runtime.Kind == "" {
-		runtime.Kind = "PartitionRuntime"
-	}
-	if runtime.Partition == "" {
-		runtime.Partition = partition
-	}
-	if runtime.Intents == nil {
-		runtime.Intents = map[string]*statedomain.IntentState{}
-	}
-	return &runtime, nil
 }
 
 func scanPartitionRuntime(ctx context.Context, store guardianapi.ReadStore, partition string) (*statedomain.PartitionRuntime, error) {

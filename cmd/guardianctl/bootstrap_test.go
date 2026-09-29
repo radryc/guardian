@@ -123,7 +123,7 @@ func TestBootstrapRouterEnv(t *testing.T) {
 func TestBootstrapCommandsRegistered(t *testing.T) {
 	// Verify dev commands exist in the command list
 	cmds := devCommands()
-	
+
 	names := make(map[string]bool)
 	for _, c := range cmds {
 		if c.Cmd == nil {

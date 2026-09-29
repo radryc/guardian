@@ -127,10 +127,9 @@ func main() {
 		guardianURL:                   *guardianURL,
 		guardianDiscoveryToken:        *guardianDiscoveryToken,
 	})
-	var storeCloser interface{ Close() error } = store
-	if storeCloser != nil {
+	if store != nil {
 		defer func() {
-			if err := storeCloser.Close(); err != nil {
+			if err := store.Close(); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 			}
 		}()
@@ -527,7 +526,7 @@ const storeRequiredMessage = "a store is required; pass --store-dir or --monofs-
 
 func ensureStoreConfigured(store any) error {
 	if store == nil {
-		return fmt.Errorf(storeRequiredMessage)
+		return errors.New(storeRequiredMessage)
 	}
 	return nil
 }
@@ -661,6 +660,13 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 		pathFlag := flags.String("path", "", "logical file path (required)")
 		return &command.Command{Description: "Read a file from the store", Flags: flags, Run: func(ctx context.Context, _ []string) error {
 			return storeRead(ctx, store, printer, *pathFlag)
+		}}
+	}()))
+	reg.Register("store", "delete", storeCommand(func() *command.Command {
+		flags := flag.NewFlagSet("store delete", flag.ContinueOnError)
+		pathFlag := flags.String("path", "", "logical file path (required)")
+		return &command.Command{Description: "Delete a file from the store", Flags: flags, Run: func(ctx context.Context, _ []string) error {
+			return storeDelete(ctx, store, printer, *pathFlag)
 		}}
 	}()))
 	reg.Register("filesystem", "tree", storeCommand(func() *command.Command {
@@ -1011,6 +1017,34 @@ func storeRead(ctx context.Context, store guardianapi.Store, printer *output.Pri
 		return nil
 	}
 	_, err = fmt.Fprint(printer.Writer, string(data))
+	return err
+}
+
+func storeDelete(ctx context.Context, store guardianapi.Store, printer *output.Printer, logicalPath string) error {
+	if store == nil {
+		return fmt.Errorf("store not available")
+	}
+	if logicalPath == "" {
+		return fmt.Errorf("--path is required")
+	}
+	if isSecretPath(logicalPath) {
+		return fmt.Errorf("access to secret paths is not allowed")
+	}
+	info, err := store.Stat(ctx, logicalPath)
+	if err != nil {
+		return err
+	}
+	if _, err := store.DeletePaths(ctx, guardianapi.DeleteBatch{
+		Deletes: []guardianapi.PathDelete{{LogicalPath: logicalPath, ExpectedVersionID: info.VersionID}},
+		Context: guardianapi.MutationContext{PrincipalID: "guardianctl", Reason: "store delete"},
+	}); err != nil {
+		return err
+	}
+	if printer.Format == cliformat.FormatJSON {
+		printer.PrintJSON(map[string]any{"path": logicalPath, "deleted": true})
+		return nil
+	}
+	_, err = fmt.Fprintf(printer.Writer, "deleted %s\n", logicalPath)
 	return err
 }
 
@@ -1384,65 +1418,6 @@ func indentBlock(value, prefix string) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
-func deploymentFilterFromFlags(limit int, sinceValue, untilValue string) (historyquery.DeploymentFilter, error) {
-	filter := historyquery.DeploymentFilter{Limit: limit}
-	if strings.TrimSpace(sinceValue) != "" {
-		parsed, err := time.Parse(time.RFC3339Nano, sinceValue)
-		if err != nil {
-			return historyquery.DeploymentFilter{}, fmt.Errorf("--since must be RFC3339")
-		}
-		filter.Since = &parsed
-	}
-	if strings.TrimSpace(untilValue) != "" {
-		parsed, err := time.Parse(time.RFC3339Nano, untilValue)
-		if err != nil {
-			return historyquery.DeploymentFilter{}, fmt.Errorf("--until must be RFC3339")
-		}
-		filter.Until = &parsed
-	}
-	if err := filter.Validate(); err != nil {
-		return historyquery.DeploymentFilter{}, err
-	}
-	return filter, nil
-}
-
-func loadRollouts(ctx context.Context, store guardianapi.ReadStore, partitionName string, filter historyquery.DeploymentFilter) ([]historyquery.RolloutRecord, error) {
-	if strings.TrimSpace(partitionName) != "" {
-		return historyquery.LoadPartitionRollouts(ctx, store, partitionName, filter)
-	}
-	names, err := configuredPartitionNames(ctx, store)
-	if err != nil {
-		return nil, err
-	}
-	rollouts := make([]historyquery.RolloutRecord, 0)
-	for _, name := range names {
-		items, err := historyquery.LoadPartitionRollouts(ctx, store, name, historyquery.DeploymentFilter{
-			Since: filter.Since,
-			Until: filter.Until,
-		})
-		if err != nil {
-			return nil, err
-		}
-		rollouts = append(rollouts, items...)
-	}
-	sort.Slice(rollouts, func(i, j int) bool {
-		if rollouts[i].CreatedAt.Equal(rollouts[j].CreatedAt) {
-			if rollouts[i].Partition == rollouts[j].Partition {
-				if rollouts[i].Intent == rollouts[j].Intent {
-					return rollouts[i].DeploymentRevision > rollouts[j].DeploymentRevision
-				}
-				return rollouts[i].Intent < rollouts[j].Intent
-			}
-			return rollouts[i].Partition < rollouts[j].Partition
-		}
-		return rollouts[i].CreatedAt.After(rollouts[j].CreatedAt)
-	})
-	if filter.Limit > 0 && len(rollouts) > filter.Limit {
-		return append([]historyquery.RolloutRecord(nil), rollouts[:filter.Limit]...), nil
-	}
-	return rollouts, nil
-}
-
 func formatRolloutAssets(assets []historyquery.RolloutAsset) string {
 	if len(assets) == 0 {
 		return ""
@@ -1624,144 +1599,6 @@ func loadRollbackManifest(ctx context.Context, store guardianapi.Store, partitio
 	return nil, nil, fmt.Errorf("archive manifest %s does not contain a valid intent manifest", manifestPath)
 }
 
-func tailEvents(ctx context.Context, store guardianapi.Store, printer *output.Printer, partition, intent string, once bool, pollInterval time.Duration) error {
-	if pollInterval <= 0 {
-		pollInterval = time.Second
-	}
-	if err := tailEventsWatch(ctx, store, printer, partition, intent, once); err == nil {
-		return nil
-	} else if !strings.Contains(err.Error(), "watch not supported") {
-		return err
-	}
-	return tailEventsPoll(ctx, store, printer, partition, intent, once, pollInterval)
-}
-
-func tailEventsWatch(ctx context.Context, store guardianapi.Store, printer *output.Printer, partition, intent string, once bool) error {
-	prefixes := []string{paths.PartitionsRoot()}
-	if partition != "" {
-		prefixes = []string{paths.StateEventsDir(partition)}
-	}
-	ch, err := store.Watch(ctx, prefixes)
-	if err != nil {
-		return err
-	}
-	seen := map[string]struct{}{}
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case event, ok := <-ch:
-			if !ok {
-				return nil
-			}
-			if event.Type == guardianapi.ChangeDeleted || !isEventPath(event.LogicalPath) {
-				continue
-			}
-			if _, ok := seen[event.LogicalPath]; ok {
-				continue
-			}
-			record, err := readEventRecord(ctx, store, event.LogicalPath)
-			if err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					continue
-				}
-				return err
-			}
-			if intent != "" && record.Intent != intent {
-				continue
-			}
-			seen[event.LogicalPath] = struct{}{}
-			printEvent(printer, record)
-			if once {
-				return nil
-			}
-		}
-	}
-}
-
-func tailEventsPoll(ctx context.Context, store guardianapi.Store, printer *output.Printer, partition, intent string, once bool, pollInterval time.Duration) error {
-	seen, err := listEventFiles(ctx, store, partition)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if seen == nil {
-		seen = map[string]struct{}{}
-	}
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			current, err := listEventFiles(ctx, store, partition)
-			if err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					continue
-				}
-				return err
-			}
-			files := make([]string, 0, len(current))
-			for logicalPath := range current {
-				if _, ok := seen[logicalPath]; ok {
-					continue
-				}
-				files = append(files, logicalPath)
-			}
-			sort.Strings(files)
-			for _, logicalPath := range files {
-				record, err := readEventRecord(ctx, store, logicalPath)
-				if err != nil {
-					if errors.Is(err, os.ErrNotExist) {
-						continue
-					}
-					return err
-				}
-				seen[logicalPath] = struct{}{}
-				if intent != "" && record.Intent != intent {
-					continue
-				}
-				printEvent(printer, record)
-				if once {
-					return nil
-				}
-			}
-		}
-	}
-}
-
-func listEventFiles(ctx context.Context, store guardianapi.ReadStore, partition string) (map[string]struct{}, error) {
-	dirs := make([]string, 0, 1)
-	if partition != "" {
-		dirs = append(dirs, paths.StateEventsDir(partition))
-	} else {
-		names, err := configuredPartitionNames(ctx, store)
-		if err != nil {
-			return nil, err
-		}
-		for _, name := range names {
-			dirs = append(dirs, paths.StateEventsDir(name))
-		}
-	}
-	out := map[string]struct{}{}
-	for _, dir := range dirs {
-		entries, err := store.ListDir(ctx, dir)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, err
-		}
-		for _, entry := range entries {
-			if entry.IsDir || !strings.HasSuffix(entry.Name, ".json") {
-				continue
-			}
-			out[strings.TrimRight(dir, "/")+"/"+entry.Name] = struct{}{}
-		}
-	}
-	return out, nil
-}
-
 func configuredPartitionNames(ctx context.Context, store guardianapi.ReadStore) ([]string, error) {
 	if err := ensureStoreConfigured(store); err != nil {
 		return nil, err
@@ -1785,41 +1622,6 @@ func configuredPartitionNames(ctx context.Context, store guardianapi.ReadStore) 
 	}
 	sort.Strings(names)
 	return names, nil
-}
-
-func readEventRecord(ctx context.Context, store guardianapi.ReadStore, logicalPath string) (*historydomain.EventRecord, error) {
-	var record historydomain.EventRecord
-	if err := readJSON(ctx, store, logicalPath, &record); err != nil {
-		return nil, err
-	}
-	return &record, nil
-}
-
-func printEvent(printer *output.Printer, record *historydomain.EventRecord) {
-	if printer.Format == cliformat.FormatJSON {
-		printer.PrintJSON(record)
-		return
-	}
-	target := record.Partition
-	if record.Intent != "" {
-		target += "/" + record.Intent
-	}
-	printer.PrintText("%s %-24s %-24s %s\n", record.CreatedAt.Format(time.RFC3339), target, record.Type, record.Message)
-}
-
-func isEventPath(logicalPath string) bool {
-	return strings.Contains(logicalPath, "/.state/events/") && strings.HasSuffix(logicalPath, ".json")
-}
-
-func copyStringMap(in map[string]string) map[string]string {
-	if in == nil {
-		return map[string]string{}
-	}
-	out := make(map[string]string, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
-	return out
 }
 
 func uniqueStrings(values []string) []string {

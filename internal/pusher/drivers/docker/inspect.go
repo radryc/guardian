@@ -98,6 +98,7 @@ type rawContainerInspect struct {
 	Name   string `json:"Name"`
 	Config struct {
 		Image  string            `json:"Image"`
+		User   string            `json:"User"`
 		Labels map[string]string `json:"Labels"`
 		Env    []string          `json:"Env"` // "KEY=VALUE" pairs
 	} `json:"Config"`
@@ -110,9 +111,9 @@ type rawContainerInspect struct {
 		Privileged     bool     `json:"Privileged"`
 		ShmSize        int64    `json:"ShmSize"`
 		DeviceRequests []struct {
-			Driver       string   `json:"Driver"`
-			Count        int      `json:"Count"`
-			DeviceIDs    []string `json:"DeviceIDs"`
+			Driver       string     `json:"Driver"`
+			Count        int        `json:"Count"`
+			DeviceIDs    []string   `json:"DeviceIDs"`
 			Capabilities [][]string `json:"Capabilities"`
 		} `json:"DeviceRequests"`
 		PortBindings map[string][]struct {
@@ -229,6 +230,7 @@ func containerFromRawInspect(r rawContainerInspect) Container {
 		Aliases:        aliases,
 		ExtraNetworks:  extraNetworks,
 		Env:            env,
+		User:           r.Config.User,
 		Ports:          ports,
 		VolumeMounts:   volumeMounts,
 		HostBindMounts: hostBindMounts,

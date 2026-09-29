@@ -3,7 +3,6 @@ package assets
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
 
 	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
 )
@@ -30,15 +29,6 @@ func Register(def Definition) {
 func DefinitionFor(assetType string) (Definition, bool) {
 	def, ok := definitions[assetType]
 	return def, ok
-}
-
-func KnownTypes() []string {
-	keys := make([]string, 0, len(definitions))
-	for key := range definitions {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func Decode(spec assetdomain.Spec) (any, Definition, error) {

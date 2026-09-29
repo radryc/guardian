@@ -12,7 +12,7 @@ func TestMonoFSConfigDiscoveryUseExternalAddressesDefaultsToStoreSetting(t *test
 func TestMonoFSConfigDiscoveryUseExternalAddressesUsesClientOverride(t *testing.T) {
 	override := true
 	cfg := MonoFSConfig{
-		UseExternalAddresses: false,
+		UseExternalAddresses:       false,
 		ClientUseExternalAddresses: &override,
 	}
 	if !cfg.DiscoveryUseExternalAddresses() {

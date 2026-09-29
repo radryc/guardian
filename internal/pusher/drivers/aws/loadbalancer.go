@@ -105,12 +105,26 @@ func (d *LoadBalancerDriver) Apply(ctx context.Context, in registry.AssetInput) 
 	lbName := loadBalancerTarget(spec, in)
 	lbType, scheme := desiredLBShape(spec)
 
+	listenerPorts := make([]int, 0, len(spec.Listeners))
+	for _, listener := range spec.Listeners {
+		port := 80
+		if listener.Port != nil {
+			port = *listener.Port
+		}
+		listenerPorts = append(listenerPorts, port)
+	}
+	sgID, err := d.backend.EnsureLoadBalancerSecurityGroup(ctx, lbName+"-sg", scheme, listenerPorts)
+	if err != nil {
+		return registry.AssetResult{}, fmt.Errorf("ensure load balancer security group: %w", err)
+	}
+
 	lbARN, err := d.backend.UpsertLoadBalancer(ctx, LoadBalancer{
-		Name:   lbName,
-		Hash:   hash,
-		Tags:   tags,
-		Type:   lbType,
-		Scheme: scheme,
+		Name:           lbName,
+		Hash:           hash,
+		Tags:           tags,
+		Type:           lbType,
+		Scheme:         scheme,
+		SecurityGroups: []string{sgID},
 	})
 	if err != nil {
 		return registry.AssetResult{}, fmt.Errorf("create load balancer: %w", err)
@@ -156,6 +170,10 @@ func (d *LoadBalancerDriver) Apply(ctx context.Context, in registry.AssetInput) 
 		if lErr != nil {
 			return registry.AssetResult{}, fmt.Errorf("create listener for port %d: %w", port, lErr)
 		}
+
+		if aErr := d.attachTargets(ctx, in, spec, tgARN, port, sgID); aErr != nil {
+			return registry.AssetResult{}, fmt.Errorf("attach targets for listener %d: %w", i, aErr)
+		}
 	}
 
 	lb, _, _ := d.backend.GetLoadBalancer(ctx, lbName)
@@ -164,6 +182,36 @@ func (d *LoadBalancerDriver) Apply(ctx context.Context, in registry.AssetInput) 
 	}
 
 	return registry.AssetResult{Outputs: outputs}, nil
+}
+
+// attachTargets registers each named Compute target with the load balancer's
+// target group. Fargate services are attached via UpdateService so ECS keeps
+// the target group's ENI registrations in sync as tasks scale.
+func (d *LoadBalancerDriver) attachTargets(ctx context.Context, in registry.AssetInput, spec *assetdefs.LoadBalancerSpec, tgARN string, tgPort int, sgID string) error {
+	for _, targetName := range spec.Targets {
+		asset, ok := in.Assets[targetName]
+		if !ok || asset.Type != "Compute" {
+			continue
+		}
+		targetIn := in
+		targetIn.Asset = asset
+		cspec, err := decodeCompute(targetIn)
+		if err != nil {
+			return err
+		}
+		containerPort := tgPort
+		if len(cspec.Ports) > 0 {
+			if cspec.Ports[0].ContainerPort != nil {
+				containerPort = *cspec.Ports[0].ContainerPort
+			} else if cspec.Ports[0].Port != nil {
+				containerPort = *cspec.Ports[0].Port
+			}
+		}
+		if err := d.backend.AttachServiceToTargetGroup(ctx, computeCluster(cspec, targetIn), computeServiceName(cspec, targetIn), asset.Name, tgARN, containerPort, sgID); err != nil {
+			return fmt.Errorf("attach target %s: %w", targetName, err)
+		}
+	}
+	return nil
 }
 
 func (d *LoadBalancerDriver) Destroy(ctx context.Context, in registry.AssetInput) error {

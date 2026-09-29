@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -40,6 +39,7 @@ type SQLDatabaseDriver struct {
 	typeName string
 }
 type ObservabilityDriver struct{ baseDriver }
+type K8sResourceDriver struct{ baseDriver }
 
 func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resolver) {
 	if reg == nil {
@@ -63,6 +63,7 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 	reg.Register(&SQLDatabaseDriver{baseDriver: base, typeName: "Database"})
 	reg.Register(&SQLDatabaseDriver{baseDriver: base, typeName: "SQLDatabase"})
 	reg.Register(&ObservabilityDriver{base})
+	reg.Register(&K8sResourceDriver{base})
 }
 
 func (d *VolumeDriver) Type() string                         { return "Volume" }
@@ -74,6 +75,7 @@ func (d *LoadBalancerDriver) Type() string                   { return "LoadBalan
 func (d *ObjectStoreDriver) Type() string                    { return "ObjectStore" }
 func (d *SQLDatabaseDriver) Type() string                    { return d.typeName }
 func (d *ObservabilityDriver) Type() string                  { return "Observability" }
+func (d *K8sResourceDriver) Type() string                    { return "K8sResource" }
 func (d *VolumeDriver) Validate(map[string]any) error        { return nil }
 func (d *ConfigDriver) Validate(map[string]any) error        { return nil }
 func (d *SecretDriver) Validate(map[string]any) error        { return nil }
@@ -83,6 +85,7 @@ func (d *LoadBalancerDriver) Validate(map[string]any) error  { return nil }
 func (d *ObjectStoreDriver) Validate(map[string]any) error   { return nil }
 func (d *SQLDatabaseDriver) Validate(map[string]any) error   { return nil }
 func (d *ObservabilityDriver) Validate(map[string]any) error { return nil }
+func (d *K8sResourceDriver) Validate(map[string]any) error   { return nil }
 
 func (d *VolumeDriver) Check(ctx context.Context, in registry.AssetInput) error { return ctx.Err() }
 
@@ -303,14 +306,32 @@ func (d *ComputeDriver) Check(ctx context.Context, in registry.AssetInput) error
 	if err != nil {
 		return err
 	}
-	if ok && deployment.CrashLoopBackOff {
-		reason := deployment.PodFailureReason
-		if reason == "" {
-			reason = "CrashLoopBackOff"
-		}
-		return fmt.Errorf("deployment %s has pods in %s", deployment.Name, reason)
+	if !ok || !deployment.CrashLoopBackOff {
+		return nil
 	}
-	return nil
+	// A crash-looping workload must not block rolling out a new spec. During a
+	// rollout the live deployment is still the previous revision; failing CHECK
+	// on it would prevent APPLY from ever running and deadlock the reconcile
+	// loop. Only fail when the crashing deployment is the desired revision
+	// (i.e. steady state), otherwise let the rollout proceed.
+	if desired, hashErr := desiredComputeHash(ctx, in, spec); hashErr != nil {
+		return hashErr
+	} else if deployment.Hash != "" && deployment.Hash != desired {
+		return nil
+	}
+	reason := deployment.PodFailureReason
+	if reason == "" {
+		reason = "CrashLoopBackOff"
+	}
+	return fmt.Errorf("deployment %s has pods in %s", deployment.Name, reason)
+}
+
+func desiredComputeHash(ctx context.Context, in registry.AssetInput, spec *assetdefs.ComputeSpec) (string, error) {
+	payload, err := loadWorkloadPayload(ctx, in)
+	if err != nil {
+		return "", err
+	}
+	return hashWithPayload(computeHash(in, spec), payload), nil
 }
 
 func (d *ComputeDriver) ObserveState(ctx context.Context, in registry.AssetInput) (*taskdomain.HealthObservation, *taskdomain.ApplyReadiness, error) {
@@ -716,14 +737,16 @@ func (d *ObjectStoreDriver) Apply(ctx context.Context, in registry.AssetInput) (
 		return registry.AssetResult{}, err
 	}
 	hash := hashWithPayload(objectStoreHash(in), payload)
+	runAsRoot := int64(0)
 	container := Container{
 		Name:         "minio",
-		Image:        "quay.io/minio/minio:latest",
+		Image:        "docker.io/bitnamilegacy/minio:latest",
 		Command:      []string{"minio"},
 		Args:         []string{"server", "/data", "--console-address=:9001"},
 		Env:          map[string]string{"MINIO_ROOT_USER": "minio", "MINIO_ROOT_PASSWORD": "minio123"},
 		Ports:        []ServicePort{{Name: "api", Port: 9000, TargetPort: 9000, Protocol: "TCP"}, {Name: "console", Port: 9001, TargetPort: 9001, Protocol: "TCP"}},
 		VolumeMounts: objectStoreMounts(in, spec),
+		RunAsUser:    &runAsRoot,
 	}
 	deployment := Deployment{
 		Namespace:         namespace(in),
@@ -963,6 +986,107 @@ func (d *ObservabilityDriver) Destroy(ctx context.Context, in registry.AssetInpu
 		return err
 	}
 	return d.backend.DeleteService(namespace(in), serviceName(in, "obs"))
+}
+
+func (d *K8sResourceDriver) Check(ctx context.Context, in registry.AssetInput) error {
+	return ctx.Err()
+}
+
+func (d *K8sResourceDriver) ObserveState(ctx context.Context, in registry.AssetInput) (*taskdomain.HealthObservation, *taskdomain.ApplyReadiness, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	return &taskdomain.HealthObservation{Status: taskdomain.HealthHealthy, Summary: "kubernetes manifest applied"}, &taskdomain.ApplyReadiness{Status: taskdomain.ApplyReadinessReady, Summary: "kubernetes manifest is ready"}, nil
+}
+
+func (d *K8sResourceDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdomain.DriftReport, error) {
+	if err := ctx.Err(); err != nil {
+		return taskdomain.DriftReport{}, err
+	}
+	manifest, ok, err := loadK8sResourceManifest(ctx, in)
+	if err != nil {
+		return taskdomain.DriftReport{}, err
+	}
+	if !ok {
+		return changedDrift(in.Asset.Name, "kubernetes manifest payload is missing"), nil
+	}
+	if in.Store == nil {
+		return changedDrift(in.Asset.Name, "kubernetes manifest outputs pending"), nil
+	}
+	state, err := orchestratorcommon.LoadIntentState(ctx, in.Store, in.PartitionName, in.IntentName)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return changedDrift(in.Asset.Name, "kubernetes manifest outputs pending"), nil
+		}
+		return taskdomain.DriftReport{}, err
+	}
+	hash := hashWithPayload(driverutil.AssetHash(in), string(manifest))
+	if strings.TrimSpace(state.Outputs[in.Asset.Name+".manifestHash"]) != hash {
+		return changedDrift(in.Asset.Name, "kubernetes manifest differs"), nil
+	}
+	return inSyncDrift(in.Asset.Name, "kubernetes manifest is in sync"), nil
+}
+
+func (d *K8sResourceDriver) Apply(ctx context.Context, in registry.AssetInput) (registry.AssetResult, error) {
+	if err := ctx.Err(); err != nil {
+		return registry.AssetResult{}, err
+	}
+	spec, err := decodeK8sResource(in)
+	if err != nil {
+		return registry.AssetResult{}, err
+	}
+	manifest, ok, err := loadK8sResourceManifest(ctx, in)
+	if err != nil {
+		return registry.AssetResult{}, err
+	}
+	if !ok {
+		return registry.AssetResult{}, fmt.Errorf("asset %s: payload.k8s is required", in.Asset.Name)
+	}
+	if err := d.backend.ApplyManifest(spec.Namespace, manifest); err != nil {
+		return registry.AssetResult{}, fmt.Errorf("apply kubernetes manifest: %w", err)
+	}
+	hash := hashWithPayload(driverutil.AssetHash(in), string(manifest))
+	return registry.AssetResult{Outputs: map[string]string{"manifestHash": hash}}, nil
+}
+
+func (d *K8sResourceDriver) Destroy(ctx context.Context, in registry.AssetInput) error {
+	return ctx.Err()
+}
+
+// loadK8sResourceManifest returns the raw manifest bytes referenced by the
+// asset's k8s/kubernetes payload. Multi-document YAML is passed through
+// unchanged.
+func loadK8sResourceManifest(ctx context.Context, in registry.AssetInput) ([]byte, bool, error) {
+	if in.Store == nil || len(in.Asset.Payload) == 0 {
+		return nil, false, nil
+	}
+	logicalPath := ""
+	for _, key := range []string{"k8s", "kubernetes"} {
+		if value := strings.TrimSpace(in.Asset.Payload[key]); value != "" {
+			logicalPath = value
+			break
+		}
+	}
+	if logicalPath == "" {
+		return nil, false, nil
+	}
+	content, err := in.Store.ReadFile(ctx, logicalPath)
+	if err != nil {
+		return nil, false, fmt.Errorf("read payload %s: %w", logicalPath, err)
+	}
+	return content, true, nil
+}
+
+func decodeK8sResource(in registry.AssetInput) (*assetdefs.K8sResourceSpec, error) {
+	typed, err := driverutil.DecodeAsset(in)
+	if err != nil {
+		return nil, err
+	}
+	spec, ok := typed.(*assetdefs.K8sResourceSpec)
+	if !ok {
+		return nil, fmt.Errorf("expected K8sResourceSpec, got %T", typed)
+	}
+	return spec, nil
 }
 
 func (d *baseDriver) checkReferences(ctx context.Context, in registry.AssetInput) error {
@@ -1423,29 +1547,6 @@ func buildComputeContainer(ctx context.Context, in registry.AssetInput, resolver
 	return container, nil
 }
 
-func (d *LoadBalancerDriver) loadBalancerConfig(in registry.AssetInput, spec *assetdefs.LoadBalancerSpec) (string, error) {
-	if spec.Config != "" {
-		_, typed, err := driverutil.DecodeNamedAsset(in, spec.Config)
-		if err != nil {
-			return "", err
-		}
-		configSpec := typed.(*assetdefs.ConfigSpec)
-		if _, content, ok := driverutil.SingleConfigFile(configSpec); ok {
-			return content, nil
-		}
-		files := driverutil.ConfigFiles(configSpec)
-		keys := make([]string, 0, len(files))
-		for key := range files {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		if len(keys) > 0 {
-			return files[keys[0]], nil
-		}
-	}
-	return generateHAProxyConfig(in, spec)
-}
-
 func (d *LoadBalancerDriver) loadBalancerBootstrap(in registry.AssetInput, spec *assetdefs.LoadBalancerSpec) (string, error) {
 	entries := make([]string, 0, len(spec.Listeners))
 	for _, listener := range spec.Listeners {
@@ -1483,35 +1584,6 @@ func loadBalancerImage(spec *assetdefs.LoadBalancerSpec) string {
 		return strings.TrimSpace(spec.Image)
 	}
 	return loadBalancerContainerImage()
-}
-
-func generateHAProxyConfig(in registry.AssetInput, spec *assetdefs.LoadBalancerSpec) (string, error) {
-	var b strings.Builder
-	b.WriteString("global\n  daemon\n")
-	b.WriteString("defaults\n  mode tcp\n  timeout connect 5s\n  timeout client 30s\n  timeout server 30s\n")
-	for idx, listener := range spec.Listeners {
-		if listener.Port == nil {
-			continue
-		}
-		frontend := listener.Name
-		if frontend == "" {
-			frontend = fmt.Sprintf("listener-%d", idx)
-		}
-		backendName := frontend + "-backend"
-		b.WriteString(fmt.Sprintf("frontend %s\n  bind *:%d\n  default_backend %s\n", frontend, *listener.Port, backendName))
-		b.WriteString(fmt.Sprintf("backend %s\n", backendName))
-		for _, target := range spec.Targets {
-			_, typed, err := driverutil.DecodeNamedAsset(in, target)
-			if err != nil {
-				return "", err
-			}
-			compute := typed.(*assetdefs.ComputeSpec)
-			port := matchComputePort(compute, *listener.Port)
-			service := driverutil.ResourceName("k8s-svc-compute", in.Target, in.PartitionName, in.IntentName, target)
-			b.WriteString(fmt.Sprintf("  server %s %s.%s.svc.cluster.local:%d check\n", target, service, namespace(in), port))
-		}
-	}
-	return b.String(), nil
 }
 
 func matchComputePort(spec *assetdefs.ComputeSpec, prefer int) int {

@@ -50,16 +50,6 @@ func AssetHash(in registry.AssetInput) string {
 	return CompositeHash(in)
 }
 
-func NamedAssetHash(asset taskdomain.AbstractAsset, target targetdomain.Placement) string {
-	return digest.MustNormalizedHash(struct {
-		Asset  taskdomain.AbstractAsset
-		Target targetdomain.Placement
-	}{
-		Asset:  asset,
-		Target: target,
-	})
-}
-
 func CompositeHash(in registry.AssetInput, extraRefs ...string) string {
 	seen := map[string]struct{}{}
 	names := []string{in.Asset.Name}

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -899,7 +898,7 @@ func (d *ObjectStoreDriver) Apply(ctx context.Context, in registry.AssetInput) (
 	container := Container{
 		Name:         objectStoreName(in),
 		Kind:         "ObjectStore",
-		Image:        "quay.io/minio/minio:latest",
+		Image:        "docker.io/bitnamilegacy/minio:latest",
 		Hash:         hash,
 		Labels:       driverutil.Labels("docker", in, hash),
 		Network:      network,
@@ -907,6 +906,7 @@ func (d *ObjectStoreDriver) Apply(ctx context.Context, in registry.AssetInput) (
 		Command:      []string{"minio"},
 		Args:         []string{"server", "/data", "--console-address=:9001"},
 		Env:          map[string]string{"MINIO_ROOT_USER": "minio", "MINIO_ROOT_PASSWORD": "minio123"},
+		User:         "0",
 		Ports:        []PortBinding{{Name: "api", Protocol: "TCP", ContainerPort: 9000}, {Name: "console", Protocol: "TCP", ContainerPort: 9001}},
 		VolumeMounts: objectStoreVolumeMounts(in, spec),
 		ConfigMounts: objectStoreConfigMounts(in, spec),
@@ -1712,29 +1712,6 @@ func firstContainerPort(ports []PortBinding) int {
 		}
 	}
 	return 0
-}
-
-func (d *LoadBalancerDriver) loadBalancerConfig(in registry.AssetInput, spec *assetdefs.LoadBalancerSpec) (string, error) {
-	if spec.Config != "" {
-		_, typed, err := driverutil.DecodeNamedAsset(in, spec.Config)
-		if err != nil {
-			return "", err
-		}
-		configSpec := typed.(*assetdefs.ConfigSpec)
-		if _, content, ok := driverutil.SingleConfigFile(configSpec); ok {
-			return content, nil
-		}
-		files := driverutil.ConfigFiles(configSpec)
-		keys := make([]string, 0, len(files))
-		for key := range files {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		if len(keys) > 0 {
-			return files[keys[0]], nil
-		}
-	}
-	return generateHAProxyConfig(in, spec)
 }
 
 func (d *LoadBalancerDriver) loadBalancerBootstrap(in registry.AssetInput, spec *assetdefs.LoadBalancerSpec) (string, error) {

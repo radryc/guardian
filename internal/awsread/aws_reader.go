@@ -302,6 +302,10 @@ func (r *AWSReader) QueryLogs(ctx context.Context, q LogQuery) ([]LogRecord, err
 		if err != nil {
 			return nil, err
 		}
+		for i := range records {
+			records[i].Region = region
+			records[i].Account = r.account
+		}
 		out = append(out, records...)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Timestamp.After(out[j].Timestamp) })
@@ -349,9 +353,11 @@ func insightsRecords(rows [][]cloudwatchlogstypes.ResultField) []LogRecord {
 				}
 			case "@message":
 				record.Message = value
-			case "@log_group":
+			// `@log` / `@logStream` are the CloudWatch Insights field names;
+			// the underscore variants are accepted for compatibility.
+			case "@log", "@log_group":
 				record.LogGroup = value
-			case "@log_stream":
+			case "@logStream", "@log_stream":
 				record.LogStream = value
 			default:
 				record.Fields[name] = value
@@ -369,15 +375,23 @@ func parseInsightsTime(value string) (time.Time, error) {
 	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
 		return parsed.UTC(), nil
 	}
+	// CloudWatch Logs Insights renders @timestamp as "2006-01-02 15:04:05.000"
+	// (UTC, space separated) rather than RFC3339.
+	for _, layout := range []string{"2006-01-02 15:04:05.000", "2006-01-02 15:04:05"} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed.UTC(), nil
+		}
+	}
 	if millis, err := strconv.ParseFloat(value, 64); err == nil {
 		return time.UnixMilli(int64(millis)).UTC(), nil
 	}
 	return time.Time{}, fmt.Errorf("unrecognized timestamp %q", value)
 }
 
-// ListServices returns X-Ray service names.
-func (r *AWSReader) ListServices(ctx context.Context) ([]string, error) {
-	seen := make(map[string]struct{})
+// ListServices returns X-Ray services with their AWS partition (region and
+// account) so callers can group them by partition.
+func (r *AWSReader) ListServices(ctx context.Context) ([]ServiceInfo, error) {
+	seen := make(map[string]ServiceInfo)
 	for _, region := range r.targetRegions() {
 		cfg, err := r.loadConfig(ctx, region)
 		if err != nil {
@@ -392,16 +406,24 @@ func (r *AWSReader) ListServices(ctx context.Context) ([]string, error) {
 			return nil, fmt.Errorf("xray GetServiceGraph (%s): %w", region, err)
 		}
 		for _, service := range resp.Services {
-			if name := strings.TrimSpace(awsroot.ToString(service.Name)); name != "" {
-				seen[name] = struct{}{}
+			name := strings.TrimSpace(awsroot.ToString(service.Name))
+			if name == "" {
+				continue
 			}
+			key := region + "\x00" + name
+			seen[key] = ServiceInfo{Name: name, Region: region, Account: r.account}
 		}
 	}
-	out := make([]string, 0, len(seen))
-	for name := range seen {
-		out = append(out, name)
+	out := make([]ServiceInfo, 0, len(seen))
+	for _, service := range seen {
+		out = append(out, service)
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].Region < out[j].Region
+	})
 	return out, nil
 }
 
@@ -454,13 +476,26 @@ func (r *AWSReader) QueryTraces(ctx context.Context, q TraceQuery) ([]TraceSumma
 			}
 			startTime := awsroot.ToTime(summary.StartTime).UTC()
 			duration := time.Duration(awsroot.ToFloat64(summary.Duration) * float64(time.Second))
+			// When no service filter was supplied the summary's own service ids
+			// are the only way to attribute the trace to a service.
+			serviceName := strings.TrimSpace(q.Service)
+			if serviceName == "" {
+				for _, serviceID := range summary.ServiceIds {
+					if name := strings.TrimSpace(awsroot.ToString(serviceID.Name)); name != "" {
+						serviceName = name
+						break
+					}
+				}
+			}
 			out = append(out, TraceSummary{
 				TraceID:   traceID,
-				Service:   strings.TrimSpace(q.Service),
+				Service:   serviceName,
 				StartTime: startTime,
 				EndTime:   startTime.Add(duration),
 				Duration:  duration,
 				Status:    status,
+				Region:    region,
+				Account:   r.account,
 			})
 		}
 	}
@@ -499,6 +534,10 @@ func (r *AWSReader) GetTrace(ctx context.Context, traceID string) ([]Span, error
 				spans = append(spans, parseXRayDocument(document, "", "")...)
 			}
 			if len(spans) > 0 {
+				for i := range spans {
+					spans[i].Region = region
+					spans[i].Account = r.account
+				}
 				sort.Slice(spans, func(i, j int) bool { return spans[i].StartTime.Before(spans[j].StartTime) })
 				return spans, nil
 			}

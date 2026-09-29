@@ -40,6 +40,8 @@ type LogRecord struct {
 	LogStream string            `json:"log_stream,omitempty"`
 	Message   string            `json:"message"`
 	Fields    map[string]string `json:"fields,omitempty"`
+	Region    string            `json:"region,omitempty"`
+	Account   string            `json:"account,omitempty"`
 }
 
 // Span is a normalized X-Ray segment/subsegment.
@@ -53,6 +55,8 @@ type Span struct {
 	EndTime      time.Time         `json:"end_time"`
 	StatusCode   string            `json:"status_code,omitempty"`
 	Attributes   map[string]string `json:"attributes,omitempty"`
+	Region       string            `json:"region,omitempty"`
+	Account      string            `json:"account,omitempty"`
 }
 
 // TraceSummary is a normalized X-Ray trace summary.
@@ -65,6 +69,17 @@ type TraceSummary struct {
 	Status     string            `json:"status,omitempty"`
 	SpanCount  int               `json:"span_count,omitempty"`
 	Attributes map[string]string `json:"attributes,omitempty"`
+	Region     string            `json:"region,omitempty"`
+	Account    string            `json:"account,omitempty"`
+}
+
+// ServiceInfo identifies an X-Ray service together with its AWS partition
+// (region and account) so callers can surface it in partition-aware service
+// discovery alongside native telemetry.
+type ServiceInfo struct {
+	Name    string `json:"name"`
+	Region  string `json:"region,omitempty"`
+	Account string `json:"account,omitempty"`
 }
 
 // MetricQuery selects a CloudWatch metric series.
@@ -101,7 +116,7 @@ type Reader interface {
 	QueryMetric(ctx context.Context, q MetricQuery) ([]MetricSeries, error)
 	ListLogGroups(ctx context.Context) ([]string, error)
 	QueryLogs(ctx context.Context, q LogQuery) ([]LogRecord, error)
-	ListServices(ctx context.Context) ([]string, error)
+	ListServices(ctx context.Context) ([]ServiceInfo, error)
 	QueryTraces(ctx context.Context, q TraceQuery) ([]TraceSummary, error)
 	GetTrace(ctx context.Context, traceID string) ([]Span, error)
 }

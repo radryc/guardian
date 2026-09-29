@@ -35,9 +35,9 @@ type ResourceClass struct {
 }
 
 type ResourcesSpec struct {
-	Limits       ResourceClass       `json:"limits,omitempty" yaml:"limits,omitempty"`
-	Requests     ResourceClass       `json:"requests,omitempty" yaml:"requests,omitempty"`
-	Reservations ResourceClass       `json:"reservations,omitempty" yaml:"reservations,omitempty"`
+	Limits       ResourceClass `json:"limits,omitempty" yaml:"limits,omitempty"`
+	Requests     ResourceClass `json:"requests,omitempty" yaml:"requests,omitempty"`
+	Reservations ResourceClass `json:"reservations,omitempty" yaml:"reservations,omitempty"`
 }
 
 type ExtendedResourcesSpec struct {
@@ -59,29 +59,29 @@ type HostBindMountSpec struct {
 }
 
 type ComputeSpec struct {
-	Image                  string              `json:"image" yaml:"image"`
-	ImagePullPolicy        string              `json:"imagePullPolicy,omitempty" yaml:"imagePullPolicy,omitempty"`
-	ObserveExisting        bool                `json:"observeExisting,omitempty" yaml:"observeExisting,omitempty"`
-	ExistingDeploymentName string              `json:"existingDeploymentName,omitempty" yaml:"existingDeploymentName,omitempty"`
-	ExistingServiceName    string              `json:"existingServiceName,omitempty" yaml:"existingServiceName,omitempty"`
-	Cluster                string              `json:"cluster,omitempty" yaml:"cluster,omitempty"`
-	Replicas               *int                `json:"replicas,omitempty" yaml:"replicas,omitempty"`
-	Command                StringList          `json:"command,omitempty" yaml:"command,omitempty"`
-	Args                   StringList          `json:"args,omitempty" yaml:"args,omitempty"`
-	Env                    map[string]any      `json:"env,omitempty" yaml:"env,omitempty"`
-	Resources              *ResourcesSpec      `json:"resources,omitempty" yaml:"resources,omitempty"`
-	HealthCheck            *HealthCheckSpec    `json:"healthCheck,omitempty" yaml:"healthCheck,omitempty"`
-	Privileged             *bool               `json:"privileged,omitempty" yaml:"privileged,omitempty"`
-	Capabilities           []string            `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
-	ShmSize                string              `json:"shmSize,omitempty" yaml:"shmSize,omitempty"`
-	GPUs                   string              `json:"gpus,omitempty" yaml:"gpus,omitempty"`
-	Networks               []string            `json:"networks,omitempty" yaml:"networks,omitempty"`
-	Ports                  []PortSpec          `json:"ports,omitempty" yaml:"ports,omitempty"`
-	VolumeMounts           []VolumeMountSpec   `json:"volumeMounts,omitempty" yaml:"volumeMounts,omitempty"`
-	ConfigMounts           []ConfigMountSpec   `json:"configMounts,omitempty" yaml:"configMounts,omitempty"`
-	HostBindMounts         []HostBindMountSpec     `json:"hostBindMounts,omitempty" yaml:"hostBindMounts,omitempty"`
-	ExtendedResources      *ExtendedResourcesSpec  `json:"extendedResources,omitempty" yaml:"extendedResources,omitempty"`
-	HostUsers              *bool                   `json:"hostUsers,omitempty" yaml:"hostUsers,omitempty"`
+	Image                  string                 `json:"image" yaml:"image"`
+	ImagePullPolicy        string                 `json:"imagePullPolicy,omitempty" yaml:"imagePullPolicy,omitempty"`
+	ObserveExisting        bool                   `json:"observeExisting,omitempty" yaml:"observeExisting,omitempty"`
+	ExistingDeploymentName string                 `json:"existingDeploymentName,omitempty" yaml:"existingDeploymentName,omitempty"`
+	ExistingServiceName    string                 `json:"existingServiceName,omitempty" yaml:"existingServiceName,omitempty"`
+	Cluster                string                 `json:"cluster,omitempty" yaml:"cluster,omitempty"`
+	Replicas               *int                   `json:"replicas,omitempty" yaml:"replicas,omitempty"`
+	Command                StringList             `json:"command,omitempty" yaml:"command,omitempty"`
+	Args                   StringList             `json:"args,omitempty" yaml:"args,omitempty"`
+	Env                    map[string]any         `json:"env,omitempty" yaml:"env,omitempty"`
+	Resources              *ResourcesSpec         `json:"resources,omitempty" yaml:"resources,omitempty"`
+	HealthCheck            *HealthCheckSpec       `json:"healthCheck,omitempty" yaml:"healthCheck,omitempty"`
+	Privileged             *bool                  `json:"privileged,omitempty" yaml:"privileged,omitempty"`
+	Capabilities           []string               `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	ShmSize                string                 `json:"shmSize,omitempty" yaml:"shmSize,omitempty"`
+	GPUs                   string                 `json:"gpus,omitempty" yaml:"gpus,omitempty"`
+	Networks               []string               `json:"networks,omitempty" yaml:"networks,omitempty"`
+	Ports                  []PortSpec             `json:"ports,omitempty" yaml:"ports,omitempty"`
+	VolumeMounts           []VolumeMountSpec      `json:"volumeMounts,omitempty" yaml:"volumeMounts,omitempty"`
+	ConfigMounts           []ConfigMountSpec      `json:"configMounts,omitempty" yaml:"configMounts,omitempty"`
+	HostBindMounts         []HostBindMountSpec    `json:"hostBindMounts,omitempty" yaml:"hostBindMounts,omitempty"`
+	ExtendedResources      *ExtendedResourcesSpec `json:"extendedResources,omitempty" yaml:"extendedResources,omitempty"`
+	HostUsers              *bool                  `json:"hostUsers,omitempty" yaml:"hostUsers,omitempty"`
 }
 
 type computeDefinition struct{}

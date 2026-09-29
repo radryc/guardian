@@ -47,11 +47,11 @@ type VolumeMount struct {
 }
 
 type ContainerResources struct {
-	CPURequest         string
-	CPULimit           string
-	MemoryRequest      string
-	MemoryLimit        string
-	ExtendedResources  map[string]string
+	CPURequest        string
+	CPULimit          string
+	MemoryRequest     string
+	MemoryLimit       string
+	ExtendedResources map[string]string
 }
 
 type ProbeTCPSocket struct {
@@ -87,6 +87,7 @@ type Container struct {
 	ReadinessProbe  *Probe
 	Privileged      bool
 	Capabilities    []string
+	RunAsUser       *int64
 	Resources       ContainerResources
 }
 
@@ -216,6 +217,8 @@ func (b *Backend) GetPodEvents(namespace, podName string) ([]string, error) {
 	return nil, nil
 }
 
+func (b *Backend) ApplyManifest(namespace string, manifest []byte) error { return nil }
+
 func key(namespace, name string) string {
 	return namespace + "/" + name
 }
@@ -256,6 +259,8 @@ func cloneDeployment(in Deployment) Deployment {
 		Container:          cloneContainer(in.Container),
 		CrashLoopBackOff:   in.CrashLoopBackOff,
 		PodFailureReason:   in.PodFailureReason,
+		PodFailureMessage:  in.PodFailureMessage,
+		PodFailurePodName:  in.PodFailurePodName,
 		ServiceAccountName: in.ServiceAccountName,
 		HostUsers:          in.HostUsers,
 	}

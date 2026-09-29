@@ -37,8 +37,8 @@ func TestScanCreateQueuesRequest(t *testing.T) {
 
 	var create CreateScanResponse
 	requestJSON(t, httpSrv, http.MethodPost, "/api/scans", CreateScanRequest{
-		Pusher:   "aws-123456789012",
-		Regions:  []string{"eu-west-1"},
+		Pusher:    "aws-123456789012",
+		Regions:   []string{"eu-west-1"},
 		Inventory: true,
 	}, &create)
 	if create.ScanID == "" || create.Status != string(awsscan.ScanStatusQueued) {
@@ -221,6 +221,50 @@ func TestScanBundleRejectsMissingScanAndPartition(t *testing.T) {
 	}
 }
 
+func TestScanBundleStackFilter(t *testing.T) {
+	_, httpSrv, store := newScanTestServer(t)
+	ctx := context.Background()
+
+	scanID := "scan-stacks"
+	result := &awsscan.ScanResult{
+		APIVersion: awsscan.APIVersion,
+		Kind:       awsscan.ResultKind,
+		ScanID:     scanID,
+		Pusher:     "aws-123456789012",
+		Account:    "123456789012",
+		Status:     awsscan.ScanStatusSucceeded,
+		Regions:    []string{"eu-west-1"},
+		Buckets: []awsscan.BucketResource{
+			{Name: "analytics-data", Region: "eu-west-1", Stack: "analytics"},
+			{Name: "billing-data", Region: "eu-west-1", Stack: "billing"},
+		},
+	}
+	content, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{
+		Writes: []guardianapi.PathWrite{{
+			LogicalPath: paths.ScanResult("aws-123456789012", scanID),
+			Content:     content,
+		}},
+	}); err != nil {
+		t.Fatalf("write result: %v", err)
+	}
+
+	var filtered ScanBundleResponse
+	requestJSON(t, httpSrv, http.MethodGet, "/api/scans/"+scanID+"/bundle?partition=imported&stacks=billing", nil, &filtered)
+	if len(filtered.Bundle.Intents) != 1 || filtered.Bundle.Intents[0].Manifest.Metadata.Name != "import-billing" {
+		t.Fatalf("expected only the billing stack intent, got %+v", filtered.Bundle.Intents)
+	}
+
+	var all ScanBundleResponse
+	requestJSON(t, httpSrv, http.MethodGet, "/api/scans/"+scanID+"/bundle?partition=imported", nil, &all)
+	if len(all.Bundle.Intents) != 2 {
+		t.Fatalf("expected both stacks without a filter, got %+v", all.Bundle.Intents)
+	}
+}
+
 func jsonBody(value any) *bytes.Reader {
 	content, err := json.Marshal(value)
 	if err != nil {
@@ -232,4 +276,3 @@ func jsonBody(value any) *bytes.Reader {
 func jsonSafeContains(haystack, needle string) bool {
 	return strings.Contains(haystack, needle)
 }
-

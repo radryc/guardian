@@ -112,7 +112,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 				Details:   map[string]string{"op": "CHECK", "error": errMsg},
 			})
 			if state.LastAppliedSpecHash != "" && state.IntentSpecHash != state.LastAppliedSpecHash {
-				if err := p.rollbackIntent(ctx, state, result); err != nil {
+				if err := p.recordRollback(ctx, state, result); err != nil {
 					return fail(err)
 				}
 			}
@@ -162,7 +162,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 				Details:   map[string]string{"op": "DIFF", "error": errMsg},
 			})
 			if state.LastAppliedSpecHash != "" && state.IntentSpecHash != state.LastAppliedSpecHash {
-				if err := p.rollbackIntent(ctx, state, result); err != nil {
+				if err := p.recordRollback(ctx, state, result); err != nil {
 					return fail(err)
 				}
 			}
@@ -170,9 +170,9 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			return nil
 		}
 		state.Drift = result.Drift
-		state.Health = cloneHealthObservation(result.Health)
-		state.ApplyReadiness = cloneApplyReadiness(result.ApplyReadiness)
-		state.AssetObservations = cloneAssetObservationMap(result.AssetObservations)
+		state.Health = statedomain.CloneHealthObservation(result.Health)
+		state.ApplyReadiness = statedomain.CloneApplyReadiness(result.ApplyReadiness)
+		state.AssetObservations = statedomain.CloneAssetObservationMap(result.AssetObservations)
 		state.LastError = nil
 		driftSettled := result.Drift == nil || result.Drift.Status == "InSync" || len(result.Drift.ChangedAssets) == 0
 		if driftSettled && applyResultSettled(result) {
@@ -191,7 +191,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		if driftSettled {
 			state.LastError = nil
 			state.Status = common.QueuedStatus(state.Status, taskdomain.OpDiff)
-			state.Drift = cloneDriftReport(result.Drift)
+			state.Drift = statedomain.CloneDriftReport(result.Drift)
 			if state.Drift == nil || state.Drift.Status == "InSync" || len(state.Drift.ChangedAssets) == 0 {
 				state.Drift = &taskdomain.DriftReport{Status: "Changed", Summary: applyNotReadySummary(result)}
 			}
@@ -277,21 +277,21 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			})
 			skipRollback := taskFile != nil && taskFile.ForceApply
 			if state.LastAppliedSpecHash != "" && state.IntentSpecHash != state.LastAppliedSpecHash && !skipRollback {
-				if err := p.rollbackIntent(ctx, state, result); err != nil {
+				if err := p.recordRollback(ctx, state, result); err != nil {
 					return fail(err)
 				}
 			}
 			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
 			return nil
 		}
-		state.Health = cloneHealthObservation(result.Health)
-		state.ApplyReadiness = cloneApplyReadiness(result.ApplyReadiness)
-		state.AssetObservations = cloneAssetObservationMap(result.AssetObservations)
+		state.Health = statedomain.CloneHealthObservation(result.Health)
+		state.ApplyReadiness = statedomain.CloneApplyReadiness(result.ApplyReadiness)
+		state.AssetObservations = statedomain.CloneAssetObservationMap(result.AssetObservations)
 		state.Outputs = copyStringMap(result.Outputs)
 		if !applyResultSettled(result) {
 			state.LastError = nil
 			state.Status = common.QueuedStatus(state.Status, taskdomain.OpDiff)
-			state.Drift = cloneDriftReport(result.Drift)
+			state.Drift = statedomain.CloneDriftReport(result.Drift)
 			if state.Drift == nil {
 				state.Drift = &taskdomain.DriftReport{Status: "Changed", Summary: applyNotReadySummary(result)}
 			}
@@ -500,8 +500,14 @@ func releaseTagFromAssetVersions(assetVersions map[string]string) string {
 }
 
 func (p *Processor) nextTask(ctx context.Context, currentTask *taskdomain.Task, state *statedomain.IntentState, op taskdomain.Operation) (*taskdomain.Task, error) {
-	if next := common.BuildTaskFromExisting(currentTask, op); next != nil {
-		return next, nil
+	// Reuse the in-flight task's payload only when it still matches the desired
+	// spec. If a newer manifest was pushed while the task was running, rebuild
+	// from the manifest so the rollout picks up the new spec instead of being
+	// pinned to the previous task's assets.
+	if currentTask != nil && state.IntentSpecHash == currentTask.IntentSpecHash {
+		if next := common.BuildTaskFromExisting(currentTask, op); next != nil {
+			return next, nil
+		}
 	}
 	states, err := common.LoadAllIntentStates(ctx, p.store, state.Partition)
 	if err != nil && !os.IsNotExist(err) {
@@ -584,34 +590,21 @@ func (p *Processor) queueDependents(ctx context.Context, partition string) error
 	return nil
 }
 
-func (p *Processor) rollbackIntent(ctx context.Context, state *statedomain.IntentState, result *taskdomain.TaskResult) error {
+// recordRollback records that a rollout failed and the intent should be viewed
+// as reverted to state.DeploymentRevision. It deliberately does NOT rewrite the
+// live intent manifest: the operator's freshly pushed spec is the source of
+// truth and must survive so the next reconcile retries it automatically. Only
+// the last known-good deployment revision is recorded for history/UI.
+func (p *Processor) recordRollback(ctx context.Context, state *statedomain.IntentState, result *taskdomain.TaskResult) error {
 	if state.DeploymentRevision == "" {
 		return fmt.Errorf("cannot rollback %s/%s: no previous deployment revision", state.Partition, state.Intent)
 	}
-	manifestPath := paths.ArchiveManifest(state.Partition, state.Intent, state.DeploymentRevision)
-	manifestContent, err := p.store.ReadFile(ctx, manifestPath)
-	if err != nil {
-		return fmt.Errorf("rollback %s/%s: read archived manifest: %w", state.Partition, state.Intent, err)
-	}
-	correlationID := revisions.NewCorrelationID()
-	_, err = p.store.UpsertFiles(ctx, guardianapi.MutationBatch{
-		Writes: []guardianapi.PathWrite{
-			{LogicalPath: paths.IntentManifest(state.Partition, state.Intent), Content: manifestContent},
-		},
-		Context: guardianapi.MutationContext{
-			PrincipalID:   "guardiand",
-			Reason:        "automatic rollback due to rollout failure",
-			CorrelationID: correlationID,
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("rollback %s/%s: write manifest: %w", state.Partition, state.Intent, err)
-	}
 	rollbackReason := derefErr(result.Error)
-	state.Status = statedomain.StatusReady
 	state.RollbackTo = state.DeploymentRevision
 	state.RollbackReason = rollbackReason
-	state.LastError = nil
+	if state.LastError == nil {
+		state.LastError = &rollbackReason
+	}
 	state.Drift = nil
 	state.Health = nil
 	state.ApplyReadiness = nil
@@ -619,11 +612,12 @@ func (p *Processor) rollbackIntent(ctx context.Context, state *statedomain.Inten
 	if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
 		return err
 	}
+	correlationID := revisions.NewCorrelationID()
 	_ = p.dispatcher.WriteEvent(ctx, &historydomain.EventRecord{
 		Partition:          state.Partition,
 		Intent:             state.Intent,
 		Type:               "rollback.triggered",
-		Message:            fmt.Sprintf("rolled back to deployment %s after %s failure: %s", state.DeploymentRevision, result.Op, rollbackReason),
+		Message:            fmt.Sprintf("rollout failed; reverting to deployment %s after %s failure: %s (desired manifest preserved)", state.DeploymentRevision, result.Op, rollbackReason),
 		TaskID:             result.TaskID,
 		DeploymentRevision: state.DeploymentRevision,
 		CorrelationID:      correlationID,
@@ -631,9 +625,10 @@ func (p *Processor) rollbackIntent(ctx context.Context, state *statedomain.Inten
 			"failed_task_id": result.TaskID,
 			"failed_op":      string(result.Op),
 			"error":          rollbackReason,
+			"manifest":       "preserved",
 		},
 	})
-	log.Printf("results: rolled back %s/%s to deployment %s after %s failure: %s", state.Partition, state.Intent, state.DeploymentRevision, result.Op, rollbackReason)
+	log.Printf("results: rollout failed for %s/%s; desired manifest preserved, last good deployment %s after %s failure: %s", state.Partition, state.Intent, state.DeploymentRevision, result.Op, rollbackReason)
 	return nil
 }
 
@@ -671,33 +666,6 @@ func copyStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-func cloneHealthObservation(in *taskdomain.HealthObservation) *taskdomain.HealthObservation {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	return &out
-}
-
-func cloneApplyReadiness(in *taskdomain.ApplyReadiness) *taskdomain.ApplyReadiness {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	return &out
-}
-
-func cloneDriftReport(in *taskdomain.DriftReport) *taskdomain.DriftReport {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	if len(in.ChangedAssets) > 0 {
-		out.ChangedAssets = append([]string(nil), in.ChangedAssets...)
-	}
-	return &out
-}
-
 func applyResultSettled(result *taskdomain.TaskResult) bool {
 	if result == nil {
 		return true
@@ -722,27 +690,6 @@ func applyNotReadySummary(result *taskdomain.TaskResult) string {
 		return result.Health.Summary
 	}
 	return "apply completed but asset is not ready"
-}
-
-func cloneAssetObservationMap(in map[string]*taskdomain.AssetObservation) map[string]*taskdomain.AssetObservation {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string]*taskdomain.AssetObservation, len(in))
-	for key, value := range in {
-		out[key] = cloneAssetObservation(value)
-	}
-	return out
-}
-
-func cloneAssetObservation(in *taskdomain.AssetObservation) *taskdomain.AssetObservation {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	out.Health = cloneHealthObservation(in.Health)
-	out.ApplyReadiness = cloneApplyReadiness(in.ApplyReadiness)
-	return &out
 }
 
 func collectTaskIDs(taskFile *taskdomain.Task, current string) []string {

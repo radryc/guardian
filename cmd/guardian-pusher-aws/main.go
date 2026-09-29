@@ -46,6 +46,9 @@ func main() {
 	var assumeRoleExternalID string
 	var bootstrapStackName string
 	var unclaimedTaskRetryDelay time.Duration
+	var maxConcurrency int
+	var shardIndex int
+	var shardCount int
 	var awsReadAddr string
 	var awsReadToken string
 	var awsReadDisabled bool
@@ -64,6 +67,9 @@ func main() {
 	flag.StringVar(&assumeRoleExternalID, "assume-role-external-id", "", "optional external ID passed to target-account role assumption")
 	flag.StringVar(&bootstrapStackName, "bootstrap-stack-name", "CDKToolkit", "expected CDK bootstrap stack name in target accounts")
 	flag.DurationVar(&unclaimedTaskRetryDelay, "unclaimed-task-retry-delay", 15*time.Second, "minimum delay before retrying a task that could not be claimed; 0 disables backoff")
+	flag.IntVar(&maxConcurrency, "max-concurrency", 0, "maximum tasks executed concurrently (0 = auto from CPU count)")
+	flag.IntVar(&shardIndex, "shard-index", 0, "shard index for this replica when sharding a shared queue")
+	flag.IntVar(&shardCount, "shard-count", 1, "number of shards sharing the queue; 1 disables sharding")
 	flag.StringVar(&awsReadAddr, "awsread-addr", envOr("GUARDIAN_AWSREAD_ADDR", ":19090"), "HTTP listen address for the read-only CloudWatch/X-Ray API (empty disables)")
 	flag.StringVar(&awsReadToken, "awsread-token", os.Getenv("GUARDIAN_AWSREAD_TOKEN"), "bearer token required by the AWS read API (empty disables auth)")
 	flag.BoolVar(&awsReadDisabled, "awsread-disabled", false, "disable the read-only CloudWatch/X-Ray API")
@@ -151,6 +157,9 @@ func main() {
 		Registry:                reg,
 		PollInterval:            5 * time.Second,
 		UnclaimedTaskRetryDelay: unclaimedTaskRetryDelay,
+		MaxConcurrency:          maxConcurrency,
+		ShardIndex:              shardIndex,
+		ShardCount:              shardCount,
 		CanHandle: func(task *taskdomain.Task) bool {
 			if !strings.EqualFold(strings.TrimSpace(task.Target.Account), account) {
 				return false
@@ -176,6 +185,8 @@ func main() {
 		WorkerID:             workerID,
 		PrincipalID:          monofsPrincipalID,
 		Store:                store,
+		ShardIndex:           shardIndex,
+		ShardCount:           shardCount,
 	}
 
 	taskErr := make(chan error, 1)

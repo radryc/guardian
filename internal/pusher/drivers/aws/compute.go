@@ -48,25 +48,6 @@ func (d *ComputeDriver) Check(ctx context.Context, in registry.AssetInput) error
 	return nil
 }
 
-func (d *ComputeDriver) checkDep(ctx context.Context, in registry.AssetInput, dep string) error {
-	asset, ok := in.Assets[dep]
-	if !ok {
-		return nil
-	}
-	switch asset.Type {
-	case "Config":
-		_, _, err := d.backend.GetParameter(ctx, awsSSMParameterName(in, dep))
-		return err
-	case "Volume":
-		_, _, err := d.backend.GetFileSystem(ctx, awsEFSName(in, dep))
-		return err
-	case "Secret":
-		_, _, err := d.backend.GetSecret(ctx, awsSecretName(in, dep))
-		return err
-	}
-	return nil
-}
-
 func (d *ComputeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdomain.DriftReport, error) {
 	if err := ctx.Err(); err != nil {
 		return taskdomain.DriftReport{}, err
@@ -185,16 +166,16 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 		AssignPublicIP: launchType == "FARGATE",
 		LogGroup:       logGroup,
 		Container: ContainerDef{
-			Name:   in.Asset.Name,
-			Image:  spec.Image,
-			Command: []string(spec.Command),
-			Args:   []string(spec.Args),
-			Env:     env,
-			Secrets: secrets,
-			Ports:   ports,
-			CPU:     cpu,
-			Memory:  mem,
-			Volumes: volumes,
+			Name:       in.Asset.Name,
+			Image:      spec.Image,
+			Command:    []string(spec.Command),
+			Args:       []string(spec.Args),
+			Env:        env,
+			Secrets:    secrets,
+			Ports:      ports,
+			CPU:        cpu,
+			Memory:     mem,
+			Volumes:    volumes,
 			Privileged: driverutil.BoolValue(spec.Privileged),
 		},
 	}

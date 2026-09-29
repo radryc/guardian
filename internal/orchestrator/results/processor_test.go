@@ -786,6 +786,87 @@ func TestProcessorReusesQueuedTaskPayloadAcrossPhases(t *testing.T) {
 	}
 }
 
+func TestProcessorRebuildsFollowUpTaskFromManifestWhenSpecChanged(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "guardiand")
+	proc := NewProcessor(store, disp)
+
+	state := baseState("demo", "svc", statedomain.StatusDiffing)
+	state.IntentSpecHash = "hash-v2"
+	state.LastTaskID = "diff-task-stale"
+	seedIntentState(t, ctx, store, state)
+
+	staleTask := taskdomain.Task{
+		APIVersion:     "guardian/v1alpha1",
+		Kind:           "Task",
+		TaskID:         "diff-task-stale",
+		Partition:      "demo",
+		Intent:         "svc",
+		Op:             taskdomain.OpDiff,
+		TargetPusher:   "local",
+		Target:         targetdomain.Placement{Cluster: "local"},
+		IntentSpecHash: "hash-v1",
+		CreatedAt:      time.Now().UTC(),
+		Assets: []taskdomain.AbstractAsset{{
+			Type:       "Compute",
+			Name:       "web",
+			Properties: map[string]any{"image": "nginx:v1"},
+		}},
+	}
+	writeJSONFile(t, ctx, store, paths.QueueTask("local", staleTask.TaskID), staleTask)
+
+	seedRawFile(t, ctx, store, paths.IntentManifest("demo", "svc"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: svc
+spec:
+  intentType: standard
+  targetPusher: local
+  target:
+    cluster: local
+  assets:
+    - type: Compute
+      name: web
+      properties:
+        image: nginx:v2
+`))
+
+	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
+		TaskID:    staleTask.TaskID,
+		Op:        taskdomain.OpDiff,
+		Status:    taskdomain.ResultSucceeded,
+		Partition: "demo",
+		Intent:    "svc",
+		Pusher:    "local",
+		Drift: &taskdomain.DriftReport{
+			Status:        "Changed",
+			Summary:       "image drift",
+			ChangedAssets: []string{"web"},
+		},
+		FinishedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("ProcessResult: %v", err)
+	}
+
+	after := loadState(t, ctx, store, "demo", "svc")
+	raw, err := store.ReadFile(ctx, paths.QueueTask("local", after.LastTaskID))
+	if err != nil {
+		t.Fatalf("load queued task: %v", err)
+	}
+	var next taskdomain.Task
+	if err := json.Unmarshal(raw, &next); err != nil {
+		t.Fatalf("Unmarshal(queued task): %v", err)
+	}
+	if next.IntentSpecHash != "hash-v2" {
+		t.Fatalf("queued task hash = %q, want hash-v2", next.IntentSpecHash)
+	}
+	if len(next.Assets) != 1 || next.Assets[0].Properties["image"] != "nginx:v2" {
+		t.Fatalf("queued task did not pick up the new manifest: %+v", next.Assets)
+	}
+}
+
 // helpers used by the new tests
 
 func seedIntent(t *testing.T, ctx context.Context, store *memory.Store, partition, intent string, status statedomain.IntentStatus) {
@@ -858,22 +939,23 @@ spec:
 	}
 
 	got := loadState(t, ctx, store, "demo", "svc")
-	if got.Status != statedomain.StatusReady {
-		t.Fatalf("status = %q, want Ready", got.Status)
+	if got.Status != statedomain.StatusDiffFailed {
+		t.Fatalf("status = %q, want DiffFailed (desired manifest preserved)", got.Status)
 	}
 	if got.RollbackTo != deploymentRev {
 		t.Fatalf("RollbackTo = %q, want %q", got.RollbackTo, deploymentRev)
 	}
-	if got.LastError != nil {
-		t.Fatalf("LastError = %v, want nil after rollback", got.LastError)
+	if got.LastError == nil {
+		t.Fatalf("LastError = nil, want failure recorded")
 	}
 
-	rolledBackManifest, err := store.ReadFile(ctx, paths.IntentManifest("demo", "svc"))
+	// The desired manifest must be preserved; rollback is recorded, not applied.
+	preservedManifest, err := store.ReadFile(ctx, paths.IntentManifest("demo", "svc"))
 	if err != nil {
-		t.Fatalf("ReadFile(rolled back manifest): %v", err)
+		t.Fatalf("ReadFile(preserved manifest): %v", err)
 	}
-	if string(rolledBackManifest) != string(prevManifest) {
-		t.Fatalf("manifest was not rolled back:\n%s", rolledBackManifest)
+	if string(preservedManifest) != "broken manifest" {
+		t.Fatalf("desired manifest was overwritten:\n%s", preservedManifest)
 	}
 
 	// Verify rollback event was written
@@ -926,6 +1008,8 @@ spec:
 	s.DeploymentRevision = deploymentRev
 	s.LastTaskID = "t-rollout-check"
 	seedIntentState(t, ctx, store, s)
+	desiredManifest := []byte("desired v2 manifest")
+	seedRawFile(t, ctx, store, paths.IntentManifest("demo", "svc"), desiredManifest)
 
 	errMsg := "check validation error"
 	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
@@ -942,19 +1026,20 @@ spec:
 	}
 
 	got := loadState(t, ctx, store, "demo", "svc")
-	if got.Status != statedomain.StatusReady {
-		t.Fatalf("status = %q, want Ready", got.Status)
+	if got.Status != statedomain.StatusCheckFailed {
+		t.Fatalf("status = %q, want CheckFailed (desired manifest preserved)", got.Status)
 	}
 	if got.RollbackTo != deploymentRev {
 		t.Fatalf("RollbackTo = %q, want %q", got.RollbackTo, deploymentRev)
 	}
 
-	rolledBackManifest, err := store.ReadFile(ctx, paths.IntentManifest("demo", "svc"))
+	// The newly pushed spec must survive the failed rollout so retry can pick it up.
+	preservedManifest, err := store.ReadFile(ctx, paths.IntentManifest("demo", "svc"))
 	if err != nil {
-		t.Fatalf("ReadFile(rolled back manifest): %v", err)
+		t.Fatalf("ReadFile(preserved manifest): %v", err)
 	}
-	if string(rolledBackManifest) != string(prevManifest) {
-		t.Fatalf("manifest was not rolled back:\n%s", rolledBackManifest)
+	if string(preservedManifest) != string(desiredManifest) {
+		t.Fatalf("desired manifest was overwritten:\n%s", preservedManifest)
 	}
 }
 
@@ -988,6 +1073,8 @@ spec:
 	s.DeploymentRevision = deploymentRev
 	s.LastTaskID = "t-rollout-apply"
 	seedIntentState(t, ctx, store, s)
+	desiredManifest := []byte("desired v3 manifest")
+	seedRawFile(t, ctx, store, paths.IntentManifest("demo", "svc"), desiredManifest)
 
 	errMsg := "apply execution error"
 	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
@@ -1004,19 +1091,19 @@ spec:
 	}
 
 	got := loadState(t, ctx, store, "demo", "svc")
-	if got.Status != statedomain.StatusReady {
-		t.Fatalf("status = %q, want Ready", got.Status)
+	if got.Status != statedomain.StatusApplyFailed {
+		t.Fatalf("status = %q, want ApplyFailed (desired manifest preserved)", got.Status)
 	}
 	if got.RollbackTo != deploymentRev {
 		t.Fatalf("RollbackTo = %q, want %q", got.RollbackTo, deploymentRev)
 	}
 
-	rolledBackManifest, err := store.ReadFile(ctx, paths.IntentManifest("demo", "svc"))
+	preservedManifest, err := store.ReadFile(ctx, paths.IntentManifest("demo", "svc"))
 	if err != nil {
-		t.Fatalf("ReadFile(rolled back manifest): %v", err)
+		t.Fatalf("ReadFile(preserved manifest): %v", err)
 	}
-	if string(rolledBackManifest) != string(prevManifest) {
-		t.Fatalf("manifest was not rolled back:\n%s", rolledBackManifest)
+	if string(preservedManifest) != string(desiredManifest) {
+		t.Fatalf("desired manifest was overwritten:\n%s", preservedManifest)
 	}
 }
 

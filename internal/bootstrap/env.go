@@ -801,10 +801,3 @@ func ComputeLocalRegistryHostAliases(cfg *Config) string {
 	host := strings.SplitN(cfg.Guardian.LocalRegistry.Host, ":", 2)[0]
 	return fmt.Sprintf("      hostAliases:\n        - ip: %q\n          hostnames:\n            - %q\n", clusterIP, host)
 }
-
-// LbEdgeRegisteredPorts queries the lb-edge registry for registered external ports.
-func LbEdgeRegisteredPorts(adminPort int) []int {
-	url := fmt.Sprintf("http://127.0.0.1:%d/services", adminPort)
-	_ = url
-	return nil
-}

@@ -63,7 +63,7 @@ func (s *blockingUpsertStore) UpsertFiles(ctx context.Context, batch guardianapi
 	return s.Store.UpsertFiles(ctx, batch)
 }
 
-func TestWriteIntentStateWritesPartitionRuntime(t *testing.T) {
+func TestWriteIntentStateWritesIntentFileAndDerivesPartitionState(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
 	dispatch := NewDispatcher(store, "test")
@@ -110,25 +110,20 @@ func TestWriteIntentStateWritesPartitionRuntime(t *testing.T) {
 		t.Fatalf("WriteIntentState() error = %v", err)
 	}
 
-	raw, err := store.ReadFile(ctx, paths.PartitionRuntime("demo"))
+	// The per-intent file is the durable source of truth.
+	raw, err := store.ReadFile(ctx, paths.IntentState("demo", "api"))
 	if err != nil {
-		t.Fatalf("ReadFile(partition runtime) error = %v", err)
+		t.Fatalf("ReadFile(intent state) error = %v", err)
 	}
-	var runtime statedomain.PartitionRuntime
-	if err := json.Unmarshal(raw, &runtime); err != nil {
-		t.Fatalf("Unmarshal(partition runtime) error = %v", err)
+	var got statedomain.IntentState
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("Unmarshal(intent state) error = %v", err)
 	}
-	if got := runtime.Intents["api"]; got == nil {
-		t.Fatal("expected runtime snapshot to include api intent")
-	} else if got.Outputs["url"] != "https://demo.example" {
-		t.Fatalf("runtime outputs = %v", got.Outputs)
+	if got.Outputs["url"] != "https://demo.example" {
+		t.Fatalf("intent outputs = %v", got.Outputs)
 	}
-	if runtime.PartitionState == nil {
-		t.Fatal("expected runtime snapshot to include partition state")
-	}
-	if got, want := runtime.PartitionState.Status, "Healthy"; got != want {
-		t.Fatalf("runtime partition status = %q, want %q", got, want)
-	}
+
+	// Partition state is derived on read from the intent files.
 	partitionState, err := common.LoadPartitionState(ctx, store, "demo")
 	if err != nil {
 		t.Fatalf("LoadPartitionState() error = %v", err)
@@ -351,7 +346,7 @@ func TestWriteIntentStateSerializesPartitionRuntimeUpdates(t *testing.T) {
 	}
 }
 
-func TestDeleteIntentStateDeletesRuntimeSnapshotAndFallsBackToScan(t *testing.T) {
+func TestDeleteIntentStateRemovesIntentAndDerivesRemainingState(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
 	dispatch := NewDispatcher(store, "test")
@@ -399,11 +394,8 @@ func TestDeleteIntentStateDeletesRuntimeSnapshotAndFallsBackToScan(t *testing.T)
 	if err := dispatch.DeleteIntentState(ctx, "demo", "api", "", "test delete"); err != nil {
 		t.Fatalf("DeleteIntentState() error = %v", err)
 	}
-	if _, err := store.ReadFile(ctx, paths.PartitionRuntime("demo")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected runtime snapshot tombstone after delete, got err=%v", err)
-	}
-	if _, err := store.ReadFile(ctx, paths.PartitionState("demo")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected partition state tombstone after delete, got err=%v", err)
+	if _, err := store.ReadFile(ctx, paths.IntentState("demo", "api")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected intent state file removed after delete, got err=%v", err)
 	}
 
 	states, err := common.LoadAllIntentStates(ctx, store, "demo")
@@ -437,32 +429,25 @@ func TestSeedRuntimeMetricsHydratesCacheAndGauges(t *testing.T) {
 	seedPartitionConfig(t, ctx, store, "alpha")
 	seedPartitionConfig(t, ctx, store, "beta")
 
-	seedJSON(t, ctx, store, paths.PartitionRuntime("alpha"), &statedomain.PartitionRuntime{
-		APIVersion: "guardian/v1alpha1",
-		Kind:       "PartitionRuntime",
-		Partition:  "alpha",
-		PartitionState: &statedomain.PartitionState{
-			APIVersion:        "guardian/v1alpha1",
-			Kind:              "PartitionState",
-			Partition:         "alpha",
-			Status:            "Compiled",
-			IntentVersions:    map[string]string{"api": "api-v1"},
-			ConfigVersionID:   "config-a",
-			PartitionRevision: "part-a",
-		},
-		Intents: map[string]*statedomain.IntentState{
-			"api": {
-				APIVersion:        "guardian/v1alpha1",
-				Kind:              "IntentState",
-				Partition:         "alpha",
-				Intent:            "api",
-				Status:            statedomain.StatusHealthy,
-				IntentVersionID:   "api-v1",
-				IntentSpecHash:    "hash-a",
-				PartitionRevision: "part-a",
-				TargetPusher:      "local",
-			},
-		},
+	seedJSON(t, ctx, store, paths.PartitionState("alpha"), &statedomain.PartitionState{
+		APIVersion:        "guardian/v1alpha1",
+		Kind:              "PartitionState",
+		Partition:         "alpha",
+		Status:            "Compiled",
+		IntentVersions:    map[string]string{"api": "api-v1"},
+		ConfigVersionID:   "config-a",
+		PartitionRevision: "part-a",
+	})
+	seedJSON(t, ctx, store, paths.IntentState("alpha", "api"), &statedomain.IntentState{
+		APIVersion:        "guardian/v1alpha1",
+		Kind:              "IntentState",
+		Partition:         "alpha",
+		Intent:            "api",
+		Status:            statedomain.StatusHealthy,
+		IntentVersionID:   "api-v1",
+		IntentSpecHash:    "hash-a",
+		PartitionRevision: "part-a",
+		TargetPusher:      "local",
 	})
 
 	seedJSON(t, ctx, store, paths.PartitionState("beta"), &statedomain.PartitionState{

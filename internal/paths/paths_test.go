@@ -29,14 +29,6 @@ func TestIntentState(t *testing.T) {
 	}
 }
 
-func TestPartitionRuntime(t *testing.T) {
-	got := PartitionRuntime("demo")
-	want := "/partitions/demo/.state/runtime.json"
-	if got != want {
-		t.Fatalf("PartitionRuntime = %q, want %q", got, want)
-	}
-}
-
 func TestAssetState(t *testing.T) {
 	got := AssetState("demo", "workers", "processor")
 	want := "/partitions/demo/.state/assets/workers--processor.json"
@@ -113,7 +105,6 @@ func TestAllPathsStartWithSlash(t *testing.T) {
 		"PartitionIntentDir": PartitionIntentsDir("p"),
 		"IntentManifest":     IntentManifest("p", "i"),
 		"PartitionState":     PartitionState("p"),
-		"PartitionRuntime":   PartitionRuntime("p"),
 		"StateRoot":          StateRoot("p"),
 		"IntentState":        IntentState("p", "i"),
 		"AssetState":         AssetState("p", "i", "a"),

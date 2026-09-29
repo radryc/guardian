@@ -10,57 +10,57 @@ import (
 
 func TestClassifyEvent(t *testing.T) {
 	cases := []struct {
-		name    string
-		event   historydomain.EventRecord
-		wantStatus string
+		name        string
+		event       historydomain.EventRecord
+		wantStatus  string
 		wantDisplay string
 	}{
 		{
-			name: "deploy.completed is healthy Pushed",
-			event: historydomain.EventRecord{Type: "deploy.completed"},
-			wantStatus: "healthy",
+			name:        "deploy.completed is healthy Pushed",
+			event:       historydomain.EventRecord{Type: "deploy.completed"},
+			wantStatus:  "healthy",
 			wantDisplay: "Pushed",
 		},
 		{
-			name: "task.failed is failing Failed",
-			event: historydomain.EventRecord{Type: "task.failed"},
-			wantStatus: "failing",
+			name:        "task.failed is failing Failed",
+			event:       historydomain.EventRecord{Type: "task.failed"},
+			wantStatus:  "failing",
 			wantDisplay: "Failed",
 		},
 		{
-			name: "partition.pushed new partition is pending Started",
-			event: historydomain.EventRecord{Type: "partition.pushed", Details: map[string]string{"is_new": "true"}},
-			wantStatus: "pending",
+			name:        "partition.pushed new partition is pending Started",
+			event:       historydomain.EventRecord{Type: "partition.pushed", Details: map[string]string{"is_new": "true"}},
+			wantStatus:  "pending",
 			wantDisplay: "Started",
 		},
 		{
-			name: "partition.pushed update is neutral Updated",
-			event: historydomain.EventRecord{Type: "partition.pushed", Details: map[string]string{"is_new": "false"}},
-			wantStatus: "neutral",
+			name:        "partition.pushed update is neutral Updated",
+			event:       historydomain.EventRecord{Type: "partition.pushed", Details: map[string]string{"is_new": "false"}},
+			wantStatus:  "neutral",
 			wantDisplay: "Updated",
 		},
 		{
-			name: "partition.status.updated healthy is healthy Ready",
-			event: historydomain.EventRecord{Type: "partition.status.updated", Details: map[string]string{"status": "Healthy", "displayStatus": "Stable"}},
-			wantStatus: "healthy",
+			name:        "partition.status.updated healthy is healthy Ready",
+			event:       historydomain.EventRecord{Type: "partition.status.updated", Details: map[string]string{"status": "Healthy", "displayStatus": "Stable"}},
+			wantStatus:  "healthy",
 			wantDisplay: "Ready",
 		},
 		{
-			name: "partition.status.updated progressing is pending Progressing",
-			event: historydomain.EventRecord{Type: "partition.status.updated", Details: map[string]string{"status": "Progressing", "displayStatus": "Progressing"}},
-			wantStatus: "pending",
+			name:        "partition.status.updated progressing is pending Progressing",
+			event:       historydomain.EventRecord{Type: "partition.status.updated", Details: map[string]string{"status": "Progressing", "displayStatus": "Progressing"}},
+			wantStatus:  "pending",
 			wantDisplay: "Progressing",
 		},
 		{
-			name: "partition.status.updated failing uses display status",
-			event: historydomain.EventRecord{Type: "partition.status.updated", Details: map[string]string{"status": "Failing", "displayStatus": "Needs action"}},
-			wantStatus: "failing",
+			name:        "partition.status.updated failing uses display status",
+			event:       historydomain.EventRecord{Type: "partition.status.updated", Details: map[string]string{"status": "Failing", "displayStatus": "Needs action"}},
+			wantStatus:  "failing",
 			wantDisplay: "Needs action",
 		},
 		{
-			name: "rollback.triggered is attention Rollback",
-			event: historydomain.EventRecord{Type: "rollback.triggered"},
-			wantStatus: "attention",
+			name:        "rollback.triggered is attention Rollback",
+			event:       historydomain.EventRecord{Type: "rollback.triggered"},
+			wantStatus:  "attention",
 			wantDisplay: "Rollback",
 		},
 	}
