@@ -192,11 +192,6 @@ func remapBatchRevision(result *guardianapi.BatchRevision) {
 	}
 }
 
-func mapLogicalToPhysical(logicalPath string) string {
-	physical, _ := mapLogicalToPhysicalChecked(logicalPath)
-	return physical
-}
-
 func mapLogicalToPhysicalChecked(logicalPath string) (string, error) {
 	if logicalPath == "/partitions" {
 		return "guardian", nil
@@ -216,12 +211,13 @@ func mapLogicalToPhysicalChecked(logicalPath string) (string, error) {
 	if strings.HasPrefix(logicalPath, "/.archive/") {
 		return "guardian-system/.archive/" + strings.TrimPrefix(logicalPath, "/.archive/"), nil
 	}
+	if logicalPath == "/.scans" {
+		return "guardian-system/.scans", nil
+	}
+	if strings.HasPrefix(logicalPath, "/.scans/") {
+		return "guardian-system/.scans/" + strings.TrimPrefix(logicalPath, "/.scans/"), nil
+	}
 	return "", fmt.Errorf("unsupported guardian logical path: %s", logicalPath)
-}
-
-func mapPhysicalToLogical(physicalPath string) string {
-	logical, _ := mapPhysicalToLogicalChecked(physicalPath)
-	return logical
 }
 
 func mapPhysicalToLogicalChecked(physicalPath string) (string, error) {
@@ -242,6 +238,12 @@ func mapPhysicalToLogicalChecked(physicalPath string) (string, error) {
 	}
 	if strings.HasPrefix(physicalPath, "guardian-system/.archive/") {
 		return "/.archive/" + strings.TrimPrefix(physicalPath, "guardian-system/.archive/"), nil
+	}
+	if physicalPath == "guardian-system/.scans" {
+		return "/.scans", nil
+	}
+	if strings.HasPrefix(physicalPath, "guardian-system/.scans/") {
+		return "/.scans/" + strings.TrimPrefix(physicalPath, "guardian-system/.scans/"), nil
 	}
 	return "", fmt.Errorf("unsupported monofs physical path: %s", physicalPath)
 }

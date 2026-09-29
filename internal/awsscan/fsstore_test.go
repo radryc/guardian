@@ -46,12 +46,12 @@ func TestScanRunnerAgainstFileStore(t *testing.T) {
 		Buckets:    []BucketResource{{Name: "fs-bucket", Region: "eu-west-1"}},
 	}}}
 	runner := &ScanRunner{
-		PusherName: "aws-123456789012",
-		Account:    "123456789012",
-		WorkerID:   "fs-worker",
+		PusherName:  "aws-123456789012",
+		Account:     "123456789012",
+		WorkerID:    "fs-worker",
 		PrincipalID: "fs-principal",
-		Store:      store,
-		NewScanner: func() Scanner { return scanner },
+		Store:       store,
+		NewScanner:  func() Scanner { return scanner },
 	}
 	if err := runner.ProcessPending(context.Background()); err != nil {
 		t.Fatalf("process pending: %v", err)

@@ -63,6 +63,11 @@ func validateIntentAssets(assets []intentdomain.AssetSpec, intentHints []assetdo
 				return fmt.Errorf("asset %q (%s): payload.aws is required", asset.Name, asset.Type)
 			}
 		}
+		if asset.Type == assetdomain.TypeK8sResource {
+			if strings.TrimSpace(asset.Payload["k8s"]) == "" && strings.TrimSpace(asset.Payload["kubernetes"]) == "" {
+				return fmt.Errorf("asset %q (%s): payload.k8s is required", asset.Name, asset.Type)
+			}
+		}
 		if asset.Type == assetdomain.TypeConfig {
 			typed, _, err := assetdefs.Decode(assetdomain.Spec{
 				Type:       asset.Type,

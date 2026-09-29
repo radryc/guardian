@@ -2,7 +2,6 @@ package assets
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
 	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
@@ -64,31 +63,4 @@ func validateBuildArgs(typed *ImageBuildSpec) error {
 		}
 	}
 	return nil
-}
-
-func NormalizeBuildArgs(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(in))
-	for key := range in {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	out := make(map[string]string, len(keys))
-	for _, key := range keys {
-		trimmedKey := strings.TrimSpace(key)
-		if trimmedKey == "" {
-			continue
-		}
-		value := strings.TrimSpace(in[key])
-		if value == "" {
-			continue
-		}
-		out[trimmedKey] = value
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }

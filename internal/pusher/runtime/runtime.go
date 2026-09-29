@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"os"
+	goruntime "runtime"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
 	"github.com/rydzu/ainfra/guardian/internal/paths"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
@@ -41,9 +44,17 @@ type Runtime struct {
 	Registry                *registry.Registry
 	PollInterval            time.Duration
 	UnclaimedTaskRetryDelay time.Duration
-	CanHandle               func(*taskdomain.Task) bool
-	retryMu                 sync.Mutex
-	nextClaimAttempt        map[string]time.Time
+	// MaxConcurrency bounds how many claimed tasks execute at once. Zero selects
+	// a CPU-derived default; values are clamped to [1, 128].
+	MaxConcurrency int
+	// ShardIndex/ShardCount let multiple replicas of the same pusher split a
+	// queue by task-ID hash. ShardCount <= 1 disables sharding.
+	ShardIndex int
+	ShardCount int
+	CanHandle  func(*taskdomain.Task) bool
+
+	retryMu          sync.Mutex
+	nextClaimAttempt map[string]time.Time
 }
 
 func (r *Runtime) Run(ctx context.Context) error {
@@ -244,48 +255,122 @@ func (r *Runtime) processPending(ctx context.Context) error {
 	pusher := strings.TrimPrefix(strings.TrimPrefix(r.QueuePath, paths.QueueRoot()), "/")
 	activeTaskIDs := make(map[string]struct{}, len(entries))
 	scanAt := time.Now()
+	pending := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir || !strings.HasSuffix(entry.Name, ".json") || strings.HasPrefix(entry.Name, ".") {
 			continue
 		}
 		taskID := strings.TrimSuffix(entry.Name, ".json")
 		activeTaskIDs[taskID] = struct{}{}
+		if !r.ownsTask(taskID) {
+			continue
+		}
 		if !r.shouldAttemptClaim(taskID, scanAt) {
 			continue
 		}
-		t, claimed, err := r.tryClaimTask(ctx, taskID)
-		if err != nil {
-			log.Printf("[Pusher] Error trying to claim task %s: %v", taskID, err)
-			continue
-		}
-		if !claimed {
-			// Task already has a result file and is awaiting control-plane cleanup.
-			// Do not emit a noisy warning in this expected completion window.
-			if completed, err := pathExists(ctx, r.Store, paths.QueueResult(pusher, taskID)); err == nil && completed {
-				r.forgetClaimRetry(taskID)
-				continue
-			}
-			r.scheduleClaimRetry(taskID, scanAt)
-			log.Printf("[Pusher] Task %s was not claimed (maybe locked or not ready).", taskID)
-			continue
-		}
-		r.forgetClaimRetry(taskID)
-		log.Printf("[Pusher] Successfully claimed task %s! op=%s partition=%s intent=%s assets=%d Executing...",
-			taskID, t.Op, t.Partition, t.Intent, len(t.Assets))
-		result := r.executeTask(ctx, t)
-		changed := []string{}
-		if result.Drift != nil {
-			changed = result.Drift.ChangedAssets
-		}
-		log.Printf("[Pusher] Task %s execution finished. op=%s partition=%s intent=%s status=%v changed=%v",
-			taskID, t.Op, t.Partition, t.Intent, result.Status, changed)
-		if err := r.writeResult(ctx, result); err != nil {
-			log.Printf("[Pusher] Error writing result for task %s: %v", taskID, err)
-			continue
-		}
+		pending = append(pending, taskID)
+	}
+	if len(pending) > 0 {
+		r.runTaskWorkers(ctx, pusher, pending, scanAt)
 	}
 	r.pruneClaimRetry(activeTaskIDs)
 	return nil
+}
+
+// runTaskWorkers claims and executes the given tasks on a bounded worker pool so
+// a slow asset no longer blocks every other task in the queue. Calls within a
+// single processPending are serialised by the polling loop.
+func (r *Runtime) runTaskWorkers(ctx context.Context, pusher string, taskIDs []string, scanAt time.Time) {
+	workers := r.concurrency()
+	if workers > len(taskIDs) {
+		workers = len(taskIDs)
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	tasks := make(chan string)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for taskID := range tasks {
+				r.processTaskEntry(ctx, pusher, taskID, scanAt)
+			}
+		}()
+	}
+	for _, taskID := range taskIDs {
+		select {
+		case tasks <- taskID:
+		case <-ctx.Done():
+			close(tasks)
+			wg.Wait()
+			return
+		}
+	}
+	close(tasks)
+	wg.Wait()
+}
+
+func (r *Runtime) processTaskEntry(ctx context.Context, pusher, taskID string, scanAt time.Time) {
+	t, claimed, err := r.tryClaimTask(ctx, taskID)
+	if err != nil {
+		log.Printf("[Pusher] Error trying to claim task %s: %v", taskID, err)
+		return
+	}
+	if !claimed {
+		// Task already has a result file and is awaiting control-plane cleanup.
+		// Do not emit a noisy warning in this expected completion window.
+		if completed, err := pathExists(ctx, r.Store, paths.QueueResult(pusher, taskID)); err == nil && completed {
+			r.forgetClaimRetry(taskID)
+			return
+		}
+		r.scheduleClaimRetry(taskID, scanAt)
+		log.Printf("[Pusher] Task %s was not claimed (maybe locked or not ready).", taskID)
+		return
+	}
+	r.forgetClaimRetry(taskID)
+	log.Printf("[Pusher] Successfully claimed task %s! op=%s partition=%s intent=%s assets=%d Executing...",
+		taskID, t.Op, t.Partition, t.Intent, len(t.Assets))
+	result := r.executeTask(ctx, t)
+	changed := []string{}
+	if result.Drift != nil {
+		changed = result.Drift.ChangedAssets
+	}
+	log.Printf("[Pusher] Task %s execution finished. op=%s partition=%s intent=%s status=%v changed=%v",
+		taskID, t.Op, t.Partition, t.Intent, result.Status, changed)
+	if err := r.writeResult(ctx, result); err != nil {
+		log.Printf("[Pusher] Error writing result for task %s: %v", taskID, err)
+	}
+}
+
+// concurrency returns the effective worker count, clamped to a sane range.
+func (r *Runtime) concurrency() int {
+	n := r.MaxConcurrency
+	if n <= 0 {
+		n = goruntime.GOMAXPROCS(0) * 2
+	}
+	if n < 1 {
+		n = 1
+	}
+	if n > 128 {
+		n = 128
+	}
+	return n
+}
+
+// ownsTask reports whether this replica is responsible for taskID when sharded.
+func (r *Runtime) ownsTask(taskID string) bool {
+	if r.ShardCount <= 1 {
+		return true
+	}
+	shard := r.ShardIndex % r.ShardCount
+	if shard < 0 {
+		shard += r.ShardCount
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(taskID))
+	return int(h.Sum32()%uint32(r.ShardCount)) == shard
 }
 
 func (r *Runtime) shouldAttemptClaim(taskID string, now time.Time) bool {
@@ -531,8 +616,8 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 	if dependencyBlock != nil {
 		result.Status = taskdomain.ResultSucceeded
 		result.Drift = &taskdomain.DriftReport{Status: "Changed", Summary: fmt.Sprintf("asset %s waiting for dependency %s: %s", dependencyBlock.assetName, dependencyBlock.dependencyName, dependencyBlock.reason), ChangedAssets: []string{dependencyBlock.assetName}}
-		result.Health = cloneHealthObservation(dependencyBlock.observation.Health)
-		result.ApplyReadiness = cloneApplyReadiness(dependencyBlock.observation.ApplyReadiness)
+		result.Health = statedomain.CloneHealthObservation(dependencyBlock.observation.Health)
+		result.ApplyReadiness = statedomain.CloneApplyReadiness(dependencyBlock.observation.ApplyReadiness)
 		if len(outputs) > 0 {
 			result.Outputs = outputs
 		}
@@ -768,7 +853,7 @@ func runtimeTaskResultTraceJSON(result *taskdomain.TaskResult) string {
 		summary.ApplyReadiness = &readinessCopy
 	}
 	if len(result.AssetObservations) > 0 {
-		summary.AssetObservations = cloneAssetObservationMap(result.AssetObservations)
+		summary.AssetObservations = statedomain.CloneAssetObservationMap(result.AssetObservations)
 	}
 	return marshalRuntimeTraceJSON(summary)
 }
@@ -778,8 +863,8 @@ func buildAssetObservation(health *taskdomain.HealthObservation, readiness *task
 		return nil
 	}
 	return &taskdomain.AssetObservation{
-		Health:         cloneHealthObservation(health),
-		ApplyReadiness: cloneApplyReadiness(readiness),
+		Health:         statedomain.CloneHealthObservation(health),
+		ApplyReadiness: statedomain.CloneApplyReadiness(readiness),
 	}
 }
 
@@ -789,43 +874,6 @@ func isEmptyHealthObservation(observation *taskdomain.HealthObservation) bool {
 
 func isEmptyApplyReadiness(observation *taskdomain.ApplyReadiness) bool {
 	return observation == nil || observation.Status == "" || observation.Status == taskdomain.ApplyReadinessUnknown
-}
-
-func cloneHealthObservation(in *taskdomain.HealthObservation) *taskdomain.HealthObservation {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	return &out
-}
-
-func cloneApplyReadiness(in *taskdomain.ApplyReadiness) *taskdomain.ApplyReadiness {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	return &out
-}
-
-func cloneAssetObservationMap(in map[string]*taskdomain.AssetObservation) map[string]*taskdomain.AssetObservation {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string]*taskdomain.AssetObservation, len(in))
-	for key, value := range in {
-		out[key] = cloneAssetObservation(value)
-	}
-	return out
-}
-
-func cloneAssetObservation(in *taskdomain.AssetObservation) *taskdomain.AssetObservation {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	out.Health = cloneHealthObservation(in.Health)
-	out.ApplyReadiness = cloneApplyReadiness(in.ApplyReadiness)
-	return &out
 }
 
 func mergeHealthObservation(current, next *taskdomain.HealthObservation, assetName string) *taskdomain.HealthObservation {

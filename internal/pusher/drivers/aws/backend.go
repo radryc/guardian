@@ -169,11 +169,13 @@ func cloneStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-func (b *Backend) UpsertFileSystem(ctx context.Context, fs FileSystem) (string, error) { return "fs-test", nil }
+func (b *Backend) UpsertFileSystem(ctx context.Context, fs FileSystem) (string, error) {
+	return "fs-test", nil
+}
 func (b *Backend) GetFileSystem(ctx context.Context, fsID string) (FileSystem, bool, error) {
 	return FileSystem{ID: fsID, Hash: "test"}, true, nil
 }
-func (b *Backend) DeleteFileSystem(ctx context.Context, fsID string) error { return nil }
+func (b *Backend) DeleteFileSystem(ctx context.Context, fsID string) error    { return nil }
 func (b *Backend) UpsertParameter(ctx context.Context, param Parameter) error { return nil }
 func (b *Backend) GetParameter(ctx context.Context, name string) (Parameter, bool, error) {
 	return Parameter{Name: name, Hash: "test"}, true, nil
@@ -191,6 +193,9 @@ func (b *Backend) GetService(ctx context.Context, cluster, name string) (ECSServ
 	return ECSService{Name: name, Hash: "test"}, true, nil
 }
 func (b *Backend) DeleteService(ctx context.Context, cluster, name string) error { return nil }
+func (b *Backend) AttachServiceToTargetGroup(ctx context.Context, cluster, service, container, tgARN string, port int, sgID string) error {
+	return nil
+}
 func (b *Backend) UpsertLoadBalancer(ctx context.Context, lb LoadBalancer) (string, error) {
 	return "arn:aws:elasticloadbalancing:test:test:loadbalancer/test", nil
 }
@@ -198,6 +203,9 @@ func (b *Backend) GetLoadBalancer(ctx context.Context, name string) (LoadBalance
 	return LoadBalancer{Name: name, Hash: "test"}, true, nil
 }
 func (b *Backend) DeleteLoadBalancer(ctx context.Context, arn string) error { return nil }
+func (b *Backend) EnsureLoadBalancerSecurityGroup(ctx context.Context, name, scheme string, ports []int) (string, error) {
+	return "sg-test", nil
+}
 func (b *Backend) UpsertTargetGroup(ctx context.Context, tg TargetGroup) (string, error) {
 	return "arn:aws:elasticloadbalancing:test:test:targetgroup/test", nil
 }
@@ -211,12 +219,12 @@ func (b *Backend) UpsertListener(ctx context.Context, listener Listener) (string
 func (b *Backend) GetListener(ctx context.Context, lbARN string, port int) (Listener, bool, error) {
 	return Listener{Hash: "test"}, true, nil
 }
-func (b *Backend) DeleteListener(ctx context.Context, arn string) error { return nil }
+func (b *Backend) DeleteListener(ctx context.Context, arn string) error      { return nil }
 func (b *Backend) UpsertBucket(ctx context.Context, bucket BucketSpec) error { return nil }
 func (b *Backend) GetBucket(ctx context.Context, name string) (BucketSpec, bool, error) {
 	return BucketSpec{Name: name, Hash: "test"}, true, nil
 }
-func (b *Backend) DeleteBucket(ctx context.Context, name string) error { return nil }
+func (b *Backend) DeleteBucket(ctx context.Context, name string) error      { return nil }
 func (b *Backend) UpsertLogGroup(ctx context.Context, group LogGroup) error { return nil }
 func (b *Backend) GetLogGroup(ctx context.Context, name string) (LogGroup, bool, error) {
 	return LogGroup{Name: name, Hash: "test"}, true, nil

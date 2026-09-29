@@ -5,17 +5,21 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	awsroot "github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	ecstypes "github.com/aws/aws-sdk-go-v2/service/ecs/types"
 	"github.com/aws/aws-sdk-go-v2/service/efs"
 	efstypes "github.com/aws/aws-sdk-go-v2/service/efs/types"
 	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 	elbv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -28,18 +32,39 @@ type AWSBackend struct {
 	profile       string
 	defaultRegion string
 	dryRun        bool
+
+	mu   sync.Mutex
+	cfgs map[string]awsroot.Config
 }
 
 func NewAWSBackend(profile, defaultRegion string, dryRun bool) *AWSBackend {
 	if defaultRegion == "" {
 		defaultRegion = "us-east-1"
 	}
-	return &AWSBackend{profile: profile, defaultRegion: defaultRegion, dryRun: dryRun}
+	return &AWSBackend{
+		profile:       profile,
+		defaultRegion: defaultRegion,
+		dryRun:        dryRun,
+		cfgs:          make(map[string]awsroot.Config),
+	}
 }
 
+// loadConfig returns a cached config per region. The config's credentials
+// provider is a shared aws.CredentialsCache, so concurrent operations
+// single-flight credential resolution (SSO refresh / assume-role /
+// credential_process) instead of spawning one resolution per call, which
+// otherwise fails with "failed to refresh cached credentials".
 func (b *AWSBackend) loadConfig(ctx context.Context, region string) (awsroot.Config, error) {
 	if region == "" {
 		region = b.defaultRegion
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.cfgs == nil {
+		b.cfgs = make(map[string]awsroot.Config)
+	}
+	if cfg, ok := b.cfgs[region]; ok {
+		return cfg, nil
 	}
 	opts := []func(*awsconfig.LoadOptions) error{
 		awsconfig.WithRegion(region),
@@ -47,7 +72,15 @@ func (b *AWSBackend) loadConfig(ctx context.Context, region string) (awsroot.Con
 	if b.profile != "" {
 		opts = append(opts, awsconfig.WithSharedConfigProfile(b.profile))
 	}
-	return awsconfig.LoadDefaultConfig(ctx, opts...)
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
+	if err != nil {
+		return awsroot.Config{}, err
+	}
+	// Ensure credentials are cached/shared even if the SDK returned a
+	// non-caching provider.
+	cfg.Credentials = awsroot.NewCredentialsCache(cfg.Credentials)
+	b.cfgs[region] = cfg
+	return cfg, nil
 }
 
 func (b *AWSBackend) dry() bool { return b.dryRun }
@@ -120,10 +153,10 @@ func (b *AWSBackend) GetFileSystem(ctx context.Context, fsID string) (FileSystem
 	f := out.FileSystems[0]
 	tags := tagsFromEFSDescription(f.Tags)
 	return FileSystem{
-		ID:        awsroot.ToString(f.FileSystemId),
-		Name:      awsroot.ToString(f.Name),
-		Tags:      tags,
-		Hash:      tags["guardian.hash"],
+		ID:   awsroot.ToString(f.FileSystemId),
+		Name: awsroot.ToString(f.Name),
+		Tags: tags,
+		Hash: tags["guardian-hash"],
 	}, true, nil
 }
 
@@ -161,25 +194,26 @@ func (b *AWSBackend) UpsertParameter(ctx context.Context, param Parameter) error
 		paramType = ssmtypes.ParameterTypeSecureString
 	}
 
+	// AWS rejects Tags together with Overwrite, so always overwrite the value
+	// without tags and apply tags separately (AddTagsToResource).
 	_, err = client.PutParameter(ctx, &ssm.PutParameterInput{
 		Name:      awsroot.String(param.Name),
 		Value:     awsroot.String(param.Value),
 		Type:      paramType,
-		Tags:      toSSMTags(param.Tags),
-		Overwrite: awsroot.Bool(false),
+		Overwrite: awsroot.Bool(true),
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "ParameterAlreadyExists") {
-			_, err = client.PutParameter(ctx, &ssm.PutParameterInput{
-				Name:      awsroot.String(param.Name),
-				Value:     awsroot.String(param.Value),
-				Type:      paramType,
-				Tags:      toSSMTags(param.Tags),
-				Overwrite: awsroot.Bool(true),
-			})
-		}
-		if err != nil {
-			return err
+		return err
+	}
+	if len(param.Tags) > 0 {
+		if _, tagErr := client.AddTagsToResource(ctx, &ssm.AddTagsToResourceInput{
+			ResourceType: ssmtypes.ResourceTypeForTaggingParameter,
+			ResourceId:   awsroot.String(param.Name),
+			Tags:         toSSMTags(param.Tags),
+		}); tagErr != nil {
+			// Non-fatal: the parameter value is already correct; tagging can be
+			// retried on the next apply.
+			fmt.Printf("  warn: tag SSM parameter %s: %v\n", param.Name, tagErr)
 		}
 	}
 	return nil
@@ -217,7 +251,7 @@ func (b *AWSBackend) GetParameter(ctx context.Context, name string) (Parameter, 
 		Name:  awsroot.ToString(out.Parameter.Name),
 		Value: awsroot.ToString(out.Parameter.Value),
 		Type:  string(out.Parameter.Type),
-		Hash:  tags["guardian.hash"],
+		Hash:  tags["guardian-hash"],
 		Tags:  tags,
 	}, true, nil
 }
@@ -254,7 +288,7 @@ func (b *AWSBackend) UpsertSecret(ctx context.Context, secret Secret) (string, e
 	out, err := client.CreateSecret(ctx, &secretsmanager.CreateSecretInput{
 		Name:         awsroot.String(secret.Name),
 		SecretString: awsroot.String(secret.Value),
-		Tags:          toSecretsManagerTags(secret.Tags),
+		Tags:         toSecretsManagerTags(secret.Tags),
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") || strings.Contains(err.Error(), "ResourceExistsException") {
@@ -335,7 +369,11 @@ func (b *AWSBackend) UpsertService(ctx context.Context, svc ECSService) error {
 	}
 	client := ecs.NewFromConfig(cfg)
 
-	taskDef, err := b.upsertTaskDefinition(ctx, client, svc)
+	if err := b.ensureCluster(ctx, client, svc); err != nil {
+		return fmt.Errorf("ensure ECS cluster: %w", err)
+	}
+
+	taskDef, err := b.upsertTaskDefinition(ctx, client, svc, cfg.Region)
 	if err != nil {
 		return fmt.Errorf("register task definition: %w", err)
 	}
@@ -343,16 +381,53 @@ func (b *AWSBackend) UpsertService(ctx context.Context, svc ECSService) error {
 	return b.upsertECSService(ctx, client, svc, taskDef)
 }
 
-func (b *AWSBackend) upsertTaskDefinition(ctx context.Context, client *ecs.Client, svc ECSService) (string, error) {
+// ensureCluster creates the ECS cluster used by the service if it does not
+// already exist. The Compute driver defaults the cluster name to the target
+// account id, so on a fresh account the cluster must be provisioned before a
+// service can be placed.
+func (b *AWSBackend) ensureCluster(ctx context.Context, client *ecs.Client, svc ECSService) error {
+	cluster := strings.TrimSpace(svc.Cluster)
+	if cluster == "" {
+		return nil
+	}
+	out, err := client.DescribeClusters(ctx, &ecs.DescribeClustersInput{
+		Clusters: []string{cluster},
+	})
+	if err != nil {
+		if isAWSNotFound(err) {
+			return b.createCluster(ctx, client, cluster, svc.Tags)
+		}
+		return err
+	}
+	for _, c := range out.Clusters {
+		if awsroot.ToString(c.Status) == "ACTIVE" {
+			return nil
+		}
+	}
+	return b.createCluster(ctx, client, cluster, svc.Tags)
+}
+
+func (b *AWSBackend) createCluster(ctx context.Context, client *ecs.Client, cluster string, tags map[string]string) error {
+	_, err := client.CreateCluster(ctx, &ecs.CreateClusterInput{
+		ClusterName: awsroot.String(cluster),
+		Tags:        toECSTags(tags),
+	})
+	if err != nil && !strings.Contains(err.Error(), "already exists") {
+		return err
+	}
+	return nil
+}
+
+func (b *AWSBackend) upsertTaskDefinition(ctx context.Context, client *ecs.Client, svc ECSService, region string) (string, error) {
 	container := ecstypes.ContainerDefinition{
-		Name:  awsroot.String(svc.Container.Name),
-		Image: awsroot.String(svc.Container.Image),
+		Name:         awsroot.String(svc.Container.Name),
+		Image:        awsroot.String(svc.Container.Image),
 		PortMappings: toECSPortMappings(svc.Container.Ports),
 		LogConfiguration: &ecstypes.LogConfiguration{
 			LogDriver: ecstypes.LogDriverAwslogs,
 			Options: map[string]string{
 				"awslogs-group":         svc.LogGroup,
-				"awslogs-region":        "",
+				"awslogs-region":        region,
 				"awslogs-stream-prefix": svc.Container.Name,
 			},
 		},
@@ -383,11 +458,22 @@ func (b *AWSBackend) upsertTaskDefinition(ctx context.Context, client *ecs.Clien
 		taskMem = "512"
 	}
 
+	// ECS requires an execution role when container secrets are present. Use the
+	// asset-provided role when set, otherwise provision/reuse a default one.
+	execRole := svc.ExecRole
+	if execRole == "" && len(svc.Container.Secrets) > 0 {
+		role, rerr := b.ensureExecutionRole(ctx)
+		if rerr != nil {
+			return "", fmt.Errorf("ensure ECS execution role: %w", rerr)
+		}
+		execRole = role
+	}
+
 	out, err := client.RegisterTaskDefinition(ctx, &ecs.RegisterTaskDefinitionInput{
 		Family:                  awsroot.String(svc.TaskFamily),
 		ContainerDefinitions:    []ecstypes.ContainerDefinition{container},
 		TaskRoleArn:             awsroot.String(svc.TaskRole),
-		ExecutionRoleArn:        awsroot.String(svc.ExecRole),
+		ExecutionRoleArn:        awsroot.String(execRole),
 		NetworkMode:             ecstypes.NetworkModeAwsvpc,
 		RequiresCompatibilities: toLaunchTypes(svc.LaunchType),
 		Cpu:                     awsroot.String(taskCPU),
@@ -399,15 +485,133 @@ func (b *AWSBackend) upsertTaskDefinition(ctx context.Context, client *ecs.Clien
 	return awsroot.ToString(out.TaskDefinition.TaskDefinitionArn), nil
 }
 
+// ensureExecutionRole returns the ARN of a shared ECS task execution role,
+// creating it (with the managed ECS execution policy plus secrets read) on
+// first use.
+func (b *AWSBackend) ensureExecutionRole(ctx context.Context) (string, error) {
+	cfg, err := b.loadConfig(ctx, "")
+	if err != nil {
+		return "", err
+	}
+	client := iam.NewFromConfig(cfg)
+	const roleName = "guardian-ecs-execution-role"
+
+	if out, gerr := client.GetRole(ctx, &iam.GetRoleInput{RoleName: awsroot.String(roleName)}); gerr == nil {
+		return awsroot.ToString(out.Role.Arn), nil
+	} else if !strings.Contains(gerr.Error(), "NoSuchEntity") {
+		return "", gerr
+	}
+
+	trust := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
+	created, cerr := client.CreateRole(ctx, &iam.CreateRoleInput{
+		RoleName:                 awsroot.String(roleName),
+		AssumeRolePolicyDocument: awsroot.String(trust),
+	})
+	if cerr != nil {
+		if out, gerr := client.GetRole(ctx, &iam.GetRoleInput{RoleName: awsroot.String(roleName)}); gerr == nil {
+			return awsroot.ToString(out.Role.Arn), nil
+		}
+		return "", cerr
+	}
+	_, _ = client.AttachRolePolicy(ctx, &iam.AttachRolePolicyInput{
+		RoleName:  awsroot.String(roleName),
+		PolicyArn: awsroot.String("arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"),
+	})
+	_, _ = client.PutRolePolicy(ctx, &iam.PutRolePolicyInput{
+		RoleName:       awsroot.String(roleName),
+		PolicyName:     awsroot.String("guardian-secrets-read"),
+		PolicyDocument: awsroot.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["secretsmanager:GetSecretValue","ssm:GetParameters","kms:Decrypt"],"Resource":"*"}]}`),
+	})
+	return awsroot.ToString(created.Role.Arn), nil
+}
+
+// discoverVPCID returns the default VPC id, or the first VPC in the account
+// when no default exists. Target groups must be created inside a VPC.
+func (b *AWSBackend) discoverVPCID(ctx context.Context, cfg awsroot.Config) (string, error) {
+	client := ec2.NewFromConfig(cfg)
+	out, err := client.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{})
+	if err != nil {
+		return "", err
+	}
+	if len(out.Vpcs) == 0 {
+		return "", fmt.Errorf("no VPC found; create a default VPC or specify subnets")
+	}
+	for _, v := range out.Vpcs {
+		if v.IsDefault != nil && *v.IsDefault {
+			return awsroot.ToString(v.VpcId), nil
+		}
+	}
+	return awsroot.ToString(out.Vpcs[0].VpcId), nil
+}
+
+// discoverSubnets returns subnet IDs to place resources in. It prefers the
+// default VPC's subnets and falls back to the first VPC found.
+func (b *AWSBackend) discoverSubnets(ctx context.Context, cfg awsroot.Config) ([]string, error) {
+	client := ec2.NewFromConfig(cfg)
+	out, err := client.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
+		Filters: []ec2types.Filter{
+			{Name: awsroot.String("default-for-az"), Values: []string{"true"}},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(out.Subnets))
+	for _, s := range out.Subnets {
+		ids = append(ids, awsroot.ToString(s.SubnetId))
+	}
+	if len(ids) > 0 {
+		return ids, nil
+	}
+
+	vpcs, verr := client.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{})
+	if verr != nil {
+		return nil, verr
+	}
+	if len(vpcs.Vpcs) == 0 {
+		return nil, fmt.Errorf("no VPC found; create a default VPC or specify subnets")
+	}
+	vpcID := awsroot.ToString(vpcs.Vpcs[0].VpcId)
+	subs, serr := client.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
+		Filters: []ec2types.Filter{{Name: awsroot.String("vpc-id"), Values: []string{vpcID}}},
+	})
+	if serr != nil {
+		return nil, serr
+	}
+	for _, s := range subs.Subnets {
+		ids = append(ids, awsroot.ToString(s.SubnetId))
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("no subnets found in account")
+	}
+	return ids, nil
+}
+
 func (b *AWSBackend) upsertECSService(ctx context.Context, client *ecs.Client, svc ECSService, taskDefARN string) error {
+	subnets := svc.Subnets
+	assignPublic := svc.AssignPublicIP
+	if len(subnets) == 0 {
+		cfg, cerr := b.loadConfig(ctx, "")
+		if cerr != nil {
+			return cerr
+		}
+		discovered, derr := b.discoverSubnets(ctx, cfg)
+		if derr != nil {
+			return fmt.Errorf("discover subnets: %w", derr)
+		}
+		subnets = discovered
+		// Default VPC subnets are public; Fargate needs a public IP to pull images.
+		assignPublic = true
+	}
+
 	netConf := &ecstypes.NetworkConfiguration{
 		AwsvpcConfiguration: &ecstypes.AwsVpcConfiguration{
-			Subnets:        svc.Subnets,
+			Subnets:        subnets,
 			SecurityGroups: svc.SecurityGroups,
 			AssignPublicIp: ecstypes.AssignPublicIpDisabled,
 		},
 	}
-	if svc.AssignPublicIP {
+	if assignPublic {
 		netConf.AwsvpcConfiguration.AssignPublicIp = ecstypes.AssignPublicIpEnabled
 	}
 
@@ -423,7 +627,7 @@ func (b *AWSBackend) upsertECSService(ctx context.Context, client *ecs.Client, s
 		DesiredCount:         awsroot.Int32(int32(svc.DesiredCount)),
 		LaunchType:           launchType,
 		NetworkConfiguration: netConf,
-		Tags:                  toECSTags(svc.Tags),
+		Tags:                 toECSTags(svc.Tags),
 	}
 
 	if svc.TargetGroupARN != "" {
@@ -436,17 +640,30 @@ func (b *AWSBackend) upsertECSService(ctx context.Context, client *ecs.Client, s
 		}
 	}
 
+	// CreateService is only idempotent when EVERY parameter matches an existing
+	// service. On any difference ECS returns "Creation of service was not
+	// idempotent" (not "already exists"), so probe first and update in place.
+	existing, derr := client.DescribeServices(ctx, &ecs.DescribeServicesInput{
+		Cluster:  awsroot.String(svc.Cluster),
+		Services: []string{svc.Name},
+	})
+	if derr != nil && !isAWSNotFound(derr) {
+		return derr
+	}
+	if derr == nil && len(existing.Services) > 0 && awsroot.ToString(existing.Services[0].Status) == "ACTIVE" {
+		_, upErr := client.UpdateService(ctx, &ecs.UpdateServiceInput{
+			Cluster:              awsroot.String(svc.Cluster),
+			Service:              awsroot.String(svc.Name),
+			TaskDefinition:       awsroot.String(taskDefARN),
+			DesiredCount:         awsroot.Int32(int32(svc.DesiredCount)),
+			NetworkConfiguration: netConf,
+			ForceNewDeployment:   true,
+		})
+		return upErr
+	}
+
 	_, err := client.CreateService(ctx, createIn)
 	if err != nil {
-		if strings.Contains(err.Error(), "already exists") {
-			_, upErr := client.UpdateService(ctx, &ecs.UpdateServiceInput{
-				Cluster:        awsroot.String(svc.Cluster),
-				Service:        awsroot.String(svc.Name),
-				TaskDefinition: awsroot.String(taskDefARN),
-				DesiredCount:   awsroot.Int32(int32(svc.DesiredCount)),
-			})
-			return upErr
-		}
 		return fmt.Errorf("create ECS service: %w", err)
 	}
 	return nil
@@ -487,7 +704,7 @@ func (b *AWSBackend) GetService(ctx context.Context, cluster, name string) (ECSS
 			ResourceArn: awsroot.String(serviceArn),
 		}); tagsErr == nil {
 			service.Tags = tagsFromECSTags(tagsOut.Tags)
-			service.Hash = service.Tags["guardian.hash"]
+			service.Hash = service.Tags["guardian-hash"]
 		}
 	}
 	return service, true, nil
@@ -541,6 +758,49 @@ func (b *AWSBackend) DeleteService(ctx context.Context, cluster, name string) er
 	return err
 }
 
+// AttachServiceToTargetGroup registers an ECS service with an ELBv2 target
+// group. Fargate tasks are registered by ENI IP, so the target group must use
+// the "ip" target type.
+func (b *AWSBackend) AttachServiceToTargetGroup(ctx context.Context, cluster, service, container, tgARN string, port int, sgID string) error {
+	if b.dry() {
+		fmt.Printf("  [dry-run] would attach ECS service %s/%s to target group %s\n", cluster, service, tgARN)
+		return nil
+	}
+	if strings.TrimSpace(tgARN) == "" {
+		return nil
+	}
+	cfg, err := b.loadConfig(ctx, "")
+	if err != nil {
+		return err
+	}
+	client := ecs.NewFromConfig(cfg)
+	updateIn := &ecs.UpdateServiceInput{
+		Cluster: awsroot.String(cluster),
+		Service: awsroot.String(service),
+		LoadBalancers: []ecstypes.LoadBalancer{{
+			TargetGroupArn: awsroot.String(tgARN),
+			ContainerName:  awsroot.String(container),
+			ContainerPort:  awsroot.Int32(int32(port)),
+		}},
+		ForceNewDeployment: true,
+	}
+	// Place the tasks in the load balancer's security group so the LB's
+	// self-referencing ingress rule authorizes health checks and traffic.
+	if strings.TrimSpace(sgID) != "" {
+		if subnets, derr := b.discoverSubnets(ctx, cfg); derr == nil && len(subnets) > 0 {
+			updateIn.NetworkConfiguration = &ecstypes.NetworkConfiguration{
+				AwsvpcConfiguration: &ecstypes.AwsVpcConfiguration{
+					Subnets:        subnets,
+					SecurityGroups: []string{sgID},
+					AssignPublicIp: ecstypes.AssignPublicIpEnabled,
+				},
+			}
+		}
+	}
+	_, err = client.UpdateService(ctx, updateIn)
+	return err
+}
+
 // --- ELBv2 (ALB/NLB) ---
 
 func (b *AWSBackend) UpsertLoadBalancer(ctx context.Context, lb LoadBalancer) (string, error) {
@@ -564,21 +824,148 @@ func (b *AWSBackend) UpsertLoadBalancer(ctx context.Context, lb LoadBalancer) (s
 		scheme = elbv2types.LoadBalancerSchemeEnumInternal
 	}
 
+	lbSubnets := lb.Subnets
+	if len(lbSubnets) == 0 {
+		discovered, derr := b.discoverSubnets(ctx, cfg)
+		if derr != nil {
+			return "", fmt.Errorf("discover subnets: %w", derr)
+		}
+		lbSubnets = discovered
+	}
+
+	if existing, ok, gerr := b.GetLoadBalancer(ctx, lb.Name); gerr != nil {
+		return "", gerr
+	} else if ok {
+		if len(lb.SecurityGroups) > 0 {
+			if _, serr := client.SetSecurityGroups(ctx, &elasticloadbalancingv2.SetSecurityGroupsInput{
+				LoadBalancerArn: awsroot.String(existing.ARN),
+				SecurityGroups:  lb.SecurityGroups,
+			}); serr != nil {
+				return "", fmt.Errorf("set load balancer security groups: %w", serr)
+			}
+		}
+		return existing.ARN, nil
+	}
+
 	out, err := client.CreateLoadBalancer(ctx, &elasticloadbalancingv2.CreateLoadBalancerInput{
-		Name:          awsroot.String(lb.Name),
-		Type:          lbType,
-		Scheme:        scheme,
-		Subnets:       lb.Subnets,
+		Name:           awsroot.String(lb.Name),
+		Type:           lbType,
+		Scheme:         scheme,
+		Subnets:        lbSubnets,
 		SecurityGroups: lb.SecurityGroups,
 		Tags:           toELBv2Tags(lb.Tags),
 	})
 	if err != nil {
+		if strings.Contains(err.Error(), "DuplicateLoadBalancerName") {
+			if existing, ok, gerr := b.GetLoadBalancer(ctx, lb.Name); gerr == nil && ok {
+				return existing.ARN, nil
+			}
+		}
 		return "", fmt.Errorf("create load balancer: %w", err)
 	}
 	if len(out.LoadBalancers) == 0 {
 		return "", fmt.Errorf("create load balancer: no load balancer returned")
 	}
 	return awsroot.ToString(out.LoadBalancers[0].LoadBalancerArn), nil
+}
+
+// EnsureLoadBalancerSecurityGroup creates (or reuses) a security group for a
+// load balancer, allowing inbound traffic on the listener ports plus
+// self-referencing traffic so the LB can reach targets that share the group.
+func (b *AWSBackend) EnsureLoadBalancerSecurityGroup(ctx context.Context, name, scheme string, ports []int) (string, error) {
+	if b.dry() {
+		return "sg-dry-run", nil
+	}
+	cfg, err := b.loadConfig(ctx, "")
+	if err != nil {
+		return "", err
+	}
+	client := ec2.NewFromConfig(cfg)
+
+	vpcID, err := b.discoverVPCID(ctx, cfg)
+	if err != nil {
+		return "", err
+	}
+
+	sgName := strings.TrimSpace(name)
+	if sgName == "" {
+		sgName = "guardian-lb"
+	}
+	describe := func() (string, bool) {
+		out, derr := client.DescribeSecurityGroups(ctx, &ec2.DescribeSecurityGroupsInput{
+			Filters: []ec2types.Filter{
+				{Name: awsroot.String("group-name"), Values: []string{sgName}},
+				{Name: awsroot.String("vpc-id"), Values: []string{vpcID}},
+			},
+		})
+		if derr != nil || len(out.SecurityGroups) == 0 {
+			return "", false
+		}
+		return awsroot.ToString(out.SecurityGroups[0].GroupId), true
+	}
+	if id, ok := describe(); ok {
+		return id, nil
+	}
+
+	created, err := client.CreateSecurityGroup(ctx, &ec2.CreateSecurityGroupInput{
+		GroupName:   awsroot.String(sgName),
+		Description: awsroot.String("Guardian managed load balancer"),
+		VpcId:       awsroot.String(vpcID),
+		TagSpecifications: []ec2types.TagSpecification{{
+			ResourceType: ec2types.ResourceTypeSecurityGroup,
+			Tags: []ec2types.Tag{
+				{Key: awsroot.String("guardian-managed"), Value: awsroot.String("true")},
+			},
+		}},
+	})
+	if err != nil {
+		if id, ok := describe(); ok {
+			return id, nil
+		}
+		return "", err
+	}
+	sgID := awsroot.ToString(created.GroupId)
+
+	cidr := "0.0.0.0/0"
+	if scheme == "internal" {
+		vpcs, verr := client.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{VpcIds: []string{vpcID}})
+		if verr == nil && len(vpcs.Vpcs) > 0 {
+			cidr = awsroot.ToString(vpcs.Vpcs[0].CidrBlock)
+		}
+	}
+	perms := []ec2types.IpPermission{}
+	seen := map[int]struct{}{}
+	for _, port := range ports {
+		if port <= 0 {
+			continue
+		}
+		if _, ok := seen[port]; ok {
+			continue
+		}
+		seen[port] = struct{}{}
+		perms = append(perms, ec2types.IpPermission{
+			IpProtocol: awsroot.String("tcp"),
+			FromPort:   awsroot.Int32(int32(port)),
+			ToPort:     awsroot.Int32(int32(port)),
+			IpRanges:   []ec2types.IpRange{{CidrIp: awsroot.String(cidr)}},
+		})
+	}
+	// Self-reference so the LB can forward to targets that reuse this group.
+	perms = append(perms, ec2types.IpPermission{
+		IpProtocol: awsroot.String("-1"),
+		UserIdGroupPairs: []ec2types.UserIdGroupPair{{
+			GroupId: awsroot.String(sgID),
+		}},
+	})
+	if len(perms) > 0 {
+		if _, aerr := client.AuthorizeSecurityGroupIngress(ctx, &ec2.AuthorizeSecurityGroupIngressInput{
+			GroupId:       awsroot.String(sgID),
+			IpPermissions: perms,
+		}); aerr != nil && !strings.Contains(aerr.Error(), "InvalidPermission.Duplicate") {
+			return "", aerr
+		}
+	}
+	return sgID, nil
 }
 
 func (b *AWSBackend) GetLoadBalancer(ctx context.Context, name string) (LoadBalancer, bool, error) {
@@ -620,7 +1007,7 @@ func (b *AWSBackend) GetLoadBalancer(ctx context.Context, name string) (LoadBala
 					continue
 				}
 				result.Tags = tagsFromELBv2(desc.Tags)
-				result.Hash = result.Tags["guardian.hash"]
+				result.Hash = result.Tags["guardian-hash"]
 			}
 		}
 	}
@@ -677,18 +1064,43 @@ func (b *AWSBackend) UpsertTargetGroup(ctx context.Context, tg TargetGroup) (str
 		healthPath = "/"
 	}
 
+	if existing, ok, gerr := b.GetTargetGroup(ctx, tg.Name); gerr != nil {
+		return "", gerr
+	} else if ok {
+		return existing.ARN, nil
+	}
+
+	vpcID := strings.TrimSpace(tg.VPCID)
+	if vpcID == "" {
+		discovered, verr := b.discoverVPCID(ctx, cfg)
+		if verr != nil {
+			return "", fmt.Errorf("discover VPC for target group: %w", verr)
+		}
+		vpcID = discovered
+	}
+
+	healthPort := tg.HealthPort
+	if healthPort == "" {
+		healthPort = "traffic-port"
+	}
+
 	out, err := client.CreateTargetGroup(ctx, &elasticloadbalancingv2.CreateTargetGroupInput{
-		Name:       awsroot.String(tg.Name),
-		Port:       awsroot.Int32(int32(tg.Port)),
-		Protocol:   proto,
-		VpcId:      awsroot.String(tg.VPCID),
-		TargetType: targetType,
+		Name:                awsroot.String(tg.Name),
+		Port:                awsroot.Int32(int32(tg.Port)),
+		Protocol:            proto,
+		VpcId:               awsroot.String(vpcID),
+		TargetType:          targetType,
 		HealthCheckPath:     awsroot.String(healthPath),
 		HealthCheckProtocol: toELBv2HealthProto(tg.HealthProto),
-		HealthCheckPort:     awsroot.String(tg.HealthPort),
-		Tags:                 toELBv2Tags(tg.Tags),
+		HealthCheckPort:     awsroot.String(healthPort),
+		Tags:                toELBv2Tags(tg.Tags),
 	})
 	if err != nil {
+		if strings.Contains(err.Error(), "DuplicateTargetGroupName") {
+			if existing, ok, gerr := b.GetTargetGroup(ctx, tg.Name); gerr == nil && ok {
+				return existing.ARN, nil
+			}
+		}
 		return "", fmt.Errorf("create target group: %w", err)
 	}
 	if len(out.TargetGroups) == 0 {
@@ -766,23 +1178,45 @@ func (b *AWSBackend) UpsertListener(ctx context.Context, listener Listener) (str
 		proto = elbv2types.ProtocolEnumTcp
 	}
 
+	defaultActions := []elbv2types.Action{
+		{
+			Type: elbv2types.ActionTypeEnumForward,
+			ForwardConfig: &elbv2types.ForwardActionConfig{
+				TargetGroups: []elbv2types.TargetGroupTuple{
+					{TargetGroupArn: awsroot.String(listener.DefaultActionARN)},
+				},
+			},
+		},
+	}
+
+	if existing, ok, gerr := b.GetListener(ctx, listener.LoadBalancerARN, listener.Port); gerr != nil {
+		return "", gerr
+	} else if ok {
+		_, uerr := client.ModifyListener(ctx, &elasticloadbalancingv2.ModifyListenerInput{
+			ListenerArn:    awsroot.String(existing.ARN),
+			Port:           awsroot.Int32(int32(listener.Port)),
+			Protocol:       proto,
+			DefaultActions: defaultActions,
+		})
+		if uerr != nil {
+			return "", fmt.Errorf("update listener: %w", uerr)
+		}
+		return existing.ARN, nil
+	}
+
 	out, err := client.CreateListener(ctx, &elasticloadbalancingv2.CreateListenerInput{
 		LoadBalancerArn: awsroot.String(listener.LoadBalancerARN),
 		Port:            awsroot.Int32(int32(listener.Port)),
 		Protocol:        proto,
-		DefaultActions: []elbv2types.Action{
-			{
-				Type: elbv2types.ActionTypeEnumForward,
-				ForwardConfig: &elbv2types.ForwardActionConfig{
-					TargetGroups: []elbv2types.TargetGroupTuple{
-						{TargetGroupArn: awsroot.String(listener.DefaultActionARN)},
-					},
-				},
-			},
-		},
-		Tags: toELBv2Tags(listener.Tags),
+		DefaultActions:  defaultActions,
+		Tags:            toELBv2Tags(listener.Tags),
 	})
 	if err != nil {
+		if strings.Contains(err.Error(), "DuplicateListener") {
+			if existing, ok, gerr := b.GetListener(ctx, listener.LoadBalancerARN, listener.Port); gerr == nil && ok {
+				return existing.ARN, nil
+			}
+		}
 		return "", fmt.Errorf("create listener: %w", err)
 	}
 	if len(out.Listeners) == 0 {
@@ -810,10 +1244,10 @@ func (b *AWSBackend) GetListener(ctx context.Context, lbARN string, port int) (L
 	for _, l := range out.Listeners {
 		if int(awsroot.ToInt32(l.Port)) == port {
 			return Listener{
-				ARN:              awsroot.ToString(l.ListenerArn),
-				LoadBalancerARN:  awsroot.ToString(l.LoadBalancerArn),
-				Port:             int(awsroot.ToInt32(l.Port)),
-				Protocol:         string(l.Protocol),
+				ARN:             awsroot.ToString(l.ListenerArn),
+				LoadBalancerARN: awsroot.ToString(l.LoadBalancerArn),
+				Port:            int(awsroot.ToInt32(l.Port)),
+				Protocol:        string(l.Protocol),
 			}, true, nil
 		}
 	}
@@ -936,7 +1370,7 @@ func (b *AWSBackend) GetBucket(ctx context.Context, name string) (BucketSpec, bo
 			tags[awsroot.ToString(tag.Key)] = awsroot.ToString(tag.Value)
 		}
 		result.Tags = tags
-		result.Hash = tags["guardian.hash"]
+		result.Hash = tags["guardian-hash"]
 	}
 	if versioningOut, versioningErr := client.GetBucketVersioning(ctx, &s3.GetBucketVersioningInput{
 		Bucket: awsroot.String(name),
@@ -981,7 +1415,7 @@ func (b *AWSBackend) UpsertLogGroup(ctx context.Context, group LogGroup) error {
 
 	_, err = client.CreateLogGroup(ctx, &cloudwatchlogs.CreateLogGroupInput{
 		LogGroupName: awsroot.String(group.Name),
-		Tags:          toCWLTags(group.Tags),
+		Tags:         toCWLTags(group.Tags),
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") {

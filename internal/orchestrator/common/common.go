@@ -30,14 +30,12 @@ func ReadJSON(ctx context.Context, store guardianapi.ReadStore, logicalPath stri
 	return nil
 }
 
+// LoadPartitionState returns the partition state with status and metrics
+// derived from the authoritative per-intent state files. The persisted
+// PartitionState file is only a base (config revision, compiled intent set,
+// errors); it is no longer refreshed on every intent write, so deriving on read
+// keeps it fresh without O(intents) write amplification.
 func LoadPartitionState(ctx context.Context, store guardianapi.ReadStore, partition string) (*statedomain.PartitionState, error) {
-	state, err := loadPartitionStateFile(ctx, store, partition)
-	if err == nil {
-		return state, nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
 	runtime, err := LoadPartitionRuntime(ctx, store, partition)
 	if err != nil {
 		return nil, err
@@ -171,6 +169,20 @@ func HasActiveTask(ctx context.Context, store guardianapi.ReadStore, intentState
 		return true, nil
 	}
 	return false, nil
+}
+
+// LoadQueueTask reads the queued task file for a partition's last queued task.
+// It is used to inspect what spec an in-flight task actually carries, which can
+// differ from the intent state when a newer manifest was pushed mid-flight.
+func LoadQueueTask(ctx context.Context, store guardianapi.ReadStore, pusher, taskID string) (*taskdomain.Task, error) {
+	if pusher == "" || taskID == "" {
+		return nil, os.ErrNotExist
+	}
+	var task taskdomain.Task
+	if err := ReadJSON(ctx, store, paths.QueueTask(pusher, taskID), &task); err != nil {
+		return nil, err
+	}
+	return &task, nil
 }
 
 func pathExists(ctx context.Context, store guardianapi.ReadStore, logicalPath string) (bool, error) {

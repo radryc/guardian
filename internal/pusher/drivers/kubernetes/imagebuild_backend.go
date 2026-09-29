@@ -270,10 +270,6 @@ func (b *ImageBuildBackend) applyManifest(obj map[string]any) error {
 	return nil
 }
 
-func (b *ImageBuildBackend) waitForJob(ctx context.Context, namespace, jobName string) error {
-	return b.waitForJobStreaming(ctx, namespace, jobName, jobName, nil)
-}
-
 func (b *ImageBuildBackend) waitForJobStreaming(ctx context.Context, namespace, jobName, imageRef string, logCh chan<- BuildLogEntry) error {
 	deadline := time.Now().Add(30 * time.Minute)
 	logTicker := time.NewTicker(30 * time.Second)
@@ -700,4 +696,3 @@ func (b *ImageBuildBackend) buildPushJobManifest(jobName, namespace, skopeoImage
 		},
 	}
 }
-

@@ -35,10 +35,6 @@ func PartitionState(partition string) string {
 
 func StateRoot(partition string) string { return normalize(PartitionRoot(partition), ".state") }
 
-func PartitionRuntime(partition string) string {
-	return normalize(StateRoot(partition), "runtime.json")
-}
-
 func StateIntentsDir(partition string) string { return normalize(StateRoot(partition), "intents") }
 
 func IntentState(partition, intent string) string {
@@ -49,12 +45,6 @@ func StateAssetsDir(partition string) string { return normalize(StateRoot(partit
 
 func AssetState(partition, intent, asset string) string {
 	return normalize(StateAssetsDir(partition), intent+"--"+asset+".json")
-}
-
-func StateTasksDir(partition string) string { return normalize(StateRoot(partition), "tasks") }
-
-func TaskState(partition, taskID string) string {
-	return normalize(StateTasksDir(partition), taskID+".json")
 }
 
 func StateEventsDir(partition string) string { return normalize(StateRoot(partition), "events") }

@@ -152,13 +152,18 @@ func (d *Dispatcher) WriteIntentState(ctx context.Context, s *statedomain.Intent
 	if err != nil {
 		return err
 	}
-	runtime, err := d.partitionRuntime(ctx, s.Partition)
+	if _, err := d.writeFile(ctx, paths.IntentState(s.Partition, s.Intent), content, "write intent state", "write_intent_state"); err != nil {
+		return err
+	}
+	delta, err := d.applyIntentDelta(ctx, s.Partition, s.Intent, s, false)
 	if err != nil {
 		return err
 	}
-	runtime.Intents[s.Intent] = statedomain.CloneIntentState(s)
-	runtime.UpdatedAt = nowUTC()
-	return d.writeStateAndRuntime(ctx, paths.IntentState(s.Partition, s.Intent), content, runtime, "write intent state", "write_intent_state")
+	adjustStatusGauges(delta)
+	if delta.previousStatus != delta.newStatus {
+		d.emitPartitionStatusEvent(ctx, delta.runtime, delta.previousStatus)
+	}
+	return nil
 }
 
 func (d *Dispatcher) WritePartitionState(ctx context.Context, s *statedomain.PartitionState) error {
@@ -169,57 +174,157 @@ func (d *Dispatcher) WritePartitionState(ctx context.Context, s *statedomain.Par
 	if err != nil {
 		return err
 	}
+	if _, err := d.writeFile(ctx, paths.PartitionState(s.Partition), content, "write partition state", "write_partition_state"); err != nil {
+		return err
+	}
 	runtime, err := d.partitionRuntime(ctx, s.Partition)
 	if err != nil {
 		return err
 	}
 	runtime.PartitionState = statedomain.ClonePartitionState(s)
 	runtime.UpdatedAt = nowUTC()
-	return d.writeStateAndRuntime(ctx, paths.PartitionState(s.Partition), content, runtime, "write partition state", "write_partition_state")
+	d.commitRuntime(ctx, runtime)
+	return nil
 }
 
 func (d *Dispatcher) DeleteIntentState(ctx context.Context, partition, intent, correlationID, reason string) error {
 	unlock := d.lockPartitionWrites(partition)
 	defer unlock()
 
-	runtime, loadErr := d.partitionRuntime(ctx, partition)
-	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
-		return loadErr
-	}
-	if runtime != nil {
-		delete(runtime.Intents, intent)
-		runtime.UpdatedAt = nowUTC()
-		statedomain.NormalizePartitionRuntime(runtime)
-	}
 	if correlationID == "" {
 		correlationID = revisions.NewCorrelationID()
 	}
-	partitionStatePath := paths.PartitionState(partition)
-	runtimePath := paths.PartitionRuntime(partition)
-	_, err := d.store.DeletePaths(ctx, guardianapi.DeleteBatch{
-		Deletes: []guardianapi.PathDelete{{LogicalPath: paths.IntentState(partition, intent)}, {LogicalPath: partitionStatePath}, {LogicalPath: runtimePath}},
+	intentPath := paths.IntentState(partition, intent)
+	if _, err := d.store.DeletePaths(ctx, guardianapi.DeleteBatch{
+		Deletes: []guardianapi.PathDelete{{LogicalPath: intentPath}},
 		Context: guardianapi.MutationContext{PrincipalID: d.principalID, Reason: reason, CorrelationID: correlationID},
-	})
-	if err == nil {
-		guardianDeletesTotal.WithLabelValues("delete_intent_state").Inc()
-		guardianDeletesTotal.WithLabelValues("delete_partition_state").Inc()
-		guardianDeletesTotal.WithLabelValues("delete_partition_runtime").Inc()
-		// Evict cached hash so a future write to this path is not skipped.
-		logicalPath := paths.IntentState(partition, intent)
-		d.lastHashMu.Lock()
-		delete(d.lastWriteHash, logicalPath)
-		delete(d.lastWriteHash, partitionStatePath)
-		delete(d.lastWriteHash, runtimePath)
-		d.lastHashMu.Unlock()
-		previousStatus := d.cachedPartitionStatus(partition)
-		if runtime != nil {
-			d.storePartitionRuntime(runtime)
-			d.emitPartitionStatusEvent(ctx, runtime, previousStatus)
-		} else {
-			d.evictPartitionRuntime(partition)
+	}); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	guardianDeletesTotal.WithLabelValues("delete_intent_state").Inc()
+	// Evict cached hash so a future write to this path is not skipped.
+	d.lastHashMu.Lock()
+	delete(d.lastWriteHash, intentPath)
+	d.lastHashMu.Unlock()
+
+	delta, err := d.applyIntentDelta(ctx, partition, intent, nil, true)
+	if err != nil {
+		return err
+	}
+	adjustStatusGauges(delta)
+	if delta.previousStatus != delta.newStatus {
+		d.emitPartitionStatusEvent(ctx, delta.runtime, delta.previousStatus)
+	}
+	return nil
+}
+
+// intentDelta describes the result of an in-memory intent update so callers can
+// adjust gauges and emit a status event without re-reading the aggregate.
+type intentDelta struct {
+	previousStatus string
+	newStatus      string
+	runtime        *statedomain.PartitionRuntime
+	before         *statedomain.IntentState
+	after          *statedomain.IntentState
+	selected       bool
+}
+
+// applyIntentDelta updates one intent in the cached partition aggregate in O(1).
+// It mutates the cached runtime in place under runtimeMu; readers clone under
+// RLock, so this does not race. Callers must hold the per-partition write lock.
+func (d *Dispatcher) applyIntentDelta(ctx context.Context, partition, intent string, after *statedomain.IntentState, removed bool) (intentDelta, error) {
+	runtime, err := d.ensureRuntime(ctx, partition)
+	if err != nil {
+		return intentDelta{}, err
+	}
+	d.runtimeMu.Lock()
+	defer d.runtimeMu.Unlock()
+
+	base := runtime.PartitionState
+	if base == nil {
+		base = &statedomain.PartitionState{
+			APIVersion: "guardian/v1alpha1",
+			Kind:       "PartitionState",
+			Partition:  partition,
+		}
+		runtime.PartitionState = base
+	}
+	previousStatus := base.Status
+	before := runtime.Intents[intent]
+	selected := statedomain.PartitionSelectsIntent(base, intent)
+	statedomain.AdjustIntentMetrics(&base.Metrics, base, intent, before, after)
+	if removed {
+		delete(runtime.Intents, intent)
+	} else if after != nil {
+		runtime.Intents[intent] = statedomain.CloneIntentState(after)
+	}
+	runtime.UpdatedAt = nowUTC()
+	status, display, summary := statedomain.DerivePartitionPresentation(base, base.Metrics)
+	base.Status, base.DisplayStatus, base.Summary = status, display, summary
+	return intentDelta{
+		previousStatus: previousStatus,
+		newStatus:      status,
+		runtime:        runtime,
+		before:         before,
+		after:          after,
+		selected:       selected,
+	}, nil
+}
+
+// ensureRuntime returns the cached partition runtime, hydrating from the store on
+// miss. The returned pointer is the live cache entry; callers must hold the
+// partition write lock and runtimeMu before mutating it.
+func (d *Dispatcher) ensureRuntime(ctx context.Context, partition string) (*statedomain.PartitionRuntime, error) {
+	d.runtimeMu.RLock()
+	runtime := d.runtimeCache[partition]
+	d.runtimeMu.RUnlock()
+	if runtime != nil {
+		return runtime, nil
+	}
+	loaded, err := common.LoadPartitionRuntime(ctx, d.store, partition)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		loaded = statedomain.NewPartitionRuntime(partition)
+	}
+	// storePartitionRuntime seeds the cache and initialises the status gauges for
+	// the loaded intents so subsequent O(1) incremental updates stay accurate.
+	d.storePartitionRuntime(loaded)
+	d.runtimeMu.RLock()
+	runtime = d.runtimeCache[partition]
+	d.runtimeMu.RUnlock()
+	return runtime, nil
+}
+
+// adjustStatusGauges applies the O(1) prometheus delta for one intent update.
+func adjustStatusGauges(delta intentDelta) {
+	if delta.previousStatus != delta.newStatus {
+		if delta.previousStatus != "" {
+			guardianPartitionStatusCurrent.WithLabelValues(delta.previousStatus).Dec()
+		}
+		if delta.newStatus != "" {
+			guardianPartitionStatusCurrent.WithLabelValues(delta.newStatus).Inc()
 		}
 	}
-	return err
+	if !delta.selected {
+		return
+	}
+	statusOf := func(state *statedomain.IntentState) string {
+		if state == nil {
+			return ""
+		}
+		if state.Status == "" {
+			return string(statedomain.StatusReady)
+		}
+		return string(state.Status)
+	}
+	if before := statusOf(delta.before); before != "" {
+		guardianIntentStatusCurrent.WithLabelValues(before).Dec()
+	}
+	if after := statusOf(delta.after); after != "" {
+		guardianIntentStatusCurrent.WithLabelValues(after).Inc()
+	}
 }
 
 func (d *Dispatcher) WriteEvent(ctx context.Context, event *historydomain.EventRecord) error {
@@ -346,74 +451,36 @@ func (d *Dispatcher) lockPartitionWrites(partition string) func() {
 	return lock.Unlock
 }
 
-func (d *Dispatcher) writeStateAndRuntime(ctx context.Context, logicalPath string, content []byte, runtime *statedomain.PartitionRuntime, reason, operation string) error {
-	runtime = statedomain.NormalizePartitionRuntime(runtime)
-	partitionStatePath := paths.PartitionState(runtime.Partition)
-	previousStatus := d.cachedPartitionStatus(runtime.Partition)
-	var partitionStateContent []byte
-	if runtime.PartitionState != nil {
-		var err error
-		partitionStateContent, err = json.MarshalIndent(runtime.PartitionState, "", "  ")
-		if err != nil {
-			return err
-		}
-	}
-	if logicalPath == partitionStatePath && len(partitionStateContent) > 0 {
-		content = partitionStateContent
-	}
-	runtimeContent, err := json.MarshalIndent(runtime, "", "  ")
-	if err != nil {
-		return err
-	}
-	runtimePath := paths.PartitionRuntime(runtime.Partition)
-	writes := make([]guardianapi.PathWrite, 0, 3)
+// writeFile persists content to logicalPath, skipping the write when the bytes
+// are identical to the last value written through this dispatcher.
+func (d *Dispatcher) writeFile(ctx context.Context, logicalPath string, content []byte, reason, operation string) (bool, error) {
 	if d.contentUnchanged(logicalPath, content) {
 		guardianSkippedWritesTotal.WithLabelValues(operation).Inc()
-	} else {
-		writes = append(writes, guardianapi.PathWrite{LogicalPath: logicalPath, Content: content})
-	}
-	if len(partitionStateContent) > 0 && logicalPath != partitionStatePath {
-		if d.contentUnchanged(partitionStatePath, partitionStateContent) {
-			guardianSkippedWritesTotal.WithLabelValues("write_partition_state").Inc()
-		} else {
-			writes = append(writes, guardianapi.PathWrite{LogicalPath: partitionStatePath, Content: partitionStateContent})
-		}
-	}
-	if d.contentUnchanged(runtimePath, runtimeContent) {
-		guardianSkippedWritesTotal.WithLabelValues("write_partition_runtime").Inc()
-	} else {
-		writes = append(writes, guardianapi.PathWrite{LogicalPath: runtimePath, Content: runtimeContent})
-	}
-	if len(writes) == 0 {
-		d.storePartitionRuntime(runtime)
-		d.emitPartitionStatusEvent(ctx, runtime, previousStatus)
-		return nil
+		return false, nil
 	}
 	if _, err := d.store.UpsertFiles(ctx, guardianapi.MutationBatch{
-		Writes:  writes,
+		Writes:  []guardianapi.PathWrite{{LogicalPath: logicalPath, Content: content}},
 		Context: guardianapi.MutationContext{PrincipalID: d.principalID, Reason: reason},
 	}); err != nil {
-		return err
+		return false, err
 	}
-	for _, write := range writes {
-		d.recordHash(write.LogicalPath, write.Content)
-		switch write.LogicalPath {
-		case logicalPath:
-			guardianWritesTotal.WithLabelValues(operation).Inc()
-			guardianWriteBytesTotal.WithLabelValues(operation).Add(float64(len(write.Content)))
-			d.publish(logicalPath, write.Content, contentTypeJSON)
-		case partitionStatePath:
-			guardianWritesTotal.WithLabelValues("write_partition_state").Inc()
-			guardianWriteBytesTotal.WithLabelValues("write_partition_state").Add(float64(len(write.Content)))
-			d.publish(partitionStatePath, write.Content, contentTypeJSON)
-		case runtimePath:
-			guardianWritesTotal.WithLabelValues("write_partition_runtime").Inc()
-			guardianWriteBytesTotal.WithLabelValues("write_partition_runtime").Add(float64(len(write.Content)))
-		}
-	}
-	d.storePartitionRuntime(runtime)
-	d.emitPartitionStatusEvent(ctx, runtime, previousStatus)
-	return nil
+	d.recordHash(logicalPath, content)
+	guardianWritesTotal.WithLabelValues(operation).Inc()
+	guardianWriteBytesTotal.WithLabelValues(operation).Add(float64(len(content)))
+	d.publish(logicalPath, content, contentTypeJSON)
+	return true, nil
+}
+
+// commitRuntime refreshes the in-memory partition runtime aggregate and emits a
+// partition status event when it changes. The aggregate is not persisted on the
+// write path: per-intent state files are the durable source of truth, so an
+// intent transition no longer rewrites the whole partition (which was
+// O(intents) per change and O(intents^2) per reconcile cycle).
+func (d *Dispatcher) commitRuntime(ctx context.Context, runtime *statedomain.PartitionRuntime) {
+	previousStatus := d.cachedPartitionStatus(runtime.Partition)
+	normalized := statedomain.NormalizePartitionRuntime(runtime)
+	d.storePartitionRuntime(normalized)
+	d.emitPartitionStatusEvent(ctx, normalized, previousStatus)
 }
 
 func (d *Dispatcher) cachedPartitionStatus(partition string) string {

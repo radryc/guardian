@@ -781,8 +781,8 @@ func createMinioBucket(ctx context.Context, storageNamespace string, dryRun bool
 	}
 
 	// Pre-load the mc image into kind so the ephemeral pod can use it.
-	// Use quay.io because Docker Hub requires authentication for minio/mc.
-	mcImage := "quay.io/minio/mc:latest"
+	// Use bitnamilegacy because Docker Hub/quay require authentication for minio/mc.
+	mcImage := "docker.io/bitnamilegacy/minio-client:latest"
 	ctxName, _ := bootstrap.RunCapture(ctx, "kubectl", "config", "current-context")
 	if strings.HasPrefix(ctxName, "kind-") && !dryRun {
 		fmt.Fprintf(os.Stderr, "  loading %s into kind...\n", mcImage)
@@ -959,7 +959,7 @@ func createKindCluster(ctx context.Context, dryRun bool, workers int) error {
 	}
 
 	// Write kind config as YAML
-	config := fmt.Sprintf(`kind: Cluster
+	config := `kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 containerdConfigPatches:
 - |-
@@ -1029,15 +1029,15 @@ nodes:
     extraMounts:
       - hostPath: /var/run/docker.sock
         containerPath: /var/run/docker.sock
-`)
+`
 
 	// Add additional workers
 	for i := 1; i < workers; i++ {
-		config += fmt.Sprintf(`  - role: worker
+		config += `  - role: worker
     extraMounts:
       - hostPath: /var/run/docker.sock
         containerPath: /var/run/docker.sock
-`)
+`
 	}
 
 	tmpFile := filepath.Join(os.TempDir(), "kind-config.yaml")

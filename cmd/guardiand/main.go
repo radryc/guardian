@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"net"
@@ -45,6 +46,10 @@ const (
 	// idleResultScanInterval is used when no active tasks are observed.
 	// It keeps costs low during quiet periods.
 	idleResultScanInterval = 2 * time.Minute
+	// resultProcessorWorkers bounds how many task results are applied at once.
+	// Results are routed to a worker by partition hash so all results for a
+	// single partition are still applied in order.
+	resultProcessorWorkers = 8
 )
 
 func main() {
@@ -379,6 +384,8 @@ func main() {
 		pushers := pusherNames(cfg.Pushers)
 		watchPrefixes := resultWatchPrefixes(pushers)
 		scanReason := "startup"
+		pool := newResultWorkerPool(ctx, processor, resultProcessorWorkers)
+		defer pool.close()
 		for {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -452,8 +459,9 @@ func main() {
 						log.Printf("read result %s: %v", event.LogicalPath, err)
 						continue
 					}
-					if err := processor.ProcessResult(ctx, &result); err != nil {
-						log.Printf("process result %s: %v", event.LogicalPath, err)
+					if !pool.submit(ctx, result) {
+						scanTicker.Stop()
+						return ctx.Err()
 					}
 					// A result just arrived via watch: tasks are clearly active.
 					// Arm fast scan so any sibling results missed by the watcher
@@ -528,35 +536,13 @@ func resultWatchPrefixes(pushers []string) []string {
 	return prefixes
 }
 
+// processLiveResultFiles is the safety-net scan for task results that the
+// watcher may have missed. It is now O(results) instead of O(partitions x
+// intents): a result is "live" when the intent it names still tracks the result
+// task, which is an O(1) intent-state lookup per result. Results no longer
+// require walking every partition runtime in the system each tick.
 func processLiveResultFiles(ctx context.Context, store guardianapi.Store, processor *results.Processor, pushers []string, reason string) (int, error) {
-	liveTaskIDs := make(map[string]bool)
-	partEntries, err := store.ListDir(ctx, paths.PartitionsRoot())
-	if err != nil {
-		return 0, err
-	}
-	for _, pe := range partEntries {
-		if !pe.IsDir {
-			continue
-		}
-		runtime, loadErr := common.LoadPartitionRuntime(ctx, store, pe.Name)
-		if loadErr != nil {
-			continue
-		}
-		for intentName, state := range runtime.Intents {
-			if state == nil || state.LastTaskID == "" {
-				continue
-			}
-			activeTask, activeErr := common.HasActiveTask(ctx, store, state)
-			if activeErr != nil {
-				log.Printf("result-processor: %s scan active-task check %s/%s: %v", reason, pe.Name, intentName, activeErr)
-				continue
-			}
-			if activeTask {
-				liveTaskIDs[state.LastTaskID] = true
-			}
-		}
-	}
-	log.Printf("result-processor: %s scan covering %d live task IDs", reason, len(liveTaskIDs))
+	live := make([]taskdomain.TaskResult, 0, 8)
 	for _, pn := range pushers {
 		entries, scanErr := store.ListDir(ctx, paths.QueueResultsDir(pn))
 		if scanErr != nil {
@@ -568,36 +554,148 @@ func processLiveResultFiles(ctx context.Context, store guardianapi.Store, proces
 				continue
 			}
 			taskID := strings.TrimSuffix(entry.Name, ".json")
-			if !liveTaskIDs[taskID] {
-				taskPath := paths.QueueTask(pn, taskID)
-				if _, statErr := store.Stat(ctx, taskPath); os.IsNotExist(statErr) {
-					resultPath := paths.QueueResult(pn, taskID)
-					if _, delErr := store.DeletePaths(ctx, guardianapi.DeleteBatch{
-						Deletes: []guardianapi.PathDelete{{LogicalPath: resultPath}},
-						Context: guardianapi.MutationContext{
-							PrincipalID:   "guardiand",
-							Reason:        "cleanup stale result file",
-							CorrelationID: taskID,
-						},
-					}); delErr != nil && !os.IsNotExist(delErr) {
-						log.Printf("result-processor: %s cleanup stale result %s: %v", reason, resultPath, delErr)
-					}
-				}
-				continue
-			}
 			resultPath := paths.QueueResult(pn, taskID)
 			var result taskdomain.TaskResult
 			if err := readJSON(ctx, store, resultPath, &result); err != nil {
 				log.Printf("result-processor: %s scan read %s: %v", reason, resultPath, err)
 				continue
 			}
-			if err := processor.ProcessResult(ctx, &result); err != nil {
-				log.Printf("result-processor: %s scan process %s: %v", reason, resultPath, err)
+			if liveResultIntent(ctx, store, &result) {
+				live = append(live, result)
+				continue
+			}
+			// Not tracked by its intent. If the task file is gone this is an
+			// orphan from an interrupted run; otherwise leave it for a later scan
+			// in case the pusher is still mid-flight.
+			if _, statErr := store.Stat(ctx, paths.QueueTask(pn, taskID)); os.IsNotExist(statErr) {
+				if _, delErr := store.DeletePaths(ctx, guardianapi.DeleteBatch{
+					Deletes: []guardianapi.PathDelete{{LogicalPath: resultPath}},
+					Context: guardianapi.MutationContext{
+						PrincipalID:   "guardiand",
+						Reason:        "cleanup stale result file",
+						CorrelationID: taskID,
+					},
+				}); delErr != nil && !os.IsNotExist(delErr) {
+					log.Printf("result-processor: %s cleanup stale result %s: %v", reason, resultPath, delErr)
+				}
 			}
 		}
 	}
-	log.Printf("result-processor: %s scan complete", reason)
-	return len(liveTaskIDs), nil
+	processResultsParallel(ctx, processor, live, resultProcessorWorkers)
+	log.Printf("result-processor: %s scan complete (%d result(s) processed)", reason, len(live))
+	return len(live), nil
+}
+
+// liveResultIntent reports whether the intent named by a result still tracks the
+// result's task. This mirrors the old HasActiveTask-based "live task" set but
+// without materialising every partition's runtime.
+func liveResultIntent(ctx context.Context, store guardianapi.Store, result *taskdomain.TaskResult) bool {
+	if result.Partition == "" || result.Intent == "" || result.TaskID == "" {
+		return false
+	}
+	state, err := common.LoadIntentState(ctx, store, result.Partition, result.Intent)
+	if err != nil || state == nil {
+		return false
+	}
+	if state.LastTaskID != result.TaskID {
+		return false
+	}
+	active, err := common.HasActiveTask(ctx, store, state)
+	if err != nil {
+		return false
+	}
+	return active
+}
+
+// resultWorkerPool applies task results concurrently while preserving per-
+// partition ordering: every result for a partition maps to the same worker.
+type resultWorkerPool struct {
+	processor *results.Processor
+	queues    []chan taskdomain.TaskResult
+	wg        sync.WaitGroup
+}
+
+func newResultWorkerPool(ctx context.Context, processor *results.Processor, workers int) *resultWorkerPool {
+	if workers < 1 {
+		workers = 1
+	}
+	pool := &resultWorkerPool{processor: processor, queues: make([]chan taskdomain.TaskResult, workers)}
+	for i := range pool.queues {
+		queue := make(chan taskdomain.TaskResult, 64)
+		pool.queues[i] = queue
+		pool.wg.Add(1)
+		go func() {
+			defer pool.wg.Done()
+			for result := range queue {
+				if err := processor.ProcessResult(ctx, &result); err != nil {
+					log.Printf("result-processor: process result %s: %v", result.TaskID, err)
+				}
+			}
+		}()
+	}
+	return pool
+}
+
+func (p *resultWorkerPool) submit(ctx context.Context, result taskdomain.TaskResult) bool {
+	select {
+	case p.queues[partitionWorkerIndex(result.Partition, len(p.queues))] <- result:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (p *resultWorkerPool) close() {
+	for _, queue := range p.queues {
+		close(queue)
+	}
+	p.wg.Wait()
+}
+
+// processResultsParallel applies a batch of results with partition-affinity
+// concurrency and waits for completion.
+func processResultsParallel(ctx context.Context, processor *results.Processor, batch []taskdomain.TaskResult, workers int) {
+	if len(batch) == 0 {
+		return
+	}
+	if workers > len(batch) {
+		workers = len(batch)
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	queues := make([]chan taskdomain.TaskResult, workers)
+	for i := range queues {
+		queues[i] = make(chan taskdomain.TaskResult, len(batch))
+	}
+	var wg sync.WaitGroup
+	for i := range queues {
+		wg.Add(1)
+		go func(queue chan taskdomain.TaskResult) {
+			defer wg.Done()
+			for result := range queue {
+				if err := processor.ProcessResult(ctx, &result); err != nil {
+					log.Printf("result-processor: process result %s: %v", result.TaskID, err)
+				}
+			}
+		}(queues[i])
+	}
+	for _, result := range batch {
+		queues[partitionWorkerIndex(result.Partition, workers)] <- result
+	}
+	for _, queue := range queues {
+		close(queue)
+	}
+	wg.Wait()
+}
+
+func partitionWorkerIndex(partition string, workers int) int {
+	if workers <= 1 {
+		return 0
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(partition))
+	return int(h.Sum32() % uint32(workers))
 }
 
 func resolveHTTPBaseURL(explicit, listen string) string {

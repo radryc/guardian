@@ -35,6 +35,7 @@ let selectedScanID = "";
 let scanDetail: any = null;
 let bundleResponse: ScanBundleResponse | null = null;
 let selectedIntents: Record<string, boolean> = {};
+let selectedStacks: Record<string, boolean> = {};
 let pollTimer: number | undefined;
 let panelActive = false;
 let busy = false;
@@ -62,6 +63,16 @@ export function initScanPanel(errorHandler: (error: any) => void): void {
     const reconcile = target.dataset.scanSave === "reconcile";
     saveBundle(reconcile).catch(onError);
   });
+  document.getElementById("scanStackSelect")?.addEventListener("change", (event) => {
+    const target = event.target as HTMLElement;
+    if (!(target instanceof HTMLInputElement)) return;
+    const name = target.dataset.scanStack;
+    if (!name) return;
+    selectedStacks[name] = target.checked;
+    renderStackSelect();
+  });
+  document.getElementById("scanStackAll")?.addEventListener("click", () => setAllStacks(true));
+  document.getElementById("scanStackNone")?.addEventListener("click", () => setAllStacks(false));
 }
 
 export function renderScanPanel(): void {
@@ -209,6 +220,7 @@ async function selectScan(scanID: string): Promise<void> {
   selectedScanID = scanID;
   bundleResponse = null;
   selectedIntents = {};
+  selectedStacks = {};
   await refreshSelectedDetail();
   renderScans();
 }
@@ -262,6 +274,71 @@ function renderScanDetail(): void {
   renderUnmappedList();
   renderInventoryList();
   renderErrorsList();
+  renderStackSelect();
+}
+
+function importableCountsByStack(): Record<string, number> {
+  const counts: Record<string, number> = {};
+  const add = (resources: any[]) => {
+    for (const resource of resources ?? []) {
+      if (resource?.managed?.managed) continue;
+      const name = String(resource?.stack ?? "").trim();
+      if (!name) continue;
+      counts[name] = (counts[name] ?? 0) + 1;
+    }
+  };
+  add(scanDetail?.buckets);
+  add(scanDetail?.fileSystems);
+  add(scanDetail?.parameters);
+  add(scanDetail?.secrets);
+  add(scanDetail?.services);
+  add(scanDetail?.loadBalancers);
+  return counts;
+}
+
+function renderStackSelect(): void {
+  const container = document.getElementById("scanStackSelect");
+  if (!container) return;
+  const stacks = [...(scanDetail?.stacks ?? [])].sort((a: any, b: any) => String(a?.name ?? "").localeCompare(String(b?.name ?? "")));
+  const countEl = document.getElementById("scanStackCount");
+  if (stacks.length === 0) {
+    container.innerHTML = `<div class="text-[12px] text-[#566778] px-1">No CloudFormation stacks discovered in this scan.</div>`;
+    if (countEl) countEl.textContent = "";
+    return;
+  }
+  const counts = importableCountsByStack();
+  const selectable = stacks.filter((stack: any) => !(stack?.managed?.managed ?? false));
+  let selected = 0;
+  container.innerHTML = stacks.map((stack: any) => {
+    const name = String(stack?.name ?? "");
+    const managed = stack?.managed?.managed ?? false;
+    const checked = !managed && (selectedStacks[name] ?? false);
+    if (checked) selected++;
+    const importable = counts[name] ?? 0;
+    const classes = checked
+      ? "border-[#00ADE4]/50 bg-[#00ADE4]/[0.06]"
+      : "border-white/[0.07] bg-[#0D1220]";
+    return `
+      <label class="flex items-center gap-2.5 px-3 py-1.5 rounded border ${classes} ${managed ? "opacity-60" : "cursor-pointer"}">
+        <input type="checkbox" ${checked ? "checked" : ""} ${managed ? "disabled" : ""} data-scan-stack="${escapeAttr(name)}" class="accent-[#00ADE4]" />
+        <span class="min-w-0 flex-1 flex items-center gap-2">
+          <span class="text-[12px] text-[#E5ECF4] truncate">${escapeHtml(name)}</span>
+          ${stack?.region ? `<span class="badge badge-neutral">${escapeHtml(String(stack.region))}</span>` : ""}
+          <span class="text-[11px] text-[#566778] shrink-0">${importable} importable</span>
+          ${managed ? `<span class="badge badge-healthy ml-auto">managed</span>` : ""}
+        </span>
+      </label>`;
+  }).join("");
+  if (countEl) countEl.textContent = `${selected}/${selectable.length} selected — leave empty to import every stack`;
+}
+
+function setAllStacks(checked: boolean): void {
+  for (const stack of scanDetail?.stacks ?? []) {
+    const name = String(stack?.name ?? "");
+    if (!name || stack?.managed?.managed) continue;
+    selectedStacks[name] = checked;
+  }
+  renderStackSelect();
 }
 
 function renderManagedList(): void {
@@ -405,6 +482,10 @@ async function generateBundle(): Promise<void> {
   }
   const grouping = (document.getElementById("scanGrouping") as HTMLSelectElement | null)?.value ?? "stack";
   const params = new URLSearchParams({ partition, grouping });
+  const selectedStackNames = Object.keys(selectedStacks).filter((name) => selectedStacks[name]);
+  if (selectedStackNames.length > 0) {
+    params.set("stacks", selectedStackNames.join(","));
+  }
   const response: ScanBundleResponse = await fetchJSON(
     `/api/scans/${encodeURIComponent(selectedScanID)}/bundle?${params.toString()}`,
   );

@@ -800,8 +800,8 @@ func (s *Server) loadIntentActivity(ctx context.Context, partitionName, intentNa
 		resp.LastTaskID = istate.LastTaskID
 		resp.Timestamps = &istate.Timestamps
 		resp.Drift = istate.Drift
-		resp.ObservedHealth = cloneHealthObservation(istate.Health)
-		resp.ApplyReadiness = cloneApplyReadiness(istate.ApplyReadiness)
+		resp.ObservedHealth = statedomain.CloneHealthObservation(istate.Health)
+		resp.ApplyReadiness = statedomain.CloneApplyReadiness(istate.ApplyReadiness)
 		if istate.LastError != nil {
 			resp.LastError = *istate.LastError
 		}
@@ -948,8 +948,8 @@ func buildIntentDocument(ctx context.Context, manifest intentdomain.Intent, part
 		Manifest:          manifest,
 		ManifestVersionID: versionID,
 		State:             state,
-		ObservedHealth:    cloneHealthObservation(stateHealth(state)),
-		ApplyReadiness:    cloneApplyReadiness(stateApplyReadiness(state)),
+		ObservedHealth:    statedomain.CloneHealthObservation(stateHealth(state)),
+		ApplyReadiness:    statedomain.CloneApplyReadiness(stateApplyReadiness(state)),
 		Status:            status,
 		DisplayStatus:     displayStatus,
 		Health:            health,
@@ -1053,8 +1053,8 @@ func buildAssetDocument(ctx context.Context, partitionName, intentName string, s
 		FlowSummary:      flowSummary,
 		FlowSource:       flowSource,
 		FlowUpdatedAt:    flowUpdatedAt,
-		ObservedHealth:   cloneHealthObservation(stateAssetHealth(state, spec.Name)),
-		ApplyReadiness:   cloneApplyReadiness(stateAssetApplyReadiness(state, spec.Name)),
+		ObservedHealth:   statedomain.CloneHealthObservation(stateAssetHealth(state, spec.Name)),
+		ApplyReadiness:   statedomain.CloneApplyReadiness(stateAssetApplyReadiness(state, spec.Name)),
 		Status:           status,
 		DisplayStatus:    displayStatus,
 		Health:           health,
@@ -1835,22 +1835,6 @@ func stateApplyReadiness(state *statedomain.IntentState) *taskdomain.ApplyReadin
 		return nil
 	}
 	return state.ApplyReadiness
-}
-
-func cloneHealthObservation(in *taskdomain.HealthObservation) *taskdomain.HealthObservation {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	return &out
-}
-
-func cloneApplyReadiness(in *taskdomain.ApplyReadiness) *taskdomain.ApplyReadiness {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	return &out
 }
 
 func deriveAssetPresentation(state *statedomain.IntentState, assetName string, runtime intentTaskRuntime) (string, string, string, string) {

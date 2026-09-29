@@ -359,6 +359,8 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 		current.Locked = compiledIntent.Spec.Spec.Locked
 		current.PartitionMode = partitionSpec.Spec.Reconciliation.Mode
 		oldSpecHash := current.IntentSpecHash
+		inFlightPusher := current.TargetPusher
+		inFlightTaskID := current.LastTaskID
 		current.IntentVersionID = compiledIntent.IntentVersionID
 		current.IntentSpecHash = compiledIntent.IntentSpecHash
 		current.PartitionRevision = compiled.PartitionRevision
@@ -369,6 +371,15 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 		current.AssetVersions = copyStringMap(compiledIntent.AssetVersions)
 		if current.Outputs == nil {
 			current.Outputs = map[string]string{}
+		}
+		// Determine the spec hash the in-flight task actually carries. State may
+		// already have advanced to the compiled hash on an earlier pass while the
+		// running task still has the previous spec, which would otherwise hide the
+		// change and deadlock the rollout until an operator forces an apply.
+		if activeTask {
+			if inFlight, loadErr := common.LoadQueueTask(ctx, r.store, inFlightPusher, inFlightTaskID); loadErr == nil && inFlight != nil && inFlight.IntentSpecHash != "" {
+				oldSpecHash = inFlight.IntentSpecHash
+			}
 		}
 
 		if !common.DependenciesHealthy(current, depsSnapshot) {
@@ -728,7 +739,7 @@ func (r *Reconciler) partitionNames(ctx context.Context) ([]string, error) {
 			continue
 		}
 		if _, err := r.store.Stat(ctx, paths.PartitionConfig(entry.Name)); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
 			return nil, err

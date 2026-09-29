@@ -39,12 +39,12 @@ func (f *fakeScanner) Scan(_ context.Context, req *ScanRequest) *ScanResult {
 
 func newTestRunner(store guardianapi.Store, scanner Scanner) *ScanRunner {
 	return &ScanRunner{
-		PusherName: "aws-123456789012",
-		Account:    "123456789012",
-		WorkerID:   "test-worker",
+		PusherName:  "aws-123456789012",
+		Account:     "123456789012",
+		WorkerID:    "test-worker",
 		PrincipalID: "test-principal",
-		Store:      store,
-		NewScanner: func() Scanner { return scanner },
+		Store:       store,
+		NewScanner:  func() Scanner { return scanner },
 	}
 }
 
