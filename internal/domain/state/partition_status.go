@@ -27,6 +27,8 @@ var knownIntentStatuses = []string{
 	string(StatusDiffFailed),
 	string(StatusDrifted),
 	string(StatusDriftedLocked),
+	string(StatusObserved),
+	string(StatusObservedDrifted),
 	string(StatusApplying),
 	string(StatusHealthy),
 	string(StatusApplyFailed),
@@ -187,7 +189,7 @@ func intentHealthBucket(state *IntentState) string {
 		}
 	}
 	switch state.Status {
-	case StatusHealthy, StatusDestroyed:
+	case StatusHealthy, StatusDestroyed, StatusObserved:
 		return "healthy"
 	case StatusChecking, StatusDiffing, StatusApplying, StatusDestroying, StatusReady:
 		return "pending"
@@ -198,7 +200,7 @@ func intentHealthBucket(state *IntentState) string {
 		return "pending"
 	case StatusInvalid, StatusCheckFailed, StatusDiffFailed, StatusApplyFailed:
 		return "failing"
-	case StatusDrifted, StatusDriftedLocked, StatusOrphaned:
+	case StatusDrifted, StatusDriftedLocked, StatusOrphaned, StatusObservedDrifted:
 		return "attention"
 	default:
 		return "pending"

@@ -16,6 +16,7 @@ import (
 	"github.com/rydzu/ainfra/guardian/internal/compiler/manifest"
 	"github.com/rydzu/ainfra/guardian/internal/compiler/planner"
 	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
+	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
 	releasedomain "github.com/rydzu/ainfra/guardian/internal/domain/release"
 	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
@@ -357,6 +358,7 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 			}
 		}
 		current.Locked = compiledIntent.Spec.Spec.Locked
+		current.IntentType = compiledIntent.Spec.Spec.IntentType
 		current.PartitionMode = partitionSpec.Spec.Reconciliation.Mode
 		oldSpecHash := current.IntentSpecHash
 		inFlightPusher := current.TargetPusher
@@ -371,6 +373,17 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 		current.AssetVersions = copyStringMap(compiledIntent.AssetVersions)
 		if current.Outputs == nil {
 			current.Outputs = map[string]string{}
+		}
+		// Observed intents are report-only. They never enter the task queue;
+		// the Guardian observed collector owns their state transitions. The
+		// reconciler only keeps their metadata in sync with the manifest.
+		if current.IntentType == intentdomain.TypeObserved {
+			if err := r.dispatcher.WriteIntentState(ctx, current); err != nil {
+				return fail(err)
+			}
+			existingStates[name] = current
+			outputs[name] = copyStringMap(current.Outputs)
+			continue
 		}
 		// Determine the spec hash the in-flight task actually carries. State may
 		// already have advanced to the compiled hash on an earlier pass while the
@@ -579,6 +592,26 @@ func (r *Reconciler) reconcileRemovedIntents(ctx context.Context, partitionName,
 		state := existingStates[name]
 		if state == nil {
 			delete(existingStates, name)
+			continue
+		}
+		// Observed intents are report-only: removing one never queues DESTROY.
+		// Drop the state and record an event instead.
+		if state.IntentType == intentdomain.TypeObserved {
+			correlationID := revisions.NewCorrelationID()
+			if err := r.dispatcher.DeleteIntentState(ctx, partitionName, name, correlationID, "observed intent removed"); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			delete(existingStates, name)
+			if err := r.dispatcher.WriteEvent(ctx, &historydomain.EventRecord{
+				Partition:     partitionName,
+				Intent:        name,
+				Type:          "intent.orphaned",
+				Message:       "observed intent removed; no destroy task queued",
+				TaskID:        state.LastTaskID,
+				CorrelationID: correlationID,
+			}); err != nil {
+				return err
+			}
 			continue
 		}
 		switch policy {

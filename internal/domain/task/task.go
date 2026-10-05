@@ -22,6 +22,7 @@ type Task struct {
 	CorrelationID     string                 `json:"correlationID"`
 	Partition         string                 `json:"partition"`
 	Intent            string                 `json:"intent"`
+	IntentType        string                 `json:"intentType,omitempty"`
 	Op                Operation              `json:"op"`
 	TargetPusher      string                 `json:"targetPusher"`
 	Target            targetdomain.Placement `json:"target,omitempty"`

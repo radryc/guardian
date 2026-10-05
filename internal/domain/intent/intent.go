@@ -9,6 +9,14 @@ import (
 type Metadata = partitiondomain.Metadata
 type AssetSpec = assetdomain.Spec
 
+const (
+	// TypeStandard is the default intent type: DIFF -> CHECK -> APPLY.
+	TypeStandard = "standard"
+	// TypeObserved is an AWS-only, report-only intent type. Guardian observes
+	// the live state and reports drift but never queues APPLY.
+	TypeObserved = "observed"
+)
+
 type Intent struct {
 	APIVersion string     `yaml:"apiVersion" json:"apiVersion"`
 	Kind       string     `yaml:"kind" json:"kind"`

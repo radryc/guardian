@@ -35,6 +35,9 @@ Relevant logical paths:
 - `/.scans/<pusher>/requests/<scanID>.json`: AWS scan request written by the UI (see docs/aws-scan.md).
 - `/.scans/<pusher>/.claims/<scanID>.json`: optimistic scan lease/claim.
 - `/.scans/<pusher>/.results/<scanID>.json`: completed scan result written by the AWS pusher.
+- `/.registry/pushers/<name>.json`: registered AWS pusher read API (see docs/aws-observed.md).
+- `/.registry/repos/<name>.json`: registered source repository for observed partitions.
+- `/partitions/<partition>/.observed/<intent>/...`: observed CloudFormation snapshots and event history.
 - `/.archive/<partition>/<intent>/<deployment>/...`: archived successful deployment state, manifest, and logs.
 
 The store can be memory-backed, filesystem-backed, or MonoFS-backed, but the daemon, CLI, and pushers all use the same logical contract.

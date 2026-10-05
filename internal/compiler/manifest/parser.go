@@ -34,7 +34,7 @@ func ParseIntent(data []byte) (*intentdomain.Intent, error) {
 		return nil, fmt.Errorf("unexpected kind %q", in.Kind)
 	}
 	if in.Spec.IntentType == "" {
-		in.Spec.IntentType = "standard"
+		in.Spec.IntentType = intentdomain.TypeStandard
 	}
 	return &in, nil
 }

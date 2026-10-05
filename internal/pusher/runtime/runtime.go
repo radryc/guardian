@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
 	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
 	"github.com/rydzu/ainfra/guardian/internal/paths"
@@ -470,6 +471,9 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 	}
 
 	assets := t.Assets
+	if t.IntentType == intentdomain.TypeObserved && t.Op == taskdomain.OpApply {
+		return fail(fmt.Errorf("observed intent %s/%s must not receive APPLY tasks", t.Partition, t.Intent))
+	}
 	if t.Op == taskdomain.OpDestroy {
 		reversed := make([]taskdomain.AbstractAsset, len(assets))
 		for i := range assets {
@@ -520,6 +524,7 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 		input := registry.AssetInput{
 			PartitionName: t.Partition,
 			IntentName:    t.Intent,
+			IntentType:    t.IntentType,
 			Asset:         asset,
 			Assets:        assetIndex,
 			AssetVersions: t.AssetVersions,

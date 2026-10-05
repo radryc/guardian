@@ -12,6 +12,7 @@ import (
 	"time"
 
 	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
+	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
 	releasedomain "github.com/rydzu/ainfra/guardian/internal/domain/release"
 	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
@@ -119,6 +120,17 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
 			return nil
 		}
+		if state.IntentType == intentdomain.TypeObserved {
+			// Report-only: never queue APPLY after a successful CHECK.
+			state.Status = statedomain.StatusObserved
+			state.LastError = nil
+			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+				return fail(err)
+			}
+			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
+			span.SetStatus(codes.Ok, "observed")
+			return nil
+		}
 		next, err := p.nextTask(ctx, taskFile, state, taskdomain.OpApply)
 		if err != nil {
 			return fail(err)
@@ -175,6 +187,41 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		state.AssetObservations = statedomain.CloneAssetObservationMap(result.AssetObservations)
 		state.LastError = nil
 		driftSettled := result.Drift == nil || result.Drift.Status == "InSync" || len(result.Drift.ChangedAssets) == 0
+		if state.IntentType == intentdomain.TypeObserved {
+			// Report-only: surface the observed state and stop. Never queue
+			// CHECK or APPLY.
+			if driftSettled {
+				state.Status = statedomain.StatusObserved
+			} else {
+				state.Status = statedomain.StatusObservedDrifted
+			}
+			state.LastError = nil
+			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+				return fail(err)
+			}
+			if driftSettled {
+				if err := p.queueDependents(ctx, state.Partition); err != nil {
+					return fail(err)
+				}
+			} else if result.Drift != nil {
+				changedStr := strings.Join(result.Drift.ChangedAssets, ", ")
+				_ = p.dispatcher.WriteEvent(ctx, &historydomain.EventRecord{
+					Partition: result.Partition,
+					Intent:    result.Intent,
+					Type:      "drift.detected",
+					Message:   valueOrDefault(result.Drift.Summary, "observed drift detected"),
+					TaskID:    result.TaskID,
+					Details: map[string]string{
+						"summary":        valueOrDefault(result.Drift.Summary, ""),
+						"changed_assets": changedStr,
+						"intentType":     intentdomain.TypeObserved,
+					},
+				})
+			}
+			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
+			span.SetStatus(codes.Ok, "observed")
+			return nil
+		}
 		if driftSettled && applyResultSettled(result) {
 			state.Status = statedomain.StatusHealthy
 			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
@@ -260,6 +307,10 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 
 	case taskdomain.OpApply:
 		state.Timestamps.LastApplyAt = result.FinishedAt
+		if state.IntentType == intentdomain.TypeObserved {
+			// Defense in depth: observed intents must never be applied.
+			return fail(fmt.Errorf("observed intent %s/%s must not receive APPLY tasks", result.Partition, result.Intent))
+		}
 		if result.Status == taskdomain.ResultFailed {
 			state.Status = statedomain.StatusApplyFailed
 			state.LastError = result.Error
@@ -552,6 +603,11 @@ func (p *Processor) queueDependents(ctx context.Context, partition string) error
 			return err
 		}
 		if state == nil || activeTask || state.Status == statedomain.StatusHealthy || state.Status == statedomain.StatusDestroyed || state.Status == statedomain.StatusDestroying {
+			continue
+		}
+		// Observed intents are report-only and owned by the observed collector;
+		// never queue reconciliation tasks for them.
+		if state.IntentType == intentdomain.TypeObserved {
 			continue
 		}
 		if !common.DependenciesHealthy(state, states) {

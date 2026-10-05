@@ -141,6 +141,14 @@ AWS account scan and import notes live in:
 
   docs/aws-scan.md
 
+AWS observed (report-only) intents live in:
+
+  docs/aws-observed.md
+
+Partition failure alerting lives in:
+
+  docs/alerting.md
+
 Flow topology metrics overlay notes live in:
 
   docs/flow-topology-metrics.md
@@ -164,6 +172,13 @@ List intents inside a partition:
 Show supported asset types:
 
   ./guardianctl asset catalog
+
+Deploy an AWS pusher and wire it to a repository:
+
+  ./guardianctl aws pusher-deploy --dir ../aws --profile prod-admin --account <id> --region <r>
+  ./guardianctl pusher add --account <id> --region <r> --url http://guardian-awsread:19090 --token-env GUARDIAN_AWSREAD_TOKEN
+  ./guardianctl repo add --name <repo> --pusher aws-<id> --partition <partition> --source <git-url>
+  ./guardianctl repo sync --name <repo> --synth
 
 
 Examples

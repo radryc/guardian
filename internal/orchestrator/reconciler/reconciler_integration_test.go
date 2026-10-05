@@ -1153,3 +1153,64 @@ spec:
 		t.Fatalf("expected destroy to clear outputs, got %v", destroyState.Outputs)
 	}
 }
+
+// TestReconcileObservedIntentNeverQueuesTasks verifies that observed intents
+// stay out of the task queue even when the reconcile is forced.
+func TestReconcileObservedIntentNeverQueuesTasks(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "test")
+	recon := reconciler.NewReconciler(store, disp, time.Minute)
+
+	seedRaw(t, ctx, store, paths.PartitionConfig("strata-aws"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Partition
+metadata:
+  name: strata-aws
+spec:
+  deletionPolicy: orphan
+  reconciliation:
+    mode: auto
+    interval: 30s
+`))
+	seedRaw(t, ctx, store, paths.IntentManifest("strata-aws", "aws-pusher"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: aws-pusher
+spec:
+  intentType: observed
+  targetPusher: aws-123456789012
+  target:
+    account: "123456789012"
+    region: eu-west-1
+  assets:
+    - type: CDKStack
+      name: pusher
+      payload:
+        aws: /partitions/strata-aws/payloads/aws/pusher.yaml
+`))
+
+	if err := recon.ReconcilePartition(ctx, "strata-aws", true); err != nil {
+		t.Fatalf("ReconcilePartition: %v", err)
+	}
+
+	state, err := common.LoadIntentState(ctx, store, "strata-aws", "aws-pusher")
+	if err != nil {
+		t.Fatalf("LoadIntentState: %v", err)
+	}
+	if state.IntentType != "observed" {
+		t.Fatalf("IntentType = %q, want observed", state.IntentType)
+	}
+	if state.LastTaskID != "" {
+		t.Fatalf("LastTaskID = %q, want empty for observed intent", state.LastTaskID)
+	}
+	entries, err := store.ListDir(ctx, paths.QueueDir("aws-123456789012"))
+	if err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir {
+				t.Fatalf("unexpected queue file %q – observed intent must not queue tasks", entry.Name)
+			}
+		}
+	}
+}

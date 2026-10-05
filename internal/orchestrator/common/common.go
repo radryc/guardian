@@ -118,7 +118,9 @@ func PreserveStatusDuringRefresh(status statedomain.IntentStatus) bool {
 	switch status {
 	case statedomain.StatusHealthy,
 		statedomain.StatusDrifted,
-		statedomain.StatusDriftedLocked:
+		statedomain.StatusDriftedLocked,
+		statedomain.StatusObserved,
+		statedomain.StatusObservedDrifted:
 		return true
 	default:
 		return false
@@ -260,6 +262,7 @@ func BuildTaskFromManifest(intentState *statedomain.IntentState, manifestContent
 		CorrelationID:     revisions.NewCorrelationID(),
 		Partition:         intentState.Partition,
 		Intent:            intentState.Intent,
+		IntentType:        parsed.Spec.IntentType,
 		Op:                op,
 		TargetPusher:      intentState.TargetPusher,
 		Target:            intentState.Target,

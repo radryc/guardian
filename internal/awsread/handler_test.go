@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rydzu/ainfra/guardian/internal/awsobserve"
 )
 
 type fakePromQL struct {
@@ -202,5 +204,87 @@ func TestParseXRayDocument(t *testing.T) {
 	}
 	if !spans[0].StartTime.Equal(time.Unix(1700000000, 0).UTC()) {
 		t.Fatalf("start time = %s", spans[0].StartTime)
+	}
+}
+
+type fakeObserved struct {
+	stacks []awsobserve.StackState
+	events []awsobserve.Event
+}
+
+func (f *fakeObserved) List(account, region string) []awsobserve.StackState { return f.stacks }
+func (f *fakeObserved) Get(account, region, stackName string) (awsobserve.StackState, bool) {
+	for _, state := range f.stacks {
+		if state.StackName == stackName {
+			return state, true
+		}
+	}
+	return awsobserve.StackState{}, false
+}
+func (f *fakeObserved) Events(account, region, stackName string, since time.Time, limit int) []awsobserve.Event {
+	return f.events
+}
+func (f *fakeObserved) Refresh(ctx context.Context, account, region string, stacks []string, detectDrift bool) ([]awsobserve.StackState, error) {
+	return f.stacks, nil
+}
+func (f *fakeObserved) Template(ctx context.Context, account, region, stackName string) (string, error) {
+	return `{"Resources":{}}`, nil
+}
+func (f *fakeObserved) DiffSource(ctx context.Context, req awsobserve.SourceDiffRequest) (*awsobserve.SourceDiffResult, error) {
+	return &awsobserve.SourceDiffResult{StackName: req.StackName, Summary: "in sync"}, nil
+}
+
+func TestHandlerServesObservedStacks(t *testing.T) {
+	observed := &fakeObserved{stacks: []awsobserve.StackState{{
+		Account: "1", Region: "eu-west-1", StackName: "AwsPusherStack", StackStatus: "UPDATE_COMPLETE",
+	}}}
+	h := NewHandler(&fakeReader{}, "").WithObserved(observed)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/aws/observed/stacks?account=1&region=eu-west-1", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "AwsPusherStack") {
+		t.Fatalf("body missing stack: %s", rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/aws/observed/stacks/AwsPusherStack?region=eu-west-1", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/aws/observed/stacks/MissingStack?region=eu-west-1", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestHandlerServesObservedTemplate(t *testing.T) {
+	observed := &fakeObserved{}
+	h := NewHandler(&fakeReader{}, "").WithObserved(observed)
+	req := httptest.NewRequest(http.MethodGet, "/v1/aws/observed/stacks/AwsPusherStack/template?region=eu-west-1", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"template"`) {
+		t.Fatalf("body missing template: %s", rec.Body.String())
+	}
+}
+
+func TestHandlerObservedDisabled(t *testing.T) {
+	h := NewHandler(&fakeReader{}, "")
+	req := httptest.NewRequest(http.MethodGet, "/v1/aws/observed/stacks", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
 	}
 }

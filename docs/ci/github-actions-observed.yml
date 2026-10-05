@@ -1,0 +1,78 @@
+# Guardian observed sync — GitHub Actions template.
+#
+# Copy this file to .github/workflows/guardian-observed.yml in the repository
+# that holds your CDK app, and set the repository secrets:
+#   GUARDIAN_MONOFS_ROUTER  MonoFS router gRPC address (host:9090)
+#   GUARDIAN_MONOFS_TOKEN   MonoFS guardian token
+#   GUARDIAN_URL            (notify-only mode) Guardian UI/API base URL
+#   GUARDIAN_TOKEN          (notify-only mode) machine token accepted by Guardian
+#   MONOFS_HTTP             (notify-only mode) MonoFS router HTTP base URL
+#
+# The repository needs a .guardian/config.yaml (see docs/aws-observed.md) that
+# declares the pusher and the partition binding.
+
+name: Guardian observed sync
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  guardian-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Mode 1 (recommended): build guardianctl and push the bundle ──
+      - name: Checkout Strata (for guardianctl)
+        uses: actions/checkout@v4
+        with:
+          repository: rydzu/ainfra
+          path: strata
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Build guardianctl
+        working-directory: strata
+        run: go build -o "$RUNNER_TEMP/guardianctl" ./guardian/cmd/guardianctl
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Apply repo config and push observed bundle
+        env:
+          GUARDIAN_MONOFS_ROUTER: ${{ secrets.GUARDIAN_MONOFS_ROUTER }}
+          GUARDIAN_MONOFS_TOKEN: ${{ secrets.GUARDIAN_MONOFS_TOKEN }}
+        run: |
+          "$RUNNER_TEMP/guardianctl" repo apply --dir . --synth
+
+      # ── Mode 2 (alternative): notify MonoFS + Guardian, no local synth ──
+      # Use this when the repository commits a prebuilt cdk.out, or another
+      # job synthesizes it. Comment out Mode 1 above first.
+      #
+      # - name: Mirror repository into MonoFS
+      #   env:
+      #     MONOFS_HTTP: ${{ secrets.MONOFS_HTTP }}
+      #     MONOFS_TOKEN: ${{ secrets.GUARDIAN_MONOFS_TOKEN }}
+      #   run: |
+      #     curl -fsS -X POST "$MONOFS_HTTP/api/ingest" \
+      #       -H "Authorization: Bearer $MONOFS_TOKEN" \
+      #       --data-urlencode "source=${{ github.server_url }}/${{ github.repository }}.git" \
+      #       --data-urlencode "ref=${{ github.ref_name }}" \
+      #       --data-urlencode "source_id=<monofs-display-path>" \
+      #       --data-urlencode "ingestion_type=git"
+      #
+      # - name: Notify Guardian of the merge
+      #   env:
+      #     GUARDIAN_URL: ${{ secrets.GUARDIAN_URL }}
+      #     GUARDIAN_TOKEN: ${{ secrets.GUARDIAN_TOKEN }}
+      #   run: |
+      #     curl -fsS -X POST "$GUARDIAN_URL/api/repos/<repo-name>/notify" \
+      #       -H "Authorization: Bearer $GUARDIAN_TOKEN" \
+      #       -H 'Content-Type: application/json' \
+      #       -d '{"commit":"${{ github.sha }}","branch":"${{ github.ref_name }}"}'

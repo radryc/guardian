@@ -20,17 +20,21 @@ import (
 	"time"
 
 	coreauthz "github.com/radryc/monofs/pkg/authz"
+	"github.com/rydzu/ainfra/guardian/internal/alerting"
 	guardauthz "github.com/rydzu/ainfra/guardian/internal/authz"
 	"github.com/rydzu/ainfra/guardian/internal/buildinfo"
 	"github.com/rydzu/ainfra/guardian/internal/compliance"
 	"github.com/rydzu/ainfra/guardian/internal/config"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
+	"github.com/rydzu/ainfra/guardian/internal/notify"
+	observedpkg "github.com/rydzu/ainfra/guardian/internal/observed"
 	"github.com/rydzu/ainfra/guardian/internal/orchestrator/common"
 	"github.com/rydzu/ainfra/guardian/internal/orchestrator/dispatcher"
 	"github.com/rydzu/ainfra/guardian/internal/orchestrator/reconciler"
 	"github.com/rydzu/ainfra/guardian/internal/orchestrator/results"
 	watcherpkg "github.com/rydzu/ainfra/guardian/internal/orchestrator/watcher"
 	"github.com/rydzu/ainfra/guardian/internal/paths"
+	"github.com/rydzu/ainfra/guardian/internal/registry"
 	"github.com/rydzu/ainfra/guardian/internal/store/memory"
 	monofsstore "github.com/rydzu/ainfra/guardian/internal/store/monofs"
 	"github.com/rydzu/ainfra/guardian/internal/telemetry"
@@ -340,6 +344,14 @@ func main() {
 	}
 
 	run("reconciler", recon.Run)
+	observedCollector := newObservedCollector(cfg, store, dispatcher)
+	if observedCollector != nil {
+		run("observed-collector", observedCollector.Run)
+	}
+	alertEvaluator := newAlertingEvaluator(cfg, store, dispatcher)
+	if alertEvaluator != nil {
+		run("alerting", alertEvaluator.Run)
+	}
 	run("partition-watcher", func(ctx context.Context) error {
 		for {
 			if ctx.Err() != nil {
@@ -747,4 +759,132 @@ func readJSON(ctx context.Context, store guardianapi.ReadStore, logicalPath stri
 		return err
 	}
 	return json.Unmarshal(data, out)
+}
+
+// newObservedCollector builds the observed-intent collector when at least one
+// pusher exposes an observed read API. Returns nil when disabled.
+func newObservedCollector(cfg *config.Config, store guardianapi.Store, dispatch *dispatcher.Dispatcher) *observedpkg.Collector {
+	intervalValue := strings.TrimSpace(cfg.Guardian.ObservedInterval)
+	if intervalValue == "" {
+		return nil
+	}
+	interval, err := time.ParseDuration(intervalValue)
+	if err != nil || interval <= 0 {
+		log.Fatalf("invalid guardian.observedInterval %q", intervalValue)
+	}
+	timeout := 30 * time.Second
+	if value := strings.TrimSpace(cfg.Guardian.ObservedTimeout); value != "" {
+		parsed, parseErr := time.ParseDuration(value)
+		if parseErr != nil || parsed <= 0 {
+			log.Fatalf("invalid guardian.observedTimeout %q", value)
+		}
+		timeout = parsed
+	}
+	endpoints := map[string]observedpkg.Endpoint{}
+	for _, pusher := range cfg.Pushers {
+		apiURL := strings.TrimSpace(pusher.ObservedAPIURL)
+		if apiURL == "" {
+			continue
+		}
+		endpoints[pusher.Name] = observedpkg.Endpoint{
+			Name:   pusher.Name,
+			Client: observedpkg.NewClient(apiURL, pusher.ObservedToken(), timeout),
+		}
+	}
+	registryStore := registry.New(store)
+	resolver := &observedpkg.RegistryResolver{
+		Static:   endpoints,
+		Registry: registryStore,
+		TTL:      30 * time.Second,
+	}
+	log.Printf("observed collector enabled, interval=%s (static endpoints: %d, store registry: /.registry/pushers)", interval, len(endpoints))
+	return &observedpkg.Collector{
+		Store:      store,
+		Dispatcher: dispatch,
+		Endpoints:  endpoints,
+		Resolver:   resolver,
+		Interval:   interval,
+		Timeout:    timeout,
+	}
+}
+
+// newAlertingEvaluator builds the partition failure alerting evaluator when
+// notifications are enabled and at least one webhook channel is configured.
+func newAlertingEvaluator(cfg *config.Config, store guardianapi.Store, dispatch *dispatcher.Dispatcher) *alerting.Evaluator {
+	notifications := cfg.Notifications
+	if !notifications.Enabled {
+		return nil
+	}
+	notifiers := map[string]notify.Notifier{}
+	channelNames := make([]string, 0, len(notifications.Channels))
+	for _, channel := range notifications.Channels {
+		name := strings.TrimSpace(channel.Name)
+		if name == "" {
+			continue
+		}
+		channelType := strings.ToLower(strings.TrimSpace(channel.Type))
+		if channelType != "" && channelType != "webhook" {
+			log.Printf("alerting: channel %s has unsupported type %q (skipped)", name, channel.Type)
+			continue
+		}
+		timeout := 10 * time.Second
+		if value := strings.TrimSpace(channel.Timeout); value != "" {
+			parsed, err := time.ParseDuration(value)
+			if err != nil || parsed <= 0 {
+				log.Fatalf("invalid notifications channel %s timeout %q", name, value)
+			}
+			timeout = parsed
+		}
+		notifiers[name] = notify.NewWebhookNotifier(name, channel.URL, channel.ChannelSecret(), timeout)
+		channelNames = append(channelNames, name)
+	}
+	if len(notifiers) == 0 {
+		log.Printf("alerting: notifications enabled but no usable channels configured")
+		return nil
+	}
+	pollInterval := 30 * time.Second
+	if value := strings.TrimSpace(notifications.PollInterval); value != "" {
+		parsed, err := time.ParseDuration(value)
+		if err != nil || parsed <= 0 {
+			log.Fatalf("invalid notifications pollInterval %q", value)
+		}
+		pollInterval = parsed
+	}
+	cooldown := 15 * time.Minute
+	if value := strings.TrimSpace(notifications.Cooldown); value != "" {
+		parsed, err := time.ParseDuration(value)
+		if err != nil || parsed < 0 {
+			log.Fatalf("invalid notifications cooldown %q", value)
+		}
+		cooldown = parsed
+	}
+	repeatInterval := 6 * time.Hour
+	if value := strings.TrimSpace(notifications.RepeatInterval); value != "" {
+		parsed, err := time.ParseDuration(value)
+		if err != nil || parsed < 0 {
+			log.Fatalf("invalid notifications repeatInterval %q", value)
+		}
+		repeatInterval = parsed
+	}
+	rules := make([]alerting.Rule, 0, len(notifications.Rules))
+	for _, rule := range notifications.Rules {
+		rules = append(rules, alerting.Rule{
+			Name:        rule.Name,
+			Events:      append([]string(nil), rule.Events...),
+			MinSeverity: notify.Severity(strings.TrimSpace(rule.MinSeverity)),
+			Channels:    append([]string(nil), rule.Channels...),
+		})
+	}
+	log.Printf("alerting: enabled with %d channel(s), interval=%s", len(notifiers), pollInterval)
+	return &alerting.Evaluator{
+		Store:          store,
+		Dispatcher:     dispatch,
+		Notifiers:      notifiers,
+		Channels:       channelNames,
+		Rules:          rules,
+		PollInterval:   pollInterval,
+		FailThreshold:  notifications.FailThreshold,
+		Cooldown:       cooldown,
+		RepeatInterval: repeatInterval,
+	}
 }

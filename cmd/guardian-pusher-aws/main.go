@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rydzu/ainfra/guardian/internal/awsobserve"
 	"github.com/rydzu/ainfra/guardian/internal/awsread"
 	"github.com/rydzu/ainfra/guardian/internal/awsscan"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
@@ -24,6 +25,7 @@ import (
 	runtimepkg "github.com/rydzu/ainfra/guardian/internal/pusher/runtime"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/secrets"
 	fsstore "github.com/rydzu/ainfra/guardian/internal/store/fs"
+	"github.com/rydzu/ainfra/guardian/internal/store/memory"
 	monofsstore "github.com/rydzu/ainfra/guardian/internal/store/monofs"
 	"github.com/rydzu/ainfra/guardian/internal/telemetry"
 	"github.com/rydzu/ainfra/guardian/internal/versioning/revisions"
@@ -52,6 +54,9 @@ func main() {
 	var awsReadAddr string
 	var awsReadToken string
 	var awsReadDisabled bool
+	var eventsQueueURL string
+	var eventsDisabled bool
+	var observedOnly bool
 	flag.StringVar(&pusherName, "pusher-name", "", "pusher name (default: aws-<account>)")
 	flag.StringVar(&account, "account", "", "target account handled by this worker")
 	flag.StringVar(&region, "region", "", "optional target region filter handled by this worker (empty = all regions in account)")
@@ -73,9 +78,20 @@ func main() {
 	flag.StringVar(&awsReadAddr, "awsread-addr", envOr("GUARDIAN_AWSREAD_ADDR", ":19090"), "HTTP listen address for the read-only CloudWatch/X-Ray API (empty disables)")
 	flag.StringVar(&awsReadToken, "awsread-token", os.Getenv("GUARDIAN_AWSREAD_TOKEN"), "bearer token required by the AWS read API (empty disables auth)")
 	flag.BoolVar(&awsReadDisabled, "awsread-disabled", false, "disable the read-only CloudWatch/X-Ray API")
+	flag.StringVar(&eventsQueueURL, "events-queue-url", os.Getenv("GUARDIAN_AWS_EVENTS_QUEUE_URL"), "SQS queue URL carrying CloudFormation EventBridge events (empty disables)")
+	flag.BoolVar(&eventsDisabled, "events-disabled", false, "disable the CloudFormation EventBridge event consumer")
+	flag.BoolVar(&observedOnly, "observed-only", false, "run only the observed-state API and event consumer (no MonoFS task queue)")
 	flag.Parse()
 
-	if account == "" || (storeDir == "" && monofsRouter == "") || (storeDir != "" && monofsRouter != "") {
+	if account == "" {
+		flag.Usage()
+		os.Exit(2)
+	}
+	if observedOnly {
+		if storeDir != "" || monofsRouter != "" {
+			log.Fatalf("--observed-only does not use a Guardian store; remove --store-dir/--monofs-router")
+		}
+	} else if (storeDir == "") == (monofsRouter == "") {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -111,7 +127,9 @@ func main() {
 		closeClient interface{ Close() error }
 		err         error
 	)
-	if monofsRouter != "" {
+	if observedOnly {
+		store = memory.New()
+	} else if monofsRouter != "" {
 		openedStore, client, openErr := monofsstore.Open(context.Background(), monofsstore.OpenConfig{
 			RouterAddr:           monofsRouter,
 			Token:                monofsToken,
@@ -141,34 +159,56 @@ func main() {
 		}()
 	}
 
-	backend, err := awsdriver.NewCLIBackend(cdkBinary, awsStateDir, assumeRoleName, assumeRoleExternalID, bootstrapStackName)
-	if err != nil {
-		log.Fatalf("configure aws backend: %v", err)
-	}
-	sdkBackend := awsdriver.NewAWSBackend("", region, false)
-	composite := awsdriver.NewCompositeBackend(backend, sdkBackend)
-	reg := registry.New()
-	awsdriver.Register(reg, composite, secrets.NewStoreResolver(store))
-	runtime := &runtimepkg.Runtime{
-		QueuePath:               paths.QueueDir(pusherName),
-		WorkerID:                workerID,
-		PrincipalID:             monofsPrincipalID,
-		Store:                   store,
-		Registry:                reg,
-		PollInterval:            5 * time.Second,
-		UnclaimedTaskRetryDelay: unclaimedTaskRetryDelay,
-		MaxConcurrency:          maxConcurrency,
-		ShardIndex:              shardIndex,
-		ShardCount:              shardCount,
-		CanHandle: func(task *taskdomain.Task) bool {
-			if !strings.EqualFold(strings.TrimSpace(task.Target.Account), account) {
-				return false
-			}
-			if strings.TrimSpace(region) == "" {
-				return true
-			}
-			return strings.EqualFold(strings.TrimSpace(task.Target.Region), region)
-		},
+	observedCache := awsobserve.NewCache(0)
+	observedService := awsobserve.NewService(observedCache, awsobserve.NewRefresher(account, assumeRoleName, assumeRoleExternalID))
+	observedService.StateDir = awsStateDir
+
+	var (
+		runtimeRunner *runtimepkg.Runtime
+		scanRunner    *awsscan.ScanRunner
+	)
+	if !observedOnly {
+		backend, err := awsdriver.NewCLIBackend(cdkBinary, awsStateDir, assumeRoleName, assumeRoleExternalID, bootstrapStackName)
+		if err != nil {
+			log.Fatalf("configure aws backend: %v", err)
+		}
+		sdkBackend := awsdriver.NewAWSBackend("", region, false)
+		composite := awsdriver.NewCompositeBackend(backend, sdkBackend)
+		reg := registry.New()
+		awsdriver.Register(reg, composite, secrets.NewStoreResolver(store))
+		runtimeRunner = &runtimepkg.Runtime{
+			QueuePath:               paths.QueueDir(pusherName),
+			WorkerID:                workerID,
+			PrincipalID:             monofsPrincipalID,
+			Store:                   store,
+			Registry:                reg,
+			PollInterval:            5 * time.Second,
+			UnclaimedTaskRetryDelay: unclaimedTaskRetryDelay,
+			MaxConcurrency:          maxConcurrency,
+			ShardIndex:              shardIndex,
+			ShardCount:              shardCount,
+			CanHandle: func(task *taskdomain.Task) bool {
+				if !strings.EqualFold(strings.TrimSpace(task.Target.Account), account) {
+					return false
+				}
+				if strings.TrimSpace(region) == "" {
+					return true
+				}
+				return strings.EqualFold(strings.TrimSpace(task.Target.Region), region)
+			},
+		}
+		scanRunner = &awsscan.ScanRunner{
+			PusherName:           pusherName,
+			Account:              account,
+			Region:               region,
+			AssumeRoleName:       assumeRoleName,
+			AssumeRoleExternalID: assumeRoleExternalID,
+			WorkerID:             workerID,
+			PrincipalID:          monofsPrincipalID,
+			Store:                store,
+			ShardIndex:           shardIndex,
+			ShardCount:           shardCount,
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -176,29 +216,40 @@ func main() {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	scanRunner := &awsscan.ScanRunner{
-		PusherName:           pusherName,
-		Account:              account,
-		Region:               region,
-		AssumeRoleName:       assumeRoleName,
-		AssumeRoleExternalID: assumeRoleExternalID,
-		WorkerID:             workerID,
-		PrincipalID:          monofsPrincipalID,
-		Store:                store,
-		ShardIndex:           shardIndex,
-		ShardCount:           shardCount,
-	}
-
 	taskErr := make(chan error, 1)
 	scanErr := make(chan error, 1)
 	readErr := make(chan error, 1)
-	goroutines := 2
-	go func() {
-		taskErr <- runtime.Run(ctx)
-	}()
-	go func() {
-		scanErr <- scanRunner.Run(ctx)
-	}()
+	eventsErr := make(chan error, 1)
+	goroutines := 0
+	if runtimeRunner != nil {
+		goroutines += 2
+		go func() {
+			taskErr <- runtimeRunner.Run(ctx)
+		}()
+		go func() {
+			scanErr <- scanRunner.Run(ctx)
+		}()
+	}
+
+	eventsEnabled := !eventsDisabled && strings.TrimSpace(eventsQueueURL) != ""
+	if eventsEnabled {
+		sqsClient, err := awsobserve.NewSQSClient(ctx, region)
+		if err != nil {
+			log.Fatalf("configure observed event consumer: %v", err)
+		}
+		consumer := &awsobserve.Consumer{
+			Client:   sqsClient,
+			QueueURL: eventsQueueURL,
+			Cache:    observedCache,
+		}
+		goroutines++
+		go func() {
+			log.Printf("observed event consumer polling %s", eventsQueueURL)
+			eventsErr <- consumer.Run(ctx)
+		}()
+	} else {
+		log.Printf("observed event consumer disabled (set --events-queue-url or GUARDIAN_AWS_EVENTS_QUEUE_URL to enable)")
+	}
 
 	if !awsReadDisabled && strings.TrimSpace(awsReadAddr) != "" {
 		readerConfig := awsread.Config{
@@ -210,7 +261,7 @@ func main() {
 		promQL := awsread.NewPromQLClient(readerConfig)
 		readServer := &http.Server{
 			Addr:    awsReadAddr,
-			Handler: awsread.NewHandler(reader, awsReadToken).WithPromQL(promQL),
+			Handler: awsread.NewHandler(reader, awsReadToken).WithPromQL(promQL).WithObserved(observedService),
 		}
 		goroutines++
 		go func() {
@@ -227,6 +278,10 @@ func main() {
 		}()
 	}
 
+	if observedOnly && goroutines == 0 {
+		log.Fatalf("--observed-only requires the read API (--awsread-addr) or the event consumer (--events-queue-url)")
+	}
+
 	var runErr error
 	for received := 0; received < goroutines; received++ {
 		select {
@@ -241,6 +296,11 @@ func main() {
 				cancel()
 			}
 		case err := <-readErr:
+			if err != nil && !errors.Is(err, context.Canceled) && runErr == nil {
+				runErr = err
+				cancel()
+			}
+		case err := <-eventsErr:
 			if err != nil && !errors.Is(err, context.Canceled) && runErr == nil {
 				runErr = err
 				cancel()

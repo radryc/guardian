@@ -217,6 +217,12 @@ func mapLogicalToPhysicalChecked(logicalPath string) (string, error) {
 	if strings.HasPrefix(logicalPath, "/.scans/") {
 		return "guardian-system/.scans/" + strings.TrimPrefix(logicalPath, "/.scans/"), nil
 	}
+	if logicalPath == "/.registry" {
+		return "guardian-system/.registry", nil
+	}
+	if strings.HasPrefix(logicalPath, "/.registry/") {
+		return "guardian-system/.registry/" + strings.TrimPrefix(logicalPath, "/.registry/"), nil
+	}
 	return "", fmt.Errorf("unsupported guardian logical path: %s", logicalPath)
 }
 
@@ -244,6 +250,12 @@ func mapPhysicalToLogicalChecked(physicalPath string) (string, error) {
 	}
 	if strings.HasPrefix(physicalPath, "guardian-system/.scans/") {
 		return "/.scans/" + strings.TrimPrefix(physicalPath, "guardian-system/.scans/"), nil
+	}
+	if physicalPath == "guardian-system/.registry" {
+		return "/.registry", nil
+	}
+	if strings.HasPrefix(physicalPath, "guardian-system/.registry/") {
+		return "/.registry/" + strings.TrimPrefix(physicalPath, "guardian-system/.registry/"), nil
 	}
 	return "", fmt.Errorf("unsupported monofs physical path: %s", physicalPath)
 }

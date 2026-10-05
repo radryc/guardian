@@ -18,6 +18,7 @@ import (
 	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
 	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
+	"github.com/rydzu/ainfra/guardian/internal/orchestrator/common"
 	"github.com/rydzu/ainfra/guardian/internal/orchestrator/dispatcher"
 	"github.com/rydzu/ainfra/guardian/internal/paths"
 	"github.com/rydzu/ainfra/guardian/internal/store/memory"
@@ -1195,4 +1196,147 @@ func TestProcessorNoRollbackWithoutPreviousDeployment(t *testing.T) {
 	if got.Status != statedomain.StatusDiffFailed {
 		t.Fatalf("status = %q, want DiffFailed (first deploy, no rollback)", got.Status)
 	}
+}
+
+func seedObservedIntent(t *testing.T, ctx context.Context, store *memory.Store, status statedomain.IntentStatus) statedomain.IntentState {
+	t.Helper()
+	state := statedomain.IntentState{
+		APIVersion:        "guardian/v1alpha1",
+		Kind:              "IntentState",
+		Partition:         "strata-aws",
+		Intent:            "aws-pusher",
+		IntentType:        "observed",
+		Status:            status,
+		IntentVersionID:   "intent-v1",
+		IntentSpecHash:    "spec-hash-v1",
+		PartitionRevision: "partition-rev-v1",
+		TargetPusher:      "aws-123456789012",
+		Target:            targetdomain.Placement{Account: "123456789012", Region: "eu-west-1"},
+		AssetVersionIDs:   map[string]string{"pusher": "asset-v1"},
+		AssetVersions:     map[string]string{"pusher": "v1"},
+		Outputs:           map[string]string{},
+		LastTaskID:        "task-observed-1",
+	}
+	writeJSONFile(t, ctx, store, paths.IntentState("strata-aws", "aws-pusher"), state)
+	seedRawFile(t, ctx, store, paths.IntentManifest("strata-aws", "aws-pusher"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: aws-pusher
+spec:
+  intentType: observed
+  targetPusher: aws-123456789012
+  target:
+    account: "123456789012"
+    region: eu-west-1
+  assets:
+    - type: CDKStack
+      name: pusher
+      payload:
+        aws: /partitions/strata-aws/payloads/aws/pusher.yaml
+`))
+	return state
+}
+
+func assertNoQueueFiles(t *testing.T, ctx context.Context, store *memory.Store, pusher string) {
+	t.Helper()
+	entries, err := store.ListDir(ctx, paths.QueueDir(pusher))
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir {
+			t.Fatalf("unexpected queue file %q for observed intent", entry.Name)
+		}
+	}
+}
+
+func TestProcessorObservedDiffDriftStopsAtObservedDrifted(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	dispatch := dispatcher.NewDispatcher(store, "guardiand")
+	processor := NewProcessor(store, dispatch)
+	seedObservedIntent(t, ctx, store, statedomain.StatusDiffing)
+
+	if err := processor.ProcessResult(ctx, &taskdomain.TaskResult{
+		TaskID:    "task-observed-1",
+		Op:        taskdomain.OpDiff,
+		Status:    taskdomain.ResultSucceeded,
+		Partition: "strata-aws",
+		Intent:    "aws-pusher",
+		Pusher:    "aws-123456789012",
+		Drift: &taskdomain.DriftReport{
+			Status:        "Changed",
+			Summary:       "template differs",
+			ChangedAssets: []string{"pusher"},
+		},
+	}); err != nil {
+		t.Fatalf("ProcessResult(diff): %v", err)
+	}
+
+	state, err := common.LoadIntentState(ctx, store, "strata-aws", "aws-pusher")
+	if err != nil {
+		t.Fatalf("LoadIntentState: %v", err)
+	}
+	if state.Status != statedomain.StatusObservedDrifted {
+		t.Fatalf("status = %q, want ObservedDrifted", state.Status)
+	}
+	assertNoQueueFiles(t, ctx, store, "aws-123456789012")
+}
+
+func TestProcessorObservedDiffInSyncNeverQueuesApply(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	dispatch := dispatcher.NewDispatcher(store, "guardiand")
+	processor := NewProcessor(store, dispatch)
+	seedObservedIntent(t, ctx, store, statedomain.StatusDiffing)
+
+	if err := processor.ProcessResult(ctx, &taskdomain.TaskResult{
+		TaskID:    "task-observed-1",
+		Op:        taskdomain.OpDiff,
+		Status:    taskdomain.ResultSucceeded,
+		Partition: "strata-aws",
+		Intent:    "aws-pusher",
+		Pusher:    "aws-123456789012",
+		Drift:     &taskdomain.DriftReport{Status: "InSync", Summary: "in sync"},
+	}); err != nil {
+		t.Fatalf("ProcessResult(diff): %v", err)
+	}
+
+	state, err := common.LoadIntentState(ctx, store, "strata-aws", "aws-pusher")
+	if err != nil {
+		t.Fatalf("LoadIntentState: %v", err)
+	}
+	if state.Status != statedomain.StatusObserved {
+		t.Fatalf("status = %q, want Observed", state.Status)
+	}
+	assertNoQueueFiles(t, ctx, store, "aws-123456789012")
+}
+
+func TestProcessorObservedCheckSuccessNeverQueuesApply(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	dispatch := dispatcher.NewDispatcher(store, "guardiand")
+	processor := NewProcessor(store, dispatch)
+	seedObservedIntent(t, ctx, store, statedomain.StatusChecking)
+
+	if err := processor.ProcessResult(ctx, &taskdomain.TaskResult{
+		TaskID:    "task-observed-1",
+		Op:        taskdomain.OpCheck,
+		Status:    taskdomain.ResultSucceeded,
+		Partition: "strata-aws",
+		Intent:    "aws-pusher",
+		Pusher:    "aws-123456789012",
+	}); err != nil {
+		t.Fatalf("ProcessResult(check): %v", err)
+	}
+
+	state, err := common.LoadIntentState(ctx, store, "strata-aws", "aws-pusher")
+	if err != nil {
+		t.Fatalf("LoadIntentState: %v", err)
+	}
+	if state.Status != statedomain.StatusObserved {
+		t.Fatalf("status = %q, want Observed", state.Status)
+	}
+	assertNoQueueFiles(t, ctx, store, "aws-123456789012")
 }
