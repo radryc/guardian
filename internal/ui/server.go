@@ -268,6 +268,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/partitions/", s.handlePartitionRoute)
 	mux.HandleFunc("/api/scans", s.handleScans)
 	mux.HandleFunc("/api/scans/", s.handleScanRoute)
+	mux.HandleFunc("/api/pushers", s.handlePushers)
+	mux.HandleFunc("/api/pushers/", s.handlePusherRoute)
+	mux.HandleFunc("/api/repos", s.handleRepos)
+	mux.HandleFunc("/api/repos/", s.handleRepoRoute)
 	return mux
 }
 
@@ -675,7 +679,7 @@ func (s *Server) saveBundle(ctx context.Context, partitionName string, req *Save
 	}
 	sort.Strings(intentNames)
 	for i := range req.Intents {
-		if err := validateIntentForSave(req.Intents[i].Manifest, intentNames, s.pushers); err != nil {
+		if err := validateIntentForSave(req.Intents[i].Manifest, intentNames, s.knownPushers(ctx)); err != nil {
 			return nil, err
 		}
 	}

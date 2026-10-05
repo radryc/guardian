@@ -10,21 +10,23 @@ import (
 type IntentStatus string
 
 const (
-	StatusInvalid       IntentStatus = "Invalid"
-	StatusBlocked       IntentStatus = "Blocked"
-	StatusReady         IntentStatus = "Ready"
-	StatusChecking      IntentStatus = "Checking"
-	StatusCheckFailed   IntentStatus = "CheckFailed"
-	StatusDiffing       IntentStatus = "Diffing"
-	StatusDiffFailed    IntentStatus = "DiffFailed"
-	StatusDrifted       IntentStatus = "Drifted"
-	StatusDriftedLocked IntentStatus = "DriftedLocked"
-	StatusApplying      IntentStatus = "Applying"
-	StatusHealthy       IntentStatus = "Healthy"
-	StatusApplyFailed   IntentStatus = "ApplyFailed"
-	StatusDestroying    IntentStatus = "Destroying"
-	StatusDestroyed     IntentStatus = "Destroyed"
-	StatusOrphaned      IntentStatus = "Orphaned"
+	StatusInvalid         IntentStatus = "Invalid"
+	StatusBlocked         IntentStatus = "Blocked"
+	StatusReady           IntentStatus = "Ready"
+	StatusChecking        IntentStatus = "Checking"
+	StatusCheckFailed     IntentStatus = "CheckFailed"
+	StatusDiffing         IntentStatus = "Diffing"
+	StatusDiffFailed      IntentStatus = "DiffFailed"
+	StatusDrifted         IntentStatus = "Drifted"
+	StatusDriftedLocked   IntentStatus = "DriftedLocked"
+	StatusObserved        IntentStatus = "Observed"
+	StatusObservedDrifted IntentStatus = "ObservedDrifted"
+	StatusApplying        IntentStatus = "Applying"
+	StatusHealthy         IntentStatus = "Healthy"
+	StatusApplyFailed     IntentStatus = "ApplyFailed"
+	StatusDestroying      IntentStatus = "Destroying"
+	StatusDestroyed       IntentStatus = "Destroyed"
+	StatusOrphaned        IntentStatus = "Orphaned"
 )
 
 type PartitionState struct {
@@ -58,6 +60,7 @@ type IntentState struct {
 	Partition           string                                  `json:"partition"`
 	Intent              string                                  `json:"intent"`
 	Status              IntentStatus                            `json:"status"`
+	IntentType          string                                  `json:"intentType,omitempty"`
 	Locked              bool                                    `json:"locked"`
 	IntentVersionID     string                                  `json:"intentVersionID"`
 	IntentSpecHash      string                                  `json:"intentSpecHash"`
