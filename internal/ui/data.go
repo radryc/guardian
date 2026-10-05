@@ -1744,6 +1744,20 @@ func deriveIntentPresentation(state *statedomain.IntentState, runtime intentTask
 			return string(state.Status), "Locked drift", "drifted-locked", combineDriftSummary("Drift detected but the intent is locked", detail)
 		}
 		return string(state.Status), "Locked drift", "drifted-locked", "Drift detected but the intent is locked"
+	case statedomain.StatusObserved:
+		if displayStatus, health, summary, ok := observedIntentHealthPresentation(state); ok {
+			return string(state.Status), displayStatus, health, summary
+		}
+		return string(state.Status), "Observed", "healthy", "Live state matches the desired CDK app"
+	case statedomain.StatusObservedDrifted:
+		detail := driftDetail(state.Drift)
+		if _, _, observedSummary, ok := observedIntentHealthPresentation(state); ok {
+			return string(state.Status), "Observed drift", "attention", combineDriftSummary(combineDriftSummary("Live state differs from the desired CDK app", detail), observedSummary)
+		}
+		if detail != "" {
+			return string(state.Status), "Observed drift", "attention", combineDriftSummary("Live state differs from the desired CDK app", detail)
+		}
+		return string(state.Status), "Observed drift", "attention", "Live state differs from the desired CDK app"
 	case statedomain.StatusBlocked:
 		return string(state.Status), "Blocked", "attention", "Waiting for joined intents to become healthy"
 	case statedomain.StatusDestroying:
@@ -1892,6 +1906,26 @@ func deriveAssetPresentation(state *statedomain.IntentState, assetName string, r
 			return string(state.Status), displayStatus, health, summary
 		}
 		return string(state.Status), "No diff", "healthy", "No current drift on this asset"
+	case statedomain.StatusObserved:
+		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
+			return string(state.Status), displayStatus, health, summary
+		}
+		return string(state.Status), "Observed", "healthy", "Live state matches the desired CDK app"
+	case statedomain.StatusObservedDrifted:
+		if changed {
+			detail := driftDetail(state.Drift)
+			if _, _, observedSummary, ok := observedAssetHealthPresentation(state, assetName); ok {
+				return string(state.Status), "Observed drift", "attention", combineDriftSummary(combineDriftSummary("Live state differs from the desired CDK app", detail), observedSummary)
+			}
+			if detail != "" {
+				return string(state.Status), "Observed drift", "attention", combineDriftSummary("Live state differs from the desired CDK app", detail)
+			}
+			return string(state.Status), "Observed drift", "attention", "Live state differs from the desired CDK app"
+		}
+		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
+			return string(state.Status), displayStatus, health, summary
+		}
+		return string(state.Status), "Observed", "healthy", "Live state matches the desired CDK app"
 	case statedomain.StatusDestroying:
 		return string(state.Status), "Removing", "pending", "Destroy in progress"
 	case statedomain.StatusDestroyed:

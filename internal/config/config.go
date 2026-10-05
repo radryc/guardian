@@ -2,16 +2,60 @@ package config
 
 import (
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
-	MonoFS     MonoFSConfig     `yaml:"monofs"`
-	KVS        KVSConfig        `yaml:"kvs"`
-	Guardian   GuardianConfig   `yaml:"guardian"`
-	Compliance ComplianceConfig `yaml:"compliance"`
-	Pushers    []PusherConfig   `yaml:"pushers"`
+	MonoFS        MonoFSConfig        `yaml:"monofs"`
+	KVS           KVSConfig           `yaml:"kvs"`
+	Guardian      GuardianConfig      `yaml:"guardian"`
+	Compliance    ComplianceConfig    `yaml:"compliance"`
+	Pushers       []PusherConfig      `yaml:"pushers"`
+	Notifications NotificationsConfig `yaml:"notifications"`
+}
+
+// NotificationsConfig configures partition failure alerting.
+type NotificationsConfig struct {
+	Enabled        bool                  `yaml:"enabled"`
+	PollInterval   string                `yaml:"pollInterval"`
+	FailThreshold  int                   `yaml:"failThreshold"`
+	Cooldown       string                `yaml:"cooldown"`
+	RepeatInterval string                `yaml:"repeatInterval"`
+	Channels       []NotificationChannel `yaml:"channels"`
+	Rules          []NotificationRule    `yaml:"rules"`
+}
+
+// NotificationChannel describes one delivery target.
+type NotificationChannel struct {
+	Name           string `yaml:"name"`
+	Type           string `yaml:"type"`
+	URL            string `yaml:"url"`
+	Secret         string `yaml:"secret"`
+	SecretEnv      string `yaml:"secretEnv"`
+	Timeout        string `yaml:"timeout"`
+	Cooldown       string `yaml:"cooldown"`
+	RepeatInterval string `yaml:"repeatInterval"`
+}
+
+// NotificationRule selects which events a channel receives.
+type NotificationRule struct {
+	Name        string   `yaml:"name"`
+	Events      []string `yaml:"events"`
+	MinSeverity string   `yaml:"minSeverity"`
+	Channels    []string `yaml:"channels"`
+}
+
+// ChannelSecret resolves the channel signing secret.
+func (c NotificationChannel) ChannelSecret() string {
+	if secret := strings.TrimSpace(c.Secret); secret != "" {
+		return secret
+	}
+	if env := strings.TrimSpace(c.SecretEnv); env != "" {
+		return strings.TrimSpace(os.Getenv(env))
+	}
+	return ""
 }
 
 type MonoFSConfig struct {
@@ -46,6 +90,10 @@ type GuardianConfig struct {
 	EnableFlowTopology   bool   `yaml:"enableFlowTopology"`
 	FlowMetricsURL       string `yaml:"flowMetricsURL"`
 	FlowMetricsTimeout   string `yaml:"flowMetricsTimeout"`
+	// ObservedInterval controls how often the observed collector polls pusher
+	// observed APIs for report-only AWS intents. Empty disables the collector.
+	ObservedInterval string `yaml:"observedInterval"`
+	ObservedTimeout  string `yaml:"observedTimeout"`
 }
 
 type ComplianceConfig struct {
@@ -59,6 +107,23 @@ type ComplianceConfig struct {
 type PusherConfig struct {
 	Name     string `yaml:"name"`
 	QueueDir string `yaml:"queueDir"`
+	// ObservedAPIURL points at the pusher's read API for observed AWS intents.
+	// The token is read from ObservedAPIToken or the env var named by
+	// ObservedAPITokenEnv.
+	ObservedAPIURL      string `yaml:"observedApiUrl"`
+	ObservedAPIToken    string `yaml:"observedApiToken"`
+	ObservedAPITokenEnv string `yaml:"observedApiTokenEnv"`
+}
+
+// ObservedToken resolves the bearer token for the pusher read API.
+func (p PusherConfig) ObservedToken() string {
+	if token := strings.TrimSpace(p.ObservedAPIToken); token != "" {
+		return token
+	}
+	if env := strings.TrimSpace(p.ObservedAPITokenEnv); env != "" {
+		return strings.TrimSpace(os.Getenv(env))
+	}
+	return ""
 }
 
 func Load(path string) (*Config, error) {
@@ -90,6 +155,8 @@ func Default() *Config {
 			EnableFlowTopology:   false,
 			FlowMetricsURL:       "",
 			FlowMetricsTimeout:   "2s",
+			ObservedInterval:     "5m",
+			ObservedTimeout:      "30s",
 		},
 		Compliance: ComplianceConfig{},
 		Pushers: []PusherConfig{{

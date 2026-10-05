@@ -509,3 +509,45 @@ func TestValidateIntentRejectsPartialExternalObjectStoreCredentials(t *testing.T
 		t.Fatalf("ValidateIntent() expected external object store credential validation error")
 	}
 }
+
+func TestValidateIntentAllowsObservedOnAWSPusher(t *testing.T) {
+	intent := &intentdomain.Intent{
+		Metadata: intentdomain.Metadata{Name: "aws-stacks"},
+		Spec: intentdomain.IntentSpec{
+			IntentType:   intentdomain.TypeObserved,
+			TargetPusher: "aws-123456789012",
+			Target:       targetdomain.Placement{Account: "123456789012", Region: "eu-west-1"},
+			Assets: []intentdomain.AssetSpec{{
+				Type:    "CDKStack",
+				Name:    "pusher",
+				Payload: map[string]string{"aws": "/partitions/demo/payloads/aws/pusher.yaml"},
+			}},
+		},
+	}
+
+	if err := ValidateIntent(intent, []string{"aws-stacks"}, []string{"aws-123456789012"}); err != nil {
+		t.Fatalf("ValidateIntent() error = %v", err)
+	}
+}
+
+func TestValidateIntentRejectsObservedOnNonAWSPusher(t *testing.T) {
+	intent := &intentdomain.Intent{
+		Metadata: intentdomain.Metadata{Name: "aws-stacks"},
+		Spec: intentdomain.IntentSpec{
+			IntentType:   intentdomain.TypeObserved,
+			TargetPusher: "k8s-main",
+			Target:       targetdomain.Placement{Cluster: "k8s-main"},
+			Assets: []intentdomain.AssetSpec{{
+				Type: "Compute",
+				Name: "svc",
+				Properties: map[string]any{
+					"image": "demo:v1",
+				},
+			}},
+		},
+	}
+
+	if err := ValidateIntent(intent, []string{"aws-stacks"}, []string{"k8s-main"}); err == nil {
+		t.Fatalf("ValidateIntent() expected observed intent on non-AWS pusher to be rejected")
+	}
+}

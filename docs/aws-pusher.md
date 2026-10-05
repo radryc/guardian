@@ -121,6 +121,16 @@ For the full account enablement flow (what the pusher stack provisions
 automatically and how to wire Doctor), see
 [`aws-observability-enablement.md`](aws-observability-enablement.md).
 
+## CloudFormation observation (observed intents)
+
+`AwsPusherStack` also provisions an EventBridge rule and SQS queue
+(`guardian-aws-observe`) for CloudFormation stack status and drift detection
+events. The pusher consumes those events into an in-memory cache and exposes it
+on the read API at `/v1/aws/observed/*`; Guardian's observed collector pulls
+that state and diffs it against the CDK app in MonoFS. See
+[`aws-observed.md`](aws-observed.md). Disable the pipeline with
+`-c deployAwsObserve=false`.
+
 ## Read-only CloudWatch / X-Ray API
 
 The pusher also serves a read-only observability API so Doctor can federate AWS

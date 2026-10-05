@@ -59,6 +59,42 @@ func PartitionReleaseLog(partition string) string {
 	return normalize(StateRoot(partition), "releases.json")
 }
 
+// ObservedRoot holds Guardian-captured observed state for AWS observed
+// intents. It lives beside .state but is written by the observed collector,
+// not the orchestrator dispatcher.
+func ObservedRoot(partition string) string {
+	return normalize(PartitionRoot(partition), ".observed")
+}
+
+func ObservedIntentDir(partition, intent string) string {
+	return normalize(ObservedRoot(partition), intent)
+}
+
+func ObservedSnapshot(partition, intent, asset string) string {
+	return normalize(ObservedIntentDir(partition, intent), asset+".json")
+}
+
+func ObservedEventsDir(partition, intent string) string {
+	return normalize(ObservedIntentDir(partition, intent), "events")
+}
+
+func ObservedEvent(partition, intent, eventID string) string {
+	return normalize(ObservedEventsDir(partition, intent), eventID+".json")
+}
+
+// RegistryRoot holds Guardian platform registrations (AWS pushers and their
+// source repositories). It is store-backed so the UI, CLI and guardiand all
+// read the same records.
+func RegistryRoot() string { return "/.registry" }
+
+func PushersRoot() string { return normalize(RegistryRoot(), "pushers") }
+
+func PusherRecord(name string) string { return normalize(PushersRoot(), name+".json") }
+
+func ReposRoot() string { return normalize(RegistryRoot(), "repos") }
+
+func RepoRecord(name string) string { return normalize(ReposRoot(), name+".json") }
+
 func QueueRoot() string { return "/.queues" }
 
 func QueueDir(pusher string) string { return normalize(QueueRoot(), pusher) }

@@ -46,7 +46,13 @@ func ValidateIntent(i *intentdomain.Intent, knownIntents []string, knownPushers 
 	if !namePattern.MatchString(i.Metadata.Name) {
 		return fmt.Errorf("invalid intent name %q", i.Metadata.Name)
 	}
-	if i.Spec.IntentType != "" && i.Spec.IntentType != "standard" {
+	switch i.Spec.IntentType {
+	case "", intentdomain.TypeStandard:
+	case intentdomain.TypeObserved:
+		if !isAWSPusher(i.Spec.TargetPusher) {
+			return fmt.Errorf("intentType %q requires an AWS targetPusher", intentdomain.TypeObserved)
+		}
+	default:
 		return fmt.Errorf("unsupported intentType %q", i.Spec.IntentType)
 	}
 
@@ -76,6 +82,10 @@ func toSet(values []string) map[string]struct{} {
 	return out
 }
 
+func isAWSPusher(targetPusher string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(targetPusher)), "aws")
+}
+
 func validateTargetPlacement(targetPusher string, placement targetdomain.Placement) error {
 	name := strings.ToLower(strings.TrimSpace(targetPusher))
 	switch {
@@ -87,7 +97,7 @@ func validateTargetPlacement(targetPusher string, placement targetdomain.Placeme
 		if strings.TrimSpace(placement.Cluster) == "" {
 			return fmt.Errorf("target.cluster is required for pusher %q", targetPusher)
 		}
-	case strings.Contains(name, "aws"):
+	case isAWSPusher(name):
 		if strings.TrimSpace(placement.Region) == "" {
 			return fmt.Errorf("target.region is required for pusher %q", targetPusher)
 		}

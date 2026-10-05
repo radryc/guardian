@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/rydzu/ainfra/guardian/internal/awsobserve"
 )
 
 // Handler serves the AWS read API over HTTP.
@@ -16,6 +18,8 @@ type Handler struct {
 	Token  string
 	// PromQL proxies PromQL to CloudWatch's Prometheus-compatible API.
 	PromQL PromQLProxier
+	// Observed serves observed CloudFormation stack state for Guardian.
+	Observed awsobserve.Provider
 }
 
 // NewHandler builds an HTTP handler for the reader.
@@ -26,6 +30,12 @@ func NewHandler(reader Reader, token string) *Handler {
 // WithPromQL attaches a CloudWatch PromQL proxy.
 func (h *Handler) WithPromQL(promql PromQLProxier) *Handler {
 	h.PromQL = promql
+	return h
+}
+
+// WithObserved attaches the observed CloudFormation state provider.
+func (h *Handler) WithObserved(provider awsobserve.Provider) *Handler {
+	h.Observed = provider
 	return h
 }
 
@@ -54,6 +64,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleGetTrace(w, r, strings.TrimPrefix(path, "/v1/aws/xray/trace/"))
 	case strings.HasPrefix(path, "/v1/aws/promql/"):
 		h.handlePromQL(w, r, strings.TrimPrefix(path, "/v1/aws/promql"))
+	case path == "/v1/aws/observed/stacks":
+		h.handleObservedList(w, r)
+	case strings.HasPrefix(path, "/v1/aws/observed/stacks/"):
+		h.handleObservedStack(w, r, strings.TrimPrefix(path, "/v1/aws/observed/stacks/"))
+	case path == "/v1/aws/observed/events":
+		h.handleObservedEvents(w, r)
+	case path == "/v1/aws/observed/refresh":
+		h.handleObservedRefresh(w, r)
+	case path == "/v1/aws/observed/diff":
+		h.handleObservedDiff(w, r)
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
@@ -267,6 +287,140 @@ func (h *Handler) handleGetTrace(w http.ResponseWriter, r *http.Request, traceID
 		return
 	}
 	writeJSON(w, http.StatusOK, spans)
+}
+
+func (h *Handler) observedReady(w http.ResponseWriter) bool {
+	if h.Observed == nil {
+		writeError(w, http.StatusServiceUnavailable, "observed state API not configured")
+		return false
+	}
+	return true
+}
+
+func (h *Handler) handleObservedList(w http.ResponseWriter, r *http.Request) {
+	if !h.observedReady(w) {
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	stacks := h.Observed.List(queryParam(r, "account"), queryParam(r, "region"))
+	writeJSON(w, http.StatusOK, map[string]any{"stacks": stacks})
+}
+
+func (h *Handler) handleObservedStack(w http.ResponseWriter, r *http.Request, suffix string) {
+	if !h.observedReady(w) {
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	account := queryParam(r, "account")
+	region := queryParam(r, "region")
+	suffix = strings.Trim(suffix, "/")
+	if suffix == "" {
+		writeError(w, http.StatusBadRequest, "stack name is required")
+		return
+	}
+	if strings.HasSuffix(suffix, "/template") {
+		stackName := strings.TrimSuffix(suffix, "/template")
+		if stackName == "" {
+			writeError(w, http.StatusBadRequest, "stack name is required")
+			return
+		}
+		template, err := h.Observed.Template(r.Context(), account, region, stackName)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"stackName": stackName, "template": template})
+		return
+	}
+	state, ok := h.Observed.Get(account, region, suffix)
+	if !ok {
+		writeError(w, http.StatusNotFound, "stack not observed")
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
+}
+
+func (h *Handler) handleObservedEvents(w http.ResponseWriter, r *http.Request) {
+	if !h.observedReady(w) {
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	since, err := parseTime(queryParam(r, "since"), time.Time{})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	limit, _ := strconv.Atoi(queryParam(r, "limit"))
+	events := h.Observed.Events(queryParam(r, "account"), queryParam(r, "region"), queryParam(r, "stack"), since, limit)
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
+func (h *Handler) handleObservedRefresh(w http.ResponseWriter, r *http.Request) {
+	if !h.observedReady(w) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var body struct {
+		Account     string   `json:"account"`
+		Region      string   `json:"region"`
+		Stacks      []string `json:"stacks"`
+		DetectDrift bool     `json:"detectDrift"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil && err.Error() != "EOF" {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(body.Region) == "" {
+		body.Region = queryParam(r, "region")
+	}
+	if strings.TrimSpace(body.Account) == "" {
+		body.Account = queryParam(r, "account")
+	}
+	states, err := h.Observed.Refresh(r.Context(), body.Account, body.Region, body.Stacks, body.DetectDrift)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"stacks": states})
+}
+
+func (h *Handler) handleObservedDiff(w http.ResponseWriter, r *http.Request) {
+	if !h.observedReady(w) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req awsobserve.SourceDiffRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.Region) == "" {
+		req.Region = queryParam(r, "region")
+	}
+	if strings.TrimSpace(req.Account) == "" {
+		req.Account = queryParam(r, "account")
+	}
+	result, err := h.Observed.DiffSource(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func queryParam(r *http.Request, name string) string {
