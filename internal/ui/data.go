@@ -406,6 +406,11 @@ func (s *Server) buildOverview(ctx context.Context) (*OverviewResponse, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Repo-managed access policy: hide partitions the caller cannot see.
+	// Disabled or observe-only services return the list unchanged.
+	if s.access != nil && s.access.Enabled() {
+		names = s.access.FilterPartitions(ctx, names)
+	}
 	response := &OverviewResponse{
 		GeneratedAt: time.Now().UTC(),
 		Partitions:  make([]PartitionSummary, 0, len(names)),

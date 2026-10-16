@@ -149,6 +149,21 @@ func ScanResult(pusher, scanID string) string {
 	return normalize(ScanResultsDir(pusher), scanID+".json")
 }
 
+// AccessRoot holds the repo-managed access policy: the raw ACL published per
+// environment plus the compiled bundle that MonoFS and Doctor consume.
+func AccessRoot() string { return "/.access" }
+
+// AccessPolicyPath is the raw ACL for one environment (access.yaml published
+// by CI into the store).
+func AccessPolicyPath(env string) string {
+	return normalize(AccessRoot(), "envs", env+".yaml")
+}
+
+// AccessCompiledPath is the compiled policy bundle served by guardiand.
+func AccessCompiledPath() string {
+	return normalize(AccessRoot(), "compiled", "policy.json")
+}
+
 func ArchiveRoot() string { return "/.archive" }
 
 func ArchiveIntentRoot(partition, intent string) string {
