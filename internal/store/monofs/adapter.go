@@ -223,6 +223,12 @@ func mapLogicalToPhysicalChecked(logicalPath string) (string, error) {
 	if strings.HasPrefix(logicalPath, "/.registry/") {
 		return "guardian-system/.registry/" + strings.TrimPrefix(logicalPath, "/.registry/"), nil
 	}
+	if logicalPath == "/.access" {
+		return "guardian-system/.access", nil
+	}
+	if strings.HasPrefix(logicalPath, "/.access/") {
+		return "guardian-system/.access/" + strings.TrimPrefix(logicalPath, "/.access/"), nil
+	}
 	// Global template overlays (/.templates/aws/**) let operators extend or
 	// override the embedded CDK template catalog from MonoFS.
 	if logicalPath == "/.templates" {
@@ -274,6 +280,12 @@ func mapPhysicalToLogicalChecked(physicalPath string) (string, error) {
 	}
 	if strings.HasPrefix(physicalPath, "guardian-system/.registry/") {
 		return "/.registry/" + strings.TrimPrefix(physicalPath, "guardian-system/.registry/"), nil
+	}
+	if physicalPath == "guardian-system/.access" {
+		return "/.access", nil
+	}
+	if strings.HasPrefix(physicalPath, "guardian-system/.access/") {
+		return "/.access/" + strings.TrimPrefix(physicalPath, "guardian-system/.access/"), nil
 	}
 	if physicalPath == "guardian-system/.templates" {
 		return "/.templates", nil

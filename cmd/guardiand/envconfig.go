@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"strings"
+	"time"
 
 	"github.com/rydzu/ainfra/guardian/internal/config"
 )
@@ -52,4 +53,16 @@ func parseGuardianPushers(raw string) []config.PusherConfig {
 		out = append(out, config.PusherConfig{Name: name, QueueDir: queueDir})
 	}
 	return out
+}
+
+// guardianAccessInterval parses GUARDIAN_ACCESS_INTERVAL (Go duration). An
+// empty or invalid value returns 0, which makes the access service fall back
+// to its default refresh interval.
+func guardianAccessInterval() time.Duration {
+	if raw := strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_INTERVAL")); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 0
 }
