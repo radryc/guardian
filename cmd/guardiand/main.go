@@ -20,6 +20,7 @@ import (
 	"time"
 
 	coreauthz "github.com/radryc/monofs/pkg/authz"
+	"github.com/rydzu/ainfra/guardian/internal/access"
 	"github.com/rydzu/ainfra/guardian/internal/alerting"
 	guardauthz "github.com/rydzu/ainfra/guardian/internal/authz"
 	"github.com/rydzu/ainfra/guardian/internal/buildinfo"
@@ -270,6 +271,25 @@ func main() {
 			Resolver:  observedResolver,
 			Publisher: publisher,
 		}
+		// Repo-managed access policy: load the raw ACL published under
+		// /.access, compile it against the live partition catalog, and hand it
+		// to the UI for read filtering and the /api/access/policy endpoint.
+		// Disabled unless GUARDIAN_ACCESS_POLICY_PATH is set.
+		accessService := access.NewService(access.Options{
+			Store:    store,
+			RawPath:  strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_POLICY_PATH")),
+			Enforce:  strings.EqualFold(strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_ENFORCE")), "true"),
+			Interval: guardianAccessInterval(),
+			Logf: func(format string, args ...any) {
+				log.Printf(format, args...)
+			},
+		})
+		go accessService.Run(context.Background())
+		if accessService.Enabled() {
+			log.Printf("guardian access policy enabled (path=%s enforce=%t)",
+				strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_POLICY_PATH")),
+				strings.EqualFold(strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_ENFORCE")), "true"))
+		}
 		uiServer, err := uiuipkg.New(uiuipkg.Options{
 			Store:              store,
 			Dispatcher:         dispatcher,
@@ -281,6 +301,8 @@ func main() {
 			ClientConfig:       clientConfig,
 			ClientConfigToken:  cfg.Guardian.ClientDiscoveryToken,
 			Unmanaged:          unmanagedService,
+			Access:             accessService,
+			AccessPolicyToken:  strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_POLICY_TOKEN")),
 			// Auto-deploy is on by default; guardian.autoDeployOnIngest=false
 			// keeps merges manual.
 			DisableAutoDeployOnIngest: !cfg.Guardian.AutoDeployOnIngest,

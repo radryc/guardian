@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	coreauthz "github.com/radryc/monofs/pkg/authz"
+	"github.com/rydzu/ainfra/guardian/internal/access"
 	"github.com/rydzu/ainfra/guardian/internal/buildinfo"
 	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
 	"github.com/rydzu/ainfra/guardian/internal/historyquery"
@@ -57,6 +59,12 @@ type Options struct {
 	// Unmanaged detects CloudFormation stacks without a repository and
 	// prepares repo associations. Optional.
 	Unmanaged UnmanagedService
+	// Access is the repo-managed access policy service. Nil (or disabled)
+	// keeps every read visible.
+	Access *access.Service
+	// AccessPolicyToken authenticates /api/access/policy pollers. When empty
+	// the endpoint is open to loopback callers only.
+	AccessPolicyToken string
 }
 
 type ClientConfig struct {
@@ -83,6 +91,8 @@ type Server struct {
 	clientConfigToken  string
 	autoDeployOnIngest bool
 	unmanaged          UnmanagedService
+	access             *access.Service
+	accessPolicyToken  string
 	index              *template.Template
 	static             http.Handler
 	mux                http.Handler
@@ -246,6 +256,8 @@ func New(opts Options) (*Server, error) {
 		clientConfigToken:  strings.TrimSpace(opts.ClientConfigToken),
 		autoDeployOnIngest: !opts.DisableAutoDeployOnIngest,
 		unmanaged:          opts.Unmanaged,
+		access:             opts.Access,
+		accessPolicyToken:  strings.TrimSpace(opts.AccessPolicyToken),
 		index:              index,
 		static:             http.StripPrefix("/static/", http.FileServer(http.FS(staticRoot))),
 	}
@@ -271,6 +283,8 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/api/v1/status/buildinfo", s.handleBuildInfo)
 	mux.HandleFunc("/api/client-config", s.handleClientConfig)
+	mux.HandleFunc("/api/access/policy", s.handleAccessPolicy)
+	mux.HandleFunc("/api/access/explain", s.handleAccessExplain)
 	mux.HandleFunc("/api/m2m/overview", s.handleM2MOverview)
 	mux.HandleFunc("/api/m2m/partitions", s.handleM2MPartitions)
 	mux.HandleFunc("/api/m2m/partitions/", s.handleM2MPartitionRoute)
@@ -377,6 +391,99 @@ func (s *Server) handleClientConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.clientConfig)
 }
 
+// handleAccessPolicy serves the compiled access policy bundle to MonoFS and
+// Doctor. Access requires the internal token (when configured), the admin
+// role, or — with no token configured — a loopback caller.
+func (s *Server) handleAccessPolicy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	if s.access == nil || !s.access.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("access policy is not enabled"))
+		return
+	}
+	if !s.requestCanReadAccessPolicy(r) {
+		status := http.StatusForbidden
+		if _, ok := coreauthz.IdentityFromContext(r.Context()); !ok {
+			status = http.StatusUnauthorized
+		}
+		writeError(w, status, fmt.Errorf("access policy requires the internal token, the admin role, or loopback access"))
+		return
+	}
+	content, err := s.access.PolicyJSON()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("ETag", `"`+s.access.Version()+`"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(content)
+}
+
+// handleAccessExplain reports why a subject has the access it has. It is
+// admin-only.
+func (s *Server) handleAccessExplain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	if s.access == nil || !s.access.Enabled() {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("access policy is not enabled"))
+		return
+	}
+	if !s.access.IsAdmin(r.Context()) {
+		writeError(w, http.StatusForbidden, fmt.Errorf("access explain requires the admin role"))
+		return
+	}
+	user := strings.TrimSpace(r.URL.Query().Get("user"))
+	if user == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("user query parameter is required"))
+		return
+	}
+	var groups []string
+	if raw := strings.TrimSpace(r.URL.Query().Get("groups")); raw != "" {
+		for _, group := range strings.Split(raw, ",") {
+			if group = strings.TrimSpace(group); group != "" {
+				groups = append(groups, group)
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, s.access.Explain(r.Context(), user, groups))
+}
+
+// requestCanReadAccessPolicy mirrors the client-config discovery auth: a
+// matching internal token, an admin identity, or loopback when no token is
+// configured.
+func (s *Server) requestCanReadAccessPolicy(r *http.Request) bool {
+	token := strings.TrimSpace(s.accessPolicyToken)
+	if token != "" {
+		provided := strings.TrimSpace(r.Header.Get("X-Guardian-Internal-Token"))
+		if provided == "" {
+			authorization := strings.TrimSpace(r.Header.Get("Authorization"))
+			if strings.HasPrefix(strings.ToLower(authorization), "bearer ") {
+				provided = strings.TrimSpace(authorization[len("Bearer "):])
+			}
+		}
+		if provided != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(token)) == 1 {
+			return true
+		}
+	} else if requestIsLoopback(r) {
+		return true
+	}
+	return s.access != nil && s.access.IsAdmin(r.Context())
+}
+
+// canSeePartition applies the repo-managed access policy to one partition.
+func (s *Server) canSeePartition(ctx context.Context, partition string) bool {
+	if s.access == nil || !s.access.Enabled() {
+		return true
+	}
+	return s.access.CanSee(ctx, partition)
+}
+
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w, http.MethodGet)
@@ -460,6 +567,12 @@ func (s *Server) handlePartitionRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	parts := strings.Split(trimmed, "/")
 	name := parts[0]
+	// Repo-managed access policy: hide GETs on partitions the caller cannot
+	// see (DELETE/PUT/POST keep their existing authz behavior).
+	if r.Method == http.MethodGet && !s.canSeePartition(r.Context(), name) {
+		http.NotFound(w, r)
+		return
+	}
 	if len(parts) == 1 {
 		switch r.Method {
 		case http.MethodGet:
