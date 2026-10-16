@@ -174,6 +174,21 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["MONOFS_ROUTER_OIDC_AUTH_URL"] = envOrDefault("MONOFS_ROUTER_OIDC_AUTH_URL", "")
 	env["MONOFS_AUTHZ_ENFORCE_UI"] = envOrDefault("MONOFS_AUTHZ_ENFORCE_UI", "false")
 
+	// --- Repo-managed access policy (pkg/authz/policy) ---
+	// Guardiand compiles the published ACL (/.access/envs/<env>.yaml) and
+	// serves the compiled bundle; the router consumes it for UI/API read
+	// filtering. Both sides default to the shared cluster token. Observe-only
+	// unless MONOFS_ACCESS_ENFORCE / GUARDIAN_ACCESS_ENFORCE are set.
+	env["MONOFS_ACCESS_POLICY_URL"] = envOrDefault("MONOFS_ACCESS_POLICY_URL", "")
+	env["MONOFS_ACCESS_POLICY_FILE"] = envOrDefault("MONOFS_ACCESS_POLICY_FILE", "")
+	env["MONOFS_ACCESS_POLICY_TOKEN"] = envOrDefault("MONOFS_ACCESS_POLICY_TOKEN", monofsToken)
+	env["MONOFS_ACCESS_SERVE_TOKEN"] = envOrDefault("MONOFS_ACCESS_SERVE_TOKEN", monofsToken)
+	env["MONOFS_ACCESS_ENFORCE"] = envOrDefault("MONOFS_ACCESS_ENFORCE", "false")
+	env["GUARDIAN_ACCESS_POLICY_PATH"] = envOrDefault("GUARDIAN_ACCESS_POLICY_PATH", "")
+	env["GUARDIAN_ACCESS_POLICY_TOKEN"] = envOrDefault("GUARDIAN_ACCESS_POLICY_TOKEN", monofsToken)
+	env["GUARDIAN_ACCESS_ENFORCE"] = envOrDefault("GUARDIAN_ACCESS_ENFORCE", "false")
+	env["GUARDIAN_ACCESS_INTERVAL"] = envOrDefault("GUARDIAN_ACCESS_INTERVAL", "30s")
+
 	// --- SSO warning ---
 	if env["MONOFS_OIDC_ISSUER"] == "" {
 		fmt.Fprintf(os.Stderr, "  WARNING: SSO authentication is not configured (MONOFS_OIDC_ISSUER is empty).\n"+
