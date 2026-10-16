@@ -225,6 +225,19 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 		return fail(err)
 	}
 
+	// A deletion marker short-circuits normal reconciliation: intents are
+	// destroyed (or orphaned) and the partition subtree is purged once teardown
+	// completes.
+	if deletion, derr := loadDeletionRequest(ctx, r.store, partitionName); derr == nil {
+		if err := r.reconcilePartitionDeletion(ctx, partitionName, deletion, configContent); err != nil {
+			return fail(err)
+		}
+		span.SetStatus(codes.Ok, "")
+		return nil
+	} else if !errors.Is(derr, os.ErrNotExist) {
+		return fail(derr)
+	}
+
 	intentEntries, err := r.store.ListDir(ctx, paths.PartitionIntentsDir(partitionName))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fail(err)
@@ -321,6 +334,10 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 		return fail(err)
 	}
 
+	// Compile spec.implementation=cdk intents into their generated CDK payload
+	// before any task is queued. Generation failures block only that intent.
+	generationErrs := r.syncGeneratedAWSPayloads(ctx, partitionName, compiled)
+
 	// Snapshot intent statuses before the loop so that in-loop mutations
 	// (e.g. queueing a refresh on a dependency) don't block dependents that
 	// already had a healthy dependency at the start of this cycle.
@@ -378,6 +395,17 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 		// the Guardian observed collector owns their state transitions. The
 		// reconciler only keeps their metadata in sync with the manifest.
 		if current.IntentType == intentdomain.TypeObserved {
+			if err := r.dispatcher.WriteIntentState(ctx, current); err != nil {
+				return fail(err)
+			}
+			existingStates[name] = current
+			outputs[name] = copyStringMap(current.Outputs)
+			continue
+		}
+		if genErr := generationErrs[name]; genErr != nil {
+			current.Status = statedomain.StatusBlocked
+			message := "generate CDK stack: " + genErr.Error()
+			current.LastError = &message
 			if err := r.dispatcher.WriteIntentState(ctx, current); err != nil {
 				return fail(err)
 			}
@@ -691,16 +719,25 @@ func (r *Reconciler) loadDeletedIntentManifest(ctx context.Context, partitionNam
 	if state != nil && state.IntentVersionID != "" {
 		version, err := r.store.GetVersion(ctx, logicalPath, state.IntentVersionID)
 		if err == nil {
-			return version.Content, nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
+			// A tombstone or a store without retained version content yields an
+			// empty body; fall through to the archive/live manifest instead.
+			if len(strings.TrimSpace(string(version.Content))) > 0 {
+				return version.Content, nil
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
 	}
 	if state != nil && state.DeploymentRevision != "" {
-		return r.store.ReadFile(ctx, paths.ArchiveManifest(partitionName, intentName, state.DeploymentRevision))
+		if content, err := r.store.ReadFile(ctx, paths.ArchiveManifest(partitionName, intentName, state.DeploymentRevision)); err == nil {
+			return content, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
 	}
-	return nil, os.ErrNotExist
+	// Partition deletion still has the live manifest in place; the removed-intent
+	// flow has already deleted it and lands on os.ErrNotExist here.
+	return r.store.ReadFile(ctx, logicalPath)
 }
 
 func (r *Reconciler) reconcileAll(ctx context.Context) error {
@@ -814,6 +851,12 @@ func (r *Reconciler) syncPartitionSchedules(ctx context.Context) error {
 			continue
 		}
 		if partition.Spec.Reconciliation.Mode == "manual" {
+			// A deletion-marked partition must keep reconciling until teardown
+			// completes, even when normal reconciliation is manual.
+			if _, derr := loadDeletionRequest(ctx, r.store, name); derr == nil {
+				r.schedulePartitionJob(name, r.intervalStr, 0)
+				continue
+			}
 			r.removePartitionJob(name)
 			continue
 		}

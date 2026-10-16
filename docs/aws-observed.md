@@ -60,6 +60,10 @@ Two important clarifications:
   MonoFS's own `--auto-refresh` poll / forge webhook routes (which need the
   MonoFS bearer token when auth is enforced).
 
+For stacks that have no repository yet (unmanaged / missing-repo), Guardian can
+prepare an observed snapshot and an adoption branch from the live template; see
+[`unmanaged-stacks.md`](unmanaged-stacks.md).
+
 ## Intent manifest
 
 One observed intent per CloudFormation stack. The `CDKStack` asset points at a
@@ -187,26 +191,57 @@ HTTP API (same records):
 | `/api/pushers/{name}` | GET/DELETE | read / remove a pusher |
 | `/api/repos` | GET/POST | list / upsert repos |
 | `/api/repos/{name}` | GET/DELETE | read / remove a repo |
+| `/api/repos/{name}/bindings` | PUT | replace partition assignments (credential-free) |
 | `/api/repos/{name}/ingest` | POST | generate intents from the stored assembly |
 | `/api/repos/{name}/notify` | POST | record a CI merge notification and ingest |
 
 ## Register a repository
 
+A repo can feed one or more partitions, and a partition can be fed by several
+repos. Each binding carries its own payload path, stack selector and optional
+account/region override:
+
 ```bash
 guardianctl repo add \
   --name strata-aws \
   --pusher aws-123456789012 \
-  --partition strata-aws \
+  --bindings '[{"partition":"prod","selector":"Prod-*"},{"partition":"staging","selector":"Stg-*"}]' \
   --source https://github.com/example/strata.git \
   --branch main \
   --assembly-subdir cdk.out
 
+guardianctl repo assign --name strata-aws --partition prod,staging --selector 'Strata-*'
 guardianctl repo list
 ```
 
-`source` may be a git URL or a MonoFS logical path. `account`/`region` default
-to the pusher's values; `path` defaults to
-`/partitions/<partition>/payloads/aws`.
+`source` may be a git URL or a MonoFS logical path; it never embeds credentials.
+`account`/`region` default to the pusher's values and can be overridden per
+binding. The UI exposes the same assignment in **Pushers & Repos** — check the
+existing partitions a repo feeds and set a selector/path per partition.
+
+Repo records live in MonoFS under `/.registry/repos` and are the only place
+credentials (pusher token, source URL) are kept. Partition manifests and
+`.guardian/config.yaml` reference repos by name and carry only credential-free
+bindings, so they are safe to commit or push to GitHub.
+
+### Partition-as-code in the repository
+
+A repository can author the partition itself:
+
+```
+.guardian/config.yaml                    # pusher (tokenEnv) + repo bindings
+guardian/partitions/<name>/
+  partition.yaml                         # or config.yaml
+  intents/*.yaml
+  payloads/**                            # copied to /partitions/<name>/payloads/**
+  secrets/**                             # never imported from the repo
+```
+
+`guardianctl repo sync` / `repo apply` imports this directory and reconciles the
+partition. UIs/APIs that ingest from a MonoFS logical source path do the same.
+Put secret values under `/partitions/<name>/secrets/...` in MonoFS and reference
+them as `secretRef: monofs-secret://<name>/<path>`; inline `Secret.value` is
+rejected for repo-sourced partitions.
 
 ## Repository config (`.guardian/config.yaml`)
 
@@ -224,10 +259,18 @@ pusher:
   tokenEnv: GUARDIAN_AWSREAD_TOKEN
 repo:
   name: strata-aws
-  partition: strata-aws
   assemblySubdir: cdk.out
-  path: /partitions/strata-aws/payloads/aws
+  bindings:
+    - partition: prod
+      selector: Prod-*
+      path: /partitions/prod/payloads/aws
+    - partition: staging
+      selector: Stg-*
+      region: eu-west-1
 ```
+
+Bindings are credential-free by design. Use `pusher.tokenEnv` (not
+`pusher.token`) so the shared config never contains a secret.
 
 Apply it with:
 
@@ -294,6 +337,23 @@ Two ingest paths exist:
 Both paths generate one `observed` intent per CloudFormation stack, targeting
 the registered pusher, and write `config.yaml`, `intents/*.yaml`, payload
 manifests and a pruned `cdk.out` under the partition.
+
+Both paths are also GitOps-aware:
+
+- If the repository contains `guardian/partitions/<name>/`, its
+  `partition.yaml`, `intents/*.yaml` and payload files are imported into
+  `/partitions/<name>/`. The repository is authoritative for that config, so an
+  authored `partition.yaml` wins over generated defaults.
+- Generated observed bundles never reset an existing partition config: ingest
+  extends instead of overwriting reconciliation, labels and defaults.
+- After a successful ingest every bound partition is reconciled immediately
+  (deploy). Control it with `guardian.autoDeployOnIngest` (default `true`) for
+  the UI/daemon and `--reconcile=false` for `repo sync`/`repo ingest`/`repo
+  notify`.
+- Repo-sourced partitions reject inline `Secret.value`; use `secretRef` with
+  the value stored under `/partitions/<name>/secrets/...` in MonoFS (never
+  committed). `.guardian/config.yaml` rejects `pusher.token` and
+  credential-bearing URLs for the same reason.
 
 `repo sync --synth` and `POST /v1/aws/observed/diff` execute the repository's
 CDK app (npm install + cdk synth) on the machine or pusher that runs them. Treat
@@ -388,6 +448,16 @@ The pusher task role needs, on top of `ReadOnlyAccess`:
 - The store ingest path requires a cloud assembly (`manifest.json` plus
   templates) already in MonoFS.
 - The registry stores bearer tokens inline when `--token` is used; prefer
-  `--token-env` so secrets stay out of the store.
+  `--token-env` so secrets stay out of the store. The registry is the only
+  place credentials live — never copy source URLs or tokens into partition
+  manifests, `.guardian/config.yaml` or other GitHub-shared files.
+- Repo-authored content is checked for secret material: `.guardian/config.yaml`
+  rejects `pusher.token` and URLs with embedded credentials,
+  `guardian/partitions/<name>/` rejects inline `Secret.value`, and MonoFS
+  publish skips deny-listed paths (`**/secrets/**`, `.env`, `*.secret.*`,
+  `*.pem`/`*.key`, `.registry/**`) so they can never round-trip to the remote.
+- `repo sync` writes each binding's intent files but no longer removes intents
+  missing from the generated bundle, because a partition can be fed by several
+  repos/bindings. Remove stale intents explicitly when a stack is retired.
 - Deleting a repo or pusher registration does not delete the generated
   partition; use `guardianctl partition delete` separately.

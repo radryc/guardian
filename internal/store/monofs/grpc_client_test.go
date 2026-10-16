@@ -332,6 +332,14 @@ func (f *fakeRouterClient) UpsertGuardianPathsStream(context.Context, ...grpc.Ca
 	return nil, nil
 }
 
+func (f *fakeRouterClient) UploadWorkspaceBundle(context.Context, ...grpc.CallOption) (grpc.ClientStreamingClient[pb.WorkspaceBundleChunk, pb.UploadWorkspaceBundleResponse], error) {
+	return nil, nil
+}
+
+func (f *fakeRouterClient) PublishWorkspace(context.Context, *pb.PublishWorkspaceRequest, ...grpc.CallOption) (grpc.ServerStreamingClient[pb.WorkspaceSyncEvent], error) {
+	return nil, nil
+}
+
 func (f *fakeRouterClient) DeleteGuardianPaths(context.Context, *pb.DeleteGuardianPathsRequest, ...grpc.CallOption) (*pb.DeleteGuardianPathsResponse, error) {
 	return nil, nil
 }

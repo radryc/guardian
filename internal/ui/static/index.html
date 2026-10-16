@@ -74,17 +74,30 @@
           </svg>
           <span>History</span>
         </button>
-        <button class="nav-item" data-tab-target="scanPanel">
+        <button class="nav-item" data-tab-target="scanPanel" data-open-scope="new">
           <svg class="w-4 h-4 shrink-0 opacity-85" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
             <circle cx="10" cy="10" r="2"/><path d="M10 4a6 6 0 0 1 6 6"/><path d="M10 1.5a8.5 8.5 0 0 1 8.5 8.5"/><path d="M10 16a6 6 0 0 1-6-6"/><path d="M10 18.5A8.5 8.5 0 0 1 1.5 10"/>
           </svg>
           <span>Scan &amp; Import</span>
         </button>
-        <button class="nav-item" data-tab-target="registryPanel">
+        <button class="nav-item" data-tab-target="unmanagedPanel" data-open-scope="new">
+          <svg class="w-4 h-4 shrink-0 opacity-85" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M3 4.5h14M3 10h14M3 15.5h9"/><circle cx="16" cy="15.5" r="2"/>
+          </svg>
+          <span>Unmanaged Stacks</span>
+        </button>
+        <button class="nav-item" data-tab-target="registryPanel" data-open-scope="new">
           <svg class="w-4 h-4 shrink-0 opacity-85" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
             <ellipse cx="10" cy="5" rx="6.5" ry="2.5"/><path d="M3.5 5v5c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5V5"/><path d="M3.5 10v5c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5v-5"/>
           </svg>
           <span>Pushers &amp; Repos</span>
+        </button>
+        <button class="nav-item" data-tab-target="builderPanel" data-open-scope="new">
+          <svg class="w-4 h-4 shrink-0 opacity-85" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="2" y="2" width="6" height="6" rx="1.5"/><rect x="12" y="12" width="6" height="6" rx="1.5"/>
+            <path d="M8 5h4a3 3 0 0 1 3 3v4"/>
+          </svg>
+          <span>Build</span>
         </button>
       </nav>
 
@@ -145,13 +158,15 @@
       </section>
 
       <!-- Tab bar -->
-      <div class="flex border-b border-white/[0.09] px-6 mt-5 bg-[#0D1220] sticky top-12 z-10">
+      <div class="flex flex-wrap border-b border-white/[0.09] px-6 mt-5 bg-[#0D1220] sticky top-12 z-10">
         <button class="tab-button active" data-tab-target="overviewPanel">Overview</button>
         <button class="tab-button" data-tab-target="topologyPanel">Topology</button>
         <button class="tab-button" data-tab-target="rolloutsPanel">Rollouts</button>
         <button class="tab-button" data-tab-target="historyPanel">History</button>
-        <button class="tab-button" data-tab-target="scanPanel">Scan &amp; Import</button>
-        <button class="tab-button" data-tab-target="registryPanel">Pushers &amp; Repos</button>
+        <button class="tab-button" data-tab-target="scanPanel" data-open-scope="existing">Scan &amp; Import</button>
+        <button class="tab-button" data-tab-target="unmanagedPanel" data-open-scope="existing">Unmanaged Stacks</button>
+        <button class="tab-button" data-tab-target="registryPanel" data-open-scope="existing">Pushers &amp; Repos</button>
+        <button class="tab-button" data-tab-target="builderPanel" data-open-scope="existing">Build</button>
       </div>
 
       <!-- ── Overview panel ────────────────────────── -->
@@ -395,6 +410,26 @@
           </article>
         </div>
       </section>
+      <!-- Unmanaged stacks panel -->
+      <section id="unmanagedPanel" class="panel hidden px-6 py-5 space-y-5">
+        <article class="card">
+          <div class="card-header">
+            <h2 class="card-title">Unmanaged CloudFormation stacks</h2>
+            <p class="text-muted text-[13px]">Live stacks that are not covered by a repository-backed partition. Associating a repository prepares an observed snapshot and an adoption branch (MR) for that stack.</p>
+          </div>
+          <div class="flex items-center gap-3">
+            <button id="unmanagedRefreshButton" class="btn-secondary">Refresh</button>
+            <span class="text-[12px] text-[#566778]">Detection reads the pusher observed API and the Guardian store; nothing is written to AWS.</span>
+          </div>
+        </article>
+        <article class="card">
+          <div class="card-header">
+            <h2 class="card-title">Stacks needing a repository</h2>
+            <p class="text-muted text-[13px]">"missing repo" stacks are already managed by a partition but have no repository binding; "unmanaged" stacks have no partition at all.</p>
+          </div>
+          <div id="unmanagedList" class="text-sm text-[#566778]">No stacks loaded yet.</div>
+        </article>
+      </section>
       <!-- Pushers & repositories panel -->
       <section id="registryPanel" class="panel hidden px-6 py-5 space-y-5">
         <article class="card">
@@ -448,7 +483,7 @@
         <article class="card">
           <div class="card-header">
             <h2 class="card-title">Source repository</h2>
-            <p class="muted text-[13px]">Associate a repository (git URL or MonoFS path) with a pusher and partition. Ingest generates one observed intent per CloudFormation stack.</p>
+            <p class="muted text-[13px]">Associate a repository (git URL or MonoFS path) with a pusher and one or more partitions. Ingest generates observed intents per CloudFormation stack, filtered by each binding's selector.</p>
           </div>
           <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
             <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
@@ -459,10 +494,11 @@
               <span>Pusher</span>
               <select id="repoPusher" class="search-input"></select>
             </label>
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
-              <span>Partition</span>
-              <input id="repoPartition" class="search-input" type="text" placeholder="strata-aws">
-            </label>
+            <div class="grid gap-1 text-[12px] text-[#9BB0CF] md:col-span-3">
+              <span>Partitions</span>
+              <div id="repoPartitionPicker" class="grid gap-1 max-h-56 overflow-y-auto rounded border border-white/[0.07] p-2"></div>
+              <p class="text-[11px] text-[#566778]">Assign one or more existing partitions. Optional stack selector and payload path per partition; one repo can feed many partitions.</p>
+            </div>
             <label class="grid gap-1 text-[12px] text-[#9BB0CF] md:col-span-2">
               <span>Source (git URL or MonoFS path)</span>
               <input id="repoSource" class="search-input" type="text" placeholder="https://github.com/org/strata.git">
@@ -475,10 +511,6 @@
               <span>Assembly subdir</span>
               <input id="repoAssemblySubdir" class="search-input" type="text" placeholder="cdk.out">
             </label>
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF] md:col-span-2">
-              <span>Payload path (optional)</span>
-              <input id="repoPath" class="search-input" type="text" placeholder="/partitions/strata-aws/payloads/aws">
-            </label>
           </div>
           <div class="mt-3">
             <button id="repoSaveButton" class="btn-primary">Register repo</button>
@@ -489,10 +521,58 @@
         <article class="card">
           <div class="card-header">
             <h2 class="card-title">Registered repositories</h2>
-            <p class="muted text-[13px]">Ingest regenerates observed intents for the partition from the stored assembly.</p>
+            <p class="muted text-[13px]">Ingest regenerates observed intents for every assigned partition from the stored assembly.</p>
           </div>
           <div id="repoList" class="grid gap-2 text-sm text-[#566778]">Loading repositories…</div>
+          <div id="repoAssignPanel" class="hidden mt-3 rounded border border-[#00ADE4]/40 bg-[#00ADE4]/[0.05] p-3">
+            <div class="flex items-center justify-between gap-2 mb-2">
+              <span class="text-[13px] font-semibold text-[#E5ECF4]">Assign partitions to <span id="repoAssignName"></span></span>
+              <button id="repoAssignCancel" class="btn-ghost text-[12px]">Cancel</button>
+            </div>
+            <div id="repoAssignPicker" class="grid gap-1 max-h-56 overflow-y-auto"></div>
+            <div class="mt-3">
+              <button id="repoAssignSave" class="btn-primary">Save assignments</button>
+            </div>
+            <p class="text-[11px] text-[#566778] mt-2">Only assignments are written. The repo source and credentials are not read or changed here.</p>
+          </div>
         </article>
+      </section>
+
+      <!-- ── Build panel ───────────────────────────── -->
+      <section id="builderPanel" class="panel hidden">
+        <div class="builder-shell">
+          <div class="builder-topbar">
+            <div class="builder-topbar-main">
+              <span id="builderPartitionLabel" class="builder-partition-label">Select a partition</span>
+              <span id="builderDirtyBadge" class="builder-dirty-badge hidden">Unsaved changes</span>
+              <span id="builderStatusText" class="builder-status-text"></span>
+            </div>
+            <div class="builder-topbar-actions">
+              <button id="builderRestoreDraft" class="btn-ghost hidden">Restore draft</button>
+              <button id="builderDiscard" class="btn-ghost">Discard changes</button>
+              <button id="builderAutoLayout" class="btn-ghost">Auto-layout</button>
+              <button id="builderSave" class="btn-primary">Save</button>
+            </div>
+          </div>
+          <div class="builder-body">
+            <aside class="builder-palette">
+              <div class="builder-palette-head">
+                <input id="builderPaletteSearch" class="search-input w-full" type="search" placeholder="Search asset types…">
+                <p class="builder-palette-hint">Drag onto a lane, or click to add to the last lane.</p>
+              </div>
+              <div id="builderPaletteList" class="builder-palette-list"></div>
+            </aside>
+            <div class="builder-canvas-wrap">
+              <div id="builderCanvas" class="builder-canvas">
+                <div id="builderCanvasContent" class="builder-canvas-content">
+                  <svg id="builderEdgeLayer" class="builder-edge-layer" xmlns="http://www.w3.org/2000/svg"></svg>
+                </div>
+              </div>
+              <div id="builderProblems" class="builder-problems hidden"></div>
+            </div>
+            <aside id="builderInspector" class="builder-inspector"></aside>
+          </div>
+        </div>
       </section>
     </main>
   </div>

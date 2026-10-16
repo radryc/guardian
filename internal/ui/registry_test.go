@@ -131,6 +131,143 @@ func TestRegistryAPIIngestFromStoreAssembly(t *testing.T) {
 	}
 }
 
+func TestRegistryAPIAssignBindingsAndMultiPartitionIngest(t *testing.T) {
+	ctx := context.Background()
+	srv, store := newRegistryTestServer(t)
+
+	assemblyDir := "/repos/strata/cdk.out"
+	seed := func(path, content string) {
+		t.Helper()
+		if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{
+			Writes: []guardianapi.PathWrite{{LogicalPath: path, Content: []byte(content)}},
+		}); err != nil {
+			t.Fatalf("seed %s: %v", path, err)
+		}
+	}
+	seed(assemblyDir+"/manifest.json", `{"artifacts":{
+		"ProdStack":{"type":"aws:cloudformation:stack","properties":{"templateFile":"ProdStack.template.json"}},
+		"StgStack":{"type":"aws:cloudformation:stack","properties":{"templateFile":"StgStack.template.json"}}
+	}}`)
+	seed(assemblyDir+"/ProdStack.template.json", `{"Resources":{}}`)
+	seed(assemblyDir+"/StgStack.template.json", `{"Resources":{}}`)
+
+	for _, body := range []map[string]any{
+		{"name": "aws-1", "account": "123456789012", "region": "eu-west-1", "observedApiUrl": "http://x", "token": "secret-token"},
+		{"name": "strata", "pusher": "aws-1", "source": assemblyDir, "bindings": []map[string]any{
+			{"partition": "prod", "selector": "Prod*"},
+			{"partition": "staging", "selector": "Stg*"},
+		}},
+	} {
+		path := "/api/pushers"
+		if body["pusher"] != nil {
+			path = "/api/repos"
+		}
+		if rec := registryRequest(t, srv, http.MethodPost, path, body); rec.Code != http.StatusOK {
+			t.Fatalf("POST %s status = %d, body=%s", path, rec.Code, rec.Body.String())
+		}
+	}
+
+	rec := registryRequest(t, srv, http.MethodPost, "/api/repos/strata/ingest", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST ingest status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := store.ReadFile(ctx, "/partitions/prod/intents/prod-stack.yaml"); err != nil {
+		t.Fatalf("prod intent missing: %v", err)
+	}
+	if _, err := store.ReadFile(ctx, "/partitions/staging/intents/stg-stack.yaml"); err != nil {
+		t.Fatalf("staging intent missing: %v", err)
+	}
+	if _, err := store.ReadFile(ctx, "/partitions/prod/intents/stg-stack.yaml"); err == nil {
+		t.Fatalf("selector leaked stg intent into prod")
+	}
+
+	rec = registryRequest(t, srv, http.MethodPut, "/api/repos/strata/bindings", map[string]any{
+		"bindings": []map[string]any{{"partition": "prod", "selector": "Prod*"}},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT bindings status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	rec = registryRequest(t, srv, http.MethodGet, "/api/repos/strata", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET repo status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, assemblyDir) {
+		t.Fatalf("assignments wiped repo credentials/source: %s", body)
+	}
+	if strings.Contains(body, "staging") {
+		t.Fatalf("removed binding still present: %s", body)
+	}
+}
+
+func TestRegistryAPIImportsRepoPartitionWithoutAssembly(t *testing.T) {
+	ctx := context.Background()
+	srv, store := newRegistryTestServer(t)
+
+	seed := func(path, content string) {
+		t.Helper()
+		if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{
+			Writes: []guardianapi.PathWrite{{LogicalPath: path, Content: []byte(content)}},
+		}); err != nil {
+			t.Fatalf("seed %s: %v", path, err)
+		}
+	}
+	seed("/repos/strata/guardian/partitions/prod/partition.yaml", `
+apiVersion: guardian/v1alpha1
+kind: Partition
+metadata:
+  name: prod
+spec:
+  deletionPolicy: orphan
+`)
+	seed("/repos/strata/guardian/partitions/prod/intents/web.yaml", `
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: web
+spec:
+  targetPusher: aws-1
+  target:
+    cluster: local
+  assets:
+    - type: Config
+      name: config
+      version: v1
+      properties:
+        content: "key: value"
+`)
+	seed("/repos/strata/guardian/partitions/prod/payloads/config.txt", "hello")
+
+	for _, body := range []map[string]any{
+		{"name": "aws-1", "observedApiUrl": "http://x"},
+		{"name": "strata", "pusher": "aws-1", "source": "/repos/strata", "bindings": []map[string]any{
+			{"partition": "prod"},
+		}},
+	} {
+		path := "/api/pushers"
+		if body["pusher"] != nil {
+			path = "/api/repos"
+		}
+		if rec := registryRequest(t, srv, http.MethodPost, path, body); rec.Code != http.StatusOK {
+			t.Fatalf("POST %s status = %d, body=%s", path, rec.Code, rec.Body.String())
+		}
+	}
+
+	rec := registryRequest(t, srv, http.MethodPost, "/api/repos/strata/ingest", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST ingest status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := store.ReadFile(ctx, "/partitions/prod/intents/web.yaml"); err != nil {
+		t.Fatalf("imported intent missing: %v", err)
+	}
+	if _, err := store.ReadFile(ctx, "/partitions/prod/payloads/config.txt"); err != nil {
+		t.Fatalf("imported payload missing: %v", err)
+	}
+	if _, err := store.ReadFile(ctx, "/partitions/prod/config.yaml"); err != nil {
+		t.Fatalf("imported config missing: %v", err)
+	}
+}
+
 func TestRegistryAPINotifyRecordsAndIngests(t *testing.T) {
 	ctx := context.Background()
 	srv, store := newRegistryTestServer(t)

@@ -163,6 +163,43 @@ alone is not supported.
 
 ---
 
+## 4b. Application telemetry — the OTEL sidecar
+
+On AWS, an `Observability` asset is not a standalone service: connect it to one
+or more `Compute` assets (`properties.targets`), and the pusher adds the AWS
+Distro for OpenTelemetry collector as a non-essential sidecar container to each
+target's ECS task definition.
+
+- The application exports OTLP to `http://localhost:4317`; the pusher sets
+  `OTEL_EXPORTER_OTLP_ENDPOINT`/`OTEL_EXPORTER_OTLP_PROTOCOL` when the Compute
+  asset does not define them, and tags telemetry with `guardian.partition`,
+  `guardian.intent`, and `guardian.asset` resource attributes.
+- Metrics are exported to CloudWatch with the `awsemf` exporter under the
+  `guardian/<partition>/<intent>` namespace and the
+  `guardian/<account>/<region>/<partition>/<intent>/otel` log group, so the
+  existing PromQL read API (§4) queries them without extra wiring.
+- Add `awsxray` to `properties.exporters` to ship traces to X-Ray. Setting
+  `properties.endpoint` also forwards metrics to an upstream OTLP HTTP
+  collector. A `properties.config` Config asset overrides the generated
+  collector config verbatim (`AOT_CONFIG_CONTENT`).
+- Only one Observability asset may target a given Compute asset.
+
+The pusher creates a shared `guardian-otel-sidecar-role` ECS task role on first
+use, with `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents`,
+`cloudwatch:PutMetricData`, `xray:PutTraceSegments`, and
+`xray:PutTelemetryRecords`.
+
+```yaml
+- type: Observability
+  name: otel
+  properties:
+    provider: otel
+    targets: [api]
+    exporters: [awsemf, xray]
+```
+
+---
+
 ## 5. Verification
 
 ```bash

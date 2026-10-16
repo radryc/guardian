@@ -43,6 +43,7 @@ if [ -z "${GUARDIAN_ASSUME_ROLE_NAME+x}" ]; then
 fi
 : "${GUARDIAN_ASSUME_ROLE_EXTERNAL_ID:=${assume_role_external_id}}"
 : "${GUARDIAN_BOOTSTRAP_STACK_NAME:=${bootstrap_stack_name:-CDKToolkit}}"
+: "${GUARDIAN_CFN_EXECUTION_ROLE:=per-intent}"
 
 if [ -z "$GUARDIAN_ACCOUNT" ]; then
   echo "account not set in $CONFIG_FILE and GUARDIAN_ACCOUNT is not set" >&2
@@ -64,7 +65,8 @@ set -- \
   --cdk-binary "$GUARDIAN_CDK_BINARY" \
   --aws-state-dir "$GUARDIAN_AWS_STATE_DIR" \
   --assume-role-name "$GUARDIAN_ASSUME_ROLE_NAME" \
-  --bootstrap-stack-name "$GUARDIAN_BOOTSTRAP_STACK_NAME"
+  --bootstrap-stack-name "$GUARDIAN_BOOTSTRAP_STACK_NAME" \
+  --cfn-execution-role "$GUARDIAN_CFN_EXECUTION_ROLE"
 
 if [ -n "$GUARDIAN_REGION" ]; then
   set -- "$@" --region "$GUARDIAN_REGION"

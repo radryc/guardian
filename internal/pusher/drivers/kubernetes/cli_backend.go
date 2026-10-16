@@ -278,6 +278,29 @@ func (b *CLIBackend) DeleteService(namespace, name string) error {
 	return b.deleteResource(namespace, "service", name)
 }
 
+func (b *CLIBackend) UpsertNetworkPolicy(policy NetworkPolicy) error {
+	if err := b.ensureNamespace(policy.Namespace); err != nil {
+		return err
+	}
+	return b.applyManifest(policy.Namespace, networkPolicyManifest(policy))
+}
+
+func (b *CLIBackend) GetNetworkPolicy(namespace, name string) (NetworkPolicy, bool, error) {
+	raw, ok, err := b.getResource(namespace, "networkpolicy", name)
+	if err != nil || !ok {
+		return NetworkPolicy{}, ok, err
+	}
+	policy, err := decodeNetworkPolicy(namespace, raw)
+	if err != nil {
+		return NetworkPolicy{}, false, err
+	}
+	return policy, true, nil
+}
+
+func (b *CLIBackend) DeleteNetworkPolicy(namespace, name string) error {
+	return b.deleteResource(namespace, "networkpolicy", name)
+}
+
 // ApplyManifest applies a raw (possibly multi-document) Kubernetes manifest
 // supplied as YAML bytes. When namespace is non-empty it is passed to kubectl,
 // otherwise each document's own namespace is honoured.

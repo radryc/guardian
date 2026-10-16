@@ -61,6 +61,70 @@ func TestPusherValidation(t *testing.T) {
 	}
 }
 
+func TestRepoBindings(t *testing.T) {
+	ctx := context.Background()
+	store := New(memory.New())
+	if err := store.PutPusher(ctx, &Pusher{Name: "aws-1", ObservedAPIURL: "http://x"}); err != nil {
+		t.Fatalf("PutPusher() error = %v", err)
+	}
+
+	legacy := &Repo{Name: "strata", Pusher: "aws-1", Partition: "legacy"}
+	if err := store.PutRepo(ctx, legacy); err != nil {
+		t.Fatalf("PutRepo(legacy) error = %v", err)
+	}
+	loaded, err := store.GetRepo(ctx, "strata")
+	if err != nil {
+		t.Fatalf("GetRepo() error = %v", err)
+	}
+	if bindings := loaded.BindingList(); len(bindings) != 1 || bindings[0].Partition != "legacy" {
+		t.Fatalf("legacy bindings = %+v", bindings)
+	}
+	if loaded.ObservedPartitionPath() != "/partitions/legacy/payloads/aws" {
+		t.Fatalf("ObservedPartitionPath() = %q", loaded.ObservedPartitionPath())
+	}
+
+	multi := &Repo{
+		Name:   "strata",
+		Pusher: "aws-1",
+		Bindings: []RepoBinding{
+			{Partition: "prod", Selector: "Prod-*", Path: "/partitions/prod/payloads/aws"},
+			{Partition: "staging", Selector: "Stg-*"},
+			{Partition: "prod", Selector: "duplicate"},
+		},
+	}
+	if err := store.PutRepo(ctx, multi); err != nil {
+		t.Fatalf("PutRepo(multi) error = %v", err)
+	}
+	loaded, err = store.GetRepo(ctx, "strata")
+	if err != nil {
+		t.Fatalf("GetRepo() error = %v", err)
+	}
+	if len(loaded.Bindings) != 2 {
+		t.Fatalf("bindings = %+v", loaded.Bindings)
+	}
+	if loaded.Partition != "prod" {
+		t.Fatalf("legacy partition = %q, want prod", loaded.Partition)
+	}
+	if loaded.Bindings[0].PayloadDir() != "/partitions/prod/payloads/aws" {
+		t.Fatalf("payload dir = %q", loaded.Bindings[0].PayloadDir())
+	}
+	if loaded.Bindings[1].PayloadDir() != "/partitions/staging/payloads/aws" {
+		t.Fatalf("payload dir = %q", loaded.Bindings[1].PayloadDir())
+	}
+	if names := loaded.PartitionNames(); len(names) != 2 || names[0] != "prod" || names[1] != "staging" {
+		t.Fatalf("PartitionNames() = %v", names)
+	}
+
+	badSelector := &Repo{Name: "strata", Pusher: "aws-1", Bindings: []RepoBinding{{Partition: "prod", Selector: "[bad"}}}
+	if err := store.PutRepo(ctx, badSelector); err == nil {
+		t.Fatalf("expected invalid selector error")
+	}
+	noBindings := &Repo{Name: "strata", Pusher: "aws-1"}
+	if err := store.PutRepo(ctx, noBindings); err == nil {
+		t.Fatalf("expected missing binding error")
+	}
+}
+
 func TestRepoRequiresRegisteredPusher(t *testing.T) {
 	ctx := context.Background()
 	store := New(memory.New())

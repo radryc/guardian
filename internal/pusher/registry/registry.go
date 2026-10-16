@@ -25,6 +25,14 @@ type ObservedStateDriver interface {
 	ObserveState(ctx context.Context, in AssetInput) (*taskdomain.HealthObservation, *taskdomain.ApplyReadiness, error)
 }
 
+// ContextValidator is implemented by drivers whose validation depends on the
+// rest of the intent's assets (for example Observability targets or Compute
+// mounts). The runtime prefers it over AssetDriver.Validate, which only sees
+// the asset in isolation.
+type ContextValidator interface {
+	ValidateInContext(props map[string]any, assets map[string]taskdomain.AbstractAsset) error
+}
+
 type AssetInput struct {
 	PartitionName string
 	IntentName    string

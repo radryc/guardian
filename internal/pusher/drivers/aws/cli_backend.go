@@ -273,6 +273,9 @@ func (b *CLIBackend) runCDK(ctx context.Context, req StackRequest, outputDir str
 	if command == "deploy" && b.bootstrapStackName != "" {
 		baseArgs = append(baseArgs, "--toolkit-stack-name", b.bootstrapStackName)
 	}
+	if command == "deploy" && strings.TrimSpace(req.ExecutionRoleARN) != "" {
+		baseArgs = append(baseArgs, "--role-arn", req.ExecutionRoleARN)
+	}
 	contextKeys := make([]string, 0, len(req.Context))
 	for key := range req.Context {
 		contextKeys = append(contextKeys, key)
@@ -282,20 +285,31 @@ func (b *CLIBackend) runCDK(ctx context.Context, req StackRequest, outputDir str
 		baseArgs = append(baseArgs, "-c", key+"="+req.Context[key])
 	}
 	if command == "deploy" {
-		tagKeys := make([]string, 0, len(req.Tags))
-		for key := range req.Tags {
-			tagKeys = append(tagKeys, key)
-		}
-		sort.Strings(tagKeys)
-		for _, key := range tagKeys {
-			baseArgs = append(baseArgs, "--tags", key+"="+req.Tags[key])
-		}
+		baseArgs = append(baseArgs, tagArgs(req.Tags)...)
 	}
 	out, err := b.runProcess(ctx, req, req.WorkspaceDir, b.cdk, baseArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("cdk %s: %w", strings.Join(baseArgs, " "), err)
 	}
 	return out, nil
+}
+
+// tagArgs renders --tags flags in stable order, skipping empty values:
+// CloudFormation rejects tag values shorter than one character.
+func tagArgs(tags map[string]string) []string {
+	keys := make([]string, 0, len(tags))
+	for key := range tags {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	args := make([]string, 0, len(keys)*2)
+	for _, key := range keys {
+		if strings.TrimSpace(tags[key]) == "" {
+			continue
+		}
+		args = append(args, "--tags", key+"="+tags[key])
+	}
+	return args
 }
 
 func (b *CLIBackend) runProcess(ctx context.Context, req StackRequest, dir, binary string, args ...string) ([]byte, error) {
@@ -469,6 +483,24 @@ func (b *CLIBackend) GetFileSystem(ctx context.Context, fsID string) (FileSystem
 func (b *CLIBackend) DeleteFileSystem(ctx context.Context, fsID string) error {
 	return fmt.Errorf("CLIBackend does not support DeleteFileSystem; use AWSBackend")
 }
+func (b *CLIBackend) UpsertVPC(ctx context.Context, vpc VPC) (string, error) {
+	return "", fmt.Errorf("CLIBackend does not support UpsertVPC; use AWSBackend")
+}
+func (b *CLIBackend) GetVPC(ctx context.Context, vpcID string) (VPC, bool, error) {
+	return VPC{}, false, nil
+}
+func (b *CLIBackend) DeleteVPC(ctx context.Context, vpcID string) error {
+	return fmt.Errorf("CLIBackend does not support DeleteVPC; use AWSBackend")
+}
+func (b *CLIBackend) UpsertDBCluster(ctx context.Context, cluster DBCluster) (DBCluster, error) {
+	return DBCluster{}, fmt.Errorf("CLIBackend does not support UpsertDBCluster; use AWSBackend")
+}
+func (b *CLIBackend) GetDBCluster(ctx context.Context, name string) (DBCluster, bool, error) {
+	return DBCluster{}, false, nil
+}
+func (b *CLIBackend) DeleteDBCluster(ctx context.Context, arn, name string) error {
+	return fmt.Errorf("CLIBackend does not support DeleteDBCluster; use AWSBackend")
+}
 func (b *CLIBackend) UpsertParameter(ctx context.Context, param Parameter) error {
 	return fmt.Errorf("CLIBackend does not support UpsertParameter; use AWSBackend")
 }
@@ -537,4 +569,15 @@ func (b *CLIBackend) UpsertLogGroup(ctx context.Context, group LogGroup) error {
 }
 func (b *CLIBackend) GetLogGroup(ctx context.Context, name string) (LogGroup, bool, error) {
 	return LogGroup{}, false, nil
+}
+
+// EnsureExecutionRole is provided by the AWS SDK backend; the CLI backend only
+// runs cdk commands.
+func (b *CLIBackend) EnsureExecutionRole(ctx context.Context, roleName string, actions []string) (string, error) {
+	return "", fmt.Errorf("execution roles require the AWS SDK backend")
+}
+
+// DeleteExecutionRole is provided by the AWS SDK backend.
+func (b *CLIBackend) DeleteExecutionRole(ctx context.Context, roleName string) error {
+	return fmt.Errorf("execution roles require the AWS SDK backend")
 }

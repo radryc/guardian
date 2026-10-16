@@ -168,3 +168,56 @@ func decodeService(namespace string, raw []byte) (Service, error) {
 		Ports:       ports,
 	}, nil
 }
+
+func decodeNetworkPolicy(namespace string, raw []byte) (NetworkPolicy, error) {
+	var payload struct {
+		Metadata struct {
+			Name        string            `json:"name"`
+			Labels      map[string]string `json:"labels"`
+			Annotations map[string]string `json:"annotations"`
+		} `json:"metadata"`
+		Spec struct {
+			PodSelector struct {
+				MatchLabels map[string]string `json:"matchLabels"`
+			} `json:"podSelector"`
+			PolicyTypes []string `json:"policyTypes"`
+			Ingress     []struct {
+				From []struct {
+					NamespaceSelector *struct {
+						MatchLabels map[string]string `json:"matchLabels"`
+					} `json:"namespaceSelector"`
+				} `json:"from"`
+			} `json:"ingress"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return NetworkPolicy{}, fmt.Errorf("decode network policy: %w", err)
+	}
+	hash := payload.Metadata.Annotations[fullHashAnnotation]
+	if hash == "" {
+		hash = payload.Metadata.Labels["guardian.hash"]
+	}
+	allowCluster := false
+	for _, rule := range payload.Spec.Ingress {
+		for _, from := range rule.From {
+			if from.NamespaceSelector != nil && len(from.NamespaceSelector.MatchLabels) == 0 {
+				allowCluster = true
+			}
+		}
+	}
+	internal := false
+	for _, policyType := range payload.Spec.PolicyTypes {
+		if policyType == "Egress" {
+			internal = true
+		}
+	}
+	return NetworkPolicy{
+		Namespace:    namespace,
+		Name:         payload.Metadata.Name,
+		Hash:         hash,
+		Labels:       cloneStringMap(payload.Metadata.Labels),
+		PodSelector:  cloneStringMap(payload.Spec.PodSelector.MatchLabels),
+		AllowCluster: allowCluster,
+		Internal:     internal,
+	}, nil
+}

@@ -47,6 +47,7 @@ func main() {
 	var assumeRoleName string
 	var assumeRoleExternalID string
 	var bootstrapStackName string
+	var cfnExecutionRole string
 	var unclaimedTaskRetryDelay time.Duration
 	var maxConcurrency int
 	var shardIndex int
@@ -71,6 +72,7 @@ func main() {
 	flag.StringVar(&assumeRoleName, "assume-role-name", "GuardianCdkDeployRole", "target-account IAM role name assumed before AWS operations; empty disables assume-role")
 	flag.StringVar(&assumeRoleExternalID, "assume-role-external-id", "", "optional external ID passed to target-account role assumption")
 	flag.StringVar(&bootstrapStackName, "bootstrap-stack-name", "CDKToolkit", "expected CDK bootstrap stack name in target accounts")
+	flag.StringVar(&cfnExecutionRole, "cfn-execution-role", envOr("GUARDIAN_CFN_EXECUTION_ROLE", "per-intent"), "CloudFormation execution role: per-intent (role per partition/intent with only the declared template actions) or shared (account bootstrap role)")
 	flag.DurationVar(&unclaimedTaskRetryDelay, "unclaimed-task-retry-delay", 15*time.Second, "minimum delay before retrying a task that could not be claimed; 0 disables backoff")
 	flag.IntVar(&maxConcurrency, "max-concurrency", 0, "maximum tasks executed concurrently (0 = auto from CPU count)")
 	flag.IntVar(&shardIndex, "shard-index", 0, "shard index for this replica when sharding a shared queue")
@@ -175,7 +177,9 @@ func main() {
 		sdkBackend := awsdriver.NewAWSBackend("", region, false)
 		composite := awsdriver.NewCompositeBackend(backend, sdkBackend)
 		reg := registry.New()
-		awsdriver.Register(reg, composite, secrets.NewStoreResolver(store))
+		awsdriver.RegisterWithOptions(reg, composite, secrets.NewStoreResolver(store), awsdriver.Options{
+			ExecutionRoleMode: cfnExecutionRole,
+		})
 		runtimeRunner = &runtimepkg.Runtime{
 			QueuePath:               paths.QueueDir(pusherName),
 			WorkerID:                workerID,

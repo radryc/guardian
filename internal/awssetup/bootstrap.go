@@ -78,12 +78,12 @@ func RunCDKBootstrap(ctx context.Context, cfg Config, accountID string) error {
 		return err
 	}
 
-	if status == StackReady {
+	if status == StackReady && !cfg.ForceBootstrap {
 		return nil
 	}
 
-	if status == StackFailed {
-		fmt.Printf("=== deleting failed %s stack ===\n", cfg.BootstrapStackName)
+	if status == StackFailed || (status == StackReady && cfg.ForceBootstrap) {
+		fmt.Printf("=== deleting %s stack before re-bootstrap ===\n", cfg.BootstrapStackName)
 
 		if cfg.DryRun {
 			fmt.Printf("  would delete stack: %s\n", cfg.BootstrapStackName)
@@ -114,6 +114,9 @@ func RunCDKBootstrap(ctx context.Context, cfg Config, accountID string) error {
 
 	if cfg.DryRun {
 		fmt.Printf("  would run: cdk bootstrap aws://%s/%s\n", accountID, cfg.Region)
+		if cfg.ExecutionPolicyARN != "" {
+			fmt.Printf("  with --cloudformation-execution-policies %s\n", cfg.ExecutionPolicyARN)
+		}
 		return nil
 	}
 
@@ -132,6 +135,9 @@ func RunCDKBootstrap(ctx context.Context, cfg Config, accountID string) error {
 		"bootstrap",
 		fmt.Sprintf("aws://%s/%s", accountID, cfg.Region),
 		"--force",
+	}
+	if cfg.ExecutionPolicyARN != "" {
+		bootstrapArgs = append(bootstrapArgs, "--cloudformation-execution-policies", cfg.ExecutionPolicyARN)
 	}
 	if cdk == "npx" || strings.HasSuffix(cdk, "npx") {
 		bootstrapArgs = append([]string{"cdk"}, bootstrapArgs...)

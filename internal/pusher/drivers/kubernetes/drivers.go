@@ -64,6 +64,7 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 	reg.Register(&SQLDatabaseDriver{baseDriver: base, typeName: "SQLDatabase"})
 	reg.Register(&ObservabilityDriver{base})
 	reg.Register(&K8sResourceDriver{base})
+	reg.Register(&NetworkDriver{base})
 }
 
 func (d *VolumeDriver) Type() string                         { return "Volume" }
@@ -465,6 +466,17 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 		HostUsers:         spec.HostUsers,
 	}
 	applyWorkloadPayload(&deployment, payload)
+	// Join every referenced network so its NetworkPolicy selects these pods.
+	if len(spec.Networks) > 0 {
+		if deployment.Labels == nil {
+			deployment.Labels = map[string]string{}
+		}
+		for _, network := range spec.Networks {
+			if ref := strings.TrimSpace(network); ref != "" {
+				deployment.Labels[networkPodLabel(ref)] = "true"
+			}
+		}
+	}
 	markDeploymentReady(&deployment)
 	if err := d.backend.UpsertDeployment(deployment); err != nil {
 		return registry.AssetResult{}, err
@@ -1419,13 +1431,14 @@ func decodeObservability(in registry.AssetInput) (*assetdefs.ObservabilitySpec, 
 }
 
 func computeHash(in registry.AssetInput, spec *assetdefs.ComputeSpec) string {
-	refs := make([]string, 0, len(spec.VolumeMounts)+len(spec.ConfigMounts))
+	refs := make([]string, 0, len(spec.VolumeMounts)+len(spec.ConfigMounts)+len(spec.Networks))
 	for _, mount := range spec.VolumeMounts {
 		refs = append(refs, mount.Volume)
 	}
 	for _, mount := range spec.ConfigMounts {
 		refs = append(refs, mount.Config)
 	}
+	refs = append(refs, spec.Networks...)
 	return driverutil.CompositeHash(in, refs...)
 }
 

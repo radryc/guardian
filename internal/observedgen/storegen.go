@@ -28,6 +28,9 @@ type StoreOptions struct {
 	Pusher string
 	// PayloadDir is the logical payload root (default /partitions/<partition>/payloads/aws).
 	PayloadDir string
+	// Selector is a comma-separated list of globs matched against
+	// CloudFormation stack names. Empty means every stack in the assembly.
+	Selector string
 	// Interval is the partition reconciliation interval (default 1m).
 	Interval string
 }
@@ -67,6 +70,10 @@ func GenerateToStore(ctx context.Context, store guardianapi.Store, opts StoreOpt
 	if err != nil {
 		return nil, err
 	}
+	stacks = filterStacks(stacks, opts.Selector)
+	if len(stacks) == 0 {
+		return nil, fmt.Errorf("selector %q matched no CloudFormation stacks", opts.Selector)
+	}
 
 	writes := make([]guardianapi.PathWrite, 0, len(stacks)*4+4)
 	partitionManifest := partitiondomain.Partition{
@@ -82,7 +89,12 @@ func GenerateToStore(ctx context.Context, store guardianapi.Store, opts StoreOpt
 	if err != nil {
 		return nil, err
 	}
-	writes = append(writes, guardianapi.PathWrite{LogicalPath: paths.PartitionConfig(opts.Partition), Content: partitionYAML})
+	// Observed generation is not authoritative for partition settings: never
+	// reset an existing partition's config, so ingest extends instead of
+	// overwriting authored reconciliation/labels/defaults.
+	if _, readErr := store.ReadFile(ctx, paths.PartitionConfig(opts.Partition)); readErr != nil {
+		writes = append(writes, guardianapi.PathWrite{LogicalPath: paths.PartitionConfig(opts.Partition), Content: partitionYAML})
+	}
 
 	created := make([]string, 0, len(stacks))
 	for _, stack := range stacks {
