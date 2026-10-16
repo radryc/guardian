@@ -47,16 +47,38 @@ func TestPathMappingRoundTrip(t *testing.T) {
 			logical:  "/.scans/aws-123456789012/requests/scan-1.json",
 			physical: "guardian-system/.scans/aws-123456789012/requests/scan-1.json",
 		},
+		{
+			logical:  "/.registry/repos/strata-aws.json",
+			physical: "guardian-system/.registry/repos/strata-aws.json",
+		},
+		{
+			logical:  "/.templates/aws/v1/network/template.yaml",
+			physical: "guardian-system/.templates/aws/v1/network/template.yaml",
+		},
+		{
+			logical:  "/.repos/github.com/example/strata/guardian/partitions/prod/partition.yaml",
+			physical: "github.com/example/strata/guardian/partitions/prod/partition.yaml",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.logical, func(t *testing.T) {
-			if got := mapLogicalToPhysical(tc.logical); got != tc.physical {
-				t.Fatalf("mapLogicalToPhysical(%q) = %q, want %q", tc.logical, got, tc.physical)
+			got, err := mapLogicalToPhysicalChecked(tc.logical)
+			if err != nil {
+				t.Fatalf("mapLogicalToPhysicalChecked(%q) error = %v", tc.logical, err)
 			}
-			if got := mapPhysicalToLogical(tc.physical); got != tc.logical {
-				t.Fatalf("mapPhysicalToLogical(%q) = %q, want %q", tc.physical, got, tc.logical)
+			if got != tc.physical {
+				t.Fatalf("mapLogicalToPhysicalChecked(%q) = %q, want %q", tc.logical, got, tc.physical)
 			}
 		})
+	}
+}
+
+func TestRepoMappingRejectsTraversal(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"/.repos/", "/.repos/../secrets", "/unknown/path"} {
+		if _, err := mapLogicalToPhysicalChecked(path); err == nil {
+			t.Fatalf("expected error for %q", path)
+		}
 	}
 }

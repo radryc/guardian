@@ -38,10 +38,12 @@ github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.19 h1:bAdDl/
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.19/go.mod h1:KaUzbLxv4CeSxh6ZCl9B4m7CuFenS8kUEaDs+f/DQr4=
 github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.23 h1:9Fjh6fi/U5JEStVZijmaMpUwE/gvBJj7x2B/PjbO9To=
 github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.23/go.mod h1:iMoT2f1tClxrWAAnKCXjZQ6LOmfLrMG14wmnWpM+F14=
-github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.3 h1:bON1rJf67TSTDCKg816AAIE4xSTtoo9tl0XRkO72R+I=
-github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.3/go.mod h1:c5BBpjJcQXpfeq9iASyVKA3T6vX6B6LEXY4mL/gklDY=
+github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.4 h1:29SvnfGhXjTl8ONxFwbj2rs6lbhiFXD2CgFQmbT/bXY=
+github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.4/go.mod h1:wm04I5DMuNVvZHFe/dHnUxincvNbbK7AiNBbYsQivek=
 github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.31 h1:uao4A3QZ5UmB326V6KF+qRpv9Tjz7IlnlnTbbANntlU=
 github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.31/go.mod h1:I/1+z0VwL1GhQyLgkoHDlygpUZ+iTAwOQ/NsftiUL2I=
+github.com/aws/aws-sdk-go-v2/service/rds v1.130.1 h1:H17oFwC/icF6BB/UeG1EskOdI/n7ugkVKMs8aAFi4Yo=
+github.com/aws/aws-sdk-go-v2/service/rds v1.130.1/go.mod h1:ISB8224E71TShRfUITcXvgbjlq0MVx/KWpvF0jbiFmg=
 github.com/aws/aws-sdk-go-v2/service/rolesanywhere v1.23.9 h1:2N7JKKQ9+4oiWOK2Alsz4qvgexr6I290FoiddaZvm/c=
 github.com/aws/aws-sdk-go-v2/service/rolesanywhere v1.23.9/go.mod h1:Jv4yT9ASKaTBjavpw5SoiYIEVxeAdz635+9ODTyfEyE=
 github.com/aws/aws-sdk-go-v2/service/s3 v1.104.2 h1:bAY6O/TDv1HQnvylh9E247IyIKsUWUt2G965S7qX110=

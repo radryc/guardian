@@ -29,8 +29,22 @@ func IntentManifest(partition, intent string) string {
 	return normalize(PartitionIntentsDir(partition), intent+".yaml")
 }
 
+// GeneratedAWSPayloadDir holds the TypeScript CDK app that Guardian generates
+// for an intent using spec.implementation=cdk. The AWS pusher stages this tree
+// from the store and deploys it as one CloudFormation stack.
+func GeneratedAWSPayloadDir(partition, intent string) string {
+	return normalize(PartitionRoot(partition), "payloads", "aws-generated", intent)
+}
+
 func PartitionState(partition string) string {
 	return normalize(PartitionRoot(partition), ".state", "partition.json")
+}
+
+// PartitionDeletion marks a partition for deferred deletion. While present,
+// the reconciler destroys the partition's intents according to deletionPolicy
+// and purges the subtree once teardown completes.
+func PartitionDeletion(partition string) string {
+	return normalize(PartitionRoot(partition), ".deletion.json")
 }
 
 func StateRoot(partition string) string { return normalize(PartitionRoot(partition), ".state") }

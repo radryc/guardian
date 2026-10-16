@@ -3,6 +3,7 @@ package awssetup
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 type Config struct {
@@ -10,8 +11,24 @@ type Config struct {
 	Region             string
 	RoleName           string
 	BootstrapStackName string
-	PolicyName         string
-	DryRun             bool
+	// PolicyMode selects how the deploy role is authorized: "scoped" puts the
+	// built-in least-privilege inline policy on the role, "managed" attaches
+	// the managed policy named by PolicyName.
+	PolicyMode string
+	// PolicyName is the managed policy attached when PolicyMode is "managed"
+	// (for example AdministratorAccess).
+	PolicyName string
+	DryRun     bool
+	// TrustPrincipals are additional principals allowed to assume the deploy
+	// role (for example the ARN of a pusher task role in a tools account).
+	TrustPrincipals []string
+	// ExecutionPolicyARN is passed to `cdk bootstrap
+	// --cloudformation-execution-policies` so the CloudFormation execution
+	// role is scoped (empty keeps the CDK default).
+	ExecutionPolicyARN string
+	// ForceBootstrap re-runs `cdk bootstrap --force` even when the bootstrap
+	// stack already exists (used to apply a new execution policy).
+	ForceBootstrap bool
 }
 
 func (c Config) Validate() error {
@@ -46,8 +63,50 @@ func (c Config) WithDefaults() Config {
 	if c.BootstrapStackName == "" {
 		c.BootstrapStackName = "CDKToolkit"
 	}
-	if c.PolicyName == "" {
-		c.PolicyName = "AdministratorAccess"
+	if strings.TrimSpace(c.PolicyMode) == "" {
+		c.PolicyMode = PolicyScoped
+	}
+	if c.PolicyMode == PolicyAdmin {
+		c.PolicyMode = "managed"
+		if c.PolicyName == "" {
+			c.PolicyName = "AdministratorAccess"
+		}
+	}
+	if c.PolicyMode == PolicyScoped {
+		c.PolicyName = ""
 	}
 	return c
+}
+
+// ResolvePolicyMode maps the --policy flag value to a mode + managed name.
+//
+//	scoped (default)          -> least-privilege inline policy
+//	admin                     -> AdministratorAccess
+//	<other>                   -> that managed policy
+func ResolvePolicyMode(value string) (mode, name string) {
+	switch strings.TrimSpace(value) {
+	case "", PolicyScoped:
+		return PolicyScoped, ""
+	case PolicyAdmin:
+		return "managed", "AdministratorAccess"
+	default:
+		return "managed", strings.TrimSpace(value)
+	}
+}
+
+// ResolveExecutionPolicy maps the --execution-policy flag value to the policy
+// argument passed to `cdk bootstrap --cloudformation-execution-policies`:
+//
+//	scoped (default)  -> GuardianCfnExecutionPolicy (created/updated)
+//	admin             -> AdministratorAccess
+//	<arn|name>        -> used as-is
+func ResolveExecutionPolicy(value string) string {
+	switch strings.TrimSpace(value) {
+	case "", PolicyScoped:
+		return PolicyScoped
+	case PolicyAdmin:
+		return "arn:aws:iam::aws:policy/AdministratorAccess"
+	default:
+		return strings.TrimSpace(value)
+	}
 }

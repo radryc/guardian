@@ -8,6 +8,7 @@ import (
 
 type ObservabilitySpec struct {
 	Provider  string   `json:"provider,omitempty" yaml:"provider,omitempty"`
+	Targets   []string `json:"targets,omitempty" yaml:"targets,omitempty"`
 	Config    string   `json:"config,omitempty" yaml:"config,omitempty"`
 	Volume    string   `json:"volume,omitempty" yaml:"volume,omitempty"`
 	Endpoint  string   `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
@@ -47,6 +48,14 @@ func (observabilityDefinition) Validate(spec any, ctx ValidationContext) error {
 	}
 	if typed.Volume != "" {
 		if err := validateAssetRef(ctx, typed.Volume, assetdomain.TypeVolume, "volume"); err != nil {
+			return err
+		}
+	}
+	if err := validateStringList(typed.Targets, "targets"); err != nil {
+		return err
+	}
+	for idx, target := range typed.Targets {
+		if err := validateAssetRef(ctx, target, assetdomain.TypeCompute, fmt.Sprintf("targets[%d]", idx)); err != nil {
 			return err
 		}
 	}

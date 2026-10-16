@@ -7,12 +7,34 @@ package registry
 import (
 	"fmt"
 	"os"
+	"path"
 	"regexp"
 	"strings"
 	"time"
 )
 
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+
+// parseSelector splits a comma-separated stack selector and validates each
+// glob so malformed patterns fail at registration time.
+func parseSelector(selector string) ([]string, error) {
+	trimmed := strings.TrimSpace(selector)
+	if trimmed == "" {
+		return nil, nil
+	}
+	out := make([]string, 0, strings.Count(trimmed, ",")+1)
+	for _, pattern := range strings.Split(trimmed, ",") {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			continue
+		}
+		if _, err := path.Match(pattern, "probe"); err != nil {
+			return nil, fmt.Errorf("invalid selector glob %q", pattern)
+		}
+		out = append(out, pattern)
+	}
+	return out, nil
+}
 
 // Pusher is a registered AWS pusher.
 type Pusher struct {
@@ -41,29 +63,93 @@ func (p Pusher) TokenValue() string {
 	return ""
 }
 
-// Repo is a registered source repository that feeds an observed partition.
+// Repo is a registered source repository that feeds one or more observed
+// partitions. Credentials (pusher token, source URL) stay in this record; the
+// partition side only ever references the repo by name.
 type Repo struct {
-	APIVersion     string    `json:"apiVersion"`
-	Kind           string    `json:"kind"`
-	Name           string    `json:"name"`
-	Pusher         string    `json:"pusher"`
-	Partition      string    `json:"partition"`
-	Path           string    `json:"path,omitempty"`
-	Source         string    `json:"source,omitempty"`
-	Branch         string    `json:"branch,omitempty"`
-	AssemblySubdir string    `json:"assemblySubdir,omitempty"`
-	Account        string    `json:"account,omitempty"`
-	Region         string    `json:"region,omitempty"`
-	Description    string    `json:"description,omitempty"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
-	LastSyncedAt   time.Time `json:"lastSyncedAt,omitempty"`
-	LastSyncCommit string    `json:"lastSyncCommit,omitempty"`
-	LastSyncError  string    `json:"lastSyncError,omitempty"`
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	Pusher     string `json:"pusher"`
+	// Partition is the legacy single-partition binding. It is kept in sync with
+	// the first entry of Bindings for older readers.
+	Partition string `json:"partition,omitempty"`
+	// Bindings maps this repo to the partitions it feeds. A repo can feed many
+	// partitions and a partition can be fed by many repos.
+	Bindings       []RepoBinding `json:"bindings,omitempty"`
+	Path           string        `json:"path,omitempty"`
+	Source         string        `json:"source,omitempty"`
+	Branch         string        `json:"branch,omitempty"`
+	AssemblySubdir string        `json:"assemblySubdir,omitempty"`
+	Account        string        `json:"account,omitempty"`
+	Region         string        `json:"region,omitempty"`
+	Description    string        `json:"description,omitempty"`
+	CreatedAt      time.Time     `json:"createdAt"`
+	UpdatedAt      time.Time     `json:"updatedAt"`
+	LastSyncedAt   time.Time     `json:"lastSyncedAt,omitempty"`
+	LastSyncCommit string        `json:"lastSyncCommit,omitempty"`
+	LastSyncError  string        `json:"lastSyncError,omitempty"`
 	// LastNotifiedAt/Commit record the most recent CI merge notification, even
 	// when the assembly was not yet available to ingest.
 	LastNotifiedAt     time.Time `json:"lastNotifiedAt,omitempty"`
 	LastNotifiedCommit string    `json:"lastNotifiedCommit,omitempty"`
+}
+
+// RepoBinding binds a repo to one partition with an optional payload path,
+// CDK stack selector and account/region override. No credentials are stored
+// here, so bindings are safe to mirror into partition manifests or shared
+// files.
+type RepoBinding struct {
+	Partition string `json:"partition" yaml:"partition"`
+	// Path is the logical MonoFS payload dir for this partition. Defaults to
+	// /partitions/<partition>/payloads/aws.
+	Path string `json:"path,omitempty" yaml:"path,omitempty"`
+	// Selector is a comma-separated list of globs matched against CloudFormation
+	// stack names. Empty means every stack in the assembly.
+	Selector string `json:"selector,omitempty" yaml:"selector,omitempty"`
+	// Account and Region override the repo/pusher values for this partition.
+	Account string `json:"account,omitempty" yaml:"account,omitempty"`
+	Region  string `json:"region,omitempty" yaml:"region,omitempty"`
+}
+
+// PayloadDir returns the MonoFS payload directory for this binding.
+func (b RepoBinding) PayloadDir() string {
+	if path := strings.TrimRight(strings.TrimSpace(b.Path), "/"); path != "" {
+		return path
+	}
+	return "/partitions/" + strings.TrimSpace(b.Partition) + "/payloads/aws"
+}
+
+// BindingList returns the effective bindings, deriving one from the legacy
+// single-partition field when no explicit bindings exist.
+func (r Repo) BindingList() []RepoBinding {
+	if len(r.Bindings) > 0 {
+		return r.Bindings
+	}
+	if strings.TrimSpace(r.Partition) == "" {
+		return nil
+	}
+	return []RepoBinding{{
+		Partition: strings.TrimSpace(r.Partition),
+		Path:      strings.TrimSpace(r.Path),
+		Account:   strings.TrimSpace(r.Account),
+		Region:    strings.TrimSpace(r.Region),
+	}}
+}
+
+// PartitionNames returns the distinct partitions this repo feeds.
+func (r Repo) PartitionNames() []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(r.Bindings)+1)
+	for _, binding := range r.BindingList() {
+		name := strings.TrimSpace(binding.Partition)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
 }
 
 // Normalize fills defaults and trims fields.
@@ -123,6 +209,36 @@ func (r *Repo) Normalize() {
 	r.Account = strings.TrimSpace(r.Account)
 	r.Region = strings.TrimSpace(r.Region)
 	r.Description = strings.TrimSpace(r.Description)
+
+	bindings := make([]RepoBinding, 0, len(r.Bindings))
+	seen := map[string]bool{}
+	for _, binding := range r.Bindings {
+		binding.Partition = strings.TrimSpace(binding.Partition)
+		binding.Path = strings.TrimRight(strings.TrimSpace(binding.Path), "/")
+		binding.Selector = strings.TrimSpace(binding.Selector)
+		binding.Account = strings.TrimSpace(binding.Account)
+		binding.Region = strings.TrimSpace(binding.Region)
+		if binding.Partition == "" || seen[binding.Partition] {
+			continue
+		}
+		seen[binding.Partition] = true
+		bindings = append(bindings, binding)
+	}
+	if len(bindings) == 0 && r.Partition != "" {
+		bindings = append(bindings, RepoBinding{
+			Partition: r.Partition,
+			Path:      strings.TrimRight(r.Path, "/"),
+			Account:   r.Account,
+			Region:    r.Region,
+		})
+	}
+	r.Bindings = bindings
+	if r.Partition == "" && len(bindings) > 0 {
+		r.Partition = bindings[0].Partition
+	}
+	if r.Path == "" && len(bindings) > 0 {
+		r.Path = bindings[0].Path
+	}
 }
 
 // Validate checks a repo registration.
@@ -134,23 +250,35 @@ func (r *Repo) Validate() error {
 	if !namePattern.MatchString(r.Name) {
 		return fmt.Errorf("invalid repo name %q", r.Name)
 	}
-	if !namePattern.MatchString(r.Partition) {
-		return fmt.Errorf("invalid partition name %q", r.Partition)
-	}
 	if r.Pusher == "" {
 		return fmt.Errorf("pusher is required")
 	}
-	if r.Path != "" && !strings.HasPrefix(r.Path, "/") {
-		return fmt.Errorf("path must be an absolute logical path")
+	if len(r.Bindings) == 0 {
+		return fmt.Errorf("at least one partition binding is required")
+	}
+	for _, binding := range r.Bindings {
+		if !namePattern.MatchString(binding.Partition) {
+			return fmt.Errorf("invalid partition name %q", binding.Partition)
+		}
+		if binding.Path != "" && !strings.HasPrefix(binding.Path, "/") {
+			return fmt.Errorf("binding %s: path must be an absolute logical path", binding.Partition)
+		}
+		if _, err := parseSelector(binding.Selector); err != nil {
+			return fmt.Errorf("binding %s: %w", binding.Partition, err)
+		}
 	}
 	return nil
 }
 
 // ObservedPartitionPath returns the default MonoFS payload path for a repo's
-// generated observed bundle.
+// generated observed bundle. Prefer RepoBinding.PayloadDir for per-partition
+// paths.
 func (r Repo) ObservedPartitionPath() string {
 	if strings.TrimSpace(r.Path) != "" {
 		return strings.TrimRight(strings.TrimSpace(r.Path), "/")
 	}
-	return "/partitions/" + r.Partition + "/payloads/aws"
+	if partition := strings.TrimSpace(r.Partition); partition != "" {
+		return "/partitions/" + partition + "/payloads/aws"
+	}
+	return ""
 }

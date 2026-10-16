@@ -20,6 +20,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 	elbv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
+	rdstypes "github.com/aws/aws-sdk-go-v2/service/rds/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -419,34 +421,10 @@ func (b *AWSBackend) createCluster(ctx context.Context, client *ecs.Client, clus
 }
 
 func (b *AWSBackend) upsertTaskDefinition(ctx context.Context, client *ecs.Client, svc ECSService, region string) (string, error) {
-	container := ecstypes.ContainerDefinition{
-		Name:         awsroot.String(svc.Container.Name),
-		Image:        awsroot.String(svc.Container.Image),
-		PortMappings: toECSPortMappings(svc.Container.Ports),
-		LogConfiguration: &ecstypes.LogConfiguration{
-			LogDriver: ecstypes.LogDriverAwslogs,
-			Options: map[string]string{
-				"awslogs-group":         svc.LogGroup,
-				"awslogs-region":        region,
-				"awslogs-stream-prefix": svc.Container.Name,
-			},
-		},
-	}
-
-	if len(svc.Container.Command) > 0 {
-		container.Command = svc.Container.Command
-	}
-	if len(svc.Container.Env) > 0 {
-		container.Environment = toECSEnv(svc.Container.Env)
-	}
-	if len(svc.Container.Secrets) > 0 {
-		container.Secrets = toECSSecrets(svc.Container.Secrets)
-	}
-	if svc.Container.CPU > 0 {
-		container.Cpu = int32(svc.Container.CPU)
-	}
-	if svc.Container.Memory > 0 {
-		container.Memory = awsroot.Int32(int32(svc.Container.Memory))
+	containers := make([]ecstypes.ContainerDefinition, 0, 1+len(svc.Sidecars))
+	containers = append(containers, toECSContainerDefinition(svc.Container, svc.LogGroup, region))
+	for _, sidecar := range svc.Sidecars {
+		containers = append(containers, toECSContainerDefinition(sidecar, svc.LogGroup, region))
 	}
 
 	taskCPU := fmt.Sprintf("%d", svc.Container.CPU)
@@ -458,10 +436,11 @@ func (b *AWSBackend) upsertTaskDefinition(ctx context.Context, client *ecs.Clien
 		taskMem = "512"
 	}
 
-	// ECS requires an execution role when container secrets are present. Use the
-	// asset-provided role when set, otherwise provision/reuse a default one.
+	// Fargate requires an execution role for the awslogs driver (and for
+	// container secrets). Use the asset-provided role when set, otherwise
+	// provision/reuse a default one.
 	execRole := svc.ExecRole
-	if execRole == "" && len(svc.Container.Secrets) > 0 {
+	if execRole == "" {
 		role, rerr := b.ensureExecutionRole(ctx)
 		if rerr != nil {
 			return "", fmt.Errorf("ensure ECS execution role: %w", rerr)
@@ -469,10 +448,21 @@ func (b *AWSBackend) upsertTaskDefinition(ctx context.Context, client *ecs.Clien
 		execRole = role
 	}
 
+	// Collector sidecars publish metrics (CloudWatch EMF) and traces (X-Ray),
+	// so they need a task role with the corresponding permissions.
+	taskRole := svc.TaskRole
+	if taskRole == "" && len(svc.Sidecars) > 0 {
+		role, rerr := b.ensureObservabilityTaskRole(ctx)
+		if rerr != nil {
+			return "", fmt.Errorf("ensure observability task role: %w", rerr)
+		}
+		taskRole = role
+	}
+
 	out, err := client.RegisterTaskDefinition(ctx, &ecs.RegisterTaskDefinitionInput{
 		Family:                  awsroot.String(svc.TaskFamily),
-		ContainerDefinitions:    []ecstypes.ContainerDefinition{container},
-		TaskRoleArn:             awsroot.String(svc.TaskRole),
+		ContainerDefinitions:    containers,
+		TaskRoleArn:             awsroot.String(taskRole),
 		ExecutionRoleArn:        awsroot.String(execRole),
 		NetworkMode:             ecstypes.NetworkModeAwsvpc,
 		RequiresCompatibilities: toLaunchTypes(svc.LaunchType),
@@ -483,6 +473,47 @@ func (b *AWSBackend) upsertTaskDefinition(ctx context.Context, client *ecs.Clien
 		return "", err
 	}
 	return awsroot.ToString(out.TaskDefinition.TaskDefinitionArn), nil
+}
+
+func toECSContainerDefinition(container ContainerDef, logGroup, region string) ecstypes.ContainerDefinition {
+	def := ecstypes.ContainerDefinition{
+		Name:         awsroot.String(container.Name),
+		Image:        awsroot.String(container.Image),
+		PortMappings: toECSPortMappings(container.Ports),
+		LogConfiguration: &ecstypes.LogConfiguration{
+			LogDriver: ecstypes.LogDriverAwslogs,
+			Options: map[string]string{
+				"awslogs-group":         logGroup,
+				"awslogs-region":        region,
+				"awslogs-stream-prefix": container.Name,
+			},
+		},
+	}
+	if len(container.Command) > 0 {
+		def.Command = append(def.Command, container.Command...)
+	}
+	if len(container.Args) > 0 {
+		def.Command = append(def.Command, container.Args...)
+	}
+	if len(container.Env) > 0 {
+		def.Environment = toECSEnv(container.Env)
+	}
+	if len(container.Secrets) > 0 {
+		def.Secrets = toECSSecrets(container.Secrets)
+	}
+	if container.CPU > 0 {
+		def.Cpu = int32(container.CPU)
+	}
+	if container.Memory > 0 {
+		def.Memory = awsroot.Int32(int32(container.Memory))
+	}
+	if container.Essential != nil {
+		def.Essential = container.Essential
+	}
+	if container.Privileged {
+		def.Privileged = awsroot.Bool(true)
+	}
+	return def
 }
 
 // ensureExecutionRole returns the ARN of a shared ECS task execution role,
@@ -521,6 +552,42 @@ func (b *AWSBackend) ensureExecutionRole(ctx context.Context) (string, error) {
 		RoleName:       awsroot.String(roleName),
 		PolicyName:     awsroot.String("guardian-secrets-read"),
 		PolicyDocument: awsroot.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["secretsmanager:GetSecretValue","ssm:GetParameters","kms:Decrypt"],"Resource":"*"}]}`),
+	})
+	return awsroot.ToString(created.Role.Arn), nil
+}
+
+// ensureObservabilityTaskRole returns the ARN of the shared ECS task role used
+// by OpenTelemetry collector sidecars, creating it on first use with the
+// permissions needed to publish EMF metrics to CloudWatch and traces to X-Ray.
+func (b *AWSBackend) ensureObservabilityTaskRole(ctx context.Context) (string, error) {
+	cfg, err := b.loadConfig(ctx, "")
+	if err != nil {
+		return "", err
+	}
+	client := iam.NewFromConfig(cfg)
+	const roleName = "guardian-otel-sidecar-role"
+
+	if out, gerr := client.GetRole(ctx, &iam.GetRoleInput{RoleName: awsroot.String(roleName)}); gerr == nil {
+		return awsroot.ToString(out.Role.Arn), nil
+	} else if !strings.Contains(gerr.Error(), "NoSuchEntity") {
+		return "", gerr
+	}
+
+	trust := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
+	created, cerr := client.CreateRole(ctx, &iam.CreateRoleInput{
+		RoleName:                 awsroot.String(roleName),
+		AssumeRolePolicyDocument: awsroot.String(trust),
+	})
+	if cerr != nil {
+		if out, gerr := client.GetRole(ctx, &iam.GetRoleInput{RoleName: awsroot.String(roleName)}); gerr == nil {
+			return awsroot.ToString(out.Role.Arn), nil
+		}
+		return "", cerr
+	}
+	_, _ = client.PutRolePolicy(ctx, &iam.PutRolePolicyInput{
+		RoleName:       awsroot.String(roleName),
+		PolicyName:     awsroot.String("guardian-otel-sidecar"),
+		PolicyDocument: awsroot.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["logs:CreateLogGroup","logs:CreateLogStream","logs:PutLogEvents","cloudwatch:PutMetricData","xray:PutTraceSegments","xray:PutTelemetryRecords"],"Resource":"*"}]}`),
 	})
 	return awsroot.ToString(created.Role.Arn), nil
 }
@@ -1535,6 +1602,332 @@ func portOrDefault(ports []PortDef) int {
 		}
 	}
 	return 80
+}
+
+// --- VPC ---
+
+func (b *AWSBackend) UpsertVPC(ctx context.Context, vpc VPC) (string, error) {
+	if b.dry() {
+		fmt.Printf("  [dry-run] would upsert VPC: %s (%s)\n", vpc.Name, vpc.CIDRBlock)
+		return "vpc-dry-run", nil
+	}
+	cfg, err := b.loadConfig(ctx, "")
+	if err != nil {
+		return "", err
+	}
+	client := ec2.NewFromConfig(cfg)
+	desc, err := client.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
+		Filters: []ec2types.Filter{{Name: awsroot.String("tag:guardian-name"), Values: []string{vpc.Name}}},
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(desc.Vpcs) > 0 {
+		id := awsroot.ToString(desc.Vpcs[0].VpcId)
+		if _, err := client.CreateTags(ctx, &ec2.CreateTagsInput{Resources: []string{id}, Tags: vpcTags(vpc)}); err != nil {
+			return "", fmt.Errorf("tag VPC %s: %w", id, err)
+		}
+		return id, nil
+	}
+	out, err := client.CreateVpc(ctx, &ec2.CreateVpcInput{CidrBlock: awsroot.String(vpc.CIDRBlock)})
+	if err != nil {
+		return "", fmt.Errorf("create VPC %s: %w", vpc.Name, err)
+	}
+	id := awsroot.ToString(out.Vpc.VpcId)
+	if _, err := client.CreateTags(ctx, &ec2.CreateTagsInput{Resources: []string{id}, Tags: vpcTags(vpc)}); err != nil {
+		return "", fmt.Errorf("tag VPC %s: %w", id, err)
+	}
+	enabled := &ec2types.AttributeBooleanValue{Value: awsroot.Bool(true)}
+	_, _ = client.ModifyVpcAttribute(ctx, &ec2.ModifyVpcAttributeInput{VpcId: awsroot.String(id), EnableDnsSupport: enabled})
+	_, _ = client.ModifyVpcAttribute(ctx, &ec2.ModifyVpcAttributeInput{VpcId: awsroot.String(id), EnableDnsHostnames: enabled})
+	return id, nil
+}
+
+func (b *AWSBackend) GetVPC(ctx context.Context, vpcID string) (VPC, bool, error) {
+	if b.dry() {
+		return VPC{ID: vpcID, Hash: "dry-run"}, true, nil
+	}
+	cfg, err := b.loadConfig(ctx, "")
+	if err != nil {
+		return VPC{}, false, err
+	}
+	client := ec2.NewFromConfig(cfg)
+	out, err := client.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{VpcIds: []string{vpcID}})
+	if err != nil {
+		if strings.Contains(err.Error(), "InvalidVpcID.NotFound") || strings.Contains(err.Error(), "does not exist") {
+			return VPC{}, false, nil
+		}
+		return VPC{}, false, err
+	}
+	if len(out.Vpcs) == 0 {
+		return VPC{}, false, nil
+	}
+	raw := out.Vpcs[0]
+	tags := make(map[string]string, len(raw.Tags))
+	for _, tag := range raw.Tags {
+		tags[awsroot.ToString(tag.Key)] = awsroot.ToString(tag.Value)
+	}
+	return VPC{
+		ID:        awsroot.ToString(raw.VpcId),
+		Name:      tags["guardian-name"],
+		Hash:      tags["guardian-hash"],
+		Tags:      tags,
+		CIDRBlock: awsroot.ToString(raw.CidrBlock),
+	}, true, nil
+}
+
+func (b *AWSBackend) DeleteVPC(ctx context.Context, vpcID string) error {
+	if b.dry() {
+		fmt.Printf("  [dry-run] would delete VPC: %s\n", vpcID)
+		return nil
+	}
+	cfg, err := b.loadConfig(ctx, "")
+	if err != nil {
+		return err
+	}
+	client := ec2.NewFromConfig(cfg)
+	if _, err := client.DeleteVpc(ctx, &ec2.DeleteVpcInput{VpcId: awsroot.String(vpcID)}); err != nil {
+		if strings.Contains(err.Error(), "InvalidVpcID.NotFound") || strings.Contains(err.Error(), "does not exist") {
+			return nil
+		}
+		return fmt.Errorf("delete VPC %s: %w", vpcID, err)
+	}
+	return nil
+}
+
+// --- RDS (Aurora) ---
+
+// UpsertDBCluster creates or converges an Aurora DB cluster. Credentials are
+// managed by RDS (Secrets Manager) so no plaintext password crosses Guardian.
+func (b *AWSBackend) UpsertDBCluster(ctx context.Context, cluster DBCluster) (DBCluster, error) {
+	if b.dry() {
+		fmt.Printf("  [dry-run] would upsert Aurora cluster: %s (%s)\n", cluster.Name, cluster.Engine)
+		cluster.ARN = "arn:aws:rds:region:account:cluster:" + cluster.Name
+		cluster.Endpoint = cluster.Name + ".dry-run.rds.amazonaws.com"
+		cluster.Status = "available"
+		return cluster, nil
+	}
+	cfg, err := b.loadConfig(ctx, "")
+	if err != nil {
+		return DBCluster{}, err
+	}
+	client := rds.NewFromConfig(cfg)
+
+	if existing, ok, gerr := b.GetDBCluster(ctx, cluster.Name); gerr != nil {
+		return DBCluster{}, gerr
+	} else if ok {
+		if cluster.Hash == "" || existing.Hash == cluster.Hash {
+			return existing, nil
+		}
+		if len(cluster.Tags) > 0 {
+			if _, terr := client.AddTagsToResource(ctx, &rds.AddTagsToResourceInput{
+				ResourceName: awsroot.String(existing.ARN),
+				Tags:         toRDSTags(cluster.Tags),
+			}); terr != nil {
+				return DBCluster{}, fmt.Errorf("tag aurora cluster %s: %w", cluster.Name, terr)
+			}
+		}
+		if cluster.EngineVersion != "" && cluster.EngineVersion != existing.EngineVersion {
+			if _, merr := client.ModifyDBCluster(ctx, &rds.ModifyDBClusterInput{
+				DBClusterIdentifier: awsroot.String(cluster.Name),
+				EngineVersion:       awsroot.String(cluster.EngineVersion),
+				ApplyImmediately:    awsroot.Bool(true),
+			}); merr != nil {
+				return DBCluster{}, fmt.Errorf("modify aurora cluster %s: %w", cluster.Name, merr)
+			}
+		}
+		if updated, ok, derr := b.GetDBCluster(ctx, cluster.Name); derr == nil && ok {
+			return updated, nil
+		}
+		return existing, nil
+	}
+
+	subnets, derr := b.discoverSubnets(ctx, cfg)
+	if derr != nil {
+		return DBCluster{}, fmt.Errorf("discover subnets: %w", derr)
+	}
+	if cluster.SubnetGroup == "" {
+		cluster.SubnetGroup = cluster.Name + "-sng"
+	}
+	if err := b.ensureDBSubnetGroup(ctx, client, cluster.SubnetGroup, subnets, cluster.Tags); err != nil {
+		return DBCluster{}, err
+	}
+
+	input := &rds.CreateDBClusterInput{
+		DBClusterIdentifier:      awsroot.String(cluster.Name),
+		Engine:                   awsroot.String(cluster.Engine),
+		MasterUsername:           awsroot.String(cluster.MasterUsername),
+		ManageMasterUserPassword: awsroot.Bool(true),
+		DBSubnetGroupName:        awsroot.String(cluster.SubnetGroup),
+		Tags:                     toRDSTags(cluster.Tags),
+	}
+	if cluster.EngineVersion != "" {
+		input.EngineVersion = awsroot.String(cluster.EngineVersion)
+	}
+	if cluster.DatabaseName != "" {
+		input.DatabaseName = awsroot.String(cluster.DatabaseName)
+	}
+	if cluster.Port > 0 {
+		input.Port = awsroot.Int32(int32(cluster.Port))
+	}
+
+	if _, err := client.CreateDBCluster(ctx, input); err != nil {
+		if strings.Contains(err.Error(), "DBClusterAlreadyExistsFault") {
+			if existing, ok, gerr := b.GetDBCluster(ctx, cluster.Name); gerr == nil && ok {
+				return existing, nil
+			}
+		}
+		return DBCluster{}, fmt.Errorf("create aurora cluster %s: %w", cluster.Name, err)
+	}
+	created, ok, err := b.GetDBCluster(ctx, cluster.Name)
+	if err != nil {
+		return DBCluster{}, err
+	}
+	if !ok {
+		created = cluster
+	}
+	return created, nil
+}
+
+func (b *AWSBackend) ensureDBSubnetGroup(ctx context.Context, client *rds.Client, name string, subnets []string, tags map[string]string) error {
+	out, err := client.DescribeDBSubnetGroups(ctx, &rds.DescribeDBSubnetGroupsInput{
+		DBSubnetGroupName: awsroot.String(name),
+	})
+	if err == nil && len(out.DBSubnetGroups) > 0 {
+		return nil
+	}
+	if _, cerr := client.CreateDBSubnetGroup(ctx, &rds.CreateDBSubnetGroupInput{
+		DBSubnetGroupName:        awsroot.String(name),
+		DBSubnetGroupDescription: awsroot.String("Guardian managed Aurora subnet group"),
+		SubnetIds:                subnets,
+		Tags:                     toRDSTags(tags),
+	}); cerr != nil {
+		if strings.Contains(cerr.Error(), "DBSubnetGroupAlreadyExists") {
+			return nil
+		}
+		return fmt.Errorf("create DB subnet group %s: %w", name, cerr)
+	}
+	return nil
+}
+
+func (b *AWSBackend) GetDBCluster(ctx context.Context, name string) (DBCluster, bool, error) {
+	if b.dry() {
+		return DBCluster{}, false, nil
+	}
+	cfg, err := b.loadConfig(ctx, "")
+	if err != nil {
+		return DBCluster{}, false, err
+	}
+	client := rds.NewFromConfig(cfg)
+	out, err := client.DescribeDBClusters(ctx, &rds.DescribeDBClustersInput{
+		Filters: []rdstypes.Filter{{Name: awsroot.String("db-cluster-id"), Values: []string{name}}},
+	})
+	if err != nil {
+		if isAWSNotFound(err) {
+			return DBCluster{}, false, nil
+		}
+		return DBCluster{}, false, err
+	}
+	if len(out.DBClusters) == 0 {
+		return DBCluster{}, false, nil
+	}
+	raw := out.DBClusters[0]
+	result := DBCluster{
+		ARN:            awsroot.ToString(raw.DBClusterArn),
+		Name:           awsroot.ToString(raw.DBClusterIdentifier),
+		Engine:         awsroot.ToString(raw.Engine),
+		EngineVersion:  awsroot.ToString(raw.EngineVersion),
+		DatabaseName:   awsroot.ToString(raw.DatabaseName),
+		MasterUsername: awsroot.ToString(raw.MasterUsername),
+		Endpoint:       awsroot.ToString(raw.Endpoint),
+		ReaderEndpoint: awsroot.ToString(raw.ReaderEndpoint),
+		Status:         awsroot.ToString(raw.Status),
+		Tags:           tagsFromRDS(raw.TagList),
+	}
+	if raw.Port != nil {
+		result.Port = int(*raw.Port)
+	}
+	if raw.MasterUserSecret != nil {
+		result.MasterUserSecret = awsroot.ToString(raw.MasterUserSecret.SecretArn)
+	}
+	if raw.DBSubnetGroup != nil {
+		result.SubnetGroup = awsroot.ToString(raw.DBSubnetGroup)
+	}
+	for _, membership := range raw.VpcSecurityGroups {
+		if id := awsroot.ToString(membership.VpcSecurityGroupId); id != "" {
+			result.SecurityGroups = append(result.SecurityGroups, id)
+		}
+	}
+	result.Hash = result.Tags["guardian-hash"]
+	return result, true, nil
+}
+
+func (b *AWSBackend) DeleteDBCluster(ctx context.Context, arn, name string) error {
+	if b.dry() {
+		fmt.Printf("  [dry-run] would delete Aurora cluster: %s\n", name)
+		return nil
+	}
+	cfg, err := b.loadConfig(ctx, "")
+	if err != nil {
+		return err
+	}
+	client := rds.NewFromConfig(cfg)
+	if name == "" && arn != "" {
+		out, derr := client.DescribeDBClusters(ctx, &rds.DescribeDBClustersInput{
+			Filters: []rdstypes.Filter{{Name: awsroot.String("db-cluster-arn"), Values: []string{arn}}},
+		})
+		if derr == nil && len(out.DBClusters) > 0 {
+			name = awsroot.ToString(out.DBClusters[0].DBClusterIdentifier)
+		}
+	}
+	if name == "" {
+		return nil
+	}
+	if _, err := client.DeleteDBCluster(ctx, &rds.DeleteDBClusterInput{
+		DBClusterIdentifier: awsroot.String(name),
+		SkipFinalSnapshot:   awsroot.Bool(true),
+	}); err != nil {
+		if isAWSNotFound(err) || strings.Contains(err.Error(), "DBClusterNotFoundFault") {
+			return nil
+		}
+		return fmt.Errorf("delete aurora cluster %s: %w", name, err)
+	}
+	return nil
+}
+
+func toRDSTags(tags map[string]string) []rdstypes.Tag {
+	var out []rdstypes.Tag
+	for k, v := range tags {
+		out = append(out, rdstypes.Tag{Key: awsroot.String(k), Value: awsroot.String(v)})
+	}
+	return out
+}
+
+func tagsFromRDS(tags []rdstypes.Tag) map[string]string {
+	out := make(map[string]string, len(tags))
+	for _, tag := range tags {
+		out[awsroot.ToString(tag.Key)] = awsroot.ToString(tag.Value)
+	}
+	return out
+}
+
+func vpcTags(vpc VPC) []ec2types.Tag {
+	tags := cloneStringMap(vpc.Tags)
+	if tags == nil {
+		tags = map[string]string{}
+	}
+	tags["Name"] = vpc.Name
+	tags["guardian-name"] = vpc.Name
+	keys := make([]string, 0, len(tags))
+	for key := range tags {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]ec2types.Tag, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, ec2types.Tag{Key: awsroot.String(key), Value: awsroot.String(tags[key])})
+	}
+	return out
 }
 
 func toEFSTags(tags map[string]string) []efstypes.Tag {

@@ -3,6 +3,7 @@ package awsdriver
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -22,12 +23,72 @@ import (
 type baseDriver struct {
 	backend  BackendAPI
 	resolver secrets.Resolver
+	// executionRoleMode is "shared" (account bootstrap role) or "per-intent".
+	executionRoleMode string
+}
+
+// perIntentExecutionRoles reports whether the driver provisions a
+// CloudFormation execution role per partition/intent.
+func (d baseDriver) perIntentExecutionRoles() bool {
+	return strings.EqualFold(strings.TrimSpace(d.executionRoleMode), ExecutionRolePerIntent)
+}
+
+// ensureExecutionRole provisions the per-intent role when the backend supports
+// it, returning "" when the account bootstrap role should be used instead.
+func (d baseDriver) ensureExecutionRole(ctx context.Context, in registry.AssetInput, actions []string) string {
+	if !d.perIntentExecutionRoles() || len(actions) == 0 {
+		return ""
+	}
+	manager, ok := d.backend.(ExecutionRoleManager)
+	if !ok {
+		return ""
+	}
+	roleName := ExecutionRoleName(in.PartitionName, in.IntentName)
+	if roleName == "" {
+		return ""
+	}
+	arn, err := manager.EnsureExecutionRole(ctx, roleName, actions)
+	if err != nil {
+		log.Printf("[Pusher] per-intent execution role %s unavailable: %v (using the account bootstrap role)", roleName, err)
+		return ""
+	}
+	return arn
+}
+
+// deleteExecutionRole removes the per-intent role after the stack is gone.
+func (d baseDriver) deleteExecutionRole(ctx context.Context, in registry.AssetInput) {
+	if !d.perIntentExecutionRoles() {
+		return
+	}
+	manager, ok := d.backend.(ExecutionRoleManager)
+	if !ok {
+		return
+	}
+	roleName := ExecutionRoleName(in.PartitionName, in.IntentName)
+	if roleName == "" {
+		return
+	}
+	if err := manager.DeleteExecutionRole(ctx, roleName); err != nil {
+		log.Printf("[Pusher] could not delete execution role %s: %v", roleName, err)
+	}
 }
 
 type CDKStackDriver struct{ baseDriver }
 type SecretDriver struct{ baseDriver }
 
+// Options configures the AWS driver set.
+type Options struct {
+	// ExecutionRoleMode selects the CloudFormation execution role:
+	// "shared" (the account bootstrap role) or "per-intent" (a role per
+	// partition/intent with only the actions its templates declare).
+	ExecutionRoleMode string
+}
+
 func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resolver) {
+	RegisterWithOptions(reg, backend, resolver, Options{})
+}
+
+func RegisterWithOptions(reg *registry.Registry, backend BackendAPI, resolver secrets.Resolver, opts Options) {
 	if reg == nil {
 		return
 	}
@@ -37,14 +98,19 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 	if resolver == nil {
 		resolver = secrets.NoopResolver{}
 	}
-	base := baseDriver{backend: backend, resolver: resolver}
+	base := baseDriver{backend: backend, resolver: resolver, executionRoleMode: opts.ExecutionRoleMode}
 	reg.Register(&CDKStackDriver{base})
+	reg.Register(&GeneratedStackDriver{base})
 	reg.Register(&SecretDriver{base})
 	reg.Register(&VolumeDriver{baseDriver: base})
 	reg.Register(&ConfigDriver{baseDriver: base})
 	reg.Register(&ComputeDriver{baseDriver: base})
 	reg.Register(&LoadBalancerDriver{baseDriver: base})
+	reg.Register(&SQLDatabaseDriver{baseDriver: base, typeName: assetdomain.TypeDatabase})
+	reg.Register(&SQLDatabaseDriver{baseDriver: base, typeName: assetdomain.TypeSQLDatabase})
 	reg.Register(&ObjectStoreDriver{baseDriver: base})
+	reg.Register(&NetworkDriver{baseDriver: base})
+	reg.Register(&ObservabilityDriver{base})
 }
 
 func (d *CDKStackDriver) Type() string { return assetdomain.TypeCDKStack }

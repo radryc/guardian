@@ -36,12 +36,13 @@ type ClientBackend struct {
 var _ BackendAPI = (*ClientBackend)(nil)
 
 var (
-	configMapsGVR = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
-	claimsGVR     = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "persistentvolumeclaims"}
-	servicesGVR   = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "services"}
-	namespacesGVR = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "namespaces"}
-	podsGVR       = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "pods"}
-	eventsGVR     = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "events"}
+	configMapsGVR      = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
+	claimsGVR          = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "persistentvolumeclaims"}
+	servicesGVR        = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "services"}
+	networkPoliciesGVR = schema.GroupVersionResource{Group: "networking.k8s.io", Version: "v1", Resource: "networkpolicies"}
+	namespacesGVR      = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "namespaces"}
+	podsGVR            = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "pods"}
+	eventsGVR          = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "events"}
 )
 
 // NewClientBackend builds a client-go backend. kubeconfig/contextName follow the
@@ -300,6 +301,30 @@ func (c *ClientBackend) GetService(namespace, name string) (Service, bool, error
 
 func (c *ClientBackend) DeleteService(namespace, name string) error {
 	return c.deleteObject(context.Background(), servicesGVR, namespace, name)
+}
+
+func (c *ClientBackend) UpsertNetworkPolicy(policy NetworkPolicy) error {
+	ctx := context.Background()
+	if err := c.ensureNamespace(ctx, policy.Namespace); err != nil {
+		return err
+	}
+	return c.applyObject(ctx, networkPolicyManifest(policy))
+}
+
+func (c *ClientBackend) GetNetworkPolicy(namespace, name string) (NetworkPolicy, bool, error) {
+	raw, ok, err := c.getObject(context.Background(), networkPoliciesGVR, namespace, name)
+	if err != nil || !ok {
+		return NetworkPolicy{}, ok, err
+	}
+	policy, err := decodeNetworkPolicy(namespace, raw)
+	if err != nil {
+		return NetworkPolicy{}, false, err
+	}
+	return policy, true, nil
+}
+
+func (c *ClientBackend) DeleteNetworkPolicy(namespace, name string) error {
+	return c.deleteObject(context.Background(), networkPoliciesGVR, namespace, name)
 }
 
 func (c *ClientBackend) podsTerminalFailure(ctx context.Context, namespace string, labels map[string]string) (reason, message, podName string) {

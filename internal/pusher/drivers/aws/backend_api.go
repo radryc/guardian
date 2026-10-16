@@ -20,6 +20,16 @@ type BackendAPI interface {
 	GetFileSystem(ctx context.Context, fsID string) (FileSystem, bool, error)
 	DeleteFileSystem(ctx context.Context, fsID string) error
 
+	// VPC
+	UpsertVPC(ctx context.Context, vpc VPC) (string, error)
+	GetVPC(ctx context.Context, vpcID string) (VPC, bool, error)
+	DeleteVPC(ctx context.Context, vpcID string) error
+
+	// RDS (Aurora)
+	UpsertDBCluster(ctx context.Context, cluster DBCluster) (DBCluster, error)
+	GetDBCluster(ctx context.Context, name string) (DBCluster, bool, error)
+	DeleteDBCluster(ctx context.Context, arn, name string) error
+
 	// SSM Parameter Store
 	UpsertParameter(ctx context.Context, param Parameter) error
 	GetParameter(ctx context.Context, name string) (Parameter, bool, error)
@@ -71,6 +81,35 @@ type FileSystem struct {
 	AccessPoints map[string]string
 }
 
+// VPC is a managed EC2 network boundary.
+type VPC struct {
+	ID        string
+	Name      string
+	Hash      string
+	Tags      map[string]string
+	CIDRBlock string
+	Internal  bool
+}
+
+// DBCluster is a managed RDS Aurora cluster.
+type DBCluster struct {
+	ARN              string
+	Name             string
+	Hash             string
+	Tags             map[string]string
+	Engine           string
+	EngineVersion    string
+	DatabaseName     string
+	MasterUsername   string
+	Port             int
+	Endpoint         string
+	ReaderEndpoint   string
+	MasterUserSecret string
+	Status           string
+	SubnetGroup      string
+	SecurityGroups   []string
+}
+
 type Parameter struct {
 	Name  string
 	Type  string
@@ -101,6 +140,7 @@ type ECSService struct {
 	SecurityGroups []string
 	AssignPublicIP bool
 	Container      ContainerDef
+	Sidecars       []ContainerDef
 	TargetGroupARN string
 	LogGroup       string
 }
@@ -118,6 +158,7 @@ type ContainerDef struct {
 	GPUs        int
 	HealthCheck *HealthCheckDef
 	Privileged  bool
+	Essential   *bool
 	Volumes     []VolumeDef
 	LogDriver   string
 	LogOptions  map[string]string
@@ -197,6 +238,14 @@ type LogGroup struct {
 
 // --- CDK types (unchanged) ---
 
+// ExecutionRoleManager is implemented by backends that can provision
+// per-intent CloudFormation execution roles (the AWS SDK backend). Backends
+// without it fall back to the account-wide bootstrap role.
+type ExecutionRoleManager interface {
+	EnsureExecutionRole(ctx context.Context, roleName string, actions []string) (string, error)
+	DeleteExecutionRole(ctx context.Context, roleName string) error
+}
+
 type StackRequest struct {
 	PartitionName string
 	IntentName    string
@@ -209,6 +258,9 @@ type StackRequest struct {
 	Env           map[string]string
 	DesiredHash   string
 	Tags          map[string]string
+	// ExecutionRoleARN is passed to `cdk deploy --role-arn` when a per-intent
+	// execution role is provisioned for the stack.
+	ExecutionRoleARN string
 }
 
 type StackState struct {

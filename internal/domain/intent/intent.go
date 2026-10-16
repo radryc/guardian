@@ -17,6 +17,17 @@ const (
 	TypeObserved = "observed"
 )
 
+const (
+	// ImplementationNative applies each asset with the provider-native driver
+	// (imperative AWS SDK calls for the AWS pusher). It is the default.
+	ImplementationNative = "native"
+	// ImplementationCDK compiles the intent's CDK-expressible assets into one
+	// generated TypeScript CDK stack that is deployed as a single
+	// CloudFormation stack. Assets without a construct (Secret, Config, ...)
+	// keep using their native driver.
+	ImplementationCDK = "cdk"
+)
+
 type Intent struct {
 	APIVersion string     `yaml:"apiVersion" json:"apiVersion"`
 	Kind       string     `yaml:"kind" json:"kind"`
@@ -25,11 +36,12 @@ type Intent struct {
 }
 
 type IntentSpec struct {
-	IntentType   string                 `yaml:"intentType" json:"intentType"`
-	Joins        []string               `yaml:"joins,omitempty" json:"joins,omitempty"`
-	TargetPusher string                 `yaml:"targetPusher" json:"targetPusher"`
-	Target       targetdomain.Placement `yaml:"target,omitempty" json:"target,omitempty"`
-	Locked       bool                   `yaml:"locked" json:"locked"`
-	Hints        []assetdomain.Hint     `yaml:"hints,omitempty" json:"hints,omitempty"`
-	Assets       []AssetSpec            `yaml:"assets" json:"assets"`
+	IntentType     string                 `yaml:"intentType" json:"intentType"`
+	Implementation string                 `yaml:"implementation,omitempty" json:"implementation,omitempty"`
+	Joins          []string               `yaml:"joins,omitempty" json:"joins,omitempty"`
+	TargetPusher   string                 `yaml:"targetPusher" json:"targetPusher"`
+	Target         targetdomain.Placement `yaml:"target,omitempty" json:"target,omitempty"`
+	Locked         bool                   `yaml:"locked" json:"locked"`
+	Hints          []assetdomain.Hint     `yaml:"hints,omitempty" json:"hints,omitempty"`
+	Assets         []AssetSpec            `yaml:"assets" json:"assets"`
 }

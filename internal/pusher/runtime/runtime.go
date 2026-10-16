@@ -515,11 +515,17 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 			attribute.String("guardian.asset.type", asset.Type),
 		)
 		assetCtx, assetSpan := otel.Tracer(runtimeScope).Start(ctx, "guardian.asset."+strings.ToLower(string(t.Op)), trace.WithAttributes(assetAttrs...))
-		if err := driver.Validate(asset.Properties); err != nil {
-			assetSpan.RecordError(err)
-			assetSpan.SetStatus(codes.Error, err.Error())
+		var validateErr error
+		if contextValidator, ok := driver.(registry.ContextValidator); ok {
+			validateErr = contextValidator.ValidateInContext(asset.Properties, assetIndex)
+		} else {
+			validateErr = driver.Validate(asset.Properties)
+		}
+		if validateErr != nil {
+			assetSpan.RecordError(validateErr)
+			assetSpan.SetStatus(codes.Error, validateErr.Error())
 			assetSpan.End()
-			return fail(err)
+			return fail(validateErr)
 		}
 		input := registry.AssetInput{
 			PartitionName: t.Partition,

@@ -12,6 +12,8 @@ type Backend struct {
 	stacks         map[string]StackState
 	drift          map[string]StackDriftStatus
 	lastRequest    StackRequest
+	vpcs           map[string]VPC
+	dbClusters     map[string]DBCluster
 }
 
 func NewBackend() *Backend {
@@ -19,6 +21,8 @@ func NewBackend() *Backend {
 		bootstrapReady: map[string]bool{},
 		stacks:         map[string]StackState{},
 		drift:          map[string]StackDriftStatus{},
+		vpcs:           map[string]VPC{},
+		dbClusters:     map[string]DBCluster{},
 	}
 }
 
@@ -175,7 +179,68 @@ func (b *Backend) UpsertFileSystem(ctx context.Context, fs FileSystem) (string, 
 func (b *Backend) GetFileSystem(ctx context.Context, fsID string) (FileSystem, bool, error) {
 	return FileSystem{ID: fsID, Hash: "test"}, true, nil
 }
-func (b *Backend) DeleteFileSystem(ctx context.Context, fsID string) error    { return nil }
+func (b *Backend) DeleteFileSystem(ctx context.Context, fsID string) error { return nil }
+func (b *Backend) UpsertVPC(ctx context.Context, vpc VPC) (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if vpc.ID == "" {
+		vpc.ID = "vpc-test"
+	}
+	clone := vpc
+	clone.Tags = cloneStringMap(vpc.Tags)
+	b.vpcs[vpc.ID] = clone
+	return vpc.ID, nil
+}
+func (b *Backend) GetVPC(ctx context.Context, vpcID string) (VPC, bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	vpc, ok := b.vpcs[vpcID]
+	return vpc, ok, nil
+}
+func (b *Backend) DeleteVPC(ctx context.Context, vpcID string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.vpcs, vpcID)
+	return nil
+}
+func (b *Backend) UpsertDBCluster(ctx context.Context, cluster DBCluster) (DBCluster, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if cluster.ARN == "" {
+		cluster.ARN = "arn:aws:rds:test:test:cluster:" + cluster.Name
+	}
+	if cluster.Endpoint == "" {
+		cluster.Endpoint = cluster.Name + ".cluster-test.rds.amazonaws.com"
+	}
+	if cluster.Status == "" {
+		cluster.Status = "available"
+	}
+	clone := cluster
+	clone.Tags = cloneStringMap(cluster.Tags)
+	clone.SecurityGroups = append([]string(nil), cluster.SecurityGroups...)
+	b.dbClusters[cluster.Name] = clone
+	return clone, nil
+}
+func (b *Backend) GetDBCluster(ctx context.Context, name string) (DBCluster, bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	cluster, ok := b.dbClusters[name]
+	return cluster, ok, nil
+}
+func (b *Backend) DeleteDBCluster(ctx context.Context, arn, name string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if name == "" {
+		for key, cluster := range b.dbClusters {
+			if cluster.ARN == arn {
+				name = key
+				break
+			}
+		}
+	}
+	delete(b.dbClusters, name)
+	return nil
+}
 func (b *Backend) UpsertParameter(ctx context.Context, param Parameter) error { return nil }
 func (b *Backend) GetParameter(ctx context.Context, name string) (Parameter, bool, error) {
 	return Parameter{Name: name, Hash: "test"}, true, nil
@@ -229,3 +294,11 @@ func (b *Backend) UpsertLogGroup(ctx context.Context, group LogGroup) error { re
 func (b *Backend) GetLogGroup(ctx context.Context, name string) (LogGroup, bool, error) {
 	return LogGroup{Name: name, Hash: "test"}, true, nil
 }
+
+// EnsureExecutionRole is a no-op on the in-memory backend.
+func (b *Backend) EnsureExecutionRole(ctx context.Context, roleName string, actions []string) (string, error) {
+	return fmt.Sprintf("arn:aws:iam::000000000000:role/%s", roleName), nil
+}
+
+// DeleteExecutionRole is a no-op on the in-memory backend.
+func (b *Backend) DeleteExecutionRole(ctx context.Context, roleName string) error { return nil }
