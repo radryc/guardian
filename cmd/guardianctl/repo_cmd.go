@@ -2,18 +2,25 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/rydzu/ainfra/guardian/internal/cli/command"
 	"github.com/rydzu/ainfra/guardian/internal/cli/output"
+	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
 	"github.com/rydzu/ainfra/guardian/internal/observedgen"
+	"github.com/rydzu/ainfra/guardian/internal/orchestrator/dispatcher"
+	"github.com/rydzu/ainfra/guardian/internal/orchestrator/reconciler"
+	"github.com/rydzu/ainfra/guardian/internal/paths"
 	"github.com/rydzu/ainfra/guardian/internal/registry"
 	"github.com/rydzu/ainfra/guardian/internal/repoconfig"
+	"github.com/rydzu/ainfra/guardian/internal/repoimport"
 	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
 )
 
@@ -29,7 +36,8 @@ func repoAddCommand(store guardianapi.Store, printer *output.Printer) *command.C
 	account := flags.String("account", "", "AWS account id override")
 	region := flags.String("region", "", "AWS region override")
 	description := flags.String("description", "", "free-form description")
-	return &command.Command{Description: "Register a source repository that feeds an observed partition", Flags: flags, Run: func(ctx context.Context, args []string) error {
+	bindingsJSON := flags.String("bindings", "", "JSON array of partition bindings (alternative to --partition)")
+	return &command.Command{Description: "Register a source repository that feeds one or more observed partitions", Flags: flags, Run: func(ctx context.Context, args []string) error {
 		repo := &registry.Repo{
 			Name:           *name,
 			Pusher:         *pusher,
@@ -42,6 +50,15 @@ func repoAddCommand(store guardianapi.Store, printer *output.Printer) *command.C
 			Region:         *region,
 			Description:    *description,
 		}
+		if strings.TrimSpace(*bindingsJSON) != "" {
+			var bindings []registry.RepoBinding
+			if err := json.Unmarshal([]byte(*bindingsJSON), &bindings); err != nil {
+				return fmt.Errorf("parse --bindings: %w", err)
+			}
+			repo.Bindings = bindings
+			repo.Partition = ""
+			repo.Path = ""
+		}
 		if err := registry.New(store).PutRepo(ctx, repo); err != nil {
 			return err
 		}
@@ -49,7 +66,7 @@ func repoAddCommand(store guardianapi.Store, printer *output.Printer) *command.C
 			printer.PrintJSON(repo)
 			return nil
 		}
-		printer.PrintText("registered repo %s -> partition %s via pusher %s\n", repo.Name, repo.Partition, repo.Pusher)
+		printer.PrintText("registered repo %s -> %s via pusher %s\n", repo.Name, strings.Join(repo.PartitionNames(), ", "), repo.Pusher)
 		return nil
 	}}
 }
@@ -70,7 +87,7 @@ func repoListCommand(store guardianapi.Store, printer *output.Printer) *command.
 			if !repo.LastSyncedAt.IsZero() {
 				lastSync = repo.LastSyncedAt.Format("2006-01-02 15:04")
 			}
-			rows = append(rows, []string{repo.Name, repo.Partition, repo.Pusher, repo.Source, lastSync, repo.LastSyncError})
+			rows = append(rows, []string{repo.Name, strings.Join(repo.PartitionNames(), ","), repo.Pusher, repo.Source, lastSync, repo.LastSyncError})
 		}
 		printer.PrintTable([]string{"NAME", "PARTITION", "PUSHER", "SOURCE", "LAST SYNC", "ERROR"}, rows)
 		return nil
@@ -90,6 +107,73 @@ func repoRemoveCommand(store guardianapi.Store, printer *output.Printer) *comman
 		printer.PrintText("removed repo %s\n", strings.TrimSpace(*name))
 		return nil
 	}}
+}
+
+// repoAssignCommand replaces a repo's partition bindings without touching its
+// source or credentials.
+func repoAssignCommand(store guardianapi.Store, printer *output.Printer) *command.Command {
+	flags := flag.NewFlagSet("repo assign", flag.ContinueOnError)
+	name := flags.String("name", "", "repo name")
+	bindingsJSON := flags.String("bindings", "", `JSON array of bindings, e.g. [{"partition":"prod","selector":"Prod-*"}]`)
+	partitions := flags.String("partition", "", "comma-separated partition names (simple bindings)")
+	selector := flags.String("selector", "", "stack selector applied to every --partition")
+	path := flags.String("path", "", "payload dir applied to every --partition")
+	account := flags.String("account", "", "account override applied to every --partition")
+	region := flags.String("region", "", "region override applied to every --partition")
+	return &command.Command{Description: "Assign existing partitions to a repository (multiple partitions, one selector each)", Flags: flags, Run: func(ctx context.Context, args []string) error {
+		if strings.TrimSpace(*name) == "" {
+			return fmt.Errorf("--name is required")
+		}
+		bindings, err := parseRepoBindings(*bindingsJSON, *partitions, *selector, *path, *account, *region)
+		if err != nil {
+			return err
+		}
+		if len(bindings) == 0 {
+			return fmt.Errorf("provide --bindings or --partition")
+		}
+		registryStore := registry.New(store)
+		repo, err := registryStore.GetRepo(ctx, strings.TrimSpace(*name))
+		if err != nil {
+			return err
+		}
+		repo.Bindings = bindings
+		repo.Partition = ""
+		repo.Path = ""
+		if err := registryStore.PutRepo(ctx, repo); err != nil {
+			return err
+		}
+		if printer.Format == "json" {
+			printer.PrintJSON(repo)
+			return nil
+		}
+		printer.PrintText("assigned repo %s to %s\n", repo.Name, strings.Join(repo.PartitionNames(), ", "))
+		return nil
+	}}
+}
+
+func parseRepoBindings(raw, partitionsCSV, selector, path, account, region string) ([]registry.RepoBinding, error) {
+	if strings.TrimSpace(raw) != "" {
+		var bindings []registry.RepoBinding
+		if err := json.Unmarshal([]byte(raw), &bindings); err != nil {
+			return nil, fmt.Errorf("parse --bindings: %w", err)
+		}
+		return bindings, nil
+	}
+	out := make([]registry.RepoBinding, 0)
+	for _, partition := range strings.Split(partitionsCSV, ",") {
+		partition = strings.TrimSpace(partition)
+		if partition == "" {
+			continue
+		}
+		out = append(out, registry.RepoBinding{
+			Partition: partition,
+			Selector:  strings.TrimSpace(selector),
+			Path:      strings.TrimSpace(path),
+			Account:   strings.TrimSpace(account),
+			Region:    strings.TrimSpace(region),
+		})
+	}
+	return out, nil
 }
 
 func repoSyncCommand(store guardianapi.Store, printer *output.Printer) *command.Command {
@@ -178,7 +262,7 @@ func repoApplyCommand(store guardianapi.Store, printer *output.Printer) *command
 			return err
 		}
 		if printer.Format != "json" {
-			printer.PrintText("applied %s: pusher=%s repo=%s partition=%s\n", configPath, config.Pusher.Name, repo.Name, repo.Partition)
+			printer.PrintText("applied %s: pusher=%s repo=%s partitions=%s\n", configPath, config.Pusher.Name, repo.Name, strings.Join(repo.PartitionNames(), ", "))
 		}
 		return syncRepoBundle(ctx, store, registryStore, repo, sourceDir, *assembly, *synth, *reconcile, printer)
 	}}
@@ -188,6 +272,7 @@ func repoIngestCommand(store guardianapi.Store, printer *output.Printer) *comman
 	flags := flag.NewFlagSet("repo ingest", flag.ContinueOnError)
 	name := flags.String("name", "", "repo name")
 	assembly := flags.String("assembly", "", "logical MonoFS path of the cloud assembly (cdk.out)")
+	reconcile := flags.Bool("reconcile", true, "reconcile every bound partition after ingest")
 	return &command.Command{Description: "Generate observed intents from an assembly already in MonoFS", Flags: flags, Run: func(ctx context.Context, args []string) error {
 		if strings.TrimSpace(*name) == "" {
 			return fmt.Errorf("--name is required")
@@ -201,13 +286,98 @@ func repoIngestCommand(store guardianapi.Store, printer *output.Printer) *comman
 		if err != nil {
 			return err
 		}
+		if *reconcile {
+			if err := reconcileRepoPartitions(ctx, store, repo); err != nil {
+				return err
+			}
+		}
 		if printer.Format == "json" {
-			printer.PrintJSON(map[string]any{"repo": repo.Name, "partition": repo.Partition, "intents": created})
+			printer.PrintJSON(map[string]any{"repo": repo.Name, "partitions": repo.PartitionNames(), "intents": created})
 			return nil
 		}
-		printer.PrintText("ingested repo %s -> partition %s (%d intent(s))\n", repo.Name, repo.Partition, len(created))
+		printer.PrintText("ingested repo %s -> %s (%d intent(s))\n", repo.Name, strings.Join(repo.PartitionNames(), ", "), len(created))
 		return nil
 	}}
+}
+
+// repoImportCommand imports a repository's guardian/partitions/** bundle from
+// either a local checkout or the MonoFS repo display path (/.repos/<path>)
+// into the canonical partition namespace, then optionally reconciles the
+// affected partitions. It is the manual counterpart of the level-triggered
+// Guardian-side repo import loop.
+func repoImportCommand(store guardianapi.Store, printer *output.Printer) *command.Command {
+	flags := flag.NewFlagSet("repo import", flag.ContinueOnError)
+	name := flags.String("name", "", "repo name")
+	source := flags.String("source", "", "override source: local directory or /.repos/<display-path>")
+	partition := flags.String("partition", "", "limit the import to one partition")
+	reconcile := flags.Bool("reconcile", true, "trigger a reconcile when files changed")
+	return &command.Command{Description: "Import guardian/partitions/** from a repo into the partition namespace", Flags: flags, Run: func(ctx context.Context, args []string) error {
+		if strings.TrimSpace(*name) == "" {
+			return fmt.Errorf("--name is required")
+		}
+		registryStore := registry.New(store)
+		repo, err := registryStore.GetRepo(ctx, strings.TrimSpace(*name))
+		if err != nil {
+			return err
+		}
+		src, err := repoSources(store, repo, *source)
+		if err != nil {
+			return err
+		}
+		result, err := repoimport.Import(ctx, src, store, repoimport.Options{
+			RepoName:  repo.Name,
+			Partition: strings.TrimSpace(*partition),
+		})
+		if err != nil {
+			return err
+		}
+		if *reconcile && result.Changed {
+			if err := reconcileRepoPartitions(ctx, store, repo); err != nil {
+				return err
+			}
+		}
+		if printer.Format == "json" {
+			printer.PrintJSON(result)
+			return nil
+		}
+		for _, warning := range result.Warnings {
+			printer.PrintText("warning: %s\n", warning)
+		}
+		printer.PrintText("imported repo %s: %d partition(s) changed, %d file(s) written, %d unchanged\n",
+			repo.Name, len(result.Imported), result.FilesWritten, len(result.Skipped))
+		return nil
+	}}
+}
+
+// repoSources picks a source for the repo import: an explicit local checkout,
+// the repo's local source, or the /.repos/<display-path> MonoFS mapping.
+func repoSources(store guardianapi.Store, repo *registry.Repo, override string) (repoimport.Source, error) {
+	source := firstNonEmpty(override, repo.Source)
+	if strings.TrimSpace(source) == "" {
+		return nil, fmt.Errorf("repo %s has no source; pass --source", repo.Name)
+	}
+	if info, err := os.Stat(source); err == nil && info.IsDir() {
+		return repoimport.NewLocalSource(source), nil
+	}
+	logical := strings.TrimSpace(source)
+	if !strings.HasPrefix(logical, "/") {
+		logical = repoDisplayLogicalPath(source)
+		if logical == "" {
+			return nil, fmt.Errorf("cannot derive a MonoFS display path from source %q; pass --source /.repos/<display-path>", source)
+		}
+	}
+	return repoimport.NewStoreSource(store, logical), nil
+}
+
+// repoDisplayLogicalPath converts a git URL into the MonoFS /.repos logical
+// path (for example https://github.com/example/strata.git ->
+// /.repos/github.com/example/strata).
+func repoDisplayLogicalPath(source string) string {
+	display := repoconfig.DisplayPathFromSource(source)
+	if display == "" {
+		return ""
+	}
+	return "/.repos/" + display
 }
 
 func repoNotifyCommand(store guardianapi.Store, printer *output.Printer) *command.Command {
@@ -215,6 +385,7 @@ func repoNotifyCommand(store guardianapi.Store, printer *output.Printer) *comman
 	name := flags.String("name", "", "repo name")
 	commit := flags.String("commit", "", "merge commit SHA")
 	noIngest := flags.Bool("no-ingest", false, "only record the notification, do not regenerate intents")
+	reconcile := flags.Bool("reconcile", true, "reconcile every bound partition after ingest")
 	return &command.Command{Description: "Record a CI merge notification and regenerate intents from the stored assembly", Flags: flags, Run: func(ctx context.Context, args []string) error {
 		if strings.TrimSpace(*name) == "" {
 			return fmt.Errorf("--name is required")
@@ -233,6 +404,11 @@ func repoNotifyCommand(store guardianapi.Store, printer *output.Printer) *comman
 			if err != nil {
 				return err
 			}
+			if *reconcile {
+				if err := reconcileRepoPartitions(ctx, store, repo); err != nil {
+					return err
+				}
+			}
 		}
 		if printer.Format == "json" {
 			printer.PrintJSON(map[string]any{"repo": repo.Name, "commit": *commit, "intents": created})
@@ -243,37 +419,56 @@ func repoNotifyCommand(store guardianapi.Store, printer *output.Printer) *comman
 	}}
 }
 
+// reconcileRepoPartitions auto-deploys every partition bound to a repo by
+// running an explicit reconcile for each binding target.
+func reconcileRepoPartitions(ctx context.Context, store guardianapi.Store, repo *registry.Repo) error {
+	var firstErr error
+	for _, partition := range repo.PartitionNames() {
+		disp := dispatcher.NewDispatcher(store, "guardianctl")
+		recon := reconciler.NewReconciler(store, disp, time.Minute)
+		if err := recon.ReconcilePartition(ctx, partition, true); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("reconcile %s: %w", partition, err)
+		}
+	}
+	return firstErr
+}
+
 // ingestRegisteredRepo regenerates observed intents for a registered repo from
-// an assembly already in MonoFS.
+// an assembly already in MonoFS. One bundle is generated per partition binding.
 func ingestRegisteredRepo(ctx context.Context, store guardianapi.Store, registryStore *registry.Store, repo *registry.Repo, assemblyOverride string) ([]string, error) {
 	pusher, err := registryStore.GetPusher(ctx, repo.Pusher)
 	if err != nil {
 		return nil, err
 	}
-	account := firstNonEmpty(repo.Account, pusher.Account)
-	region := firstNonEmpty(repo.Region, pusher.Region)
-	if account == "" || region == "" {
-		return nil, fmt.Errorf("repo %s: account and region must be set on the repo or pusher", repo.Name)
-	}
-	assemblyDir := strings.TrimSpace(assemblyOverride)
-	if assemblyDir == "" {
-		assemblyDir, err = resolveStoreAssembly(ctx, store, repo)
+	created := make([]string, 0)
+	for _, binding := range repo.BindingList() {
+		account := firstNonEmpty(binding.Account, repo.Account, pusher.Account)
+		region := firstNonEmpty(binding.Region, repo.Region, pusher.Region)
+		if account == "" || region == "" {
+			return nil, fmt.Errorf("repo %s: account and region must be set on the binding, repo or pusher", repo.Name)
+		}
+		assemblyDir := strings.TrimSpace(assemblyOverride)
+		if assemblyDir == "" {
+			assemblyDir, err = resolveStoreAssembly(ctx, store, repo, binding)
+			if err != nil {
+				_ = registryStore.RecordSync(ctx, repo.Name, "", err)
+				return nil, err
+			}
+		}
+		intents, err := observedgen.GenerateToStore(ctx, store, observedgen.StoreOptions{
+			AssemblyDir: assemblyDir,
+			Partition:   binding.Partition,
+			Account:     account,
+			Region:      region,
+			Pusher:      repo.Pusher,
+			PayloadDir:  binding.PayloadDir(),
+			Selector:    binding.Selector,
+		})
 		if err != nil {
 			_ = registryStore.RecordSync(ctx, repo.Name, "", err)
 			return nil, err
 		}
-	}
-	created, err := observedgen.GenerateToStore(ctx, store, observedgen.StoreOptions{
-		AssemblyDir: assemblyDir,
-		Partition:   repo.Partition,
-		Account:     account,
-		Region:      region,
-		Pusher:      repo.Pusher,
-		PayloadDir:  repo.ObservedPartitionPath(),
-	})
-	if err != nil {
-		_ = registryStore.RecordSync(ctx, repo.Name, "", err)
-		return nil, err
+		created = append(created, intents...)
 	}
 	if err := registryStore.RecordSync(ctx, repo.Name, "", nil); err != nil {
 		return nil, err
@@ -281,54 +476,91 @@ func ingestRegisteredRepo(ctx context.Context, store guardianapi.Store, registry
 	return created, nil
 }
 
-// syncRepoBundle generates and pushes the observed partition bundle for a
-// materialized checkout.
+// syncRepoBundle imports each binding's repo-authored partition bundle
+// (guardian/partitions/<name>/) and, when a cloud assembly is available,
+// generates the observed bundle for it. Missing intents are preserved because a
+// partition can be fed by several repos/bindings. Partition authoring is
+// credential-free: inline Secret values are rejected.
 func syncRepoBundle(ctx context.Context, store guardianapi.Store, registryStore *registry.Store, repo *registry.Repo, sourceDir, assembly string, synth, reconcile bool, printer *output.Printer) error {
 	pusher, err := registryStore.GetPusher(ctx, repo.Pusher)
 	if err != nil {
 		return err
 	}
-	account := firstNonEmpty(repo.Account, pusher.Account)
-	region := firstNonEmpty(repo.Region, pusher.Region)
-	if account == "" || region == "" {
-		return fmt.Errorf("repo %s: account and region must be set on the repo or pusher", repo.Name)
-	}
-	assemblyDir, err := resolveAssemblyDir(ctx, repo, sourceDir, assembly, synth)
-	if err != nil {
-		_ = registryStore.RecordSync(ctx, repo.Name, "", err)
-		return err
-	}
 	commit := gitHead(ctx, sourceDir)
 
-	outDir, err := os.MkdirTemp("", "guardian-observed-bundle-*")
-	if err != nil {
-		return err
+	assemblyDir, assemblyErr := resolveAssemblyDir(ctx, repo, sourceDir, assembly, synth)
+	if assemblyErr != nil {
+		assemblyDir = ""
 	}
-	defer os.RemoveAll(outDir)
-	created, err := observedgen.Generate(observedgen.Options{
-		AssemblyDir: assemblyDir,
-		OutDir:      outDir,
-		Partition:   repo.Partition,
-		Account:     account,
-		Region:      region,
-		Pusher:      repo.Pusher,
-		PayloadDir:  repo.ObservedPartitionPath(),
-	})
-	if err != nil {
+
+	bindings := repo.BindingList()
+	if len(bindings) == 0 {
+		err := fmt.Errorf("repo %s has no partition bindings", repo.Name)
 		_ = registryStore.RecordSync(ctx, repo.Name, commit, err)
 		return err
 	}
-	bundle, err := loadLocalPartitionBundle(outDir, false)
-	if err != nil {
-		_ = registryStore.RecordSync(ctx, repo.Name, commit, err)
-		return err
-	}
-	if _, err := pushPartitionBundle(ctx, store, bundle, true); err != nil {
-		_ = registryStore.RecordSync(ctx, repo.Name, commit, err)
-		return err
+
+	created := make([]string, 0)
+	for _, binding := range bindings {
+		imported, err := importRepoPartition(ctx, store, sourceDir, binding.Partition)
+		if err != nil {
+			_ = registryStore.RecordSync(ctx, repo.Name, commit, err)
+			return err
+		}
+		if assemblyDir == "" {
+			if !imported {
+				err := fmt.Errorf("repo %s partition %s: no guardian/partitions/%s and no cloud assembly: %w",
+					repo.Name, binding.Partition, binding.Partition, assemblyErr)
+				_ = registryStore.RecordSync(ctx, repo.Name, commit, err)
+				return err
+			}
+			continue
+		}
+		account := firstNonEmpty(binding.Account, repo.Account, pusher.Account)
+		region := firstNonEmpty(binding.Region, repo.Region, pusher.Region)
+		if account == "" || region == "" {
+			err := fmt.Errorf("repo %s binding %s: account and region must be set on the binding, repo or pusher", repo.Name, binding.Partition)
+			_ = registryStore.RecordSync(ctx, repo.Name, commit, err)
+			return err
+		}
+		outDir, err := os.MkdirTemp("", "guardian-observed-bundle-*")
+		if err != nil {
+			return err
+		}
+		intents, err := observedgen.Generate(observedgen.Options{
+			AssemblyDir: assemblyDir,
+			OutDir:      outDir,
+			Partition:   binding.Partition,
+			Account:     account,
+			Region:      region,
+			Pusher:      repo.Pusher,
+			PayloadDir:  binding.PayloadDir(),
+			Selector:    binding.Selector,
+		})
+		if err != nil {
+			os.RemoveAll(outDir)
+			_ = registryStore.RecordSync(ctx, repo.Name, commit, err)
+			return err
+		}
+		bundle, err := loadLocalPartitionBundle(outDir, false)
+		if err != nil {
+			os.RemoveAll(outDir)
+			_ = registryStore.RecordSync(ctx, repo.Name, commit, err)
+			return err
+		}
+		// Observed generation is not authoritative for partition settings: keep
+		// the authored or existing config when the partition already exists.
+		preserveExistingPartitionConfig(ctx, store, bundle)
+		if _, err := pushPartitionBundle(ctx, store, bundle, false); err != nil {
+			os.RemoveAll(outDir)
+			_ = registryStore.RecordSync(ctx, repo.Name, commit, err)
+			return err
+		}
+		os.RemoveAll(outDir)
+		created = append(created, intents...)
 	}
 	if reconcile {
-		if err := reconcilePushed(ctx, store, bundle); err != nil {
+		if err := reconcileRepoPartitions(ctx, store, repo); err != nil {
 			_ = registryStore.RecordSync(ctx, repo.Name, commit, err)
 			return err
 		}
@@ -338,12 +570,67 @@ func syncRepoBundle(ctx context.Context, store guardianapi.Store, registryStore 
 	}
 	if printer.Format == "json" {
 		printer.PrintJSON(map[string]any{
-			"repo": repo.Name, "partition": repo.Partition, "commit": commit, "intents": created,
+			"repo": repo.Name, "partitions": repo.PartitionNames(), "commit": commit, "intents": created,
 		})
 		return nil
 	}
-	printer.PrintText("synced repo %s -> partition %s (%d intent(s), commit %s)\n", repo.Name, repo.Partition, len(created), valueOrNone(commit))
+	printer.PrintText("synced repo %s -> %s (%d intent(s), commit %s)\n", repo.Name, strings.Join(repo.PartitionNames(), ", "), len(created), valueOrNone(commit))
 	return nil
+}
+
+const repoPartitionsSubdir = "guardian/partitions"
+
+// importRepoPartition pushes the repo-authored partition bundle from
+// guardian/partitions/<name>/ when the checkout contains one. It returns false
+// when the repo does not author that partition.
+func importRepoPartition(ctx context.Context, store guardianapi.Store, sourceDir, partition string) (bool, error) {
+	if strings.TrimSpace(sourceDir) == "" {
+		return false, nil
+	}
+	dir := filepath.Join(sourceDir, filepath.FromSlash(repoPartitionsSubdir), partition)
+	info, statErr := os.Stat(dir)
+	if statErr != nil || !info.IsDir() {
+		return false, nil
+	}
+	bundle, err := loadLocalPartitionBundle(dir, false)
+	if err != nil {
+		return true, fmt.Errorf("import partition %s: %w", partition, err)
+	}
+	if bundle.PartitionName != partition {
+		return true, fmt.Errorf("import partition %s: manifest metadata.name %q does not match", partition, bundle.PartitionName)
+	}
+	if err := rejectInlineSecretValues(bundle); err != nil {
+		return true, err
+	}
+	if _, err := pushPartitionBundle(ctx, store, bundle, false); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+// rejectInlineSecretValues enforces the GitOps rule that repository content
+// only carries references, never secret material.
+func rejectInlineSecretValues(bundle *localPartitionBundle) error {
+	for intentName, manifest := range bundle.IntentManifests {
+		for _, asset := range manifest.Spec.Assets {
+			if asset.Type != assetdomain.TypeSecret {
+				continue
+			}
+			value, _ := asset.Properties["value"].(string)
+			if strings.TrimSpace(value) != "" {
+				return fmt.Errorf("intent %s asset %s: inline Secret value is not allowed in repo-sourced partitions; use secretRef", intentName, asset.Name)
+			}
+		}
+	}
+	return nil
+}
+
+// preserveExistingPartitionConfig drops the generated partition settings when
+// the partition already exists, so ingest extends instead of resetting it.
+func preserveExistingPartitionConfig(ctx context.Context, store guardianapi.Store, bundle *localPartitionBundle) {
+	if _, err := store.ReadFile(ctx, paths.PartitionConfig(bundle.PartitionName)); err == nil {
+		delete(bundle.ManagedFiles, paths.PartitionConfig(bundle.PartitionName))
+	}
 }
 
 // applyRepoConfig loads .guardian/config.yaml from dir and upserts the pusher
@@ -524,17 +811,17 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func resolveStoreAssembly(ctx context.Context, store guardianapi.Store, repo *registry.Repo) (string, error) {
+func resolveStoreAssembly(ctx context.Context, store guardianapi.Store, repo *registry.Repo, binding registry.RepoBinding) (string, error) {
 	candidates := make([]string, 0, 4)
 	if source := strings.TrimSpace(repo.Source); strings.HasPrefix(source, "/") {
 		candidates = append(candidates, source, strings.TrimRight(source, "/")+"/cdk.out")
 	}
-	payloadDir := repo.ObservedPartitionPath()
+	payloadDir := binding.PayloadDir()
 	candidates = append(candidates, strings.TrimRight(payloadDir, "/")+"/cdk.out", payloadDir)
 	for _, candidate := range candidates {
 		if _, err := store.ReadFile(ctx, strings.TrimRight(candidate, "/")+"/manifest.json"); err == nil {
 			return candidate, nil
 		}
 	}
-	return "", fmt.Errorf("no cloud assembly found for repo %s; push a cdk.out to %s or run `guardianctl repo sync --name %s`", repo.Name, strings.TrimRight(payloadDir, "/")+"/cdk.out", repo.Name)
+	return "", fmt.Errorf("no cloud assembly found for repo %s partition %s; push a cdk.out to %s or run `guardianctl repo sync --name %s`", repo.Name, binding.Partition, strings.TrimRight(payloadDir, "/")+"/cdk.out", repo.Name)
 }

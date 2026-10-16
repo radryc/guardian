@@ -122,16 +122,21 @@ func ResourceName(prefix string, target targetdomain.Placement, partition, inten
 }
 
 func Labels(provider string, in registry.AssetInput, hash string) map[string]string {
-	return map[string]string{
+	labels := map[string]string{
 		"guardian.managed":   "true",
 		"guardian.provider":  provider,
 		"guardian.partition": in.PartitionName,
 		"guardian.intent":    in.IntentName,
 		"guardian.asset":     in.Asset.Name,
 		"guardian.type":      in.Asset.Type,
-		"guardian.cluster":   in.Target.Cluster,
 		"guardian.hash":      limitLabelValue(hash),
 	}
+	// Empty values are invalid AWS tag values; omit them instead of sending
+	// `guardian.cluster=` (CloudFormation rejects empty tag values).
+	if cluster := strings.TrimSpace(in.Target.Cluster); cluster != "" {
+		labels["guardian.cluster"] = cluster
+	}
+	return labels
 }
 
 func limitLabelValue(value string) string {

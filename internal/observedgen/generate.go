@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -38,6 +39,9 @@ type Options struct {
 	// PayloadDir is the logical MonoFS path for the generated payloads.
 	// Defaults to /partitions/<partition>/payloads/aws.
 	PayloadDir string
+	// Selector is a comma-separated list of globs matched against
+	// CloudFormation stack names. Empty means every stack in the assembly.
+	Selector string
 	// Interval is the partition reconciliation interval (default 1m).
 	Interval string
 }
@@ -79,6 +83,10 @@ func Generate(opts Options) ([]string, error) {
 	stacks, err := readAssemblyStacks(opts.AssemblyDir)
 	if err != nil {
 		return nil, err
+	}
+	stacks = filterStacks(stacks, opts.Selector)
+	if len(stacks) == 0 {
+		return nil, fmt.Errorf("selector %q matched no CloudFormation stacks", opts.Selector)
 	}
 
 	if err := os.MkdirAll(filepath.Join(opts.OutDir, "intents"), 0o755); err != nil {
@@ -142,6 +150,39 @@ spec:
 		return nil, fmt.Errorf("copy assembly templates: %w", err)
 	}
 	return created, nil
+}
+
+// filterStacks returns the stacks matching the comma-separated selector globs,
+// or every stack when the selector is empty.
+func filterStacks(stacks []assemblyStack, selector string) []assemblyStack {
+	patterns := splitSelector(selector)
+	if len(patterns) == 0 {
+		return stacks
+	}
+	out := make([]assemblyStack, 0, len(stacks))
+	for _, stack := range stacks {
+		for _, pattern := range patterns {
+			if ok, err := path.Match(pattern, stack.Name); err == nil && ok {
+				out = append(out, stack)
+				break
+			}
+		}
+	}
+	return out
+}
+
+func splitSelector(selector string) []string {
+	trimmed := strings.TrimSpace(selector)
+	if trimmed == "" {
+		return nil
+	}
+	out := make([]string, 0, strings.Count(trimmed, ",")+1)
+	for _, pattern := range strings.Split(trimmed, ",") {
+		if pattern = strings.TrimSpace(pattern); pattern != "" {
+			out = append(out, pattern)
+		}
+	}
+	return out
 }
 
 func readAssemblyStacks(assemblyDir string) ([]assemblyStack, error) {

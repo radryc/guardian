@@ -1,0 +1,8 @@
+# The sidecar rewrites the sibling compute's task definition and log group.
+actions:
+  - ecs:DescribeTaskDefinition
+  - ecs:RegisterTaskDefinition
+  - logs:CreateLogGroup
+  - logs:DescribeLogGroups
+  - iam:GetRole
+  - iam:PassRole

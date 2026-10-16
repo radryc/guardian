@@ -1214,3 +1214,174 @@ spec:
 		}
 	}
 }
+
+// TestPartitionDeletionDestroyQueuesDestroyAndPurges verifies the deferred
+// partition deletion flow: a deletion marker queues DESTROY for every intent,
+// the partition is kept until teardown completes, and the subtree is purged on
+// the next pass.
+func TestPartitionDeletionDestroyQueuesDestroyAndPurges(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "test")
+	recon := reconciler.NewReconciler(store, disp, time.Minute)
+	proc := results.NewProcessor(store, disp)
+
+	seedRaw(t, ctx, store, paths.PartitionConfig("del-destroy"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Partition
+metadata:
+  name: del-destroy
+spec:
+  deletionPolicy: destroy
+  reconciliation:
+    mode: auto
+    interval: 30s
+`))
+	seedRaw(t, ctx, store, paths.IntentManifest("del-destroy", "app"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: app
+spec:
+  intentType: standard
+  targetPusher: local
+  target:
+    cluster: local
+  locked: false
+  assets:
+    - type: Compute
+      name: web
+      properties:
+        image: img:v1
+`))
+
+	if err := recon.ReconcilePartition(ctx, "del-destroy", true); err != nil {
+		t.Fatalf("initial ReconcilePartition: %v", err)
+	}
+	if _, err := reconciler.RequestPartitionDeletion(ctx, store, "del-destroy", "test"); err != nil {
+		t.Fatalf("RequestPartitionDeletion: %v", err)
+	}
+
+	if err := recon.ReconcilePartition(ctx, "del-destroy", true); err != nil {
+		t.Fatalf("deletion ReconcilePartition: %v", err)
+	}
+	// The partition must survive until the DESTROY result arrives.
+	if _, err := store.Stat(ctx, paths.PartitionConfig("del-destroy")); err != nil {
+		t.Fatalf("partition purged before destroy completed: %v", err)
+	}
+	state, err := common.LoadIntentState(ctx, store, "del-destroy", "app")
+	if err != nil {
+		t.Fatalf("LoadIntentState: %v", err)
+	}
+	if state.Status != statedomain.StatusDestroying {
+		t.Fatalf("status = %q, want %q", state.Status, statedomain.StatusDestroying)
+	}
+	taskData, err := store.ReadFile(ctx, paths.QueueTask("local", state.LastTaskID))
+	if err != nil {
+		t.Fatalf("ReadFile destroy task: %v", err)
+	}
+	var destroyTask taskdomain.Task
+	if err := json.Unmarshal(taskData, &destroyTask); err != nil {
+		t.Fatalf("Unmarshal destroy task: %v", err)
+	}
+	if destroyTask.Op != taskdomain.OpDestroy {
+		t.Fatalf("task op = %q, want %q", destroyTask.Op, taskdomain.OpDestroy)
+	}
+
+	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
+		TaskID:     destroyTask.TaskID,
+		Op:         taskdomain.OpDestroy,
+		Status:     taskdomain.ResultSucceeded,
+		Partition:  "del-destroy",
+		Intent:     "app",
+		Pusher:     "local",
+		FinishedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("ProcessResult(destroy): %v", err)
+	}
+
+	if err := recon.ReconcilePartition(ctx, "del-destroy", true); err != nil {
+		t.Fatalf("purge ReconcilePartition: %v", err)
+	}
+	for _, path := range []string{
+		paths.PartitionConfig("del-destroy"),
+		paths.IntentManifest("del-destroy", "app"),
+		paths.IntentState("del-destroy", "app"),
+		paths.PartitionDeletion("del-destroy"),
+	} {
+		if _, err := store.Stat(ctx, path); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be purged, got err=%v", path, err)
+		}
+	}
+}
+
+// TestPartitionDeletionOrphanPurgesImmediately verifies that an orphan-policy
+// partition is purged without queueing any DESTROY tasks.
+func TestPartitionDeletionOrphanPurgesImmediately(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "test")
+	recon := reconciler.NewReconciler(store, disp, time.Minute)
+
+	seedRaw(t, ctx, store, paths.PartitionConfig("del-orphan"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Partition
+metadata:
+  name: del-orphan
+spec:
+  deletionPolicy: orphan
+  reconciliation:
+    mode: auto
+    interval: 30s
+`))
+	seedRaw(t, ctx, store, paths.IntentManifest("del-orphan", "app"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: app
+spec:
+  intentType: standard
+  targetPusher: local
+  target:
+    cluster: local
+  locked: false
+  assets:
+    - type: Compute
+      name: web
+      properties:
+        image: img:v1
+`))
+
+	if err := recon.ReconcilePartition(ctx, "del-orphan", true); err != nil {
+		t.Fatalf("initial ReconcilePartition: %v", err)
+	}
+	if _, err := reconciler.RequestPartitionDeletion(ctx, store, "del-orphan", "test"); err != nil {
+		t.Fatalf("RequestPartitionDeletion: %v", err)
+	}
+	if err := recon.ReconcilePartition(ctx, "del-orphan", true); err != nil {
+		t.Fatalf("deletion ReconcilePartition: %v", err)
+	}
+	if _, err := store.Stat(ctx, paths.PartitionConfig("del-orphan")); !os.IsNotExist(err) {
+		t.Fatalf("expected partition to be purged, got err=%v", err)
+	}
+	if _, err := store.Stat(ctx, paths.PartitionDeletion("del-orphan")); !os.IsNotExist(err) {
+		t.Fatalf("expected deletion marker to be removed, got err=%v", err)
+	}
+	entries, _ := store.ListDir(ctx, paths.QueueDir("local"))
+	for _, entry := range entries {
+		if entry.IsDir || !strings.HasSuffix(entry.Name, ".json") || strings.HasPrefix(entry.Name, ".") {
+			continue
+		}
+		raw, err := store.ReadFile(ctx, paths.QueueDir("local")+"/"+entry.Name)
+		if err != nil {
+			t.Fatalf("ReadFile queue task %s: %v", entry.Name, err)
+		}
+		var queued taskdomain.Task
+		if json.Unmarshal(raw, &queued) != nil {
+			continue
+		}
+		if queued.Op == taskdomain.OpDestroy {
+			t.Fatalf("unexpected DESTROY task for orphan-policy deletion: %s", queued.TaskID)
+		}
+	}
+}

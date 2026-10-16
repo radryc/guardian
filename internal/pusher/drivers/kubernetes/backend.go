@@ -3,11 +3,12 @@ package kubernetesdriver
 import "sync"
 
 type Backend struct {
-	mu          sync.Mutex
-	configMaps  map[string]ConfigMap
-	claims      map[string]PersistentVolumeClaim
-	deployments map[string]Deployment
-	services    map[string]Service
+	mu              sync.Mutex
+	configMaps      map[string]ConfigMap
+	claims          map[string]PersistentVolumeClaim
+	deployments     map[string]Deployment
+	services        map[string]Service
+	networkPolicies map[string]NetworkPolicy
 }
 
 type ConfigMap struct {
@@ -120,12 +121,26 @@ type Service struct {
 	Ports       []ServicePort
 }
 
+// NetworkPolicy is a managed pod-level connectivity boundary. Pods join the
+// policy by carrying the guardian.network.<asset> label; Compute assets label
+// themselves for every network they reference.
+type NetworkPolicy struct {
+	Namespace    string
+	Name         string
+	Hash         string
+	Labels       map[string]string
+	PodSelector  map[string]string // matchLabels
+	AllowCluster bool              // scope: cluster — also allow ingress from other namespaces
+	Internal     bool              // internal: true — deny egress outside the namespace (DNS excepted)
+}
+
 func NewBackend() *Backend {
 	return &Backend{
-		configMaps:  map[string]ConfigMap{},
-		claims:      map[string]PersistentVolumeClaim{},
-		deployments: map[string]Deployment{},
-		services:    map[string]Service{},
+		configMaps:      map[string]ConfigMap{},
+		claims:          map[string]PersistentVolumeClaim{},
+		deployments:     map[string]Deployment{},
+		services:        map[string]Service{},
+		networkPolicies: map[string]NetworkPolicy{},
 	}
 }
 
@@ -210,6 +225,27 @@ func (b *Backend) DeleteService(namespace, name string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.services, key(namespace, name))
+	return nil
+}
+
+func (b *Backend) UpsertNetworkPolicy(policy NetworkPolicy) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.networkPolicies[key(policy.Namespace, policy.Name)] = cloneNetworkPolicy(policy)
+	return nil
+}
+
+func (b *Backend) GetNetworkPolicy(namespace, name string) (NetworkPolicy, bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	policy, ok := b.networkPolicies[key(namespace, name)]
+	return cloneNetworkPolicy(policy), ok, nil
+}
+
+func (b *Backend) DeleteNetworkPolicy(namespace, name string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.networkPolicies, key(namespace, name))
 	return nil
 }
 
@@ -326,6 +362,18 @@ func cloneService(in Service) Service {
 		Annotations: cloneStringMap(in.Annotations),
 		Selector:    cloneStringMap(in.Selector),
 		Ports:       append([]ServicePort(nil), in.Ports...),
+	}
+}
+
+func cloneNetworkPolicy(in NetworkPolicy) NetworkPolicy {
+	return NetworkPolicy{
+		Namespace:    in.Namespace,
+		Name:         in.Name,
+		Hash:         in.Hash,
+		Labels:       cloneStringMap(in.Labels),
+		PodSelector:  cloneStringMap(in.PodSelector),
+		AllowCluster: in.AllowCluster,
+		Internal:     in.Internal,
 	}
 }
 

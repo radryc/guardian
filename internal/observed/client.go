@@ -106,6 +106,21 @@ func (c *Client) Stack(ctx context.Context, account, region, stackName string) (
 	return state, true, nil
 }
 
+// ListStacks lists the stacks the pusher has observed for an account/region.
+func (c *Client) ListStacks(ctx context.Context, account, region string) ([]awsobserve.StackState, error) {
+	query := url.Values{"region": {region}}
+	if account != "" {
+		query.Set("account", account)
+	}
+	var resp struct {
+		Stacks []awsobserve.StackState `json:"stacks"`
+	}
+	if _, err := c.do(ctx, http.MethodGet, "/v1/aws/observed/stacks", query, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Stacks, nil
+}
+
 // Template fetches the live CloudFormation template for one stack.
 func (c *Client) Template(ctx context.Context, account, region, stackName string) (string, error) {
 	query := url.Values{"region": {region}}

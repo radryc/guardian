@@ -3,9 +3,12 @@
 package cdktemplate
 
 import (
+	"fmt"
+
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"gopkg.in/yaml.v3"
 	"sort"
 	"strings"
 )
@@ -54,8 +57,13 @@ func parseTemplate(raw string) (map[string]any, error) {
 		return map[string]any{}, nil
 	}
 	var template map[string]any
-	if err := json.Unmarshal([]byte(raw), &template); err != nil {
-		return nil, err
+	if err := json.Unmarshal([]byte(raw), &template); err == nil {
+		return template, nil
+	}
+	// CloudFormation returns YAML templates verbatim for stacks deployed from
+	// YAML sources, so accept both encodings.
+	if err := yaml.Unmarshal([]byte(raw), &template); err != nil {
+		return nil, fmt.Errorf("template is neither JSON nor YAML: %w", err)
 	}
 	return template, nil
 }

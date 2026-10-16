@@ -18,9 +18,17 @@ import {
 import { renderTopology, renderTopologyLegend } from "./topology";
 import { initScanPanel, renderScanPanel } from "./scan";
 import { initRegistryPanel, renderRegistryPanel } from "./registry";
+import { initUnmanagedPanel, renderUnmanagedPanel } from "./unmanaged";
+import { initBuilderPanel } from "./builder";
 
 // ── Bootstrap ────────────────────────────────────────
 const state: AppState = createState();
+const builder = initBuilderPanel({
+  getSelectedPartition: () => state.selectedPartition,
+  onOpenPartition: (name: string) => { selectPartition(name).catch(handleError); },
+  onToast: toast,
+  onError: handleError,
+});
 
 // Restore persisted refresh interval from localStorage.
 const SAVED_INTERVAL_KEY = "guardian.refreshIntervalMs";
@@ -63,7 +71,7 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 async function bootstrap(): Promise<void> {
-  activatePanel(state.activePanel);
+  activatePanel(state.activePanel, state.selectedPartition ? "existing" : undefined);
   await refreshOverview();
   scheduleNextOverviewRefresh();
   if (state.activePanel === "rolloutsPanel" && state.selectedPartition) {
@@ -213,10 +221,15 @@ async function selectPartition(name: string, announce = true): Promise<void> {
     ensureRolloutsLoaded(samePartition).catch(handleError);
     scheduleRolloutsRefresh();
   }
+  if (state.activePanel === "builderPanel" && !samePartition) {
+    builder.render();
+  }
 }
 
 // ── Panel activation ─────────────────────────────────
-function activatePanel(panelId: string): void {
+type PanelScope = "new" | "existing";
+
+function activatePanel(panelId: string, scope?: PanelScope): void {
   state.activePanel = panelId;
   syncLocationState();
 
@@ -229,12 +242,25 @@ function activatePanel(panelId: string): void {
     btn.classList.toggle("active", (btn as HTMLElement).dataset.tabTarget === panelId);
   });
 
+  const targetPartition = scope === "existing" ? state.selectedPartition : "";
+  const resetTarget = scope === "new";
+
   renderPartitionBrowser();
   renderPartitionDetail();
   renderHistory();
   renderRollouts();
-  renderScanPanel();
-  renderRegistryPanel();
+  renderScanPanel({ targetPartition, resetTarget });
+  renderRegistryPanel({ targetPartition, resetTarget });
+  renderUnmanagedPanel({ targetPartition, resetTarget });
+  if (panelId === "builderPanel") {
+    if (scope === "new") {
+      builder.open();
+    } else if (scope === "existing" && state.selectedPartition) {
+      builder.open(state.selectedPartition);
+    } else {
+      builder.render();
+    }
+  }
   renderPageChrome();
 
   if (panelId === "historyPanel" && state.selectedPartition) {
@@ -255,7 +281,7 @@ function hydrateStateFromLocation(): void {
   const partition = params.get("partition");
   if (partition) state.selectedPartition = partition.trim();
   const panel = params.get("panel");
-  if (["overviewPanel", "topologyPanel", "rolloutsPanel", "historyPanel", "scanPanel", "registryPanel"].includes(panel ?? "")) {
+  if (["overviewPanel", "builderPanel", "topologyPanel", "rolloutsPanel", "historyPanel", "scanPanel", "registryPanel", "unmanagedPanel"].includes(panel ?? "")) {
     state.activePanel = panel!;
   }
   const rawLimit = Number.parseInt(params.get("historyLimit") ?? "", 10);
@@ -464,6 +490,7 @@ function renderPartitionList(): void {
           <strong>${escapeHtml(item.name)}</strong>
           ${renderBadge(item.health, item.displayStatus, `${item.name} status`, diagnostic, `partition:${item.name}`)}
         </div>
+        ${item.originLabel ? `<div class="partition-list-origin"><span class="origin-pill origin-${escapeAttr(item.origin ?? "native")}" title="${escapeAttr(item.originDetail ?? "")}">${escapeHtml(item.originLabel)}</span></div>` : ""}
         <div class="partition-list-meta">
           <span>${item.intentCount ?? 0} intents</span>
           <span>${item.assetCount ?? 0} assets</span>
@@ -498,6 +525,7 @@ function renderAppGrid(): void {
       <button class="app-tile ${active ? "active" : ""}" data-partition="${escapeAttr(item.name)}" data-health="${escapeAttr(item.health ?? "neutral")}">
         <div class="app-tile-body">
           <div class="app-tile-name">${escapeHtml(item.name)}</div>
+          ${item.originLabel ? `<div class="app-tile-origin"><span class="origin-pill origin-${escapeAttr(item.origin ?? "native")}" title="${escapeAttr(item.originDetail ?? "")}">${escapeHtml(item.originLabel)}</span></div>` : ""}
           ${labels.length ? `<div class="app-tile-labels">${labels.map((l: string) => `<span class="app-tile-label">${escapeHtml(l)}</span>`).join("")}</div>` : ""}
           <div class="app-tile-status-row">
             <span class="status-row">
@@ -735,6 +763,7 @@ function renderIntentCards(): void {
                     <div class="asset-chip-type-row">
                       <span class="asset-chip-type">${escapeHtml(assetTitle(asset.type))}</span>
                       <span class="asset-chip-category">${escapeHtml(cat)}</span>
+                      ${asset.originLabel ? `<span class="asset-origin asset-origin-${escapeAttr(asset.origin ?? "native")}" title="${escapeAttr(asset.template ? `${asset.originLabel} · ${asset.template}` : asset.originLabel)}">${escapeHtml(asset.originLabel)}</span>` : ""}
                     </div>
                   </div>
                   ${renderBadge(asset.health, asset.displayStatus, `${intent.name} / ${asset.name}`, asset.summary, `asset:${state.selectedPartition}:${intent.name}:${asset.name}`)}
@@ -767,6 +796,7 @@ function renderIntentCards(): void {
             <h3>${escapeHtml(intent.name)}</h3>
             <div class="muted">${escapeHtml(intent.summary ?? "")}</div>
             <div class="pill-row mt-2">
+              ${intent.originLabel ? `<span class="pill origin-pill origin-${escapeAttr(intent.origin ?? "native")}" title="${escapeAttr(intent.originDetail ?? "")}">${escapeHtml(intent.originLabel)}</span>` : ""}
               ${renderBadge(intent.health, intent.displayStatus, `${intent.name} intent`, intent.summary, `intent:${state.selectedPartition}:${intent.name}`)}
               ${(() => {
                 const freshness = intentFreshness(intent);
@@ -1967,6 +1997,7 @@ function renderTopologyDetailsPanel(): void {
 // ── Render: page chrome ───────────────────────────────
 const PANEL_COPY: Record<string, { eyebrow: string; title: string }> = {
   overviewPanel: { eyebrow: "Control center", title: "Control Center" },
+  builderPanel:  { eyebrow: "Visual editor",  title: "Build" },
   topologyPanel: { eyebrow: "Deployment graph", title: "Topology" },
   rolloutsPanel: { eyebrow: "Release timeline", title: "Rollouts" },
   historyPanel:  { eyebrow: "Push timeline",    title: "History" },
@@ -2006,7 +2037,11 @@ function renderPageChrome(): void {
       freshness.detail,
       `partition-freshness:${detail.partition.manifest.metadata.name}`,
     );
-    pills = `${renderBadge(detail.health?.status, detail.health?.displayStatus ?? "Selected", `${detail.partition.manifest.metadata.name} health`, detail.health?.summary, `partition-health:${detail.partition.manifest.metadata.name}`)} ${freshnessBadge} <span class="pill">${detail.topology?.nodes?.length ?? 0} nodes</span>`;
+    pills = `${renderBadge(detail.health?.status, detail.health?.displayStatus ?? "Selected", `${detail.partition.manifest.metadata.name} health`, detail.health?.summary, `partition-health:${detail.partition.manifest.metadata.name}`)} ${freshnessBadge} ${detail.originLabel ? `<span class="pill origin-pill origin-${escapeAttr(detail.origin ?? "native")}" title="${escapeAttr(detail.originDetail ?? "")}">${escapeHtml(detail.originLabel)}</span>` : ""} <span class="pill">${detail.topology?.nodes?.length ?? 0} nodes</span>`;
+  }
+  if (activePanel === "builderPanel") {
+    subtitle = detail ? `Compose intents and assets for ${detail.partition.manifest.metadata.name}.` : "Compose a new partition or edit an existing one.";
+    pills = detail ? `<span class="pill">${escapeHtml(detail.partition.manifest.metadata.name)}</span><span class="pill">${detail.intents?.length ?? 0} intents</span>` : "";
   }
   if (activePanel === "topologyPanel") {
     subtitle = detail ? `Topology for ${detail.partition.manifest.metadata.name}.` : "Select a partition to inspect its graph.";
@@ -2465,15 +2500,19 @@ function groupAssetsByCategory(assets: any[]): { category: string; assets: any[]
 // ── Wire events ───────────────────────────────────────
 function wireEvents(): void {
   document.querySelectorAll<HTMLElement>("[data-tab-target]").forEach((btn) => {
-    btn.addEventListener("click", () => activatePanel(btn.dataset.tabTarget!));
+    btn.addEventListener("click", () => activatePanel(btn.dataset.tabTarget!, btn.dataset.openScope as PanelScope | undefined));
   });
   initScanPanel(handleError);
   initRegistryPanel(handleError);
+  initUnmanagedPanel(handleError);
   document.getElementById("partitionSearch")?.addEventListener("input", renderPartitionList);
   document.getElementById("refreshButton")?.addEventListener("click", () => refreshOverview(true).catch(handleError));
   document.getElementById("reconcileButton")?.addEventListener("click", reconcileSelected);
-  document.getElementById("createPartitionButton")?.addEventListener("click", () => toast("Create partition via guardianctl partition push", "success"));
-  document.getElementById("overviewCreatePartitionButton")?.addEventListener("click", () => toast("Create partition via guardianctl partition push", "success"));
+  const startNewPartition = () => {
+    activatePanel("builderPanel", "new");
+  };
+  document.getElementById("createPartitionButton")?.addEventListener("click", startNewPartition);
+  document.getElementById("overviewCreatePartitionButton")?.addEventListener("click", startNewPartition);
   document.getElementById("appGridSearch")?.addEventListener("input", renderAppGrid);
   document.getElementById("historyFilter")?.addEventListener("input", renderHistory);
   document.getElementById("historyGroupToggle")?.addEventListener("change", renderHistory);

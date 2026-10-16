@@ -2,6 +2,8 @@ package assets
 
 import (
 	"fmt"
+	"net"
+	"strings"
 
 	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
 )
@@ -10,6 +12,7 @@ type NetworkSpec struct {
 	Driver   string `json:"driver,omitempty" yaml:"driver,omitempty"`
 	Internal bool   `json:"internal,omitempty" yaml:"internal,omitempty"`
 	Scope    string `json:"scope,omitempty" yaml:"scope,omitempty"`
+	CIDR     string `json:"cidr,omitempty" yaml:"cidr,omitempty"`
 }
 
 type networkDefinition struct{}
@@ -36,6 +39,11 @@ func (networkDefinition) Validate(spec any, _ ValidationContext) error {
 	case "", "partition", "cluster":
 	default:
 		return fmt.Errorf("property scope has unsupported value %q", typed.Scope)
+	}
+	if cidr := strings.TrimSpace(typed.CIDR); cidr != "" {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return fmt.Errorf("property cidr %q is not a valid CIDR block", cidr)
+		}
 	}
 	return nil
 }

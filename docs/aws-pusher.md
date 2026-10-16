@@ -85,7 +85,29 @@ Defaults:
 - profile name: `LocalDeploymentProfile`
 - trust anchor name: `LocalDeploymentAnchor`
 
-**Security note:** `AdministratorAccess` is overly broad. Tighten this to the minimum permissions required for your CDK stacks before using in production.
+### Deploy role policy
+
+`aws setup` applies a **scoped** inline policy (`GuardianDeployAccess`) by
+default instead of `AdministratorAccess`: CloudFormation stack lifecycle and
+drift, CDK bootstrap asset publishing (S3/ECR + bootstrap role assumption),
+the native AWS drivers (S3, ECS, EFS, RDS, ELB, EC2 security groups, IAM task
+roles, logs, SSM, Secrets Manager), account-scan inventory
+(`cloudcontrol:ListResources`, `cloudformation:ListTypes`), and the read-only
+CloudWatch/X-Ray surface. Re-running `aws setup` on a role that still has
+`AdministratorAccess` detaches it.
+
+Override with:
+
+- `--policy admin` — attach `AdministratorAccess` (labs only)
+- `--policy <managed-policy-name>` — attach a custom managed policy
+
+The CloudFormation **execution role** (created by `cdk bootstrap`) is scoped the
+same way: `aws init` creates/updates the customer-managed policy
+`GuardianCfnExecutionPolicy` and passes it via
+`--cloudformation-execution-policies`. Use `--execution-policy admin` for the
+CDK default, or pass your own managed policy ARN. Re-run
+`aws init --force-bootstrap` to apply a new execution policy to an existing
+bootstrap stack.
 
 ## Example pusher startup
 

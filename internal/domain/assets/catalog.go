@@ -215,7 +215,7 @@ var catalogTemplates = map[string]CatalogTemplate{
 	},
 	assetdomain.TypeLoadBalancer: {
 		Type:        assetdomain.TypeLoadBalancer,
-		Title:       "Network edge",
+		Title:       "Load balancer",
 		Description: "Expose compute services behind listeners and routing.",
 		Icon:        "🌐",
 		Category:    "Network",
@@ -584,6 +584,7 @@ func networkCatalogFields() []CatalogField {
 		{Path: "driver", Title: "Driver", Control: "select", Options: []string{"bridge", "overlay", "host", "none"}, Description: "Network driver or backend selected by the pusher."},
 		{Path: "internal", Title: "Internal only", Control: "boolean", Description: "Restrict the network to internal east-west traffic when supported."},
 		{Path: "scope", Title: "Scope", Control: "select", Options: []string{"partition", "cluster"}, Description: "Visibility boundary for the network."},
+		{Path: "cidr", Title: "CIDR block", Control: "text", Placeholder: "10.0.0.0/16", Description: "IPv4 range for managed networks such as an AWS VPC. Defaults to 10.0.0.0/16."},
 	}
 }
 
@@ -631,6 +632,7 @@ func objectStoreCatalogFields() []CatalogField {
 func observabilityCatalogFields() []CatalogField {
 	return []CatalogField{
 		{Path: "provider", Title: "Provider", Control: "select", Options: []string{"otel"}, Description: "Observability stack or collector provider name."},
+		{Path: "targets", Title: "Target compute assets", Control: "asset-refs", RefTypes: []string{"Compute"}, Description: "Compute assets that run the OpenTelemetry sidecar (AWS pusher)."},
 		{Path: "endpoint", Title: "Endpoint", Control: "text", Description: "Upstream collector or export endpoint address."},
 		{Path: "protocol", Title: "Protocol", Control: "text", Description: "Transport protocol used for the endpoint."},
 		{Path: "receivers", Title: "Receivers", Control: "list", Description: "Input protocols or receiver components to enable."},

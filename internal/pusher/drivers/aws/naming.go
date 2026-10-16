@@ -37,6 +37,35 @@ func awsEFSName(in registry.AssetInput, assetName string) string {
 	return awsResourceName("efs", in.Target, in.PartitionName, in.IntentName, assetName)
 }
 
+func awsVPCName(in registry.AssetInput) string {
+	return awsResourceName("vpc", in.Target, in.PartitionName, in.IntentName, in.Asset.Name)
+}
+
+// awsDBClusterName returns an RDS-compatible cluster identifier: lowercase,
+// 1-63 chars, starting with a letter, no consecutive or trailing hyphens.
+func awsDBClusterName(in registry.AssetInput) string {
+	hash := driverutil.AssetHash(in)
+	short := hash[:min(8, len(hash))]
+	return rdsName(fmt.Sprintf("g-%s-%s", short, sanitizeAlpha(strings.ToLower(in.Asset.Name))))
+}
+
+func awsDBSubnetGroupName(in registry.AssetInput) string {
+	hash := driverutil.AssetHash(in)
+	short := hash[:min(8, len(hash))]
+	return rdsName(fmt.Sprintf("g-%s-%s-sng", short, sanitizeAlpha(strings.ToLower(in.Asset.Name))))
+}
+
+func rdsName(name string) string {
+	for strings.Contains(name, "--") {
+		name = strings.ReplaceAll(name, "--", "-")
+	}
+	name = strings.Trim(name, "-")
+	if len(name) > 63 {
+		name = name[:63]
+	}
+	return strings.TrimRight(name, "-")
+}
+
 func awsSSMParameterName(in registry.AssetInput, assetName string) string {
 	name := awsResourceName("ssm", in.Target, in.PartitionName, in.IntentName, assetName)
 	return "/guardian/" + strings.ReplaceAll(name, "-", "/")

@@ -1,0 +1,4 @@
+# The fallback emits a raw CloudFormation resource; the required actions depend
+# on the resource type, so nothing can be declared here. Use
+# `guardianctl aws init --execution-policy admin` for accounts that rely on it.
+actions: []

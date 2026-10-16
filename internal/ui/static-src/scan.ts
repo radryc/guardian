@@ -28,6 +28,11 @@ interface ScanBundleResponse {
 const SCAN_POLL_MS = 3_000;
 const INVENTORY_DISPLAY_CAP = 200;
 
+export interface TargetPartitionOptions {
+  targetPartition?: string;
+  resetTarget?: boolean;
+}
+
 let onError: (error: any) => void = () => undefined;
 let pushers: string[] = [];
 let scans: ScanListEntry[] = [];
@@ -39,6 +44,7 @@ let selectedStacks: Record<string, boolean> = {};
 let pollTimer: number | undefined;
 let panelActive = false;
 let busy = false;
+let targetPrefill = "";
 
 export function initScanPanel(errorHandler: (error: any) => void): void {
   onError = errorHandler;
@@ -75,7 +81,8 @@ export function initScanPanel(errorHandler: (error: any) => void): void {
   document.getElementById("scanStackNone")?.addEventListener("click", () => setAllStacks(false));
 }
 
-export function renderScanPanel(): void {
+export function renderScanPanel(options: TargetPartitionOptions = {}): void {
+  applyTargetPartition(options);
   panelActive = !document.getElementById("scanPanel")?.classList.contains("hidden");
   if (!panelActive) {
     stopPolling();
@@ -87,6 +94,25 @@ export function renderScanPanel(): void {
     renderScans();
   }
   schedulePolling();
+}
+
+function applyTargetPartition(options: TargetPartitionOptions): void {
+  const input = document.getElementById("scanPartitionName") as HTMLInputElement | null;
+  if (!input) return;
+  const current = input.value.trim();
+  const untouched = !current || current === targetPrefill;
+  if (options.resetTarget) {
+    if (untouched) {
+      input.value = "";
+      targetPrefill = "";
+    }
+    return;
+  }
+  const target = options.targetPartition?.trim() ?? "";
+  if (target && untouched) {
+    input.value = target;
+    targetPrefill = target;
+  }
 }
 
 function stopPolling(): void {
@@ -572,11 +598,13 @@ async function saveBundle(reconcile: boolean): Promise<void> {
   }
   busy = true;
   try {
+    const existing = await fetchExistingPartition(partition);
     await fetchJSON(`/api/partitions/${encodeURIComponent(partition)}/bundle`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        partition: bundleResponse.bundle.partition,
+        partition: existing?.partition?.manifest ?? bundleResponse.bundle.partition,
+        partitionExpectedVersionID: existing?.partition?.manifestVersionID || undefined,
         intents,
         removeMissingIntents: false,
       }),
@@ -584,9 +612,17 @@ async function saveBundle(reconcile: boolean): Promise<void> {
     if (reconcile) {
       await fetchJSON(`/api/partitions/${encodeURIComponent(partition)}/reconcile`, { method: "POST" });
     }
-    toast(`Bundle saved to partition ${partition}.`, "success");
+    toast(existing ? `Bundle added to partition ${partition}.` : `Bundle saved to partition ${partition}.`, "success");
     window.location.search = `?partition=${encodeURIComponent(partition)}`;
   } finally {
     busy = false;
+  }
+}
+
+async function fetchExistingPartition(name: string): Promise<any> {
+  try {
+    return await fetchJSON(`/api/partitions/${encodeURIComponent(name)}`);
+  } catch {
+    return null;
   }
 }

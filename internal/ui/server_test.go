@@ -292,7 +292,7 @@ func TestBuildIntentDocumentRedactsSecretOutputs(t *testing.T) {
 		},
 	}
 
-	doc := buildIntentDocument(context.Background(), manifest, "demo", "ver-1", state, intentTaskRuntime{}, []string{"monofs-encryption-key"}, nil, nil, false, nil)
+	doc := buildIntentDocument(context.Background(), nil, manifest, "demo", nil, "ver-1", state, intentTaskRuntime{}, []string{"monofs-encryption-key"}, nil, nil, false, nil)
 
 	if got := doc.Outputs["monofs-encryption-key.value"]; got != redactedSecretValue {
 		t.Fatalf("intent output value = %q, want %q", got, redactedSecretValue)
@@ -1388,6 +1388,61 @@ func TestServerServesIndex(t *testing.T) {
 	}
 }
 
+func TestServerValidateBundle(t *testing.T) {
+	t.Parallel()
+
+	store := memory.New()
+	srv, err := New(Options{
+		Store:       store,
+		PrincipalID: "test-ui",
+		Pushers:     []string{"local"},
+	})
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	httpSrv := httptest.NewServer(srv)
+	defer httpSrv.Close()
+
+	validReq := SaveBundleRequest{
+		Partition: newPartition("demo"),
+		Intents: []SaveIntentRequest{{
+			Manifest: newConfigIntent("web", "app-config", "hello from guardian"),
+		}},
+	}
+	var valid ValidateBundleResponse
+	requestJSON(t, httpSrv, http.MethodPost, "/api/partitions/demo/validate", validReq, &valid)
+	if !valid.Valid || len(valid.Errors) != 0 {
+		t.Fatalf("expected valid bundle, got %+v", valid)
+	}
+
+	badIntent := newConfigIntent("web", "api", "")
+	badIntent.Spec.Assets = []intentdomain.AssetSpec{{
+		Type:       assetdomain.TypeCompute,
+		Name:       "api",
+		Properties: map[string]any{"replicas": 1},
+	}}
+	badReq := SaveBundleRequest{
+		Partition: newPartition("demo"),
+		Intents:   []SaveIntentRequest{{Manifest: badIntent}},
+	}
+	var bad ValidateBundleResponse
+	requestJSON(t, httpSrv, http.MethodPost, "/api/partitions/demo/validate", badReq, &bad)
+	if bad.Valid || len(bad.Errors) == 0 {
+		t.Fatalf("expected invalid bundle, got %+v", bad)
+	}
+	if bad.Errors[0].Intent != "web" || bad.Errors[0].Asset != "api" {
+		t.Fatalf("expected intent/asset context, got %+v", bad.Errors[0])
+	}
+
+	mismatchReq := SaveBundleRequest{Partition: newPartition("other")}
+	var mismatch ValidateBundleResponse
+	requestJSON(t, httpSrv, http.MethodPost, "/api/partitions/demo/validate", mismatchReq, &mismatch)
+	if mismatch.Valid || len(mismatch.Errors) == 0 {
+		t.Fatalf("expected partition name mismatch, got %+v", mismatch)
+	}
+}
+
 func requestJSON(t *testing.T, server *httptest.Server, method, path string, body any, out any) {
 	t.Helper()
 
@@ -1497,7 +1552,7 @@ func TestBuildIntentDocumentMergesYamlHintOverrides(t *testing.T) {
 			}},
 		},
 	}
-	doc := buildIntentDocument(context.Background(), manifest, "demo", "", nil, intentTaskRuntime{}, []string{"api"}, nil, nil, false, nil)
+	doc := buildIntentDocument(context.Background(), nil, manifest, "demo", nil, "", nil, intentTaskRuntime{}, []string{"api"}, nil, nil, false, nil)
 	if len(doc.OutputHints) != 1 || doc.OutputHints[0].Path != "outputs.url" {
 		t.Fatalf("unexpected output hints: %+v", doc.OutputHints)
 	}

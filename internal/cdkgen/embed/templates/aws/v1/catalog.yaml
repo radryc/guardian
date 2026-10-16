@@ -1,0 +1,109 @@
+apiVersion: guardian/v1alpha1
+kind: TemplateCatalog
+version: v1
+templates:
+  - id: aws.network.vpc
+    assetTypes: [Network]
+    export: networkVpc
+    module: network.vpc/construct
+    version: 1
+    outputs: [vpcId, cidr, name]
+    params:
+      required: []
+      unsupported: []
+  - id: aws.network.default
+    implicit: true
+    export: networkDefault
+    module: network.default/construct
+    version: 1
+  - id: aws.volume.efs
+    assetTypes: [Volume]
+    export: volumeEfs
+    module: volume.efs/construct
+    version: 1
+    requires: [network]
+    outputs: [efsId, type]
+    params:
+      unsupported: [existingID]
+  - id: aws.objectstore.s3
+    assetTypes: [ObjectStore]
+    export: objectStoreS3
+    module: objectstore.s3/construct
+    version: 1
+    outputs: [bucket, region, type]
+    params:
+      unsupported: [endpoint, existingBucket]
+  - id: aws.compute.fargate
+    assetTypes: [Compute]
+    export: computeFargate
+    module: compute.fargate/construct
+    version: 1
+    requires: [network]
+    outputs: [service, launchType, cluster]
+    params:
+      required: [image]
+      unsupported: [privileged, observeExisting]
+  - id: aws.loadbalancer.alb
+    assetTypes: [LoadBalancer]
+    export: loadBalancerAlb
+    module: loadbalancer.alb/construct
+    version: 1
+    priority: 10
+    requires: [network]
+    outputs: [lb_arn, lb_name, dns_name]
+    outputPatterns: ["tg_%d_arn"]
+    params:
+      unsupported: [existingName]
+  - id: aws.loadbalancer.nlb
+    assetTypes: [LoadBalancer]
+    export: loadBalancerNlb
+    module: loadbalancer.nlb/construct
+    version: 1
+    priority: 20
+    requires: [network]
+    match:
+      - path: listeners[*].protocol
+        op: equals
+        value: tcp
+    outputs: [lb_arn, lb_name, dns_name]
+    outputPatterns: ["tg_%d_arn"]
+    params:
+      unsupported: [existingName]
+  - id: aws.database.aurora-postgres
+    assetTypes: [Database, SQLDatabase]
+    export: databaseAuroraPostgres
+    module: database.aurora-postgres/construct
+    version: 1
+    priority: 20
+    requires: [network]
+    match:
+      - path: engine
+        op: in
+        value: "aurora-postgresql,postgres,postgresql,aurora"
+    outputs: [id, engine, database, user, port, arn, endpoint, url, readerEndpoint, secretArn]
+    params: {}
+  - id: aws.database.aurora-mysql
+    assetTypes: [Database, SQLDatabase]
+    export: databaseAuroraMysql
+    module: database.aurora-mysql/construct
+    version: 1
+    priority: 10
+    requires: [network]
+    outputs: [id, engine, database, user, port, arn, endpoint, url, readerEndpoint, secretArn]
+    params: {}
+  - id: aws.observability.otel-sidecar
+    assetTypes: [Observability]
+    export: observabilityOtelSidecar
+    module: observability.otel-sidecar/construct
+    version: 1
+    outputs: [endpoint, namespace, logGroup]
+    params:
+      required: [targets]
+  - id: aws.fallback.cfn-resource
+    assetTypes: [AWSResource]
+    export: cfnResource
+    module: fallback.cfn-resource/construct
+    version: 1
+    fallback: true
+    params:
+      required: [cfnType]

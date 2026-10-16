@@ -52,6 +52,8 @@ func (cliBearerCreds) RequireTransportSecurity() bool { return false }
 type routerClient interface {
 	UpsertGuardianPaths(ctx context.Context, in *pb.UpsertGuardianPathsRequest, opts ...grpc.CallOption) (*pb.UpsertGuardianPathsResponse, error)
 	UpsertGuardianPathsStream(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[pb.GuardianPathWriteChunk, pb.UpsertGuardianPathsResponse], error)
+	UploadWorkspaceBundle(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[pb.WorkspaceBundleChunk, pb.UploadWorkspaceBundleResponse], error)
+	PublishWorkspace(ctx context.Context, in *pb.PublishWorkspaceRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[pb.WorkspaceSyncEvent], error)
 	DeleteGuardianPaths(ctx context.Context, in *pb.DeleteGuardianPathsRequest, opts ...grpc.CallOption) (*pb.DeleteGuardianPathsResponse, error)
 	ListGuardianVersions(ctx context.Context, in *pb.ListGuardianVersionsRequest, opts ...grpc.CallOption) (*pb.ListGuardianVersionsResponse, error)
 	GetGuardianVersion(ctx context.Context, in *pb.GetGuardianVersionRequest, opts ...grpc.CallOption) (*pb.GetGuardianVersionResponse, error)

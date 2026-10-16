@@ -8,6 +8,7 @@ package repoconfig
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -45,17 +46,20 @@ type PusherSpec struct {
 	Labels         map[string]string `yaml:"labels,omitempty"`
 }
 
-// RepoSpec declares the partition binding and repository source.
+// RepoSpec declares the partition bindings and repository source. Bindings are
+// credential-free and safe to commit; the source URL lives here too but must
+// never embed credentials.
 type RepoSpec struct {
-	Name           string `yaml:"name,omitempty"`
-	Partition      string `yaml:"partition,omitempty"`
-	Source         string `yaml:"source,omitempty"`
-	Branch         string `yaml:"branch,omitempty"`
-	AssemblySubdir string `yaml:"assemblySubdir,omitempty"`
-	Path           string `yaml:"path,omitempty"`
-	Account        string `yaml:"account,omitempty"`
-	Region         string `yaml:"region,omitempty"`
-	Description    string `yaml:"description,omitempty"`
+	Name           string                 `yaml:"name,omitempty"`
+	Partition      string                 `yaml:"partition,omitempty"`
+	Bindings       []registry.RepoBinding `yaml:"bindings,omitempty"`
+	Source         string                 `yaml:"source,omitempty"`
+	Branch         string                 `yaml:"branch,omitempty"`
+	AssemblySubdir string                 `yaml:"assemblySubdir,omitempty"`
+	Path           string                 `yaml:"path,omitempty"`
+	Account        string                 `yaml:"account,omitempty"`
+	Region         string                 `yaml:"region,omitempty"`
+	Description    string                 `yaml:"description,omitempty"`
 }
 
 // Load reads the repo config from dir. found=false means no config file exists.
@@ -110,8 +114,39 @@ func (c *Config) Validate() error {
 	if c.Repo.Partition != "" && !namePattern.MatchString(c.Repo.Partition) {
 		return fmt.Errorf("invalid partition name %q", c.Repo.Partition)
 	}
-	if c.Repo.Name == "" && c.Repo.Partition != "" {
-		return fmt.Errorf("repo.name is required when repo.partition is set")
+	for _, binding := range c.Repo.Bindings {
+		if !namePattern.MatchString(strings.TrimSpace(binding.Partition)) {
+			return fmt.Errorf("invalid partition name %q in repo.bindings", binding.Partition)
+		}
+	}
+	if c.Repo.Name == "" && (c.Repo.Partition != "" || len(c.Repo.Bindings) > 0) {
+		return fmt.Errorf("repo.name is required when repo.partition or repo.bindings is set")
+	}
+	// .guardian/config.yaml is committed to the repository, so it must never
+	// carry secret material. Values come from the environment or the registry.
+	if strings.TrimSpace(c.Pusher.Token) != "" {
+		return fmt.Errorf("pusher.token must not be committed to the repository; use pusher.tokenEnv instead")
+	}
+	if err := rejectCredentialURL("pusher.observedApiUrl", c.Pusher.ObservedAPIURL); err != nil {
+		return err
+	}
+	if err := rejectCredentialURL("repo.source", c.Repo.Source); err != nil {
+		return err
+	}
+	return nil
+}
+
+func rejectCredentialURL(field, raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" {
+		return nil
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("%s must not embed credentials; use an out-of-band credential such as a deploy key or token env", field)
 	}
 	return nil
 }
@@ -147,6 +182,7 @@ func (c *Config) RepoRegistration(sourceOverride string) *registry.Repo {
 		Name:           c.Repo.Name,
 		Pusher:         c.Pusher.Name,
 		Partition:      c.Repo.Partition,
+		Bindings:       c.Repo.Bindings,
 		Source:         source,
 		Branch:         c.Repo.Branch,
 		AssemblySubdir: c.Repo.AssemblySubdir,
@@ -155,4 +191,46 @@ func (c *Config) RepoRegistration(sourceOverride string) *registry.Repo {
 		Region:         c.Repo.Region,
 		Description:    c.Repo.Description,
 	}
+}
+
+// DisplayPathFromSource converts a repository source (git URL or MonoFS
+// logical path) into the MonoFS repo display path used by the /.repos logical
+// namespace. It returns "" when no display path can be derived.
+//
+// Examples:
+//
+//	https://github.com/example/strata.git -> github.com/example/strata
+//	git@github.com:example/strata.git    -> github.com/example/strata
+//	/.repos/github.com/example/strata    -> github.com/example/strata
+func DisplayPathFromSource(source string) string {
+	value := strings.TrimSpace(source)
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, "/") {
+		trimmed := strings.TrimPrefix(value, "/.repos/")
+		if trimmed == value {
+			return ""
+		}
+		return strings.Trim(trimmed, "/")
+	}
+	value = strings.TrimSuffix(value, ".git")
+	scheme := false
+	if idx := strings.Index(value, "://"); idx >= 0 {
+		value = value[idx+3:]
+		scheme = true
+	}
+	if at := strings.Index(value, "@"); at >= 0 {
+		value = value[at+1:]
+	}
+	if !scheme {
+		if colon := strings.Index(value, ":"); colon >= 0 {
+			value = value[:colon] + "/" + value[colon+1:]
+		}
+	}
+	value = strings.Trim(value, "/")
+	if value == "" || !strings.Contains(value, "/") {
+		return ""
+	}
+	return value
 }

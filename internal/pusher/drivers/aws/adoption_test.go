@@ -63,6 +63,22 @@ func (b *adoptionBackend) DeleteFileSystem(ctx context.Context, fsID string) err
 	return nil
 }
 
+func (b *adoptionBackend) UpsertVPC(ctx context.Context, vpc VPC) (string, error) {
+	return "vpc-new", nil
+}
+func (b *adoptionBackend) GetVPC(ctx context.Context, vpcID string) (VPC, bool, error) {
+	return VPC{}, false, nil
+}
+func (b *adoptionBackend) DeleteVPC(ctx context.Context, vpcID string) error { return nil }
+
+func (b *adoptionBackend) UpsertDBCluster(ctx context.Context, cluster DBCluster) (DBCluster, error) {
+	return cluster, nil
+}
+func (b *adoptionBackend) GetDBCluster(ctx context.Context, name string) (DBCluster, bool, error) {
+	return DBCluster{}, false, nil
+}
+func (b *adoptionBackend) DeleteDBCluster(ctx context.Context, arn, name string) error { return nil }
+
 func (b *adoptionBackend) UpsertParameter(ctx context.Context, param Parameter) error {
 	b.upsertedParams = append(b.upsertedParams, param)
 	b.parameters[param.Name] = param

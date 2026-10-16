@@ -58,7 +58,7 @@ func (d *ComputeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskd
 	}
 
 	adopted := computeAdopted(spec)
-	hash := driverutil.CompositeHash(in)
+	hash := computeHash(in)
 	svcName := computeServiceName(spec, in)
 	cluster := computeCluster(spec, in)
 
@@ -93,15 +93,33 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 		return registry.AssetResult{}, err
 	}
 
-	hash := driverutil.CompositeHash(in)
+	hash := computeHash(in)
 	launchType := "FARGATE"
 	if driverutil.BoolValue(spec.Privileged) || hasCapability(spec.Capabilities, "SYS_ADMIN") {
 		launchType = "EC2"
 	}
 
+	sidecars := []ContainerDef(nil)
+	if !computeAdopted(spec) {
+		var err error
+		sidecars, err = observabilitySidecars(in)
+		if err != nil {
+			return registry.AssetResult{}, err
+		}
+	}
+
 	env, err := driverutil.ResolveEnv(ctx, d.resolver, spec.Env)
 	if err != nil {
 		return registry.AssetResult{}, err
+	}
+	env = driverutil.MergeOtelResourceAttrs(env, in.PartitionName, in.IntentName, in.Asset.Name)
+	if len(sidecars) > 0 {
+		if strings.TrimSpace(env["OTEL_EXPORTER_OTLP_ENDPOINT"]) == "" {
+			env["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:4317"
+		}
+		if strings.TrimSpace(env["OTEL_EXPORTER_OTLP_PROTOCOL"]) == "" {
+			env["OTEL_EXPORTER_OTLP_PROTOCOL"] = "grpc"
+		}
 	}
 
 	secrets := resolveComputeSecrets(in, spec)
@@ -151,6 +169,13 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 			Hash: hash,
 			Tags: tags,
 		})
+		if len(sidecars) > 0 {
+			_ = d.backend.UpsertLogGroup(ctx, LogGroup{
+				Name: observabilityLogGroup(in),
+				Hash: hash,
+				Tags: tags,
+			})
+		}
 	}
 
 	cpu, mem := resolveResources(spec)
@@ -165,6 +190,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 		TaskFamily:     taskFamily,
 		AssignPublicIP: launchType == "FARGATE",
 		LogGroup:       logGroup,
+		Sidecars:       sidecars,
 		Container: ContainerDef{
 			Name:       in.Asset.Name,
 			Image:      spec.Image,

@@ -98,6 +98,10 @@ func loadLocalPartitionBundle(dir string, includeSecrets bool) (*localPartitionB
 
 	configPath := filepath.Join(dir, "config.yaml")
 	configRaw, err := os.ReadFile(configPath)
+	if err != nil && errors.Is(err, os.ErrNotExist) {
+		configPath = filepath.Join(dir, "partition.yaml")
+		configRaw, err = os.ReadFile(configPath)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read partition config: %w", err)
 	}
@@ -259,7 +263,7 @@ func loadExtraFiles(dir, partitionName string, includeSecrets bool) (map[string]
 			return err
 		}
 		relative = filepath.ToSlash(relative)
-		if relative == "config.yaml" {
+		if relative == "config.yaml" || relative == "partition.yaml" {
 			return nil
 		}
 		content, err := os.ReadFile(path)

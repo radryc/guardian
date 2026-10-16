@@ -55,6 +55,18 @@ func ValidateIntent(i *intentdomain.Intent, knownIntents []string, knownPushers 
 	default:
 		return fmt.Errorf("unsupported intentType %q", i.Spec.IntentType)
 	}
+	switch i.Spec.Implementation {
+	case "", intentdomain.ImplementationNative:
+	case intentdomain.ImplementationCDK:
+		if i.Spec.IntentType == intentdomain.TypeObserved {
+			return fmt.Errorf("implementation %q is not supported for observed intents", intentdomain.ImplementationCDK)
+		}
+		if !isAWSPusher(i.Spec.TargetPusher) {
+			return fmt.Errorf("implementation %q requires an AWS targetPusher", intentdomain.ImplementationCDK)
+		}
+	default:
+		return fmt.Errorf("unsupported implementation %q", i.Spec.Implementation)
+	}
 
 	knownIntentSet := toSet(knownIntents)
 	for _, join := range i.Spec.Joins {

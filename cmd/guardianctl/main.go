@@ -624,16 +624,22 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 	reg.Register("partition", "push", storeCommand(partitionPushCommand(store, printer)))
 	reg.Register("aws", "observed-generate", awsObservedGenerateCommand(printer))
 	reg.Register("aws", "pusher-deploy", awsPusherDeployCommand(printer))
+	reg.Register("aws", "scan", storeCommand(awsScanCommand(store, printer)))
+	reg.Register("aws", "unmanaged", storeCommand(awsUnmanagedCommand(store, workspacePublisherFromStore(store), printer)))
+	reg.Register("aws", "ecr-login", awsEcrLoginCommand())
 	reg.Register("pusher", "add", storeCommand(pusherAddCommand(store, printer)))
 	reg.Register("pusher", "list", storeCommand(pusherListCommand(store, printer)))
 	reg.Register("pusher", "remove", storeCommand(pusherRemoveCommand(store, printer)))
 	reg.Register("repo", "add", storeCommand(repoAddCommand(store, printer)))
 	reg.Register("repo", "list", storeCommand(repoListCommand(store, printer)))
 	reg.Register("repo", "remove", storeCommand(repoRemoveCommand(store, printer)))
+	reg.Register("repo", "assign", storeCommand(repoAssignCommand(store, printer)))
 	reg.Register("repo", "sync", storeCommand(repoSyncCommand(store, printer)))
 	reg.Register("repo", "ingest", storeCommand(repoIngestCommand(store, printer)))
 	reg.Register("repo", "apply", storeCommand(repoApplyCommand(store, printer)))
 	reg.Register("repo", "notify", storeCommand(repoNotifyCommand(store, printer)))
+	reg.Register("repo", "import", storeCommand(repoImportCommand(store, printer)))
+	reg.Register("template", "list", storeCommand(templateListCommand(store, printer)))
 	reg.Register("notify", "test", notifyTestCommand(printer))
 	reg.Register("partition", "validate-local", partitionValidateLocalCommand(printer))
 	reg.Register("partition", "reconcile", storeCommand(partitionReconcileCommand(store, printer)))
@@ -722,41 +728,7 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 		}}
 	}()))
 
-	reg.Register("partition", "delete", storeCommand(func() *command.Command {
-		flags := flag.NewFlagSet("partition delete", flag.ContinueOnError)
-		partitionName := flags.String("partition", "", "partition name")
-		return &command.Command{Description: "Delete a partition subtree", Flags: flags, Run: func(ctx context.Context, args []string) error {
-			if *partitionName == "" {
-				return fmt.Errorf("--partition is required")
-			}
-			correlationID := revisions.NewCorrelationID()
-			files, err := walkFiles(ctx, store, paths.PartitionRoot(*partitionName))
-			if err != nil {
-				return err
-			}
-			if len(files) > 0 {
-				deletes := make([]guardianapi.PathDelete, 0, len(files))
-				for _, file := range files {
-					deletes = append(deletes, guardianapi.PathDelete{LogicalPath: file})
-				}
-				if _, err := store.DeletePaths(ctx, guardianapi.DeleteBatch{
-					Deletes: deletes,
-					Context: guardianapi.MutationContext{PrincipalID: "guardianctl", Reason: "delete partition files", CorrelationID: correlationID},
-				}); err != nil {
-					return err
-				}
-			}
-			batch, err := store.DeletePaths(ctx, guardianapi.DeleteBatch{
-				Deletes: []guardianapi.PathDelete{{LogicalPath: paths.PartitionRoot(*partitionName)}},
-				Context: guardianapi.MutationContext{PrincipalID: "guardianctl", Reason: "delete partition", CorrelationID: correlationID},
-			})
-			if err != nil {
-				return err
-			}
-			printMutation(printer, batch, paths.PartitionRoot(*partitionName), correlationID)
-			return nil
-		}}
-	}()))
+	reg.Register("partition", "delete", storeCommand(partitionDeleteCommand(store, printer)))
 
 	reg.Register("intent", "put", storeCommand(func() *command.Command {
 		flags := flag.NewFlagSet("intent put", flag.ContinueOnError)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"os"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -567,6 +568,12 @@ func (d *Dispatcher) evictPartitionRuntime(partition string) {
 	applyRuntimeMetricDelta(previous, nil)
 }
 
+// ForgetPartition drops cached runtime state for a partition that has been
+// deleted from the store, so gauges stop reporting it.
+func (d *Dispatcher) ForgetPartition(partition string) {
+	d.evictPartitionRuntime(partition)
+}
+
 // SeedPartitionReleaseLogs walks every known partition and hydrates the
 // in-memory release log cache from the durable store. Called once at process
 // startup so reads are non-I/O for the steady state.
@@ -657,6 +664,78 @@ func (d *Dispatcher) staleReleaseLogPartitions(seen map[string]struct{}) []strin
 	d.releaseMu.RUnlock()
 	sort.Strings(stale)
 	return stale
+}
+
+// SyncGeneratedPayload keeps a control-plane-generated payload directory in
+// sync with the supplied file set: changed/new files are written, files no
+// longer produced are deleted, and unchanged files are left untouched. It uses
+// the dispatcher's configured store principal.
+func (d *Dispatcher) SyncGeneratedPayload(ctx context.Context, dir string, files map[string][]byte, reason string) error {
+	existing, err := listStoreFiles(ctx, d.store, dir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	present := make(map[string]bool, len(files))
+	writes := make([]guardianapi.PathWrite, 0, len(files))
+	for rel, content := range files {
+		logicalPath := path.Join(dir, rel)
+		present[logicalPath] = true
+		current, readErr := d.store.ReadFile(ctx, logicalPath)
+		if readErr == nil && string(current) == string(content) {
+			continue
+		}
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			return readErr
+		}
+		writes = append(writes, guardianapi.PathWrite{LogicalPath: logicalPath, Content: content})
+	}
+	deletes := make([]guardianapi.PathDelete, 0)
+	for _, logicalPath := range existing {
+		if !present[logicalPath] {
+			deletes = append(deletes, guardianapi.PathDelete{LogicalPath: logicalPath})
+		}
+	}
+	if len(writes) > 0 {
+		if _, err := d.store.UpsertFiles(ctx, guardianapi.MutationBatch{
+			Writes:  writes,
+			Context: guardianapi.MutationContext{PrincipalID: d.principalID, Reason: reason},
+		}); err != nil {
+			return err
+		}
+		guardianWritesTotal.WithLabelValues("sync_generated_payload").Add(float64(len(writes)))
+	}
+	if len(deletes) > 0 {
+		if _, err := d.store.DeletePaths(ctx, guardianapi.DeleteBatch{
+			Deletes: deletes,
+			Context: guardianapi.MutationContext{PrincipalID: d.principalID, Reason: reason + " (prune)"},
+		}); err != nil {
+			return err
+		}
+		guardianDeletesTotal.WithLabelValues("sync_generated_payload").Add(float64(len(deletes)))
+	}
+	return nil
+}
+
+func listStoreFiles(ctx context.Context, store guardianapi.ReadStore, dir string) ([]string, error) {
+	entries, err := store.ListDir(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		child := path.Join(dir, entry.Name)
+		if entry.IsDir {
+			nested, err := listStoreFiles(ctx, store, child)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, nested...)
+			continue
+		}
+		out = append(out, child)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // WriteRelease advances the per-partition release log so the entry for

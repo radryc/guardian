@@ -9,9 +9,12 @@ import (
 	"sort"
 	"time"
 
+	"github.com/rydzu/ainfra/guardian/internal/cdkgen"
 	"github.com/rydzu/ainfra/guardian/internal/compiler/dag"
 	"github.com/rydzu/ainfra/guardian/internal/compiler/manifest"
 	"github.com/rydzu/ainfra/guardian/internal/compiler/resolver"
+	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
+	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
 	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
 	"github.com/rydzu/ainfra/guardian/internal/paths"
@@ -255,6 +258,7 @@ func BuildTaskFromManifest(intentState *statedomain.IntentState, manifestContent
 	for _, name := range order {
 		assets = append(assets, assetByName[name])
 	}
+	assets = substituteGeneratedStack(parsed, intentState, assets)
 	return &taskdomain.Task{
 		APIVersion:        "guardian/v1alpha1",
 		Kind:              "Task",
@@ -275,6 +279,37 @@ func BuildTaskFromManifest(intentState *statedomain.IntentState, manifestContent
 		Assets:            assets,
 		CreatedAt:         time.Now().UTC(),
 	}, nil
+}
+
+// substituteGeneratedStack replaces the CDK-expressible assets of an intent
+// using spec.implementation=cdk with one synthetic GeneratedStack asset. The
+// AWS pusher deploys the pre-generated stack payload (see cdkgen) as a single
+// CloudFormation stack; assets without a construct (Secret, Config, ...) keep
+// their native drivers and run first, followed by the stack.
+func substituteGeneratedStack(parsed *intentdomain.Intent, state *statedomain.IntentState, assets []taskdomain.AbstractAsset) []taskdomain.AbstractAsset {
+	if parsed.Spec.Implementation != intentdomain.ImplementationCDK {
+		return assets
+	}
+	native := make([]taskdomain.AbstractAsset, 0, len(assets))
+	generated := false
+	for _, asset := range assets {
+		if cdkgen.IsSupported(asset.Type) {
+			generated = true
+			continue
+		}
+		native = append(native, asset)
+	}
+	if !generated {
+		return native
+	}
+	dir := paths.GeneratedAWSPayloadDir(state.Partition, state.Intent)
+	native = append(native, taskdomain.AbstractAsset{
+		Type:       assetdomain.TypeGeneratedStack,
+		Name:       "aws-stack",
+		Properties: map[string]any{},
+		Payload:    map[string]string{"generated": dir},
+	})
+	return native
 }
 
 func BuildTaskFromExisting(current *taskdomain.Task, op taskdomain.Operation) *taskdomain.Task {

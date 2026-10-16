@@ -94,6 +94,10 @@ type GuardianConfig struct {
 	// observed APIs for report-only AWS intents. Empty disables the collector.
 	ObservedInterval string `yaml:"observedInterval"`
 	ObservedTimeout  string `yaml:"observedTimeout"`
+	// AutoDeployOnIngest reconciles every partition bound to a repo right after
+	// that repo is ingested (UI or CLI), so a merge deploys without a manual
+	// reconcile. Defaults to true; set false for manual-approval workflows.
+	AutoDeployOnIngest bool `yaml:"autoDeployOnIngest"`
 }
 
 type ComplianceConfig struct {
@@ -157,6 +161,7 @@ func Default() *Config {
 			FlowMetricsTimeout:   "2s",
 			ObservedInterval:     "5m",
 			ObservedTimeout:      "30s",
+			AutoDeployOnIngest:   true,
 		},
 		Compliance: ComplianceConfig{},
 		Pushers: []PusherConfig{{

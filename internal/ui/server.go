@@ -10,10 +10,12 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,6 +51,12 @@ type Options struct {
 	FlowEvaluator      FlowStateEvaluator
 	ClientConfig       ClientConfig
 	ClientConfigToken  string
+	// DisableAutoDeployOnIngest turns off the reconcile that normally follows a
+	// successful repo ingest. Auto-deploy is on unless this is set.
+	DisableAutoDeployOnIngest bool
+	// Unmanaged detects CloudFormation stacks without a repository and
+	// prepares repo associations. Optional.
+	Unmanaged UnmanagedService
 }
 
 type ClientConfig struct {
@@ -73,6 +81,8 @@ type Server struct {
 	rolloutCache       *rolloutCache
 	clientConfig       ClientConfig
 	clientConfigToken  string
+	autoDeployOnIngest bool
+	unmanaged          UnmanagedService
 	index              *template.Template
 	static             http.Handler
 	mux                http.Handler
@@ -234,6 +244,8 @@ func New(opts Options) (*Server, error) {
 		rolloutCache:       newRolloutCache(defaultRolloutTTL),
 		clientConfig:       opts.ClientConfig,
 		clientConfigToken:  strings.TrimSpace(opts.ClientConfigToken),
+		autoDeployOnIngest: !opts.DisableAutoDeployOnIngest,
+		unmanaged:          opts.Unmanaged,
 		index:              index,
 		static:             http.StripPrefix("/static/", http.FileServer(http.FS(staticRoot))),
 	}
@@ -272,6 +284,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/pushers/", s.handlePusherRoute)
 	mux.HandleFunc("/api/repos", s.handleRepos)
 	mux.HandleFunc("/api/repos/", s.handleRepoRoute)
+	mux.HandleFunc("/api/aws/unmanaged", s.handleUnmanaged)
+	mux.HandleFunc("/api/aws/unmanaged/", s.handleUnmanagedRoute)
 	return mux
 }
 
@@ -460,7 +474,7 @@ func (s *Server) handlePartitionRoute(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, http.StatusOK, payload)
 		case http.MethodDelete:
-			removed, err := s.deletePartition(r.Context(), name)
+			removed, purged, err := s.deletePartition(r.Context(), name)
 			if err != nil {
 				status := http.StatusInternalServerError
 				if errors.Is(err, os.ErrNotExist) {
@@ -470,9 +484,10 @@ func (s *Server) handlePartitionRoute(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
-				"success":      true,
-				"partition":    name,
-				"deletedPaths": removed,
+				"success":            true,
+				"partition":          name,
+				"deletedPaths":       removed,
+				"deletionInProgress": !purged,
 			})
 		default:
 			writeMethodNotAllowed(w, http.MethodGet, http.MethodDelete)
@@ -567,6 +582,17 @@ func (s *Server) handlePartitionRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, resp)
+	case "validate":
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w, http.MethodPost)
+			return
+		}
+		var req SaveBundleRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("decode request: %w", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, s.validateBundle(r.Context(), name, &req))
 	case "reconcile":
 		if r.Method != http.MethodPost {
 			writeMethodNotAllowed(w, http.MethodPost)
@@ -647,6 +673,73 @@ func parsePartitionHistoryOptions(values url.Values) (PartitionHistoryOptions, e
 		return PartitionHistoryOptions{}, err
 	}
 	return opts, nil
+}
+
+var assetErrorPattern = regexp.MustCompile(`^asset "([^"]+)"`)
+
+func (s *Server) validateBundle(ctx context.Context, partitionName string, req *SaveBundleRequest) *ValidateBundleResponse {
+	response := &ValidateBundleResponse{Valid: true}
+	addIssue := func(issue ValidateBundleIssue) {
+		if issue.Severity == "" {
+			issue.Severity = "error"
+		}
+		response.Valid = false
+		response.Errors = append(response.Errors, issue)
+	}
+	if req == nil {
+		addIssue(ValidateBundleIssue{Message: "request body is required"})
+		return response
+	}
+
+	partition := req.Partition
+	partition.APIVersion = defaultString(partition.APIVersion, "guardian/v1alpha1")
+	partition.Kind = defaultString(partition.Kind, "Partition")
+	if strings.TrimSpace(partition.Metadata.Name) == "" {
+		partition.Metadata.Name = partitionName
+	}
+	for i := range req.Intents {
+		req.Intents[i].Manifest.APIVersion = defaultString(req.Intents[i].Manifest.APIVersion, "guardian/v1alpha1")
+		req.Intents[i].Manifest.Kind = defaultString(req.Intents[i].Manifest.Kind, "Intent")
+	}
+	if partition.Metadata.Name != partitionName {
+		addIssue(ValidateBundleIssue{Message: fmt.Sprintf("partition metadata.name %q does not match path %q", partition.Metadata.Name, partitionName)})
+	}
+	if err := validatePartitionForSave(partition); err != nil {
+		addIssue(ValidateBundleIssue{Message: err.Error()})
+	}
+
+	intentNames := make([]string, 0, len(req.Intents))
+	intentSeen := map[string]struct{}{}
+	for i := range req.Intents {
+		name := strings.TrimSpace(req.Intents[i].Manifest.Metadata.Name)
+		if name == "" {
+			addIssue(ValidateBundleIssue{Message: fmt.Sprintf("intent at index %d is missing metadata.name", i)})
+			continue
+		}
+		if _, exists := intentSeen[name]; exists {
+			addIssue(ValidateBundleIssue{Intent: name, Message: fmt.Sprintf("duplicate intent %q", name)})
+			continue
+		}
+		intentSeen[name] = struct{}{}
+		intentNames = append(intentNames, name)
+	}
+	sort.Strings(intentNames)
+
+	knownPushers := s.knownPushers(ctx)
+	for i := range req.Intents {
+		name := strings.TrimSpace(req.Intents[i].Manifest.Metadata.Name)
+		if name == "" {
+			continue
+		}
+		if err := validateIntentForSave(req.Intents[i].Manifest, intentNames, knownPushers); err != nil {
+			issue := ValidateBundleIssue{Intent: name, Message: err.Error()}
+			if match := assetErrorPattern.FindStringSubmatch(err.Error()); match != nil {
+				issue.Asset = match[1]
+			}
+			addIssue(issue)
+		}
+	}
+	return response
 }
 
 func (s *Server) saveBundle(ctx context.Context, partitionName string, req *SaveBundleRequest) (*SaveBundleResponse, error) {
@@ -802,6 +895,24 @@ func (s *Server) saveBundle(ctx context.Context, partitionName string, req *Save
 	return resp, nil
 }
 
+// autoDeployPartitions reconciles every partition fed by a just-ingested repo.
+// It is best-effort: ingest succeeded, so a reconcile failure is logged and
+// retried by the partition watcher / schedule.
+func (s *Server) autoDeployPartitions(ctx context.Context, names []string) {
+	if !s.autoDeployOnIngest || len(names) == 0 {
+		return
+	}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if err := s.reconcilePartition(ctx, name); err != nil {
+			log.Printf("guardian ui: auto-deploy partition %s after repo ingest: %v", name, err)
+		}
+	}
+}
+
 func (s *Server) reconcilePartition(ctx context.Context, partitionName string) error {
 	disp := s.dispatcher
 	if disp == nil {
@@ -838,52 +949,28 @@ func (s *Server) reconcilePartitionForceApply(ctx context.Context, partitionName
 	return nil
 }
 
-func (s *Server) deletePartition(ctx context.Context, partitionName string) (int, error) {
-	files, err := s.walkFiles(ctx, paths.PartitionRoot(partitionName))
-	if err != nil {
-		return 0, err
+// deletePartition requests a deferred partition deletion and runs one
+// reconcile pass. Under the destroy policy this queues DESTROY tasks for every
+// intent; the partition files are purged by the reconciler once teardown
+// completes. Under orphan policy the partition is purged in this call.
+// It returns whether the partition is already purged.
+func (s *Server) deletePartition(ctx context.Context, partitionName string) (int, bool, error) {
+	if _, err := reconciler.RequestPartitionDeletion(ctx, s.store, partitionName, s.principalID); err != nil {
+		return 0, false, err
 	}
-	if len(files) == 0 {
-		return 0, os.ErrNotExist
+	disp := s.dispatcher
+	if disp == nil {
+		disp = dispatcher.NewDispatcher(s.store, s.principalID)
 	}
-	deletes := make([]guardianapi.PathDelete, 0, len(files))
-	for _, file := range files {
-		deletes = append(deletes, guardianapi.PathDelete{LogicalPath: file})
+	recon := reconciler.NewReconciler(s.store, disp, time.Minute)
+	if err := recon.ReconcilePartition(ctx, partitionName, true); err != nil {
+		return 0, false, err
 	}
-	if _, err := s.store.DeletePaths(ctx, guardianapi.DeleteBatch{
-		Deletes: deletes,
-		Context: guardianapi.MutationContext{
-			PrincipalID:   s.principalID,
-			Reason:        "delete partition from guardian ui",
-			CorrelationID: newCorrelationID(),
-		},
-	}); err != nil {
-		return 0, err
+	if _, err := s.store.Stat(ctx, paths.PartitionConfig(partitionName)); errors.Is(err, os.ErrNotExist) {
+		s.partitionData.invalidatePartition(partitionName)
+		return 1, true, nil
 	}
-	s.partitionData.invalidatePartition(partitionName)
-	return len(files), nil
-}
-
-func (s *Server) walkFiles(ctx context.Context, logicalDir string) ([]string, error) {
-	entries, err := s.store.ListDir(ctx, logicalDir)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0)
-	for _, entry := range entries {
-		child := strings.TrimRight(logicalDir, "/") + "/" + entry.Name
-		if entry.IsDir {
-			nested, err := s.walkFiles(ctx, child)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, nested...)
-			continue
-		}
-		out = append(out, child)
-	}
-	sort.Strings(out)
-	return out, nil
+	return 0, false, nil
 }
 
 func (s *Server) writeEvent(ctx context.Context, event *historydomain.EventRecord) {

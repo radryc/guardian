@@ -39,6 +39,8 @@ import (
 	monofsstore "github.com/rydzu/ainfra/guardian/internal/store/monofs"
 	"github.com/rydzu/ainfra/guardian/internal/telemetry"
 	uiuipkg "github.com/rydzu/ainfra/guardian/internal/ui"
+	unmanagedpkg "github.com/rydzu/ainfra/guardian/internal/unmanaged"
+	"github.com/rydzu/ainfra/guardian/internal/workspacepub"
 	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
@@ -97,6 +99,7 @@ func main() {
 		}
 		cfg = loaded
 	}
+	applyGuardianEnvConfig(cfg)
 	if strings.TrimSpace(uiListen) != "" {
 		cfg.Guardian.UIListenAddress = uiListen
 	}
@@ -148,6 +151,7 @@ func main() {
 		store        guardianapi.Store
 		storeCloser  interface{ Close() error }
 		clientConfig uiuipkg.ClientConfig
+		publisher    *workspacepub.Publisher
 	)
 	if cfg.MonoFS.APIEndpoint != "" {
 		clientRouterAddr := strings.TrimSpace(cfg.MonoFS.ClientAPIEndpoint)
@@ -176,6 +180,7 @@ func main() {
 		}
 		store = openedStore
 		storeCloser = client
+		publisher = client.WorkspacePublisher()
 	} else {
 		store = memory.New()
 	}
@@ -258,6 +263,13 @@ func main() {
 		if cfg.Guardian.EnableFlowTopology {
 			flowEvaluator = uiuipkg.NewMonofsMetricsFlowEvaluator(strings.TrimSpace(cfg.Guardian.FlowMetricsURL), flowMetricsTimeout, 5*time.Second)
 		}
+		_, observedResolver := newObservedResolver(cfg, store, 30*time.Second)
+		unmanagedService := &unmanagedpkg.Service{
+			Store:     store,
+			Registry:  registry.New(store),
+			Resolver:  observedResolver,
+			Publisher: publisher,
+		}
 		uiServer, err := uiuipkg.New(uiuipkg.Options{
 			Store:              store,
 			Dispatcher:         dispatcher,
@@ -268,6 +280,10 @@ func main() {
 			FlowEvaluator:      flowEvaluator,
 			ClientConfig:       clientConfig,
 			ClientConfigToken:  cfg.Guardian.ClientDiscoveryToken,
+			Unmanaged:          unmanagedService,
+			// Auto-deploy is on by default; guardian.autoDeployOnIngest=false
+			// keeps merges manual.
+			DisableAutoDeployOnIngest: !cfg.Guardian.AutoDeployOnIngest,
 		})
 		if err != nil {
 			log.Fatalf("build ui server: %v", err)
@@ -780,6 +796,21 @@ func newObservedCollector(cfg *config.Config, store guardianapi.Store, dispatch 
 		}
 		timeout = parsed
 	}
+	endpoints, resolver := newObservedResolver(cfg, store, timeout)
+	log.Printf("observed collector enabled, interval=%s (static endpoints: %d, store registry: /.registry/pushers)", interval, len(endpoints))
+	return &observedpkg.Collector{
+		Store:      store,
+		Dispatcher: dispatch,
+		Endpoints:  endpoints,
+		Resolver:   resolver,
+		Interval:   interval,
+		Timeout:    timeout,
+	}
+}
+
+// newObservedResolver builds the static pusher endpoints plus the store-backed
+// resolver shared by the observed collector and the unmanaged-stacks service.
+func newObservedResolver(cfg *config.Config, store guardianapi.Store, timeout time.Duration) (map[string]observedpkg.Endpoint, *observedpkg.RegistryResolver) {
 	endpoints := map[string]observedpkg.Endpoint{}
 	for _, pusher := range cfg.Pushers {
 		apiURL := strings.TrimSpace(pusher.ObservedAPIURL)
@@ -797,15 +828,7 @@ func newObservedCollector(cfg *config.Config, store guardianapi.Store, dispatch 
 		Registry: registryStore,
 		TTL:      30 * time.Second,
 	}
-	log.Printf("observed collector enabled, interval=%s (static endpoints: %d, store registry: /.registry/pushers)", interval, len(endpoints))
-	return &observedpkg.Collector{
-		Store:      store,
-		Dispatcher: dispatch,
-		Endpoints:  endpoints,
-		Resolver:   resolver,
-		Interval:   interval,
-		Timeout:    timeout,
-	}
+	return endpoints, resolver
 }
 
 // newAlertingEvaluator builds the partition failure alerting evaluator when

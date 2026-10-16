@@ -76,6 +76,49 @@ func serviceManifest(service Service) map[string]any {
 	}
 }
 
+func networkPolicyManifest(policy NetworkPolicy) map[string]any {
+	policyTypes := []string{"Ingress"}
+	ingressFrom := []map[string]any{{"podSelector": map[string]any{}}}
+	if policy.AllowCluster {
+		ingressFrom = append(ingressFrom, map[string]any{"namespaceSelector": map[string]any{}})
+	}
+	spec := map[string]any{
+		"podSelector": map[string]any{"matchLabels": cloneStringMap(policy.PodSelector)},
+		"policyTypes": policyTypes,
+		"ingress": []map[string]any{
+			{"from": ingressFrom},
+		},
+	}
+	if policy.Internal {
+		spec["policyTypes"] = []string{"Ingress", "Egress"}
+		spec["egress"] = []map[string]any{
+			{"to": []map[string]any{{"podSelector": map[string]any{}}}},
+			{
+				"to": []map[string]any{
+					{"namespaceSelector": map[string]any{"matchLabels": map[string]string{"kubernetes.io/metadata.name": "kube-system"}}},
+				},
+				"ports": []map[string]any{
+					{"protocol": "UDP", "port": 53},
+					{"protocol": "TCP", "port": 53},
+				},
+			},
+		}
+	}
+	return map[string]any{
+		"apiVersion": "networking.k8s.io/v1",
+		"kind":       "NetworkPolicy",
+		"metadata": map[string]any{
+			"name":      policy.Name,
+			"namespace": policy.Namespace,
+			"labels":    cloneStringMap(policy.Labels),
+			"annotations": map[string]string{
+				fullHashAnnotation: policy.Hash,
+			},
+		},
+		"spec": spec,
+	}
+}
+
 func deploymentManifestItems(deployment Deployment) []map[string]any {
 	items := []map[string]any{}
 	volumeItems, volumeMounts := containerVolumes(deployment)

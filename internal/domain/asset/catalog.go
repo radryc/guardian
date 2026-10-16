@@ -15,6 +15,13 @@ const (
 	TypeObjectStore   = "ObjectStore"
 	TypeObservability = "Observability"
 	TypeK8sResource   = "K8sResource"
+	// TypeAWSResource is an internal asset type for AWS resources that have no
+	// curated Guardian template yet. It is rendered by the fallback
+	// `aws.fallback.cfn-resource` template with a raw CloudFormation type.
+	TypeAWSResource = "AWSResource"
+	// TypeGeneratedStack is an internal, non-user-authorable asset type that
+	// carries the whole intent's generated CDK stack through the task pipeline.
+	TypeGeneratedStack = "GeneratedStack"
 )
 
 func KnownTypes() []string {

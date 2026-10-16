@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rydzu/ainfra/guardian/internal/cdkgen"
 	manifestpkg "github.com/rydzu/ainfra/guardian/internal/compiler/manifest"
 	"github.com/rydzu/ainfra/guardian/internal/compiler/planner"
 	"github.com/rydzu/ainfra/guardian/internal/compiler/resolver"
@@ -58,6 +59,10 @@ type PartitionSummary struct {
 	Status        string            `json:"status"`
 	DisplayStatus string            `json:"displayStatus"`
 	Health        string            `json:"health"`
+	// Origin mirrors the partition detail origin (deployed/adopted/observed).
+	Origin       string `json:"origin,omitempty"`
+	OriginLabel  string `json:"originLabel,omitempty"`
+	OriginDetail string `json:"originDetail,omitempty"`
 	// LastHealth and LastDisplayStatus reflect the resolved-asset state only
 	// (ignoring pending assets). Used in the overview tile so transient
 	// "Progressing" flicker is hidden; details still show the live status.
@@ -88,6 +93,12 @@ type PartitionDetailResponse struct {
 	Intents       []IntentDocument  `json:"intents"`
 	Topology      TopologyData      `json:"topology"`
 	RecentEvents  []TimelineEntry   `json:"recentEvents"`
+	// Origin summarizes how the partition's desired state is produced:
+	// deployed by Guardian (templates), user CDK, adopted existing stack, or
+	// observe-only snapshot.
+	Origin       string `json:"origin,omitempty"`
+	OriginLabel  string `json:"originLabel,omitempty"`
+	OriginDetail string `json:"originDetail,omitempty"`
 }
 
 type PartitionDocument struct {
@@ -135,23 +146,34 @@ type IntentDocument struct {
 	DisplayStatus     string                        `json:"displayStatus"`
 	Health            string                        `json:"health"`
 	Summary           string                        `json:"summary"`
-	TaskActive        bool                          `json:"taskActive"`
-	TaskTimedOut      bool                          `json:"taskTimedOut"`
-	TargetSummary     string                        `json:"targetSummary"`
-	Joined            []string                      `json:"joined"`
-	Locked            bool                          `json:"locked"`
-	Outputs           map[string]string             `json:"outputs,omitempty"`
-	OutputHints       []assetdefs.CatalogHint       `json:"outputHints,omitempty"`
-	Assets            []AssetDocument               `json:"assets"`
-	LastDeployment    *DeploymentSummary            `json:"lastDeployment,omitempty"`
-	LastUpdatedAt     time.Time                     `json:"lastUpdatedAt,omitempty"`
+	// Origin distinguishes how the desired state is produced: deployed by
+	// Guardian from templates, user-authored CDK, adopted existing stack, or
+	// observe-only snapshot.
+	Origin         string                  `json:"origin,omitempty"`
+	OriginLabel    string                  `json:"originLabel,omitempty"`
+	OriginDetail   string                  `json:"originDetail,omitempty"`
+	TaskActive     bool                    `json:"taskActive"`
+	TaskTimedOut   bool                    `json:"taskTimedOut"`
+	TargetSummary  string                  `json:"targetSummary"`
+	Joined         []string                `json:"joined"`
+	Locked         bool                    `json:"locked"`
+	Outputs        map[string]string       `json:"outputs,omitempty"`
+	OutputHints    []assetdefs.CatalogHint `json:"outputHints,omitempty"`
+	Assets         []AssetDocument         `json:"assets"`
+	LastDeployment *DeploymentSummary      `json:"lastDeployment,omitempty"`
+	LastUpdatedAt  time.Time               `json:"lastUpdatedAt,omitempty"`
 }
 
 type AssetDocument struct {
-	ID               string                        `json:"id"`
-	Name             string                        `json:"name"`
-	Type             string                        `json:"type"`
-	Version          string                        `json:"version,omitempty"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Version string `json:"version,omitempty"`
+	// Origin records how this asset is applied (generated template, fallback
+	// CloudFormation resource, native driver, observed snapshot).
+	Origin           string                        `json:"origin,omitempty"`
+	OriginLabel      string                        `json:"originLabel,omitempty"`
+	Template         string                        `json:"template,omitempty"`
 	DependsOn        []string                      `json:"dependsOn"`
 	FlowMetricGroups []string                      `json:"flowMetricGroups,omitempty"`
 	FlowState        string                        `json:"flowState,omitempty"`
@@ -363,6 +385,19 @@ type SaveBundleResponse struct {
 	RemovedIntents     []string          `json:"removedIntents,omitempty"`
 }
 
+type ValidateBundleIssue struct {
+	Intent   string `json:"intent,omitempty"`
+	Asset    string `json:"asset,omitempty"`
+	Field    string `json:"field,omitempty"`
+	Message  string `json:"message"`
+	Severity string `json:"severity"`
+}
+
+type ValidateBundleResponse struct {
+	Valid  bool                  `json:"valid"`
+	Errors []ValidateBundleIssue `json:"errors,omitempty"`
+}
+
 func (s *Server) buildOverview(ctx context.Context) (*OverviewResponse, error) {
 	ctx, cancel := withTimeout(ctx)
 	defer cancel()
@@ -442,6 +477,9 @@ func summarizePartition(detail *PartitionDetailResponse) PartitionSummary {
 		Status:           detail.Health.Status,
 		DisplayStatus:    detail.Health.DisplayStatus,
 		Health:           detail.Health.Status,
+		Origin:           detail.Origin,
+		OriginLabel:      detail.OriginLabel,
+		OriginDetail:     detail.OriginDetail,
 		DeletionPolicy:   detail.Partition.Manifest.Spec.DeletionPolicy,
 		Reconciliation:   detail.Partition.Manifest.Spec.Reconciliation.Mode,
 		IntentCount:      len(detail.Intents),
@@ -608,6 +646,7 @@ func (s *Server) loadPartitionData(ctx context.Context, partitionName string, in
 		order = append([]string(nil), compiled.IntentOrder...)
 	}
 	intents := make([]IntentDocument, 0, len(order))
+	partitionLabels := mergeStringMaps(partitionManifest.Metadata.Labels, partitionManifest.Spec.Labels)
 	for _, name := range order {
 		manifest := intentManifests[name]
 		if manifest == nil {
@@ -619,10 +658,11 @@ func (s *Server) loadPartitionData(ctx context.Context, partitionName string, in
 				assetOrder = mergeAssetOrder(compiledIntent.AssetOrder, manifest.Spec.Assets)
 			}
 		}
-		intents = append(intents, buildIntentDocument(ctx, *manifest, partitionName, intentVersions[name], intentStates[name], intentRuntimes[name], assetOrder, latestDeployments[name], intentStates, s.enableFlowTopology, s.flowEvaluator))
+		intents = append(intents, buildIntentDocument(ctx, s.store, *manifest, partitionName, partitionLabels, intentVersions[name], intentStates[name], intentRuntimes[name], assetOrder, latestDeployments[name], intentStates, s.enableFlowTopology, s.flowEvaluator))
 	}
 
 	health := buildPartitionHealth(intents, partitionState)
+	partitionOriginInfo := partitionOrigin(partitionLabels, intents)
 	return &PartitionDetailResponse{
 		GeneratedAt:   time.Now().UTC(),
 		CompilerError: errorString(compileErr),
@@ -635,6 +675,9 @@ func (s *Server) loadPartitionData(ctx context.Context, partitionName string, in
 		Intents:      intents,
 		Topology:     buildTopology(*partitionManifest, intents),
 		RecentEvents: recentEvents,
+		Origin:       partitionOriginInfo.Origin,
+		OriginLabel:  partitionOriginInfo.Label,
+		OriginDetail: partitionOriginInfo.Detail,
 	}, nil
 }
 
@@ -931,7 +974,161 @@ func blockedSummary(state *statedomain.IntentState, deps map[string]*statedomain
 	return "Waiting for " + strings.Join(unhealthy, ", ") + " to become healthy"
 }
 
-func buildIntentDocument(ctx context.Context, manifest intentdomain.Intent, partitionName, versionID string, state *statedomain.IntentState, runtime intentTaskRuntime, assetOrder []string, latest *DeploymentView, deps map[string]*statedomain.IntentState, enableFlowTopology bool, evaluator FlowStateEvaluator) IntentDocument {
+// Origin describes how an intent's or partition's desired state is produced so
+// the UI can distinguish stacks deployed by Guardian from adopted existing
+// stacks, observe-only snapshots, user-authored CDK and native drivers.
+const (
+	originAdopted   = "adopted"
+	originObserved  = "observed"
+	originGenerated = "generated"
+	originUserCDK   = "user-cdk"
+	originNative    = "native"
+)
+
+type originInfo struct {
+	Origin string
+	Label  string
+	Detail string
+}
+
+func isObservedIntent(manifest intentdomain.Intent) bool {
+	return strings.EqualFold(strings.TrimSpace(manifest.Spec.IntentType), "observed")
+}
+
+func adoptedOriginInfo(labels map[string]string) (originInfo, bool) {
+	if !strings.EqualFold(strings.TrimSpace(labels["guardian.io/origin"]), "adopted") {
+		return originInfo{}, false
+	}
+	detail := "Existing CloudFormation stack adopted from AWS"
+	if stack := strings.TrimSpace(labels["guardian.io/adopted-stack"]); stack != "" {
+		detail = fmt.Sprintf("%s: %s", detail, stack)
+	}
+	return originInfo{Origin: originAdopted, Label: "Adopted from AWS", Detail: detail}, true
+}
+
+func intentOrigin(ctx context.Context, store guardianapi.Store, partition string, manifest intentdomain.Intent, partitionLabels map[string]string) originInfo {
+	if isObservedIntent(manifest) {
+		if adopted, ok := adoptedOriginInfo(partitionLabels); ok {
+			return adopted
+		}
+		return originInfo{Origin: originObserved, Label: "Observe only", Detail: "Snapshot only; Guardian never applies changes"}
+	}
+	if strings.EqualFold(strings.TrimSpace(manifest.Spec.Implementation), intentdomain.ImplementationCDK) {
+		if payload, ok := readGeneratedPayloadManifest(ctx, store, partition, manifest.Metadata.Name); ok {
+			catalog := strings.TrimSpace(payload.CatalogVersion)
+			if catalog == "" {
+				catalog = "unknown"
+			}
+			return originInfo{
+				Origin: originGenerated,
+				Label:  "Native CDK",
+				Detail: fmt.Sprintf("Generated stack %s · %d template(s) · catalog %s", payload.StackName, len(payload.Templates), catalog),
+			}
+		}
+		return originInfo{Origin: originUserCDK, Label: "User CDK", Detail: "CDK app authored in the repository; Guardian deploys it as-is"}
+	}
+	return originInfo{Origin: originNative, Label: "Native driver", Detail: "Applied by provider-native drivers (no CloudFormation stack)"}
+}
+
+func readGeneratedPayloadManifest(ctx context.Context, store guardianapi.Store, partition, intent string) (*cdkgen.PayloadManifest, bool) {
+	if store == nil {
+		return nil, false
+	}
+	path := paths.GeneratedAWSPayloadDir(partition, intent) + "/" + cdkgen.PayloadManifestFileName
+	raw, err := store.ReadFile(ctx, path)
+	if err != nil {
+		return nil, false
+	}
+	var payload cdkgen.PayloadManifest
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, false
+	}
+	return &payload, true
+}
+
+// partitionOrigin aggregates the intent origins with the adopted label taking
+// precedence, so the partition tile and header show a single mode.
+func partitionOrigin(labels map[string]string, intents []IntentDocument) originInfo {
+	if adopted, ok := adoptedOriginInfo(labels); ok {
+		return adopted
+	}
+	counts := map[string]int{}
+	for _, intent := range intents {
+		if origin := strings.TrimSpace(intent.Origin); origin != "" {
+			counts[origin]++
+		}
+	}
+	switch len(counts) {
+	case 0:
+		return originInfo{}
+	case 1:
+		for origin := range counts {
+			switch origin {
+			case originGenerated:
+				return originInfo{Origin: originGenerated, Label: "Native CDK", Detail: "All intents deploy CDK stacks generated from the template catalog"}
+			case originUserCDK:
+				return originInfo{Origin: originUserCDK, Label: "User CDK", Detail: "All intents deploy CDK apps authored in the repository"}
+			case originObserved:
+				return originInfo{Origin: originObserved, Label: "Observe only", Detail: "Snapshot only; Guardian never applies changes"}
+			default:
+				return originInfo{Origin: originNative, Label: "Native driver", Detail: "Applied by provider-native drivers"}
+			}
+		}
+	}
+	parts := make([]string, 0, len(counts))
+	for _, origin := range []string{originGenerated, originUserCDK, originObserved, originNative} {
+		if counts[origin] > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", counts[origin], origin))
+		}
+	}
+	return originInfo{Origin: "mixed", Label: "Mixed", Detail: "Intents: " + strings.Join(parts, " · ")}
+}
+
+// assetOrigin classifies how one asset is applied inside an intent.
+type assetOrigin struct {
+	Origin   string
+	Label    string
+	Template string
+}
+
+func assetOrigins(manifest intentdomain.Intent, payload *cdkgen.PayloadManifest) map[string]assetOrigin {
+	origins := make(map[string]assetOrigin, len(manifest.Spec.Assets))
+	observed := isObservedIntent(manifest)
+	generated := map[string]bool{}
+	if payload != nil {
+		for _, name := range payload.GeneratedAssets {
+			generated[name] = true
+		}
+	}
+	var catalog *cdkgen.Catalog
+	if payload != nil {
+		catalog = cdkgen.EmbeddedProvider().Catalog()
+	}
+	for _, asset := range manifest.Spec.Assets {
+		switch {
+		case observed:
+			origins[asset.Name] = assetOrigin{Origin: originObserved, Label: "observed"}
+		case payload != nil && generated[asset.Name]:
+			entry := assetOrigin{Origin: originGenerated, Label: "template"}
+			if catalog != nil {
+				if selected, err := catalog.Select(asset.Type, asset.Properties); err == nil && selected != nil {
+					entry.Template = selected.ID
+				}
+			}
+			origins[asset.Name] = entry
+		case payload != nil && strings.EqualFold(asset.Type, "AWSResource"):
+			origins[asset.Name] = assetOrigin{Origin: originGenerated, Label: "fallback", Template: "aws.fallback.cfn-resource"}
+		case payload != nil:
+			origins[asset.Name] = assetOrigin{Origin: originNative, Label: "native driver"}
+		default:
+			origins[asset.Name] = assetOrigin{Origin: originUserCDK, Label: "user-cdk"}
+		}
+	}
+	return origins
+}
+
+// buildIntentDocument renders one intent for the UI.
+func buildIntentDocument(ctx context.Context, store guardianapi.Store, manifest intentdomain.Intent, partitionName string, partitionLabels map[string]string, versionID string, state *statedomain.IntentState, runtime intentTaskRuntime, assetOrder []string, latest *DeploymentView, deps map[string]*statedomain.IntentState, enableFlowTopology bool, evaluator FlowStateEvaluator) IntentDocument {
 	status, displayStatus, health, summary := deriveIntentPresentation(state, runtime)
 	if status == string(statedomain.StatusBlocked) {
 		if s := blockedSummary(state, deps); s != "" {
@@ -980,17 +1177,23 @@ func buildIntentDocument(ctx context.Context, manifest intentdomain.Intent, part
 	for _, asset := range manifest.Spec.Assets {
 		specByName[asset.Name] = asset
 	}
+	origin := intentOrigin(ctx, store, partitionName, manifest, partitionLabels)
+	doc.Origin = origin.Origin
+	doc.OriginLabel = origin.Label
+	doc.OriginDetail = origin.Detail
+	payloadManifest, _ := readGeneratedPayloadManifest(ctx, store, partitionName, manifest.Metadata.Name)
+	origins := assetOrigins(manifest, payloadManifest)
 	for _, name := range assetOrder {
 		spec, ok := specByName[name]
 		if !ok {
 			continue
 		}
-		doc.Assets = append(doc.Assets, buildAssetDocument(ctx, partitionName, manifest.Metadata.Name, spec, manifest.Spec.Hints, state, runtime, latest, deps, enableFlowTopology, evaluator))
+		doc.Assets = append(doc.Assets, buildAssetDocument(ctx, partitionName, manifest.Metadata.Name, spec, origins[spec.Name], manifest.Spec.Hints, state, runtime, latest, deps, enableFlowTopology, evaluator))
 	}
 	return doc
 }
 
-func buildAssetDocument(ctx context.Context, partitionName, intentName string, spec assetdomain.Spec, intentHints []assetdomain.Hint, state *statedomain.IntentState, runtime intentTaskRuntime, latest *DeploymentView, deps map[string]*statedomain.IntentState, enableFlowTopology bool, evaluator FlowStateEvaluator) AssetDocument {
+func buildAssetDocument(ctx context.Context, partitionName, intentName string, spec assetdomain.Spec, origin assetOrigin, intentHints []assetdomain.Hint, state *statedomain.IntentState, runtime intentTaskRuntime, latest *DeploymentView, deps map[string]*statedomain.IntentState, enableFlowTopology bool, evaluator FlowStateEvaluator) AssetDocument {
 	status, displayStatus, health, summary := deriveAssetPresentation(state, spec.Name, runtime)
 	if status == string(statedomain.StatusBlocked) {
 		if s := blockedSummary(state, deps); s != "" {
@@ -1047,6 +1250,9 @@ func buildAssetDocument(ctx context.Context, partitionName, intentName string, s
 		Name:             spec.Name,
 		Type:             spec.Type,
 		Version:          version,
+		Origin:           origin.Origin,
+		OriginLabel:      origin.Label,
+		Template:         origin.Template,
 		DependsOn:        append([]string(nil), spec.DependsOn...),
 		FlowMetricGroups: append([]string(nil), flowMetricGroups...),
 		FlowState:        flowState,
@@ -2105,7 +2311,7 @@ func assetFacts(spec assetdomain.Spec, outputs map[string]string) (string, []Fac
 			ports = append(ports, label)
 		}
 		facts = appendOutputsFact(facts, []string{"id", "address"})
-		return "Network edge", facts, true, ports, 1
+		return "Load balancer", facts, true, ports, 1
 	case *assetdefs.ObservabilitySpec:
 		facts := []Fact{}
 		if value.Provider != "" {

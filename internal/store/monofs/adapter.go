@@ -223,6 +223,24 @@ func mapLogicalToPhysicalChecked(logicalPath string) (string, error) {
 	if strings.HasPrefix(logicalPath, "/.registry/") {
 		return "guardian-system/.registry/" + strings.TrimPrefix(logicalPath, "/.registry/"), nil
 	}
+	// Global template overlays (/.templates/aws/**) let operators extend or
+	// override the embedded CDK template catalog from MonoFS.
+	if logicalPath == "/.templates" {
+		return "guardian-system/.templates", nil
+	}
+	if strings.HasPrefix(logicalPath, "/.templates/") {
+		return "guardian-system/.templates/" + strings.TrimPrefix(logicalPath, "/.templates/"), nil
+	}
+	// Repo display paths (ingested repositories) are reachable read-only under
+	// /.repos/<display-path>/... so the repo importer can read
+	// guardian/partitions/** straight from MonoFS.
+	if strings.HasPrefix(logicalPath, "/.repos/") {
+		trimmed := strings.TrimPrefix(logicalPath, "/.repos/")
+		if trimmed == "" || strings.Contains(trimmed, "..") {
+			return "", fmt.Errorf("unsupported guardian logical path: %s", logicalPath)
+		}
+		return trimmed, nil
+	}
 	return "", fmt.Errorf("unsupported guardian logical path: %s", logicalPath)
 }
 
@@ -256,6 +274,12 @@ func mapPhysicalToLogicalChecked(physicalPath string) (string, error) {
 	}
 	if strings.HasPrefix(physicalPath, "guardian-system/.registry/") {
 		return "/.registry/" + strings.TrimPrefix(physicalPath, "guardian-system/.registry/"), nil
+	}
+	if physicalPath == "guardian-system/.templates" {
+		return "/.templates", nil
+	}
+	if strings.HasPrefix(physicalPath, "guardian-system/.templates/") {
+		return "/.templates/" + strings.TrimPrefix(physicalPath, "guardian-system/.templates/"), nil
 	}
 	return "", fmt.Errorf("unsupported monofs physical path: %s", physicalPath)
 }

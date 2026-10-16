@@ -30,6 +30,13 @@ func (b *CompositeBackend) DeleteStack(ctx context.Context, req StackRequest) er
 	return b.CDK.DeleteStack(ctx, req)
 }
 
+func (b *CompositeBackend) EnsureExecutionRole(ctx context.Context, roleName string, actions []string) (string, error) {
+	return b.SDK.EnsureExecutionRole(ctx, roleName, actions)
+}
+func (b *CompositeBackend) DeleteExecutionRole(ctx context.Context, roleName string) error {
+	return b.SDK.DeleteExecutionRole(ctx, roleName)
+}
+
 func (b *CompositeBackend) UpsertFileSystem(ctx context.Context, fs FileSystem) (string, error) {
 	return b.SDK.UpsertFileSystem(ctx, fs)
 }
@@ -38,6 +45,25 @@ func (b *CompositeBackend) GetFileSystem(ctx context.Context, fsID string) (File
 }
 func (b *CompositeBackend) DeleteFileSystem(ctx context.Context, fsID string) error {
 	return b.SDK.DeleteFileSystem(ctx, fsID)
+}
+func (b *CompositeBackend) UpsertVPC(ctx context.Context, vpc VPC) (string, error) {
+	return b.SDK.UpsertVPC(ctx, vpc)
+}
+func (b *CompositeBackend) GetVPC(ctx context.Context, vpcID string) (VPC, bool, error) {
+	return b.SDK.GetVPC(ctx, vpcID)
+}
+func (b *CompositeBackend) DeleteVPC(ctx context.Context, vpcID string) error {
+	return b.SDK.DeleteVPC(ctx, vpcID)
+}
+
+func (b *CompositeBackend) UpsertDBCluster(ctx context.Context, cluster DBCluster) (DBCluster, error) {
+	return b.SDK.UpsertDBCluster(ctx, cluster)
+}
+func (b *CompositeBackend) GetDBCluster(ctx context.Context, name string) (DBCluster, bool, error) {
+	return b.SDK.GetDBCluster(ctx, name)
+}
+func (b *CompositeBackend) DeleteDBCluster(ctx context.Context, arn, name string) error {
+	return b.SDK.DeleteDBCluster(ctx, arn, name)
 }
 func (b *CompositeBackend) UpsertParameter(ctx context.Context, param Parameter) error {
 	return b.SDK.UpsertParameter(ctx, param)
