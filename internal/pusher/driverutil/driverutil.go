@@ -442,6 +442,12 @@ func ApplyOtelEnv(env map[string]string, in registry.AssetInput, provider string
 	setGenerated("guardian.pusher", in.PusherName)
 	setGenerated("guardian.provider", provider)
 	setGenerated("guardian.cluster", strings.TrimSpace(in.Target.Cluster))
+	for key, value := range env {
+		if strings.HasSuffix(strings.ToUpper(key), "_OTEL_SERVICE_NAME") && strings.TrimSpace(value) != "" {
+			setGenerated("service.alias", strings.TrimSpace(value))
+			break
+		}
+	}
 	if strings.EqualFold(provider, "kubernetes") {
 		setGenerated("k8s.cluster.name", strings.TrimSpace(in.Target.Cluster))
 	}
