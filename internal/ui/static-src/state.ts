@@ -1,6 +1,7 @@
 export interface AppState {
   activePanel: string;
   selectedPartition: string;
+  selectedSet: string;
   overview: any;
   detail: any;
   expandedAssetKey: string;
@@ -39,6 +40,7 @@ export function createState(): AppState {
   return {
     activePanel: "overviewPanel",
     selectedPartition: "",
+    selectedSet: "",
     overview: null,
     detail: null,
     expandedAssetKey: "",

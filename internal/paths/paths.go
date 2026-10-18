@@ -109,6 +109,19 @@ func ReposRoot() string { return normalize(RegistryRoot(), "repos") }
 
 func RepoRecord(name string) string { return normalize(ReposRoot(), name+".json") }
 
+// SetsRoot holds the virtual navigation sets. Sets are metadata only; they do
+// not affect partitions, deployments, or MonoFS paths.
+func SetsRoot() string { return normalize(RegistryRoot(), "sets") }
+
+func SetRecord(id string) string { return normalize(SetsRoot(), id+".json") }
+
+// SetPrimaryRoot records the optional primary set for a partition.
+func SetPrimaryRoot() string { return normalize(RegistryRoot(), "set-primary") }
+
+func SetPrimaryRecord(partition string) string {
+	return normalize(SetPrimaryRoot(), partition+".json")
+}
+
 func QueueRoot() string { return "/.queues" }
 
 func QueueDir(pusher string) string { return normalize(QueueRoot(), pusher) }
