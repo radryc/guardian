@@ -39,20 +39,24 @@ func setsEnsureCommand(store guardianapi.Store, printer *output.Printer) *comman
 			return fmt.Errorf("--name is required")
 		}
 		sets := setstore.New(store)
+		parentID, err := resolveParentID(ctx, store, *parent)
+		if err != nil {
+			return err
+		}
 		set, err := sets.FindByName(ctx, setName)
 		if err != nil && !os.IsNotExist(err) {
 			return err
 		}
 		if os.IsNotExist(err) || set == nil {
-			set = &setstore.Set{Name: setName, Description: *description, ParentID: *parent, Labels: labelMap(labels)}
+			set = &setstore.Set{Name: setName, Description: *description, ParentID: parentID, Labels: labelMap(labels)}
 			set, err = sets.Create(ctx, set)
 			if err != nil {
 				return err
 			}
 		} else {
 			set.Description = *description
-			if strings.TrimSpace(*parent) != "" {
-				set.ParentID = *parent
+			if parentID != "" {
+				set.ParentID = parentID
 			}
 			for key, value := range labelMap(labels) {
 				set.Labels[key] = value
@@ -86,7 +90,11 @@ func setsCreateCommand(store guardianapi.Store, printer *output.Printer) *comman
 		if strings.TrimSpace(*name) == "" {
 			return fmt.Errorf("--name is required")
 		}
-		set, err := setstore.New(store).Create(ctx, &setstore.Set{Name: *name, Description: *description, ParentID: *parent, Labels: labelMap(labels), Pinned: *pinned})
+		parentID, err := resolveParentID(ctx, store, *parent)
+		if err != nil {
+			return err
+		}
+		set, err := setstore.New(store).Create(ctx, &setstore.Set{Name: *name, Description: *description, ParentID: parentID, Labels: labelMap(labels), Pinned: *pinned})
 		if err != nil {
 			return err
 		}
@@ -147,7 +155,11 @@ func setsUpdateCommand(store guardianapi.Store, printer *output.Printer) *comman
 			set.Description = *description
 		}
 		if strings.TrimSpace(*parent) != "" {
-			set.ParentID = *parent
+			parentID, err := resolveParentID(ctx, store, *parent)
+			if err != nil {
+				return err
+			}
+			set.ParentID = parentID
 		}
 		if strings.TrimSpace(*pinned) != "" {
 			set.Pinned = strings.EqualFold(strings.TrimSpace(*pinned), "true")
@@ -173,7 +185,11 @@ func setsMoveCommand(store guardianapi.Store, printer *output.Printer) *command.
 		if err != nil {
 			return err
 		}
-		moved, err := setstore.New(store).Move(ctx, set.ID, *parent)
+		parentID, err := resolveParentID(ctx, store, *parent)
+		if err != nil {
+			return err
+		}
+		moved, err := setstore.New(store).Move(ctx, set.ID, parentID)
 		if err != nil {
 			return err
 		}
@@ -258,6 +274,18 @@ func resolveSet(ctx context.Context, store guardianapi.Store, ref string) (*sets
 		return set, nil
 	}
 	return sets.FindByName(ctx, ref)
+}
+
+func resolveParentID(ctx context.Context, store guardianapi.Store, ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", nil
+	}
+	parent, err := resolveSet(ctx, store, ref)
+	if err != nil {
+		return "", fmt.Errorf("parent set %q: %w", ref, err)
+	}
+	return parent.ID, nil
 }
 
 func existingPartitions(ctx context.Context, store guardianapi.Store, partitions []string) []string {
