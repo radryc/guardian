@@ -3,6 +3,10 @@
 Static HTML mockups for the next Guardian UI iteration. Open `overview.html`
 directly in a browser; no build step or server is required.
 
+The mockups use a small demo data set for readability. The design for thousands
+of partitions is the lazy-loaded set tree, server-side counts, and paginated
+set pages described below.
+
 | File | What it shows |
 |---|---|
 | `overview.html` | Health-first overview, assignment gaps, and the virtual-set tree |
