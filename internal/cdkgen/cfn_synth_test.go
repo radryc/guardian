@@ -63,6 +63,11 @@ func TestCloudFormationFromTemplates(t *testing.T) {
 				assertLogicalIDPrefix(t, template, "DefaultVpc")
 				assertLogicalIDPrefix(t, template, "BucketDemoBucket")
 				assertLogicalIDPrefix(t, template, "ClusterAwsEcs975049940689")
+				// Private ECR images need explicit pull permissions on the
+				// task execution role (ContainerImage.fromRegistry cannot
+				// infer them).
+				assertPolicyAction(t, template, "ecr:GetAuthorizationToken")
+				assertPolicyAction(t, template, "ecr:BatchGetImage")
 			},
 		},
 		{
@@ -346,6 +351,36 @@ func assertLoadBalancerType(t *testing.T, template map[string]any, want string) 
 		return
 	}
 	t.Error("no load balancer resource found")
+}
+
+func assertPolicyAction(t *testing.T, template map[string]any, want string) {
+	t.Helper()
+	resources, _ := template["Resources"].(map[string]any)
+	for _, resource := range resources {
+		entry, ok := resource.(map[string]any)
+		if !ok || entry["Type"] != "AWS::IAM::Policy" {
+			continue
+		}
+		properties, _ := entry["Properties"].(map[string]any)
+		document, _ := properties["PolicyDocument"].(map[string]any)
+		statements, _ := document["Statement"].([]any)
+		for _, statement := range statements {
+			stmt, _ := statement.(map[string]any)
+			switch actions := stmt["Action"].(type) {
+			case string:
+				if actions == want {
+					return
+				}
+			case []any:
+				for _, action := range actions {
+					if action == want {
+						return
+					}
+				}
+			}
+		}
+	}
+	t.Errorf("no IAM policy grants %q", want)
 }
 
 func assertRdsEngine(t *testing.T, template map[string]any, want string) {

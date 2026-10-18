@@ -1,6 +1,6 @@
 # ECS Fargate cluster/service/task definition, its IAM roles, log group and
-# security group. ECR pull is granted to the execution role via the
-# AmazonECSTaskExecutionRolePolicy managed policy.
+# security group. ECR pull is granted to the execution role by the construct
+# (ContainerImage.fromRegistry does not add it automatically).
 actions:
   - ecs:CreateCluster
   - ecs:DeleteCluster
