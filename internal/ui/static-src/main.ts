@@ -2747,6 +2747,7 @@ function wireEvents(): void {
       }
     },
     onOpenConnections: () => activatePanel("registryPanel"),
+    onChanged: () => renderPageChrome(),
     onToast: toast,
     onError: handleError,
   });
