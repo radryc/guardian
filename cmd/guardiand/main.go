@@ -346,7 +346,10 @@ func main() {
 				RedirectURL:  redirectURL,
 				Verifier:     uiVerifier,
 				RequireLogin: strings.EqualFold(strings.TrimSpace(os.Getenv("MONOFS_AUTHZ_ENFORCE_UI")), "true"),
-				ExemptPaths:  []string{"/api/m2m"},
+				// Machine pollers (MonoFS router, Doctor) authenticate with the
+				// internal token, not an OIDC session. Let the access-policy
+				// handler enforce that instead of the browser login wall.
+				ExemptPaths: []string{"/api/m2m", "/api/access/policy"},
 			}
 			if publicAuthURL != "" {
 				waCfg.Endpoints.AuthURL = publicAuthURL
@@ -821,12 +824,13 @@ func newObservedCollector(cfg *config.Config, store guardianapi.Store, dispatch 
 	endpoints, resolver := newObservedResolver(cfg, store, timeout)
 	log.Printf("observed collector enabled, interval=%s (static endpoints: %d, store registry: /.registry/pushers)", interval, len(endpoints))
 	return &observedpkg.Collector{
-		Store:      store,
-		Dispatcher: dispatch,
-		Endpoints:  endpoints,
-		Resolver:   resolver,
-		Interval:   interval,
-		Timeout:    timeout,
+		Store:       store,
+		Dispatcher:  dispatch,
+		Endpoints:   endpoints,
+		Resolver:    resolver,
+		Interval:    interval,
+		Timeout:     timeout,
+		DetectDrift: cfg.Guardian.ObservedDetectDrift,
 	}
 }
 
