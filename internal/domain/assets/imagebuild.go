@@ -18,6 +18,9 @@ type ImageBuildSpec struct {
 	Platform        string            `json:"platform,omitempty" yaml:"platform,omitempty"`
 	BuildArgs       map[string]string `json:"buildArgs,omitempty" yaml:"buildArgs,omitempty"`
 	Insecure        *bool             `json:"insecure,omitempty" yaml:"insecure,omitempty"`
+	// Instrumentation records whether the image is built with zero-code
+	// instrumentation. The Dockerfile performs the actual otelc wrapping.
+	Instrumentation string `json:"instrumentation,omitempty" yaml:"instrumentation,omitempty"`
 }
 
 type imageBuildDefinition struct{}
@@ -49,6 +52,11 @@ func (imageBuildDefinition) Validate(spec any, _ ValidationContext) error {
 		if strings.TrimSpace(typed.Dockerfile) == "" {
 			return fmt.Errorf("property dockerfile is required when buildContext is set")
 		}
+	}
+	switch typed.Instrumentation {
+	case "", "none", "otelc":
+	default:
+		return fmt.Errorf("property instrumentation must be one of none, otelc")
 	}
 	return validateBuildArgs(typed)
 }
