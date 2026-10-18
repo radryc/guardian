@@ -148,6 +148,7 @@ Repositories declare their deployment surface in `.guardian/config.yaml`
 ```bash
 ./guardianctl repo add --name my-repo --pusher docker-main \
   --partition my-partition --source https://github.com/org/my-repo.git
+./guardianctl repo seed --file deploy/bootstrap/repos.yaml  # bulk assignments
 ./guardianctl repo sync --name my-repo --synth     # import partitions + generate observed intents
 ./guardianctl repo notify --name my-repo           # CI hook after a push
 ```
