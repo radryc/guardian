@@ -99,6 +99,9 @@ type PartitionDetailResponse struct {
 	Origin       string `json:"origin,omitempty"`
 	OriginLabel  string `json:"originLabel,omitempty"`
 	OriginDetail string `json:"originDetail,omitempty"`
+	// Assignments is the partition-scoped ownership view (repos, pushers,
+	// canonical paths, warnings).
+	Assignments *PartitionAssignments `json:"assignments,omitempty"`
 }
 
 type PartitionDocument struct {
@@ -683,6 +686,7 @@ func (s *Server) loadPartitionData(ctx context.Context, partitionName string, in
 		Origin:       partitionOriginInfo.Origin,
 		OriginLabel:  partitionOriginInfo.Label,
 		OriginDetail: partitionOriginInfo.Detail,
+		Assignments:  s.buildPartitionAssignments(ctx, partitionName, intents),
 	}, nil
 }
 
