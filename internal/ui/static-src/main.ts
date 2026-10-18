@@ -26,6 +26,7 @@ const state: AppState = createState();
 const builder = initBuilderPanel({
   getSelectedPartition: () => state.selectedPartition,
   onOpenPartition: (name: string) => { selectPartition(name).catch(handleError); },
+  onOpenConnections: () => activatePanel("registryPanel"),
   onToast: toast,
   onError: handleError,
 });
@@ -271,6 +272,9 @@ function activatePanel(panelId: string, scope?: PanelScope): void {
     : panelId === "scanPanel" ? "unmanagedPanel" : panelId;
   document.querySelectorAll(".nav-item[data-tab-target]").forEach((btn) => {
     btn.classList.toggle("active", (btn as HTMLElement).dataset.tabTarget === navTarget);
+  });
+  document.querySelectorAll<HTMLElement>("[data-adopt-tab]").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.adoptTab === panelId);
   });
 
   const targetPartition = scope === "existing" ? state.selectedPartition : "";
@@ -590,6 +594,7 @@ function renderAppGrid(): void {
 function renderPartitionDetail(): void {
   const detail = state.detail;
   const hero = document.getElementById("heroContent");
+  renderAssignments();
   if (!hero) return;
 
   if (state.activePanel !== "overviewPanel") {
@@ -645,6 +650,101 @@ function renderPartitionDetail(): void {
   renderServiceHealth();
   renderRecentEvents();
   renderPageChrome();
+}
+
+function renderAssignments(): void {
+  const card = document.getElementById("assignmentCard");
+  const grid = document.getElementById("assignmentGrid");
+  const badge = document.getElementById("assignmentBadge");
+  if (!card || !grid) return;
+  const detail = state.detail;
+  if (state.activePanel !== "overviewPanel" || !detail || !detail.assignments) {
+    card.classList.add("hidden");
+    return;
+  }
+  const assignments = detail.assignments;
+  const repos = Array.isArray(assignments.repos) ? assignments.repos : [];
+  const pushers = Array.isArray(assignments.pushers) ? assignments.pushers : [];
+  const warnings = Array.isArray(assignments.warnings) ? assignments.warnings : [];
+  const unregistered = pushers.some((p: any) => p.registered === false);
+  const needsAttention = warnings.length > 0 || repos.length === 0 || unregistered;
+  card.classList.remove("hidden");
+  if (badge) {
+    badge.innerHTML = needsAttention
+      ? `<span class="assignment-warn">Needs attention</span>`
+      : `<span class="assignment-ok">✓ Assignment complete</span>`;
+  }
+
+  const repoHtml = repos.length ? repos.map((repo: any) => {
+    const source = String(repo.source ?? "").trim();
+    const branch = String(repo.branch ?? "main").trim() || "main";
+    const commit = String(repo.commit ?? "unknown").trim() || "unknown";
+    const synced = repo.lastSyncedAt ? formatDateTime(repo.lastSyncedAt) : "never";
+    const selector = String(repo.binding?.selector ?? "").trim();
+    return `
+      <div class="assignment-repo">
+        <div class="assignment-repo-head">
+          <strong>${escapeHtml(repo.name ?? "repository")}</strong>
+          ${source ? `<a class="btn-secondary" style="padding:2px 8px;font-size:10px;" href="${escapeAttr(source)}" target="_blank" rel="noreferrer">Open repo ↗</a>` : ""}
+        </div>
+        <div class="assignment-meta">branch ${escapeHtml(branch)} · commit ${escapeHtml(commit)} · last ingest ${escapeHtml(synced)}</div>
+        ${selector ? `<div class="assignment-meta">binding selector ${escapeHtml(selector)}</div>` : ""}
+        <div class="assignment-paths">
+          ${assignmentPath("Repo path", repo.repoPath)}
+          ${assignmentPath("MonoFS", repo.monofsPath)}
+          ${assignmentPath("Payload", repo.payloadPath)}
+          ${assignmentPath("Config", repo.configPath)}
+        </div>
+        ${repo.repoPathHint ? `<div class="assignment-meta">${escapeHtml(repo.repoPathHint)}</div>` : ""}
+        ${repo.lastSyncError ? `<div class="assignment-warning">${escapeHtml(repo.lastSyncError)}</div>` : ""}
+      </div>`;
+  }).join("") : `
+    <div class="assignment-warning">
+      No repository is assigned to this partition.
+      <button class="btn-secondary" style="padding:2px 8px;font-size:10px;" data-assignment-action="connections">Bind repo</button>
+    </div>`;
+
+  const pusherHtml = pushers.length ? pushers.map((pusher: any) => {
+    const registered = pusher.registered !== false;
+    const intents = Array.isArray(pusher.intents) ? pusher.intents : [];
+    return `
+      <div class="assignment-target">
+        <span class="status-dot status-dot-${registered ? "healthy" : "failing"}"></span>
+        <div>
+          <strong>${escapeHtml(pusher.name ?? "pusher")}</strong>
+          <div class="meta">${pusher.account ? `account ${escapeHtml(pusher.account)} · ` : ""}${escapeHtml(pusher.region ?? "region unknown")}${registered ? "" : " · not registered"}</div>
+        </div>
+        <span class="right">${intents.map((intent: string) => `<span class="assignment-chip">${escapeHtml(intent)}</span>`).join("")}</span>
+      </div>`;
+  }).join("") : `<div class="assignment-empty">No target pusher found for this partition.</div>`;
+
+  const warningsHtml = warnings.length ? `
+    <div class="assignment-warnings">
+      ${warnings.map((warning: string) => `<div class="item">⚠ ${escapeHtml(warning)}</div>`).join("")}
+    </div>` : "";
+
+  grid.innerHTML = `
+    <div class="assignment-block">
+      <div class="assignment-block-head">
+        <span class="assignment-title">Repository</span>
+        <span class="right"><button class="btn-secondary" style="padding:2px 8px;font-size:10px;" data-assignment-action="connections">Manage in Connections</button></span>
+      </div>
+      ${repoHtml}
+    </div>
+    <div class="assignment-block">
+      <div class="assignment-block-head">
+        <span class="assignment-title">Targets</span>
+        <span class="assignment-chip">${pushers.length} assigned</span>
+      </div>
+      ${pusherHtml}
+    </div>
+    ${warningsHtml}`;
+}
+
+function assignmentPath(label: string, value: unknown): string {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  return `<div class="assignment-path-row"><span class="label">${escapeHtml(label)}</span><code>${escapeHtml(text)}</code><button class="copy" data-copy="${escapeAttr(text)}">copy</button></div>`;
 }
 
 function heroMetric(label: string, value: number): string {
@@ -2563,6 +2663,22 @@ function wireEvents(): void {
   initUnmanagedPanel(handleError);
   document.getElementById("partitionSearch")?.addEventListener("input", renderPartitionList);
   document.getElementById("adoptScanButton")?.addEventListener("click", () => activatePanel("scanPanel"));
+  document.querySelectorAll<HTMLElement>("[data-adopt-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => activatePanel(btn.dataset.adoptTab ?? "unmanagedPanel"));
+  });
+  document.getElementById("assignmentCard")?.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    const copy = target.closest<HTMLElement>("[data-copy]");
+    if (copy) {
+      const value = copy.dataset.copy ?? "";
+      navigator.clipboard?.writeText(value).then(() => toast("Copied to clipboard", "success")).catch(() => toast("Could not copy", "error"));
+      return;
+    }
+    const action = target.closest<HTMLElement>("[data-assignment-action]");
+    if (action?.dataset.assignmentAction === "connections") {
+      activatePanel("registryPanel");
+    }
+  });
   document.getElementById("refreshButton")?.addEventListener("click", () => refreshOverview(true).catch(handleError));
   document.getElementById("reconcileButton")?.addEventListener("click", reconcileSelected);
   const startNewPartition = () => {
