@@ -133,6 +133,15 @@ Department X — AWS Production
   separate from health so a partition is not counted twice.
 - **Ungrouped** is a virtual set for partitions not in any set.
 - Set metadata lives in the Guardian store (`/.registry/sets`), not in repos.
+- A partition can declare membership in its config:
+  ```yaml
+  spec:
+    sets: [Core, Department X]
+    primarySet: Core
+  ```
+  Membership is additive and does not require a repository binding. Unknown
+  sets are created automatically, so a partition config can define its own
+  grouping.
 - Set pages are paginated; “Add partitions” searches by name/repo/path and
   supports multi-select. This is how thousands of partitions stay navigable.
 - Unassigned is a partition state, not a set: a partition can be grouped in a

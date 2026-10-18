@@ -13,6 +13,8 @@ spec:
   reconciliation:
     mode: auto
     interval: 30s
+  sets: [Core, Department X]
+  primarySet: Core
 `)
 
 	part, err := ParsePartition(data)
@@ -21,6 +23,12 @@ spec:
 	}
 	if part.Metadata.Name != "demo" {
 		t.Fatalf("part.Metadata.Name = %q, want demo", part.Metadata.Name)
+	}
+	if len(part.Spec.Sets) != 2 || part.Spec.Sets[0] != "Core" || part.Spec.Sets[1] != "Department X" {
+		t.Fatalf("part.Spec.Sets = %v", part.Spec.Sets)
+	}
+	if part.Spec.PrimarySet != "Core" {
+		t.Fatalf("part.Spec.PrimarySet = %q", part.Spec.PrimarySet)
 	}
 }
 
