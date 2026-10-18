@@ -511,6 +511,40 @@ h3 { margin: 0; font-size: 12.5px; }
 .set-row .star { color: var(--faint); font-size: 10px; }
 .set-row .star.on { color: var(--amber); }
 
+.rollup {
+  display: inline-flex;
+  width: 34px;
+  height: 4px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+}
+.rollup .seg { flex: 1; height: 100%; }
+.rollup .seg.green { background: var(--green); }
+.rollup .seg.amber { background: var(--amber); }
+.rollup .seg.neutral { background: var(--neutral); }
+.rollup .seg.red { background: var(--red); }
+
+.rollup-lg {
+  display: flex;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 6px 0 9px;
+}
+.rollup-lg .seg { height: 100%; }
+.rollup-lg .seg.green { background: var(--green); }
+.rollup-lg .seg.amber { background: var(--amber); }
+.rollup-lg .seg.neutral { background: var(--neutral); }
+.rollup-lg .seg.red { background: var(--red); }
+.rollup-legend { display: grid; gap: 5px; }
+.rollup-legend .row { display: flex; align-items: center; gap: 7px; font-size: 11.5px; }
+.rollup-legend .row .label { flex: 1; color: var(--muted); }
+.rollup-legend .row .value { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.rollup-legend .row .num { color: var(--faint); font-size: 10px; }
+
 .set-row.depth-1 { padding-left: 18px; }
 .set-row.depth-2 { padding-left: 30px; }
 .set-row.depth-3 { padding-left: 42px; }
@@ -729,7 +763,7 @@ h3 { margin: 0; font-size: 12.5px; }
 }
 .pager .spacer { flex: 1; }
 
-/* ---------- fleet page ---------- */
+/* ---------- connections page ---------- */
 
 .filter-bar {
   display: flex;

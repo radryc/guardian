@@ -23,14 +23,18 @@
         <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="7" height="7" rx="1.5"/><rect x="11" y="2" width="7" height="7" rx="1.5"/><rect x="2" y="11" width="7" height="7" rx="1.5"/><rect x="11" y="11" width="7" height="7" rx="1.5"/></svg>
         <span>Overview</span>
       </button>
+      <a class="nav-item" href="connections.html">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M8.5 11.5l3-3"/>
+          <path d="M6.8 13.2l-1.1 1.1a2.6 2.6 0 0 1-3.7-3.7l2.5-2.5a2.6 2.6 0 0 1 3.7 0"/>
+          <path d="M13.2 6.8l1.1-1.1a2.6 2.6 0 0 1 3.7 3.7l-2.5 2.5a2.6 2.6 0 0 1-3.7 0"/>
+        </svg>
+        <span>Connections</span>
+      </a>
       <button class="nav-item">
         <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4.5h14M3 10h14M3 15.5h9"/><circle cx="16" cy="15.5" r="2"/></svg>
         <span>Adopt</span>
       </button>
-      <a class="nav-item" href="fleet.html">
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="10" cy="5" rx="6.5" ry="2.5"/><path d="M3.5 5v5c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5V5"/><path d="M3.5 10v5c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5v-5"/></svg>
-        <span>Fleet</span>
-      </a>
       <button class="nav-item">
         <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="6" height="6" rx="1.5"/><rect x="12" y="12" width="6" height="6" rx="1.5"/><path d="M8 5h4a3 3 0 0 1 3 3v4"/></svg>
         <span>Build</span>
@@ -47,18 +51,18 @@
       </div>
 
       <div class="set-tree">
-        <a class="set-row active" href="overview.html"><span class="chevron">▾</span><span class="name">All applications</span><span class="count">5</span><span class="health amber"></span></a>
+        <a class="set-row active" href="overview.html"><span class="chevron">▾</span><span class="name">All applications</span><span class="count">5</span><span class="rollup" title="2 healthy · 1 observed · 2 attention"><span class="seg green" style="flex:2"></span><span class="seg neutral"></span><span class="seg amber" style="flex:2"></span></span></a>
         <div class="set-divider"></div>
 
-        <a class="set-row" href="sets.html"><span class="chevron">▾</span><span class="name">Department X — AWS Production</span><span class="count">4</span><span class="health amber"></span></a>
-        <a class="set-row depth-1" href="sets.html"><span class="chevron">▾</span><span class="name">Payments</span><span class="count">3</span><span class="health amber"></span></a>
+        <a class="set-row" href="sets.html"><span class="chevron">▾</span><span class="name">Department X — AWS Production</span><span class="count">4</span><span class="rollup" title="2 healthy · 1 observed · 1 attention"><span class="seg green" style="flex:2"></span><span class="seg neutral"></span><span class="seg amber"></span></span></a>
+        <a class="set-row depth-1" href="sets.html"><span class="chevron">▾</span><span class="name">Payments</span><span class="count">3</span><span class="rollup" title="2 healthy · 1 attention"><span class="seg green" style="flex:2"></span><span class="seg amber"></span></span></a>
         <a class="set-row depth-2 partition" href="application.html"><span class="status-dot green"></span><span class="name">demo-deploy</span></a>
         <a class="set-row depth-2 partition" href="application.html"><span class="status-dot green"></span><span class="name">demo-build</span></a>
-        <a class="set-row depth-2 partition" href="fleet.html"><span class="status-dot amber"></span><span class="name">demo-new</span><span class="count">unassigned</span></a>
+        <a class="set-row depth-2 partition" href="connections.html"><span class="status-dot amber"></span><span class="name">demo-new</span><span class="count">unassigned</span></a>
         <a class="set-row depth-2" href="sets.html"><span class="chevron">▸</span><span class="name">Refunds</span><span class="count">0</span></a>
-        <a class="set-row depth-1" href="sets.html"><span class="chevron">▸</span><span class="name">Platform</span><span class="count">1</span><span class="health neutral"></span></a>
+        <a class="set-row depth-1" href="sets.html"><span class="chevron">▸</span><span class="name">Platform</span><span class="count">1</span><span class="rollup" title="1 observed"><span class="seg neutral"></span></span></a>
 
-        <a class="set-row" href="sets.html"><span class="chevron">▾</span><span class="name">Department Y — AWS Development</span><span class="count">1</span><span class="health amber"></span></a>
+        <a class="set-row" href="sets.html"><span class="chevron">▾</span><span class="name">Department Y — AWS Development</span><span class="count">1</span><span class="rollup" title="1 attention"><span class="seg amber"></span></span></a>
         <a class="set-row depth-1 partition" href="application.html"><span class="status-dot amber"></span><span class="name">demo-observe</span></a>
 
         <a class="set-row" href="sets.html"><span class="chevron">▸</span><span class="name">Ungrouped</span><span class="count">0</span></a>
@@ -72,8 +76,8 @@
 
       <div class="section-label" style="margin-top: 14px;">Pinned</div>
       <div class="set-tree">
-        <a class="set-row" href="sets.html"><span class="star on">★</span><span class="name">Payments</span><span class="count">3</span></a>
-        <a class="set-row" href="sets.html"><span class="star on">★</span><span class="name">Department Y — Development</span><span class="count">1</span></a>
+        <a class="set-row" href="sets.html"><span class="star on">★</span><span class="name">Payments</span><span class="count">3</span><span class="rollup" title="2 healthy · 1 attention"><span class="seg green" style="flex:2"></span><span class="seg amber"></span></span></a>
+        <a class="set-row" href="sets.html"><span class="star on">★</span><span class="name">Department Y — Development</span><span class="count">1</span><span class="rollup" title="1 attention"><span class="seg amber"></span></span></a>
       </div>
     </div>
 
@@ -143,8 +147,8 @@
             </div>
           </div>
           <div class="attention-actions">
-            <a class="btn small" href="fleet.html">Bind repo</a>
-            <a class="btn ghost small" href="fleet.html">Open Fleet</a>
+            <a class="btn small" href="connections.html">Bind repo</a>
+            <a class="btn ghost small" href="connections.html">Open Connections</a>
           </div>
         </div>
       </section>
@@ -245,7 +249,7 @@
           <div class="repo-sub">strata-demo-observe · /partitions/demo-observe</div>
           <div class="foot"><span class="badge">Observe only</span><span class="open">Open →</span></div>
         </a>
-        <a class="app-card" href="fleet.html">
+        <a class="app-card" href="connections.html">
           <div class="top"><span class="status-dot amber"></span><span class="name">demo-new</span><span class="badge amber">Unassigned</span></div>
           <div class="status"><span class="status-text amber">No source</span><span style="color: var(--faint);">·</span><span style="color: var(--muted);">0 intents</span></div>
           <div class="details"><span>account 7806…</span><span>us-east-1</span></div>
@@ -258,7 +262,7 @@
 
     <p class="mockup-note">
       Static design mockup — not the production UI.
-      <a href="sets.html">Sets →</a> · <a href="fleet.html">Fleet →</a> · <a href="application.html">Application →</a>
+      <a href="sets.html">Sets →</a> · <a href="connections.html">Connections →</a> · <a href="application.html">Application →</a>
     </p>
   </main>
 </div>

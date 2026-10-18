@@ -4,7 +4,7 @@ Status: draft for review. Scope: the Guardian web UI
 (`internal/ui/templates/index.html`, `internal/ui/static-src/*`).
 
 Mockups: `docs/mockups/overview.html`, `application.html`, `sets.html`,
-`fleet.html` (see `docs/mockups/README.md`).
+`connections.html` (see `docs/mockups/README.md`).
 
 ## 1. Goal
 
@@ -58,8 +58,8 @@ Four top-level destinations:
 ```
 ┌──────────────────────────────┐
 │  Overview                    │  what is deployed, what is broken
+│  Connections                 │  agents, accounts, repos
 │  Adopt                       │  stacks that are not owned in code yet
-│  Fleet                       │  agents, accounts, repos
 │  Build                       │  create/edit a partition (existing design)
 └──────────────────────────────┘
 
@@ -69,8 +69,8 @@ Selecting an application opens a partition view:
 ```
 
 - **Overview** replaces Applications + the current Control Center overview.
+- **Connections** merges Pushers & Repos into one connection view.
 - **Adopt** merges Unmanaged Stacks and Scan & Import into one queue.
-- **Fleet** merges Pushers & Repos into one connection view.
 - **Build** stays as designed in `ui-partition-builder.md`.
 - Topology / Rollouts / History become partition-scoped tabs. They no longer
   appear when no partition is selected.
@@ -98,6 +98,10 @@ Department X — AWS Production
   `region`, `env`, `owner`) so “department X in AWS” is readable.
 - The sidebar tree replaces the flat partition list. Counts and health roll up
   through children; children are lazy-loaded.
+- Each set row shows a **segmented rollup bar** (healthy · observed · attention)
+  beside the count. The set page breaks the rollup down numerically, states
+  whether child sets are included, and keeps assignment (assigned/unassigned)
+  separate from health so a partition is not counted twice.
 - **Ungrouped** is a virtual set for partitions not in any set.
 - Set metadata lives in the Guardian store (`/.registry/sets`), not in repos.
 - Set pages are paginated; “Add partitions” searches by name/repo/path and
@@ -122,7 +126,7 @@ Department X — AWS Production
 │ ├──────────────────────────────────────────────────────────────────────┤ │
 │ │ ● demo-new   Unassigned   no repository assigned                     │ │
 │ │   Desired state has no source of truth until a repo is bound.        │ │
-│ │   [Bind repo]  [Open Fleet]                                          │ │
+│ │   [Bind repo]  [Open Connections]                                          │ │
 │ └──────────────────────────────────────────────────────────────────────┘ │
 │                                                                          │
 │ RECENTLY CHANGED                                                         │
@@ -226,11 +230,11 @@ Changes from today:
   merge it to bind the stack to the repo."
 - Remove the separate "Scan & Import" top-level tab.
 
-### 5.4 Fleet — agents, accounts, repos
+### 5.4 Connections — agents, accounts, repos
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ Fleet                                                                    │
+│ Connections                                                              │
 │ 3 agents · 3 accounts · 4 repos                                          │
 ├──────────────────────────────────────────────────────────────────────────┤
 │ AGENTS                                                                   │
@@ -248,9 +252,9 @@ Changes from today:
 
 - Keep the current tables and add a health dot + last-ingest/error column.
 - The row is the unit of action: "open repo", "remove binding", "re-register".
-- The page answers "is my fleet connected?" before "what are the URLs?".
-- **Fleet is the only global view.** Partition pages show only the repos and
-  pushers assigned to that partition; “Manage in Fleet” opens the filtered
+- The page answers "are my connections healthy?" before "what are the URLs?".
+- **Connections is the only global view.** Partition pages show only the repos and
+  pushers assigned to that partition; “Manage in Connections” opens the filtered
   global view.
 
 ### 5.5 Set page — named, nested navigation
@@ -307,8 +311,8 @@ Rules:
 
 ## 7. Interaction details
 
-- **Keyboard:** `/` focuses search; `g o` Overview, `g a` Adopt, `g f` Fleet,
-  `g b` Build; `Esc` closes the panel. (Optional phase 3.)
+- **Keyboard:** `/` focuses search; `g o` Overview, `g c` Connections,
+  `g a` Adopt, `g b` Build; `Esc` closes the panel. (Optional phase 3.)
 - **Refresh:** keep the auto-refresh pill; show "updated 12s ago" everywhere.
 - **Actions:** one primary button per screen. Destructive actions (delete
   partition, remove binding) are secondary and confirm with the partition name.
@@ -324,7 +328,7 @@ Rules:
 ### Phase 1 — low risk, no backend changes (1–2 days)
 
 - Rename the nav/header consistently: **Overview** (not Applications/Control
-  Center), **Adopt**, **Fleet**, **Build**.
+  Center), **Adopt**, **Connections**, **Build**.
 - Collapse the six-cell stat strip into one health sentence + filters.
 - Move "Needs attention" above the fold; add reason + action per row.
 - Add "last changed / last observed" timestamps to application cards.
@@ -336,11 +340,11 @@ Rules:
 
 - Hide Topology/Rollouts/History until a partition is selected.
 - Merge Unmanaged Stacks + Scan & Import into **Adopt**.
-- Merge Pushers & Repos into **Fleet**.
+- Merge Pushers & Repos into **Connections**.
 - Add the Summary tab, the drift card, and the **Source & targets** card.
 - Add the scoped assignment aggregate to the partition API (repos by binding,
   pushers by intent, paths, warnings).
-- Remove Pushers & Repos from the partition tab bar; link to filtered Fleet.
+- Remove Pushers & Repos from the partition tab bar; link to filtered Connections.
 - Keep deep links working (`/#partition/demo-observe/history`).
 
 ### Phase 3 — virtual sets (5–8 days)
@@ -364,9 +368,9 @@ Rules:
 
 The mockups follow the recommended defaults:
 
-1. **Four destinations** — Overview, Adopt, Fleet, Build.
+1. **Four destinations** — Overview, Connections, Adopt, Build.
 2. **Attention-first overview** — needs-attention rows appear before the app grid.
-3. **Adopt and Fleet stay separate** — setup/admin work vs. daily operations.
+3. **Adopt and Connections stay separate** — setup/admin work vs. daily operations.
 4. **Status vocabulary** — the seven canonical statuses in §6.
 5. **Virtual sets** — nested, many-to-many membership with one optional primary
    set; descriptions and labels are first-class.
