@@ -3,6 +3,7 @@ package sets
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/rydzu/ainfra/guardian/internal/store/memory"
@@ -44,6 +45,22 @@ func TestCreateNestedSetsAndMembership(t *testing.T) {
 	}
 	if err := store.Delete(ctx, child.ID); err != nil {
 		t.Fatalf("Delete empty child: %v", err)
+	}
+}
+
+func TestFindByName(t *testing.T) {
+	ctx := context.Background()
+	store := New(memory.New())
+	created, err := store.Create(ctx, &Set{Name: "Core"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	found, err := store.FindByName(ctx, "Core")
+	if err != nil || found.ID != created.ID {
+		t.Fatalf("FindByName = %+v, err = %v", found, err)
+	}
+	if _, err := store.FindByName(ctx, "missing"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing err = %v, want os.ErrNotExist", err)
 	}
 }
 
