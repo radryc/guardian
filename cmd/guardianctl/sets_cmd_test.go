@@ -104,8 +104,16 @@ func TestSetsCLILifecycle(t *testing.T) {
 	if err := run(setsDeleteCommand(store, printer), []string{"--set", child.ID}); err == nil {
 		t.Fatal("delete non-empty set should fail")
 	}
+	// Move by parent name, not only by id.
+	if err := run(setsMoveCommand(store, printer), []string{"--set", child.ID, "--parent", "Parent"}); err != nil {
+		t.Fatalf("move by name: %v", err)
+	}
+	got, _ = storeSets.Get(ctx, child.ID)
+	if got.ParentID != parent.ID {
+		t.Fatalf("parent = %q, want %q", got.ParentID, parent.ID)
+	}
 	if err := run(setsMoveCommand(store, printer), []string{"--set", child.ID, "--parent", ""}); err != nil {
-		t.Fatalf("move: %v", err)
+		t.Fatalf("move to root: %v", err)
 	}
 	got, _ = storeSets.Get(ctx, child.ID)
 	if got.ParentID != "" {
