@@ -233,7 +233,8 @@ function renderRepos(): void {
       const chips = bindings.length
         ? bindings.map((binding) => `<span class="pill">${escapeHtml(binding.partition)}${binding.selector ? ` <span class="text-[#566778]">· ${escapeHtml(binding.selector)}</span>` : ""}</span>`).join(" ")
         : `<span class="pill">no partitions</span>`;
-      const sourceType = repo.sourceType === "monofs" ? "MonoFS" : "Git";
+      const sourceType = repo.sourceType === "monofs" ? "MonoFS" : repo.sourceType === "native" ? "Native" : "Git";
+      const native = repo.sourceType === "native";
       const syncLine = repo.lastSyncError
         ? `<div class="text-[12px] text-[#f87171] truncate">${escapeHtml(repo.lastSyncError)}</div>`
         : repo.lastSyncedAt
@@ -245,13 +246,13 @@ function renderRepos(): void {
           <div class="min-w-0">
             <div class="text-sm text-[#dbe7f7] font-semibold">${escapeHtml(repo.name)}</div>
             <div class="flex flex-wrap gap-1 mt-1">${chips}</div>
-            <div class="text-[12px] text-[#7f93ad] truncate mt-1">${sourceType} · pusher ${escapeHtml(repo.pusher || "unassigned")} · ${escapeHtml(repo.source || repo.path || "no source")}</div>
+            <div class="text-[12px] text-[#7f93ad] truncate mt-1">${sourceType}${native ? " · no repository required" : ` · pusher ${escapeHtml(repo.pusher || "unassigned")} · ${escapeHtml(repo.source || repo.path || "no source")}`}</div>
             ${syncLine}
           </div>
           <div class="flex items-center gap-2 shrink-0">
             <button class="btn-secondary text-[12px] px-2 py-0.5" data-repo-action="assign" data-repo-name="${escapeAttr(repo.name)}">Assign</button>
-            <button class="btn-secondary text-[12px] px-2 py-0.5" data-repo-action="ingest" data-repo-name="${escapeAttr(repo.name)}"${repo.pusher ? "" : ` disabled title="Assign a pusher first"`}>Ingest</button>
-            <button class="btn-ghost text-[12px]" data-repo-action="delete" data-repo-name="${escapeAttr(repo.name)}">Remove</button>
+            ${native ? "" : `<button class="btn-secondary text-[12px] px-2 py-0.5" data-repo-action="ingest" data-repo-name="${escapeAttr(repo.name)}"${repo.pusher ? "" : ` disabled title="Assign a pusher first"`}>Ingest</button>`}
+            ${native ? "" : `<button class="btn-ghost text-[12px]" data-repo-action="delete" data-repo-name="${escapeAttr(repo.name)}">Remove</button>`}
           </div>
         </div>
       </div>`;

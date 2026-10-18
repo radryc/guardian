@@ -144,9 +144,13 @@ func repoAssignCommand(store guardianapi.Store, printer *output.Printer) *comman
 			return fmt.Errorf("provide --bindings, --partition, or --pusher")
 		}
 		registryStore := registry.New(store)
-		repo, err := registryStore.GetRepo(ctx, strings.TrimSpace(*name))
+		repoName := strings.TrimSpace(*name)
+		repo, err := registryStore.GetRepo(ctx, repoName)
 		if err != nil {
-			return err
+			if repoName != registry.NativeRepoName || !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			repo = &registry.Repo{Name: registry.NativeRepoName, SourceType: "native", Description: "Native platform source; no repository required"}
 		}
 		if len(bindings) > 0 {
 			repo.Bindings = bindings

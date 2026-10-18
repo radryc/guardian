@@ -364,3 +364,30 @@ func TestRegistryAPIRegistersRepoBeforePusherAndBindings(t *testing.T) {
 		}
 	}
 }
+
+func TestRegistryAPINativeSourceIsBuiltIn(t *testing.T) {
+	srv, _ := newRegistryTestServer(t)
+
+	rec := registryRequest(t, srv, http.MethodGet, "/api/repos", nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"name": "native"`) || !strings.Contains(rec.Body.String(), `"sourceType": "native"`) {
+		t.Fatalf("native source missing from repos: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = registryRequest(t, srv, http.MethodPut, "/api/repos/native/bindings", map[string]any{
+		"bindings": []map[string]any{{"partition": "platform"}},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bind native source status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	rec = registryRequest(t, srv, http.MethodGet, "/api/repos/native", nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"partition": "platform"`) {
+		t.Fatalf("native source binding missing: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = registryRequest(t, srv, http.MethodPost, "/api/repos/native/ingest", nil)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "no repository") {
+		t.Fatalf("native ingest = %d %s", rec.Code, rec.Body.String())
+	}
+	rec = registryRequest(t, srv, http.MethodDelete, "/api/repos/native", nil)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "built in") {
+		t.Fatalf("native delete = %d %s", rec.Code, rec.Body.String())
+	}
+}

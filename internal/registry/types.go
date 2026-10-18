@@ -66,6 +66,11 @@ func (p Pusher) TokenValue() string {
 // Repo is a registered source repository that feeds one or more observed
 // partitions. Credentials (pusher token, source URL) stay in this record; the
 // partition side only ever references the repo by name.
+// NativeRepoName is the built-in source used for partitions that do not have
+// (and do not need) a repository. It is a logical repo-like assignment so the
+// normal partition binding and assignment views can represent it.
+const NativeRepoName = "native"
+
 type Repo struct {
 	APIVersion string `json:"apiVersion"`
 	Kind       string `json:"kind"`
@@ -79,8 +84,9 @@ type Repo struct {
 	Bindings []RepoBinding `json:"bindings,omitempty"`
 	Path     string        `json:"path,omitempty"`
 	Source   string        `json:"source,omitempty"`
-	// SourceType is "git" (Git URL/local checkout) or "monofs" (logical
-	// MonoFS path). It is inferred from Source when omitted.
+	// SourceType is "git" (Git URL/local checkout), "monofs" (logical MonoFS
+	// path), or "native" (no repository required). It is inferred from Source
+	// when omitted.
 	SourceType     string    `json:"sourceType,omitempty"`
 	Branch         string    `json:"branch,omitempty"`
 	AssemblySubdir string    `json:"assemblySubdir,omitempty"`
@@ -205,6 +211,10 @@ func (r *Repo) Normalize() {
 	r.Path = strings.TrimSpace(r.Path)
 	r.Source = strings.TrimSpace(r.Source)
 	r.SourceType = strings.ToLower(strings.TrimSpace(r.SourceType))
+	if r.SourceType == "native" {
+		r.Source = ""
+		r.Branch = ""
+	}
 	if r.SourceType == "" && r.Source != "" {
 		if strings.HasPrefix(r.Source, "/") || strings.HasPrefix(r.Source, "monofs://") {
 			r.SourceType = "monofs"
@@ -262,9 +272,9 @@ func (r *Repo) Validate() error {
 		return fmt.Errorf("invalid repo name %q", r.Name)
 	}
 	switch r.SourceType {
-	case "", "git", "monofs":
+	case "", "git", "monofs", "native":
 	default:
-		return fmt.Errorf("sourceType must be git or monofs")
+		return fmt.Errorf("sourceType must be git, monofs, or native")
 	}
 	if r.SourceType == "monofs" && r.Source != "" && !strings.HasPrefix(r.Source, "/") && !strings.HasPrefix(r.Source, "monofs://") {
 		return fmt.Errorf("MonoFS source must be an absolute logical path or monofs:// URL")

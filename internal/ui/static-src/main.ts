@@ -693,6 +693,13 @@ function renderAssignments(): void {
   }
 
   const repoHtml = repos.length ? repos.map((repo: any) => {
+    if (repo.sourceType === "native") {
+      return `
+      <div class="assignment-repo assignment-repo-native">
+        <div class="assignment-repo-head"><strong>Native platform</strong></div>
+        <div class="assignment-meta">No repository required — desired state is native/control-plane.</div>
+      </div>`;
+    }
     const source = String(repo.source ?? "").trim();
     const branch = String(repo.branch ?? "main").trim() || "main";
     const commit = String(repo.commit ?? "unknown").trim() || "unknown";
