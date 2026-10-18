@@ -14,6 +14,7 @@ const (
 	TypeTraefikRoute  = "TraefikRoute"
 	TypeObjectStore   = "ObjectStore"
 	TypeObservability = "Observability"
+	TypeProbe         = "Probe"
 	TypeK8sResource   = "K8sResource"
 	// TypeAWSResource is an internal asset type for AWS resources that have no
 	// curated Guardian template yet. It is rendered by the fallback
@@ -39,6 +40,7 @@ func KnownTypes() []string {
 		TypeTraefikRoute,
 		TypeObjectStore,
 		TypeObservability,
+		TypeProbe,
 		TypeK8sResource,
 	}
 }

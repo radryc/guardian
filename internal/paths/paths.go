@@ -109,6 +109,16 @@ func ReposRoot() string { return normalize(RegistryRoot(), "repos") }
 
 func RepoRecord(name string) string { return normalize(ReposRoot(), name+".json") }
 
+// ProbesRoot holds the latest probe snapshots written by pushers. History
+// lives in telemetry, not in MonoFS.
+func ProbesRoot() string { return normalize(RegistryRoot(), "probes") }
+
+func ProbesDir(pusher string) string { return normalize(ProbesRoot(), pusher) }
+
+func ProbeSnapshot(pusher, partition string) string {
+	return normalize(ProbesDir(pusher), partition+".json")
+}
+
 // SetsRoot holds the virtual navigation sets. Sets are metadata only; they do
 // not affect partitions, deployments, or MonoFS paths.
 func SetsRoot() string { return normalize(RegistryRoot(), "sets") }

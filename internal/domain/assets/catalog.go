@@ -288,6 +288,21 @@ var catalogTemplates = map[string]CatalogTemplate{
 		Fields: observabilityCatalogFields(),
 		Hints:  hints(observabilityCatalogFields()),
 	},
+	assetdomain.TypeProbe: {
+		Type:        assetdomain.TypeProbe,
+		Title:       "Health probe",
+		Description: "Explicit health probe executed by the pusher; results are exported as service telemetry.",
+		Icon:        "🩺",
+		Category:    "Operations",
+		Template: map[string]any{
+			"type":     "http",
+			"path":     "/healthz",
+			"interval": "30s",
+			"timeout":  "3s",
+		},
+		Fields: probeCatalogFields(),
+		Hints:  hints(probeCatalogFields()),
+	},
 	assetdomain.TypeK8sResource: {
 		Type:        assetdomain.TypeK8sResource,
 		Title:       "Kubernetes resource",
@@ -626,6 +641,27 @@ func objectStoreCatalogFields() []CatalogField {
 		{Path: "secretAccessKey", Title: "Secret access key", Control: "text", Description: "Secret key paired with accessKeyID for external authentication."},
 		{Path: "usePathStyle", Title: "Path-style addressing", Control: "boolean", Description: "Force path-style S3 addressing when the endpoint requires it."},
 		{Path: "versioning", Title: "Versioning", Control: "boolean", Description: "Enable bucket versioning when supported by the backend."},
+	}
+}
+
+func probeCatalogFields() []CatalogField {
+	return []CatalogField{
+		{Path: "target", Title: "Target asset", Control: "asset-ref", RefTypes: []string{"Compute", "LoadBalancer", "Database", "SQLDatabase", "ObjectStore", "Observability"}, Description: "Asset whose outputs are probed. Overrides autoprobe for that asset."},
+		{Path: "type", Title: "Probe type", Control: "select", Options: []string{"http", "https", "tcp", "grpc", "dns", "tls"}, Description: "Probe protocol."},
+		{Path: "name", Title: "Probe name", Control: "text", Description: "Stable probe name; defaults to the asset name."},
+		{Path: "url", Title: "URL", Control: "text", Description: "Explicit URL for an independent probe."},
+		{Path: "address", Title: "Address", Control: "text", Description: "Explicit host:port or hostname."},
+		{Path: "port", Title: "Port", Control: "number", Description: "Port when the address does not include one."},
+		{Path: "path", Title: "HTTP path", Control: "text", Description: "Single HTTP path. Empty tries the standard health paths."},
+		{Path: "method", Title: "HTTP method", Control: "text", Description: "HTTP method, defaults to GET."},
+		{Path: "expectStatus", Title: "Expected statuses", Control: "list", Description: "Accepted HTTP status codes."},
+		{Path: "expectBody", Title: "Expected body", Control: "text", Description: "Substring that must appear in the response body."},
+		{Path: "expectIps", Title: "Expected IPs", Control: "list", Description: "Accepted DNS answers."},
+		{Path: "interval", Title: "Interval", Control: "text", Description: "Probe interval, e.g. 30s."},
+		{Path: "timeout", Title: "Timeout", Control: "text", Description: "Per-attempt timeout, e.g. 3s."},
+		{Path: "retries", Title: "Retries", Control: "number", Description: "Retries before reporting down."},
+		{Path: "insecureSkipVerify", Title: "Skip TLS verification", Control: "boolean", Description: "Disable TLS certificate verification."},
+		{Path: "enabled", Title: "Enabled", Control: "boolean", Description: "Disable this probe without removing it."},
 	}
 }
 

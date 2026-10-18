@@ -296,6 +296,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/scans/", s.handleScanRoute)
 	mux.HandleFunc("/api/pushers", s.handlePushers)
 	mux.HandleFunc("/api/pushers/", s.handlePusherRoute)
+	mux.HandleFunc("/api/probes", s.handleProbes)
+	mux.HandleFunc("/api/probes/", s.handleProbeRoute)
 	mux.HandleFunc("/api/repos", s.handleRepos)
 	mux.HandleFunc("/api/repos/", s.handleRepoRoute)
 	mux.HandleFunc("/api/aws/unmanaged", s.handleUnmanaged)

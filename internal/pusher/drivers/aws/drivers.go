@@ -14,6 +14,7 @@ import (
 	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
 	orchestratorcommon "github.com/rydzu/ainfra/guardian/internal/orchestrator/common"
+	probepkg "github.com/rydzu/ainfra/guardian/internal/pusher/drivers/probe"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/driverutil"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/secrets"
@@ -111,6 +112,7 @@ func RegisterWithOptions(reg *registry.Registry, backend BackendAPI, resolver se
 	reg.Register(&ObjectStoreDriver{baseDriver: base})
 	reg.Register(&NetworkDriver{baseDriver: base})
 	reg.Register(&ObservabilityDriver{base})
+	reg.Register(probepkg.New())
 }
 
 func (d *CDKStackDriver) Type() string { return assetdomain.TypeCDKStack }

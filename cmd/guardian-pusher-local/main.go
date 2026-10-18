@@ -14,6 +14,8 @@ import (
 	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
 	"github.com/rydzu/ainfra/guardian/internal/paths"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/drivers"
+	probepkg "github.com/rydzu/ainfra/guardian/internal/pusher/drivers/probe"
+	"github.com/rydzu/ainfra/guardian/internal/pusher/probes"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
 	runtimepkg "github.com/rydzu/ainfra/guardian/internal/pusher/runtime"
 	fsstore "github.com/rydzu/ainfra/guardian/internal/store/fs"
@@ -113,6 +115,7 @@ func main() {
 	dbDriver := drivers.NewDatabaseDriver()
 	reg.Register(dbDriver)
 	reg.RegisterAs(assetdomain.TypeSQLDatabase, dbDriver)
+	reg.Register(probepkg.New())
 
 	runtime := &runtimepkg.Runtime{
 		QueuePath:               paths.QueueDir(pusherName),
@@ -129,6 +132,23 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	probeCfg := probes.ConfigFromEnv()
+	probeCfg.Store = store
+	probeCfg.Pusher = pusherName
+	probeCfg.Cluster = pusherName
+	probeCfg.Provider = "local"
+	probeCfg.WorkerID = workerID
+	probeCfg.ShardIndex = shardIndex
+	probeCfg.ShardCount = shardCount
+	if probeCfg.OTLPEndpoint == "" {
+		probeCfg.OTLPEndpoint = probes.HTTPEndpoint(telemetryCfg.Endpoint)
+	}
+	go func() {
+		if err := probes.New(probeCfg).Run(ctx); err != nil && err != context.Canceled {
+			log.Printf("probe runner stopped: %v", err)
+		}
+	}()
 
 	if err := runtime.Run(ctx); err != nil && err != context.Canceled {
 		log.Fatal(err)

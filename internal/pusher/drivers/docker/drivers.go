@@ -14,6 +14,7 @@ import (
 	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
 	orchestratorcommon "github.com/rydzu/ainfra/guardian/internal/orchestrator/common"
+	probepkg "github.com/rydzu/ainfra/guardian/internal/pusher/drivers/probe"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/driverutil"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/secrets"
@@ -77,6 +78,7 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 	reg.Register(&SQLDatabaseDriver{baseDriver: base, typeName: "Database"})
 	reg.Register(&SQLDatabaseDriver{baseDriver: base, typeName: "SQLDatabase"})
 	reg.Register(&ObservabilityDriver{base})
+	reg.Register(probepkg.New())
 }
 
 func (d *VolumeDriver) Type() string                         { return "Volume" }

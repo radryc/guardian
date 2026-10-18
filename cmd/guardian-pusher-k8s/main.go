@@ -17,6 +17,7 @@ import (
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
 	"github.com/rydzu/ainfra/guardian/internal/paths"
 	kubernetesdriver "github.com/rydzu/ainfra/guardian/internal/pusher/drivers/kubernetes"
+	"github.com/rydzu/ainfra/guardian/internal/pusher/probes"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
 	runtimepkg "github.com/rydzu/ainfra/guardian/internal/pusher/runtime"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/secrets"
@@ -153,6 +154,23 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	probeCfg := probes.ConfigFromEnv()
+	probeCfg.Store = store
+	probeCfg.Pusher = pusherName
+	probeCfg.Cluster = cluster
+	probeCfg.Provider = "kubernetes"
+	probeCfg.WorkerID = workerID
+	probeCfg.ShardIndex = shardIndex
+	probeCfg.ShardCount = shardCount
+	if probeCfg.OTLPEndpoint == "" {
+		probeCfg.OTLPEndpoint = probes.HTTPEndpoint(telemetryCfg.Endpoint)
+	}
+	go func() {
+		if err := probes.New(probeCfg).Run(ctx); err != nil && err != context.Canceled {
+			log.Printf("probe runner stopped: %v", err)
+		}
+	}()
 
 	if err := runtime.Run(ctx); err != nil && err != context.Canceled {
 		log.Fatal(err)
