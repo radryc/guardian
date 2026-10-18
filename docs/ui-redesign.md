@@ -1,11 +1,39 @@
 # UI redesign — simple by default, deep when needed
 
-Status: draft for review. Scope: the Guardian web UI
+Status: implemented. Scope: the Guardian web UI
 (`internal/ui/templates/index.html`, `internal/ui/static-src/*`).
+
+Implementation notes live in `docs/ui-redesign-implementation.md`. The
+mockups in `docs/mockups/` remain the visual design reference; the shipped UI
+uses the same structure with the real APIs.
 
 Mockups: `docs/mockups/overview.html`, `application.html`, `sets.html`,
 `adopt.html`, `build.html`, `connections.html` (see
 `docs/mockups/README.md`).
+
+## Implementation status
+
+- **Four destinations** — Overview, Connections, Adopt, Build. Topology,
+  Rollouts and History are partition-scoped tabs and are hidden until a
+  partition is selected.
+- **Theme picker** — Midnight, Graphite, Ocean, Forest, Daylight; persisted in
+  `localStorage` under `guardian.theme`.
+- **Source & targets** — the partition API now returns a scoped assignment
+  view (`internal/ui/assignments.go`) and the Summary renders repos, pushers,
+  repo/MonoFS/payload paths, and warnings.
+- **Adopt** — unmanaged stacks and account scans live under one Adopt page with
+  sub-tabs; the scan flow keeps its existing bundle builder.
+- **Virtual sets** — `internal/sets` (store-backed CRUD), `/api/sets` routes,
+  a bounded sidebar tree, set cards on the Overview, a set page, and
+  create/edit/move/delete/add-partition UI. Membership is virtual; deleting a
+  non-empty set is rejected.
+- **Bounded rendering** — the sidebar renders set rows and only the selected
+  (or containing) set's partitions, capped at 40; set pages show the first 50
+  partitions; the Overview partition preview is capped at 12. This is the
+  scale guard for thousands of partitions.
+- **Known limitations** — the sidebar tree is bounded, not virtualized yet;
+  the builder assignment block is read-only and links to Connections; the
+  optional primary-set marker is stored but not surfaced in the UI.
 
 ## 1. Goal
 

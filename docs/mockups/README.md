@@ -59,5 +59,6 @@ These follow the recommended defaults from the design review:
 6. **`connections.html`** — all agents/repos live here; partition pages show only
    the ones assigned to them.
 
-These are design artifacts, not production UI. The real implementation will
-reuse the existing templates and styles.
+These mockups are design references. The shipped Guardian UI now implements
+the same structure with the real APIs, including the five themes and the
+bounded set navigation described in `docs/ui-redesign-implementation.md`.

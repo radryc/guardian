@@ -1,70 +1,70 @@
 # UI redesign — implementation plan
 
-Status: in progress. This plan turns `docs/ui-redesign.md` and
+Status: implemented; verification in progress. This plan turns `docs/ui-redesign.md` and
 `docs/mockups/` into the shipped UI. Each phase is a separate commit.
 
 ## Phase 1 — shell, navigation, themes
 
 **Goal:** the four-destination shell and a working theme picker.
 
-- [ ] Add theme tokens and four dark themes in `static-src/main.css`:
-      Midnight (default), Graphite, Ocean, Forest.
-- [ ] Add a theme picker to the top nav; persist `guardian.theme` in
+- [x] Add theme tokens and five themes in `static-src/main.css`:
+      Midnight (default), Graphite, Ocean, Forest, Daylight.
+- [x] Add a theme picker to the top nav; persist `guardian.theme` in
       localStorage and apply `data-theme` on `<html>` before paint.
-- [ ] Replace the eight top-level nav items with:
+- [x] Replace the eight top-level nav items with:
       Overview, Connections, Adopt, Build.
-- [ ] Keep partition-scoped tabs: Summary, Topology, Rollouts, History.
+- [x] Keep partition-scoped tabs: Summary, Topology, Rollouts, History.
       Hide the tab row when no partition is selected.
-- [ ] Rename the global pages in `renderPageChrome`:
+- [x] Rename the global pages in `renderPageChrome`:
       Connections (registry), Adopt (unmanaged + scan), Build.
-- [ ] Keep the existing panels/IDs internally; navigation labels change.
-- [ ] Commit.
+- [x] Keep the existing panels/IDs internally; navigation labels change.
+- [x] Commit (`faed242`).
 
 ## Phase 2 — assignment, scoped views, adopt/build
 
 **Goal:** every partition shows where it comes from and what it targets.
 
-- [ ] Add `assignments` to `PartitionDetailResponse`:
+- [x] Add `assignments` to `PartitionDetailResponse`:
       repos (by binding), pushers (by intent), repo/MonoFS/payload paths,
       warnings (no repo, unregistered pusher, account/region mismatch).
-- [ ] Add a **Source & targets** card to the selected-partition view:
+- [x] Add a **Source & targets** card to the selected-partition view:
       repo, branch/commit, repo path, MonoFS path, payload path, selector,
       per-intent pusher mapping, warning states.
-- [ ] Add a compact assignment section to the builder inspector:
+- [x] Add a compact assignment section to the builder inspector:
       repo, paths, target pusher, set; link to Connections for changes.
-- [ ] Make Adopt a single page with two sections: unmanaged stacks and scan.
-- [ ] Connections remains the only global agents/repos view.
-- [ ] Commit.
+- [x] Make Adopt a single page with sub-tabs: unmanaged stacks and scan.
+- [x] Connections remains the only global agents/repos view.
+- [x] Commit (`3d49f49`).
 
 ## Phase 3 — virtual sets
 
 **Goal:** named, nested sets for navigation and grouping.
 
-- [ ] Add `internal/sets` with store-backed CRUD:
+- [x] Add `internal/sets` with store-backed CRUD:
       `Set{id,name,description,parentId,labels,pinned,partitions}`,
       cycle checks, delete block for non-empty sets, partition membership.
-- [ ] Add `/.registry/sets` and `/.registry/set-primary` paths.
-- [ ] Add API:
+- [x] Add `/.registry/sets` and `/.registry/set-primary` paths.
+- [x] Add API:
       `GET /api/sets`, `GET /api/sets/{id}`, `POST /api/sets`,
       `PATCH /api/sets/{id}`, `DELETE /api/sets/{id}`,
       `POST /api/sets/{id}/move`, `POST /api/sets/{id}/partitions`.
-- [ ] Replace the flat partition list in the sidebar with a lazy set tree:
+- [x] Replace the flat partition list in the sidebar with a bounded set tree:
       All sets, nested sets, Ungrouped, pinned sets, search.
-- [ ] Overview shows top-level set cards with descriptions, labels,
+- [x] Overview shows top-level set cards with descriptions, labels,
       partition/subset counts, health rollup, and assignment summary.
-- [ ] Add a set page with:
+- [x] Add a set page with:
       description, labels, parent, subsets, scoped partition table
       (status, repo, MonoFS path, assignment), health rollup, set details.
-- [ ] Add create/edit/move/delete set and add/remove partitions UI.
-- [ ] Commit.
+- [x] Add create/edit/move/delete set and add/remove partitions UI.
+- [x] Commit (pending).
 
 ## Phase 4 — polish and verification
 
-- [ ] Status vocabulary and empty states across the new pages.
-- [ ] `npm run build:ui`, `go build`, relevant Go tests.
-- [ ] Update docs (`docs/ui-redesign.md`, `docs/mockups/README.md`) with the
+- [x] Status vocabulary and empty states across the new pages.
+- [x] `npm run build:ui`, `go build`, relevant Go tests.
+- [x] Update docs (`docs/ui-redesign.md`, `docs/mockups/README.md`) with the
       shipped behavior.
-- [ ] Commit.
+- [x] Commit (`pending`).
 
 ## Acceptance
 
