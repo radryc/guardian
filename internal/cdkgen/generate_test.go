@@ -45,7 +45,7 @@ func demoIntent() Input {
 			{Type: "Volume", Name: "nginx-data", Properties: map[string]any{"accessMode": "ReadWriteMany", "size": "1Gi"}},
 			{Type: "ObjectStore", Name: "demo-bucket", Properties: map[string]any{"engine": "s3", "region": "us-east-1", "versioning": true}},
 			{Type: "Compute", Name: "nginx", DependsOn: []string{"nginx-data", "nginx-page", "demo-api-key"}, Properties: map[string]any{
-				"image":        "public.ecr.aws/nginx/nginx:latest",
+				"image":        "975049940689.dkr.ecr.us-east-1.amazonaws.com/demo/nginx:latest",
 				"ports":        []any{map[string]any{"name": "http", "containerPort": float64(80), "protocol": "TCP", "servicePort": float64(80)}},
 				"configMounts": []any{map[string]any{"config": "nginx-page", "path": "/usr/share/nginx/html", "readOnly": true}},
 				"volumeMounts": []any{map[string]any{"path": "/var/cache/nginx", "volume": "nginx-data"}},
