@@ -7,6 +7,7 @@ export interface SetsOptions {
   onSelectPartition: (name: string) => void;
   onOpenSet: (id: string) => void;
   onOpenConnections: () => void;
+  onChanged?: () => void;
   onToast: (message: string, type?: "success" | "error" | "info") => void;
   onError: (error: any) => void;
 }
@@ -118,6 +119,7 @@ export async function refreshSets(): Promise<void> {
     repos = Array.isArray(repoResponse?.repos) ? repoResponse.repos : [];
     loaded = true;
     renderSets();
+    opts.onChanged?.();
   } finally {
     loading = false;
   }
