@@ -37,6 +37,7 @@ type AssetInput struct {
 	PartitionName string
 	IntentName    string
 	IntentType    string
+	PusherName    string
 	Asset         taskdomain.AbstractAsset
 	Assets        map[string]taskdomain.AbstractAsset
 	AssetVersions map[string]string

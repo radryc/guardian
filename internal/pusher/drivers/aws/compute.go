@@ -112,7 +112,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
-	env = driverutil.MergeOtelResourceAttrs(env, in.PartitionName, in.IntentName, in.Asset.Name)
+	env = driverutil.ApplyOtelEnv(env, in, "aws")
 	if len(sidecars) > 0 {
 		if strings.TrimSpace(env["OTEL_EXPORTER_OTLP_ENDPOINT"]) == "" {
 			env["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:4317"

@@ -366,41 +366,136 @@ func cloneValue(in any) any {
 	}
 }
 
-// MergeOtelResourceAttrs injects guardian.partition, guardian.intent, and guardian.asset
-// into the OTEL_RESOURCE_ATTRIBUTES environment variable, preserving any existing value.
-// This allows OTEL-instrumented services to automatically tag their telemetry with
-// Guardian topology labels so Doctor's traces/logs/metrics can be correlated.
-func MergeOtelResourceAttrs(env map[string]string, partition, intent, asset string) map[string]string {
-	if partition == "" && intent == "" && asset == "" {
-		return env
-	}
-	var b strings.Builder
-	if partition != "" {
-		b.WriteString("guardian.partition=")
-		b.WriteString(partition)
-	}
-	if intent != "" {
-		if b.Len() > 0 {
-			b.WriteByte(',')
-		}
-		b.WriteString("guardian.intent=")
-		b.WriteString(intent)
-	}
-	if asset != "" {
-		if b.Len() > 0 {
-			b.WriteByte(',')
-		}
-		b.WriteString("guardian.asset=")
-		b.WriteString(asset)
-	}
+// MaxServiceNameLength is the backend-safe cap for the generated service.name.
+// 200 matches the AWS X-Ray segment-name limit and is accepted by the other
+// Doctor/Grafana backends.
+const MaxServiceNameLength = 200
 
-	if existing := strings.TrimSpace(env["OTEL_RESOURCE_ATTRIBUTES"]); existing != "" {
-		b.WriteByte(',')
-		b.WriteString(existing)
+// ServiceIdentity is the canonical telemetry identity of one asset.
+type ServiceIdentity struct {
+	Name      string
+	FullName  string
+	Truncated bool
+}
+
+// CanonicalServiceIdentity builds <partition>.<intent>.<asset> and applies a
+// deterministic hash suffix when the name exceeds MaxServiceNameLength.
+func CanonicalServiceIdentity(partition, intent, asset string) ServiceIdentity {
+	parts := make([]string, 0, 3)
+	for _, part := range []string{partition, intent, asset} {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
 	}
+	full := strings.Join(parts, ".")
+	if full == "" {
+		return ServiceIdentity{}
+	}
+	if len(full) <= MaxServiceNameLength {
+		return ServiceIdentity{Name: full, FullName: full}
+	}
+	sum := digest.MustNormalizedHash([]string{full})[:10]
+	keep := MaxServiceNameLength - 1 - len(sum)
+	if keep < 1 {
+		keep = 1
+	}
+	prefix := strings.TrimRight(full[:keep], "._-")
+	if prefix == "" {
+		prefix = "service"
+	}
+	return ServiceIdentity{Name: prefix + "." + sum, FullName: full, Truncated: true}
+}
+
+// ApplyOtelEnv injects the canonical identity and topology attributes into the
+// workload environment. Explicit OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES
+// values are preserved; generated values only fill gaps.
+func ApplyOtelEnv(env map[string]string, in registry.AssetInput, provider string) map[string]string {
 	if env == nil {
 		env = map[string]string{}
 	}
-	env["OTEL_RESOURCE_ATTRIBUTES"] = b.String()
+	identity := CanonicalServiceIdentity(in.PartitionName, in.IntentName, in.Asset.Name)
+	attrs := parseOtelResourceAttrs(env["OTEL_RESOURCE_ATTRIBUTES"])
+
+	serviceName := strings.TrimSpace(env["OTEL_SERVICE_NAME"])
+	if serviceName == "" {
+		if existing := strings.TrimSpace(attrs["service.name"]); existing != "" {
+			serviceName = existing
+		} else {
+			serviceName = identity.Name
+		}
+	}
+	if serviceName != "" {
+		env["OTEL_SERVICE_NAME"] = serviceName
+		attrs["service.name"] = serviceName
+	}
+
+	setGenerated := func(key, value string) {
+		if _, exists := attrs[key]; exists || value == "" {
+			return
+		}
+		attrs[key] = value
+	}
+	setGenerated("service.namespace", in.PartitionName)
+	setGenerated("guardian.partition", in.PartitionName)
+	setGenerated("guardian.intent", in.IntentName)
+	setGenerated("guardian.asset", in.Asset.Name)
+	setGenerated("guardian.pusher", in.PusherName)
+	setGenerated("guardian.provider", provider)
+	setGenerated("guardian.cluster", strings.TrimSpace(in.Target.Cluster))
+	if strings.EqualFold(provider, "kubernetes") {
+		setGenerated("k8s.cluster.name", strings.TrimSpace(in.Target.Cluster))
+	}
+	if strings.EqualFold(provider, "aws") {
+		setGenerated("guardian.account", strings.TrimSpace(in.Target.Account))
+		setGenerated("guardian.region", strings.TrimSpace(in.Target.Region))
+	}
+	if identity.FullName != "" {
+		setGenerated("guardian.service.full_name", identity.FullName)
+		truncated := "false"
+		if identity.Truncated && serviceName == identity.Name {
+			truncated = "true"
+		}
+		setGenerated("guardian.service.truncated", truncated)
+	}
+
+	env["OTEL_RESOURCE_ATTRIBUTES"] = formatOtelResourceAttrs(attrs)
 	return env
+}
+
+func parseOtelResourceAttrs(raw string) map[string]string {
+	out := map[string]string{}
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(pair, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		out[key] = strings.TrimSpace(value)
+	}
+	return out
+}
+
+func formatOtelResourceAttrs(attrs map[string]string) string {
+	keys := make([]string, 0, len(attrs))
+	for key := range attrs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, key := range keys {
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(key)
+		b.WriteByte('=')
+		b.WriteString(attrs[key])
+	}
+	return b.String()
 }

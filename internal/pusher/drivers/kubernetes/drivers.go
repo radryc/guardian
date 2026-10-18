@@ -451,7 +451,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
-	container.Env = driverutil.MergeOtelResourceAttrs(env, in.PartitionName, in.IntentName, in.Asset.Name)
+	container.Env = driverutil.ApplyOtelEnv(env, in, "kubernetes")
 	container.Image = spec.Image
 	deployment := Deployment{
 		Namespace:         namespace(in),

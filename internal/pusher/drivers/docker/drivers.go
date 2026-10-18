@@ -589,7 +589,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
-	env = driverutil.MergeOtelResourceAttrs(env, in.PartitionName, in.IntentName, in.Asset.Name)
+	env = driverutil.ApplyOtelEnv(env, in, "docker")
 	desired := computeContainerNames(in, spec)
 	var primary Container
 	for idx, name := range desired {
