@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Guardian — Build mockup</title>
+  <link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="brand" href="overview.html"><span class="brand-mark"></span>Guardian</a>
+  <div class="crumb"><span>Local</span><span class="sep">/</span><a href="overview.html" style="color: var(--muted);">Build</a><span class="sep">/</span><strong>checkout-api</strong></div>
+  <div class="spacer"></div>
+  <span class="pill">v0.18.0 · e83877a</span>
+  <span class="pill"><span class="dot" style="background: var(--amber);"></span>draft</span>
+</nav>
+
+<div class="shell">
+  <aside class="sidebar">
+    <nav class="nav">
+      <a class="nav-item" href="overview.html">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="7" height="7" rx="1.5"/><rect x="11" y="2" width="7" height="7" rx="1.5"/><rect x="2" y="11" width="7" height="7" rx="1.5"/><rect x="11" y="11" width="7" height="7" rx="1.5"/></svg>
+        <span>Overview</span>
+      </a>
+      <a class="nav-item" href="connections.html">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M8.5 11.5l3-3"/>
+          <path d="M6.8 13.2l-1.1 1.1a2.6 2.6 0 0 1-3.7-3.7l2.5-2.5a2.6 2.6 0 0 1 3.7 0"/>
+          <path d="M13.2 6.8l1.1-1.1a2.6 2.6 0 0 1 3.7 3.7l-2.5 2.5a2.6 2.6 0 0 1-3.7 0"/>
+        </svg>
+        <span>Connections</span>
+      </a>
+      <a class="nav-item" href="adopt.html">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4.5h14M3 10h14M3 15.5h9"/><circle cx="16" cy="15.5" r="2"/></svg>
+        <span>Adopt</span>
+      </a>
+      <a class="nav-item active" href="build.html">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="6" height="6" rx="1.5"/><rect x="12" y="12" width="6" height="6" rx="1.5"/><path d="M8 5h4a3 3 0 0 1 3 3v4"/></svg>
+        <span>Build</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-rule"></div>
+
+    <div class="sidebar-section">
+      <div class="section-label">Sets</div>
+      <div class="set-toolbar">
+        <input class="search" type="search" placeholder="Search sets and partitions" aria-label="Search sets and partitions">
+        <a class="btn ghost small" href="sets.html">+</a>
+      </div>
+
+      <div class="set-tree">
+        <a class="set-row" href="overview.html"><span class="chevron">▸</span><span class="name">All sets</span><span class="count">2</span><span class="rollup" title="2 healthy · 1 observed · 2 attention"><span class="seg green" style="flex:2"></span><span class="seg neutral"></span><span class="seg amber" style="flex:2"></span></span></a>
+        <div class="set-divider"></div>
+        <a class="set-row" href="sets.html"><span class="chevron">▾</span><span class="name">Department X — AWS Production</span><span class="count">4</span><span class="rollup" title="2 healthy · 1 observed · 1 attention"><span class="seg green" style="flex:2"></span><span class="seg neutral"></span><span class="seg amber"></span></span></a>
+        <a class="set-row depth-1" href="sets.html"><span class="chevron">▾</span><span class="name">Payments</span><span class="count">3</span><span class="rollup" title="2 healthy · 1 attention"><span class="seg green" style="flex:2"></span><span class="seg amber"></span></span></a>
+        <a class="set-row depth-2 partition" href="application.html"><span class="status-dot green"></span><span class="name">demo-deploy</span></a>
+        <a class="set-row depth-2 partition" href="application.html"><span class="status-dot green"></span><span class="name">demo-build</span></a>
+        <a class="set-row depth-2 partition" href="connections.html"><span class="status-dot amber"></span><span class="name">demo-new</span><span class="count">unassigned</span></a>
+        <a class="set-row depth-2 partition active" href="build.html"><span class="status-dot blue"></span><span class="name">checkout-api</span><span class="count">draft</span></a>
+        <a class="set-row depth-2" href="sets.html"><span class="chevron">▸</span><span class="name">Refunds</span><span class="count">0</span></a>
+        <a class="set-row depth-1" href="sets.html"><span class="chevron">▸</span><span class="name">Platform</span><span class="count">1</span><span class="rollup" title="1 observed"><span class="seg neutral"></span></span></a>
+        <a class="set-row" href="sets.html"><span class="chevron">▸</span><span class="name">Department Y — AWS Development</span><span class="count">1</span><span class="rollup" title="1 attention"><span class="seg amber"></span></span></a>
+        <a class="set-row" href="sets.html"><span class="chevron">▸</span><span class="name">Ungrouped</span><span class="count">0</span></a>
+      </div>
+
+      <div class="set-divider"></div>
+      <div class="set-tree">
+        <a class="set-row action" href="sets.html"><span class="chevron">+</span><span class="name">New set</span></a>
+        <a class="set-row action" href="sets.html"><span class="chevron">⌘</span><span class="name">Manage sets</span></a>
+      </div>
+    </div>
+
+    <div class="sidebar-actions">
+      <button class="btn ghost wide">Discard draft</button>
+      <button class="btn primary wide">Save draft</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="page-head compact">
+      <div>
+        <p class="eyebrow">Build</p>
+        <div class="app-title-line">
+          <h1>New application</h1>
+          <span class="badge amber">Draft</span>
+        </div>
+        <div class="app-meta">
+          <span>checkout-api</span>
+          <span>set <a href="sets.html" style="color: var(--muted); text-decoration: underline; text-underline-offset: 2px;">Payments</a></span>
+          <span>repo <span class="mono">strata-demo-deploy</span></span>
+          <span>target <span class="mono">aws-780603797542</span> · us-east-1</span>
+        </div>
+      </div>
+      <div class="head-right">
+        <button class="btn ghost">Auto-layout</button>
+        <button class="btn">Validate</button>
+        <button class="btn">Save draft</button>
+        <button class="btn primary">Deploy</button>
+      </div>
+    </header>
+
+    <div class="builder-shell">
+      <aside class="builder-palette">
+        <input class="search palette-search" type="search" placeholder="Find an asset" aria-label="Find an asset">
+        <div class="palette-group">
+          <div class="label">Network</div>
+          <div class="palette-item"><span class="palette-icon">N</span> Network <span class="drag">⋮⋮</span></div>
+        </div>
+        <div class="palette-group">
+          <div class="label">Compute</div>
+          <div class="palette-item"><span class="palette-icon">C</span> Compute <span class="drag">⋮⋮</span></div>
+          <div class="palette-item"><span class="palette-icon">K</span> Kubernetes resource <span class="drag">⋮⋮</span></div>
+        </div>
+        <div class="palette-group">
+          <div class="label">Storage</div>
+          <div class="palette-item"><span class="palette-icon">V</span> Volume <span class="drag">⋮⋮</span></div>
+          <div class="palette-item"><span class="palette-icon">S</span> Object store <span class="drag">⋮⋮</span></div>
+        </div>
+        <div class="palette-group">
+          <div class="label">Data</div>
+          <div class="palette-item"><span class="palette-icon">DB</span> SQL database <span class="drag">⋮⋮</span></div>
+        </div>
+        <div class="palette-group">
+          <div class="label">Edge</div>
+          <div class="palette-item"><span class="palette-icon">LB</span> Load balancer <span class="drag">⋮⋮</span></div>
+        </div>
+        <div class="palette-group">
+          <div class="label">Observability</div>
+          <div class="palette-item"><span class="palette-icon">O</span> Observability <span class="drag">⋮⋮</span></div>
+        </div>
+        <div class="palette-group">
+          <div class="label">Config</div>
+          <div class="palette-item"><span class="palette-icon">CF</span> Config <span class="drag">⋮⋮</span></div>
+          <div class="palette-item"><span class="palette-icon">K</span> Secret <span class="drag">⋮⋮</span></div>
+        </div>
+      </aside>
+
+      <div class="canvas-wrap">
+        <div class="canvas">
+          <div class="intent-frame"></div>
+          <div class="intent-frame-head"><strong>api</strong> intent · pusher <span class="mono">aws-780603797542</span> · 4 assets</div>
+
+          <svg class="canvas-edges" viewBox="0 0 700 500" preserveAspectRatio="none" aria-hidden="true">
+            <path d="M174 150 C210 150, 210 310, 240 310" />
+            <path class="selected" d="M174 460 C210 460, 210 350, 240 350" />
+            <path d="M394 310 L500 310" />
+          </svg>
+
+          <div class="node" style="left: 20px; top: 120px;">
+            <div class="node-head"><span class="node-icon">N</span><span class="node-name">main</span></div>
+            <div class="node-type">Network</div>
+            <div class="node-meta">10.43.0.0/16</div>
+          </div>
+
+          <div class="node" style="left: 20px; top: 430px;">
+            <div class="node-head"><span class="node-icon">V</span><span class="node-name">data</span></div>
+            <div class="node-type">Volume</div>
+            <div class="node-meta">1 Gi · EFS</div>
+          </div>
+
+          <div class="node selected" style="left: 240px; top: 270px;">
+            <div class="node-head"><span class="node-icon">C</span><span class="node-name">api</span></div>
+            <div class="node-type">Compute · Fargate</div>
+            <div class="node-meta">strata-demo/app:demo</div>
+            <div class="node-port"><span class="dot"></span> http :80</div>
+          </div>
+
+          <div class="node" style="left: 500px; top: 270px;">
+            <div class="node-head"><span class="node-icon">LB</span><span class="node-name">edge</span></div>
+            <div class="node-type">Load balancer</div>
+            <div class="node-meta">targets api</div>
+            <div class="node-port"><span class="dot"></span> http :80</div>
+          </div>
+
+          <div class="canvas-hint">Drop an asset from the palette, or drag from a node to connect.</div>
+
+          <div class="canvas-toolbar">
+            <button class="btn ghost">−</button>
+            <span style="color: var(--faint); font-size: 10px; padding: 0 4px;">100%</span>
+            <button class="btn ghost">+</button>
+            <button class="btn ghost">Auto-layout</button>
+          </div>
+          <div class="canvas-legend">
+            <span class="item"><span class="status-dot green"></span> dependency</span>
+            <span class="item"><span style="width: 14px; height: 1px; background: var(--accent); display: inline-block;"></span> selected</span>
+          </div>
+        </div>
+      </div>
+
+      <aside class="inspector">
+        <div class="inspector-head">
+          <div>
+            <div class="name">api</div>
+            <div class="sub">Compute · Fargate · asset</div>
+          </div>
+          <span class="badge blue" style="margin-left: auto;">selected</span>
+        </div>
+
+        <div class="tabs-sm">
+          <button class="tab-sm active">Essentials</button>
+          <button class="tab-sm">Advanced</button>
+          <button class="tab-sm">Raw YAML</button>
+        </div>
+
+        <div class="form-grid">
+          <div class="field">
+            <label>Name</label>
+            <input class="input mono" value="api">
+          </div>
+          <div class="field">
+            <label>Container image</label>
+            <textarea class="textarea mono" rows="2">780603797542.dkr.ecr.us-east-1.amazonaws.com/strata-demo/app:demo</textarea>
+          </div>
+          <div class="field">
+            <label>Replicas</label>
+            <input class="input" value="1">
+          </div>
+          <div class="field">
+            <label>Ports</label>
+            <input class="input mono" value="http 80 → 80">
+          </div>
+        </div>
+
+        <div style="margin-top: 10px; color: var(--faint); font-size: 9.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase;">References</div>
+        <div style="margin-top: 4px;">
+          <div class="ref-row"><span class="k">network</span><span class="v">main</span><span class="badge" style="margin-left: auto;">required</span></div>
+          <div class="ref-row"><span class="k">volume</span><span class="v">data</span><span class="badge" style="margin-left: auto;">/data</span></div>
+          <div class="ref-row"><span class="k">expose</span><span class="v">edge</span><span class="badge" style="margin-left: auto;">http</span></div>
+        </div>
+
+        <div style="margin-top: 12px; color: var(--faint); font-size: 9.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase;">Assignment</div>
+        <div class="assignment-mini" style="margin-top: 5px;">
+          <div class="line"><span class="k">Repo</span><span class="v">strata-demo-deploy</span></div>
+          <div class="line"><span class="k">Repo path</span><span class="v">guardian/partitions/checkout-api/</span></div>
+          <div class="line"><span class="k">MonoFS</span><span class="v">/partitions/checkout-api/</span></div>
+          <div class="line"><span class="k">Pusher</span><span class="v">aws-780603797542</span></div>
+          <div class="line"><span class="k">Set</span><span class="v">Payments</span></div>
+        </div>
+
+        <div style="margin-top: 10px; display: flex; gap: 5px;">
+          <button class="btn small">Choose repo</button>
+          <button class="btn small ghost">Change set</button>
+        </div>
+      </aside>
+    </div>
+
+    <div class="problems-bar">
+      <span class="problem">⚠</span>
+      <span>1 warning: image tag <code>:demo</code> is mutable — use a digest for reproducible deploys.</span>
+      <span class="spacer"></span>
+      <span style="color: var(--faint);">4 assets · 13 resources</span>
+      <button class="btn ghost">View plan</button>
+    </div>
+
+    <p class="mockup-note">
+      Static design mockup — not the production UI.
+      <a href="overview.html">← Overview</a> · <a href="adopt.html">Adopt</a> · <a href="sets.html">Sets →</a>
+    </p>
+  </main>
+</div>
+
+</body>
+</html>
