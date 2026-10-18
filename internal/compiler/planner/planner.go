@@ -12,7 +12,9 @@ import (
 	"github.com/rydzu/ainfra/guardian/internal/compiler/manifest"
 	"github.com/rydzu/ainfra/guardian/internal/compiler/resolver"
 	"github.com/rydzu/ainfra/guardian/internal/compiler/validator"
+	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
 	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
+	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
 	"github.com/rydzu/ainfra/guardian/internal/versioning/digest"
 	"github.com/rydzu/ainfra/guardian/internal/versioning/revisions"
 )
@@ -93,6 +95,9 @@ func Compile(ctx context.Context, input CompileInput) (*CompiledPartition, error
 		if err := validator.ValidateIntent(parsed, names, nil); err != nil {
 			return nil, fmt.Errorf("intent %s invalid: %w", parsed.Metadata.Name, err)
 		}
+		if synthetic, ok := defaultObservabilityAsset(part.Spec.Defaults.Observability, parsed); ok {
+			parsed.Spec.Assets = append(parsed.Spec.Assets, synthetic)
+		}
 
 		joinGraph.AddNode(parsed.Metadata.Name, parsed.Spec.Joins)
 
@@ -161,6 +166,60 @@ func Compile(ctx context.Context, input CompileInput) (*CompiledPartition, error
 	result.IntentOrder = order
 	result.PartitionRevision = revisions.PartitionRevision(input.ConfigVersionID, result.IntentVersions)
 	return result, nil
+}
+
+func defaultObservabilityAsset(defaults partitiondomain.ObservabilityDefaults, intent *intentdomain.Intent) (assetdomain.Spec, bool) {
+	if intent == nil || strings.EqualFold(intent.Spec.IntentType, intentdomain.TypeObserved) {
+		return assetdomain.Spec{}, false
+	}
+	if defaults.Enabled == nil || !*defaults.Enabled {
+		return assetdomain.Spec{}, false
+	}
+	if strings.EqualFold(defaults.AutoInstrument, "none") || strings.EqualFold(defaults.Instrumentation, "none") {
+		return assetdomain.Spec{}, false
+	}
+	existing := map[string]bool{}
+	targets := make([]string, 0)
+	for _, asset := range intent.Spec.Assets {
+		existing[asset.Name] = true
+		if asset.Type == assetdomain.TypeObservability {
+			return assetdomain.Spec{}, false
+		}
+		if asset.Type == "Compute" {
+			targets = append(targets, asset.Name)
+		}
+	}
+	if len(targets) == 0 {
+		return assetdomain.Spec{}, false
+	}
+	name := "observability"
+	if existing[name] {
+		name = "observability-default"
+	}
+	properties := map[string]any{
+		"provider": "otel",
+		"mode":     firstNonEmpty(defaults.Instrumentation, "auto"),
+		"targets":  targets,
+	}
+	if endpoint := strings.TrimSpace(defaults.OTLPEndpoint); endpoint != "" {
+		properties["endpoint"] = endpoint
+	}
+	switch strings.ToLower(strings.TrimSpace(defaults.CloudWatch)) {
+	case "true":
+		properties["cloudwatch"] = true
+	case "false":
+		properties["cloudwatch"] = false
+	}
+	return assetdomain.Spec{Type: assetdomain.TypeObservability, Name: name, Properties: properties}, true
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func dedupeRefs(refs []resolver.OutputRef) []resolver.OutputRef {

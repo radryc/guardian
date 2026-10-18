@@ -589,7 +589,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
-	env = driverutil.ApplyOtelEnv(env, in, "docker")
+	env = driverutil.ApplyObservabilityEnv(env, in, "docker", "otel-collector:4317")
 	desired := computeContainerNames(in, spec)
 	var primary Container
 	for idx, name := range desired {
@@ -1026,6 +1026,9 @@ func (d *ObservabilityDriver) ObserveState(ctx context.Context, in registry.Asse
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
+	if spec, err := decodeObservability(in); err == nil && observabilityEnvOnly(spec) {
+		return &taskdomain.HealthObservation{Status: taskdomain.HealthHealthy, Summary: "observability environment injection is ready"}, readyObservation("observability environment injection is ready"), nil
+	}
 	readiness := readinessFromError(d.Check(ctx, in), "docker observability dependencies resolved")
 	health, err := d.observeContainerHealth(ctx, observabilityName(in), "docker observability collector is running")
 	if err != nil {
@@ -1035,6 +1038,9 @@ func (d *ObservabilityDriver) ObserveState(ctx context.Context, in registry.Asse
 }
 
 func (d *ObservabilityDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdomain.DriftReport, error) {
+	if spec, err := decodeObservability(in); err == nil && observabilityEnvOnly(spec) {
+		return inSyncDrift(in.Asset.Name, "observability environment injection is applied by target compute assets"), nil
+	}
 	payload, err := loadContainerPayload(ctx, in)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
@@ -1046,6 +1052,13 @@ func (d *ObservabilityDriver) Apply(ctx context.Context, in registry.AssetInput)
 	spec, err := decodeObservability(in)
 	if err != nil {
 		return registry.AssetResult{}, err
+	}
+	if observabilityEnvOnly(spec) {
+		endpoint := strings.TrimSpace(spec.Endpoint)
+		if endpoint == "" {
+			endpoint = "otel-collector:4317"
+		}
+		return registry.AssetResult{Outputs: map[string]string{"endpoint": endpoint, "mode": "env"}}, nil
 	}
 	payload, err := loadContainerPayload(ctx, in)
 	if err != nil {
@@ -1091,6 +1104,9 @@ func (d *ObservabilityDriver) Apply(ctx context.Context, in registry.AssetInput)
 func (d *ObservabilityDriver) Destroy(ctx context.Context, in registry.AssetInput) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if spec, err := decodeObservability(in); err == nil && observabilityEnvOnly(spec) {
+		return nil
 	}
 	return d.backend.DeleteContainer(observabilityName(in))
 }
@@ -1323,6 +1339,18 @@ func decodeObservability(in registry.AssetInput) (*assetdefs.ObservabilitySpec, 
 		return nil, fmt.Errorf("expected ObservabilitySpec, got %T", typed)
 	}
 	return spec, nil
+}
+
+func observabilityEnvOnly(spec *assetdefs.ObservabilitySpec) bool {
+	if spec == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(spec.Mode)) {
+	case "auto", "env":
+		return true
+	default:
+		return false
+	}
 }
 
 func computeHash(in registry.AssetInput, spec *assetdefs.ComputeSpec) string {

@@ -462,6 +462,92 @@ func ApplyOtelEnv(env map[string]string, in registry.AssetInput, provider string
 	return env
 }
 
+// ApplyObservabilityEnv injects identity plus the effective OTLP endpoint. The
+// defaultEndpoint is provider-specific and is used when neither the intent nor
+// the targeting Observability asset specifies one.
+func ApplyObservabilityEnv(env map[string]string, in registry.AssetInput, provider, defaultEndpoint string) map[string]string {
+	env = ApplyOtelEnv(env, in, provider)
+	settings := ObservabilityForAsset(in)
+	endpoint := strings.TrimSpace(settings.Endpoint)
+	if endpoint == "" {
+		endpoint = strings.TrimSpace(defaultEndpoint)
+	}
+	if endpoint != "" && strings.TrimSpace(env["OTEL_EXPORTER_OTLP_ENDPOINT"]) == "" {
+		env["OTEL_EXPORTER_OTLP_ENDPOINT"] = endpoint
+	}
+	if strings.TrimSpace(env["OTEL_EXPORTER_OTLP_PROTOCOL"]) == "" {
+		protocol := strings.TrimSpace(settings.Protocol)
+		if protocol == "" {
+			protocol = "grpc"
+		}
+		env["OTEL_EXPORTER_OTLP_PROTOCOL"] = protocol
+	}
+	return env
+}
+
+// ObservabilitySettings is the effective observability configuration for one
+// compute asset, resolved from targeting Observability assets.
+type ObservabilitySettings struct {
+	Mode       string
+	Endpoint   string
+	Protocol   string
+	CloudWatch bool
+	AssetName  string
+}
+
+// ObservabilityForAsset resolves the Observability asset that targets the given
+// compute asset. The first matching asset in name order wins.
+func ObservabilityForAsset(in registry.AssetInput) ObservabilitySettings {
+	names := make([]string, 0, len(in.Assets))
+	for name := range in.Assets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		asset := in.Assets[name]
+		if asset.Type != assetdomain.TypeObservability {
+			continue
+		}
+		_, typed, err := DecodeNamedAsset(in, name)
+		if err != nil {
+			continue
+		}
+		spec, ok := typed.(*assetdefs.ObservabilitySpec)
+		if !ok || !containsString(spec.Targets, in.Asset.Name) {
+			continue
+		}
+		settings := ObservabilitySettings{
+			Mode:      strings.ToLower(strings.TrimSpace(spec.Mode)),
+			Endpoint:  strings.TrimSpace(spec.Endpoint),
+			Protocol:  strings.TrimSpace(spec.Protocol),
+			AssetName: name,
+		}
+		if spec.CloudWatch != nil {
+			settings.CloudWatch = *spec.CloudWatch
+		}
+		return settings
+	}
+	return ObservabilitySettings{}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func parseOtelResourceAttrs(raw string) map[string]string {
 	out := map[string]string{}
 	for _, pair := range strings.Split(raw, ",") {

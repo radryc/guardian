@@ -35,6 +35,28 @@ type ReconciliationSpec struct {
 }
 
 type PartitionDefaults struct {
-	TargetPusher string                 `yaml:"targetPusher,omitempty" json:"targetPusher,omitempty"`
-	Target       targetdomain.Placement `yaml:"target,omitempty" json:"target,omitempty"`
+	TargetPusher  string                 `yaml:"targetPusher,omitempty" json:"targetPusher,omitempty"`
+	Target        targetdomain.Placement `yaml:"target,omitempty" json:"target,omitempty"`
+	Observability ObservabilityDefaults  `yaml:"observability,omitempty" json:"observability,omitempty"`
+	Probes        ProbeDefaults          `yaml:"probes,omitempty" json:"probes,omitempty"`
+}
+
+type ObservabilityDefaults struct {
+	Enabled         *bool  `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	AutoInstrument  string `yaml:"autoInstrument,omitempty" json:"autoInstrument,omitempty"`
+	ServiceName     string `yaml:"serviceName,omitempty" json:"serviceName,omitempty"`
+	OTLPEndpoint    string `yaml:"otlpEndpoint,omitempty" json:"otlpEndpoint,omitempty"`
+	CloudWatch      string `yaml:"cloudwatch,omitempty" json:"cloudwatch,omitempty"`
+	Instrumentation string `yaml:"instrumentation,omitempty" json:"instrumentation,omitempty"`
+}
+
+type ProbeDefaults struct {
+	Enabled       *bool    `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Interval      string   `yaml:"interval,omitempty" json:"interval,omitempty"`
+	Timeout       string   `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	Retries       *int     `yaml:"retries,omitempty" json:"retries,omitempty"`
+	HTTPPaths     []string `yaml:"httpPaths,omitempty" json:"httpPaths,omitempty"`
+	TCPPorts      []int    `yaml:"tcpPorts,omitempty" json:"tcpPorts,omitempty"`
+	MaxTargets    *int     `yaml:"maxTargets,omitempty" json:"maxTargets,omitempty"`
+	AllowExternal *bool    `yaml:"allowExternal,omitempty" json:"allowExternal,omitempty"`
 }

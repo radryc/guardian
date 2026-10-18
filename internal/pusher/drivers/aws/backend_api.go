@@ -45,6 +45,7 @@ type BackendAPI interface {
 	GetService(ctx context.Context, cluster, name string) (ECSService, bool, error)
 	DeleteService(ctx context.Context, cluster, name string) error
 	AttachServiceToTargetGroup(ctx context.Context, cluster, service, container, tgARN string, port int, sgID string) error
+	EnsureObservabilityTaskRole(ctx context.Context) (string, error)
 
 	// ELBv2 (ALB/NLB)
 	UpsertLoadBalancer(ctx context.Context, lb LoadBalancer) (string, error)
@@ -143,6 +144,20 @@ type ECSService struct {
 	Sidecars       []ContainerDef
 	TargetGroupARN string
 	LogGroup       string
+	ServiceConnect *ServiceConnectConfig
+}
+
+// ServiceConnectConfig registers an ECS service in the cluster's Service
+// Connect namespace so it gets a stable DNS name.
+type ServiceConnectConfig struct {
+	Namespace string
+	Services  []ServiceConnectService
+}
+
+type ServiceConnectService struct {
+	PortMappingName string
+	DNSName         string
+	Port            int
 }
 
 type ContainerDef struct {

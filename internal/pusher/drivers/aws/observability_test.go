@@ -113,6 +113,53 @@ func TestComputeAppliesOtelSidecar(t *testing.T) {
 	}
 }
 
+func TestObservabilityGatewayCreatesServiceConnectService(t *testing.T) {
+	backend := newAdoptionBackend()
+	driver := &ObservabilityDriver{baseDriver{backend: backend, resolver: secrets.NoopResolver{}}}
+	compute := taskdomain.AbstractAsset{Type: "Compute", Name: "api", Properties: map[string]any{"image": "app:v1"}}
+	observability := taskdomain.AbstractAsset{
+		Type: "Observability",
+		Name: "otel",
+		Properties: map[string]any{
+			"provider":   "otel",
+			"mode":       "gateway",
+			"cloudwatch": true,
+			"targets":    []any{"api"},
+		},
+	}
+	in := registry.AssetInput{
+		PartitionName: "demo",
+		IntentName:    "api",
+		PusherName:    "aws-123",
+		Asset:         observability,
+		Assets:        map[string]taskdomain.AbstractAsset{"api": compute, "otel": observability},
+		Target:        targetdomain.Placement{Account: "123456789012", Region: "eu-west-1", Cluster: "strata"},
+		Store:         memory.New(),
+	}
+	result, err := driver.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if !strings.HasPrefix(result.Outputs["endpoint"], "http://") {
+		t.Fatalf("endpoint = %q", result.Outputs["endpoint"])
+	}
+	if backend.lastService == nil {
+		t.Fatal("expected gateway service upsert")
+	}
+	if backend.lastService.ServiceConnect == nil {
+		t.Fatal("expected Service Connect configuration")
+	}
+	if backend.lastService.Container.Image != defaultOtelCollectorImage {
+		t.Fatalf("image = %q", backend.lastService.Container.Image)
+	}
+	if !strings.Contains(backend.lastService.Container.Env["AOT_CONFIG_CONTENT"], "awscloudwatchlogs") {
+		t.Fatal("gateway config missing CloudWatch Logs exporter")
+	}
+	if !strings.Contains(backend.lastService.Container.Env["AOT_CONFIG_CONTENT"], "awsxray") {
+		t.Fatal("gateway config missing X-Ray exporter")
+	}
+}
+
 func TestOtelSidecarXRaySegmentNameNormalization(t *testing.T) {
 	backend := newAdoptionBackend()
 	driver := &ComputeDriver{baseDriver{backend: backend, resolver: secrets.NoopResolver{}}}

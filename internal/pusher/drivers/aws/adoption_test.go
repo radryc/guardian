@@ -116,6 +116,9 @@ func (b *adoptionBackend) UpsertService(ctx context.Context, svc ECSService) err
 func (b *adoptionBackend) AttachServiceToTargetGroup(ctx context.Context, cluster, service, container, tgARN string, port int, sgID string) error {
 	return nil
 }
+func (b *adoptionBackend) EnsureObservabilityTaskRole(ctx context.Context) (string, error) {
+	return "arn:aws:iam::test:role/guardian-otel-sidecar-role", nil
+}
 func (b *adoptionBackend) GetService(ctx context.Context, cluster, name string) (ECSService, bool, error) {
 	svc, ok := b.services[cluster+"/"+name]
 	return svc, ok, nil

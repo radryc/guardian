@@ -3,6 +3,7 @@ package awsdriver
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -50,7 +51,26 @@ func (d *ObservabilityDriver) Diff(ctx context.Context, in registry.AssetInput) 
 	if err := ctx.Err(); err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	return inSyncDrift(in.Asset.Name, "observability sidecars are applied by target compute assets"), nil
+	spec, err := decodeObservability(in)
+	if err != nil {
+		return taskdomain.DriftReport{}, err
+	}
+	switch observabilityMode(spec) {
+	case "gateway", "auto", "collector":
+		svc, ok, err := d.backend.GetService(ctx, in.Target.Cluster, gatewayServiceName(in))
+		if err != nil {
+			return taskdomain.DriftReport{}, err
+		}
+		if !ok {
+			return changedDrift(in.Asset.Name, "otel gateway is missing"), nil
+		}
+		if svc.Hash != driverutil.CompositeHash(in) {
+			return changedDrift(in.Asset.Name, "otel gateway differs"), nil
+		}
+		return inSyncDrift(in.Asset.Name, "otel gateway is in sync"), nil
+	default:
+		return inSyncDrift(in.Asset.Name, "observability sidecars are applied by target compute assets"), nil
+	}
 }
 
 func (d *ObservabilityDriver) Apply(ctx context.Context, in registry.AssetInput) (registry.AssetResult, error) {
@@ -61,19 +81,104 @@ func (d *ObservabilityDriver) Apply(ctx context.Context, in registry.AssetInput)
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
-	if len(spec.Targets) == 0 {
-		return registry.AssetResult{}, fmt.Errorf("asset %s: targets requires at least one compute asset", in.Asset.Name)
+	switch observabilityMode(spec) {
+	case "gateway", "auto", "collector":
+		return d.applyGateway(ctx, in, spec)
+	case "env":
+		endpoint := strings.TrimSpace(spec.Endpoint)
+		return registry.AssetResult{Outputs: map[string]string{
+			"endpoint":  endpoint,
+			"namespace": observabilityNamespace(in),
+			"logGroup":  observabilityLogGroup(in),
+		}}, nil
+	default:
+		if len(spec.Targets) == 0 {
+			return registry.AssetResult{}, fmt.Errorf("asset %s: targets requires at least one compute asset", in.Asset.Name)
+		}
+		return registry.AssetResult{Outputs: map[string]string{
+			"endpoint":  "http://localhost:4317",
+			"namespace": observabilityNamespace(in),
+			"logGroup":  observabilityLogGroup(in),
+		}}, nil
+	}
+}
+
+func (d *ObservabilityDriver) applyGateway(ctx context.Context, in registry.AssetInput, spec *assetdefs.ObservabilitySpec) (registry.AssetResult, error) {
+	config, err := otelCollectorConfig(in, spec)
+	if err != nil {
+		return registry.AssetResult{}, err
+	}
+	hash := driverutil.CompositeHash(in)
+	logGroup := observabilityLogGroup(in)
+	_ = d.backend.UpsertLogGroup(ctx, LogGroup{Name: logGroup, Hash: hash, Tags: awsTags(in, hash)})
+	taskRole, err := d.backend.EnsureObservabilityTaskRole(ctx)
+	if err != nil {
+		return registry.AssetResult{}, fmt.Errorf("ensure observability task role: %w", err)
+	}
+	name := gatewayServiceName(in)
+	namespace := serviceConnectNamespace()
+	essential := true
+	svc := ECSService{
+		Name:           name,
+		Cluster:        in.Target.Cluster,
+		Hash:           hash,
+		Tags:           awsTags(in, hash),
+		DesiredCount:   1,
+		LaunchType:     "FARGATE",
+		TaskFamily:     awsTaskFamily("otel-gateway", in),
+		TaskRole:       taskRole,
+		AssignPublicIP: true,
+		LogGroup:       logGroup,
+		Container: ContainerDef{
+			Name:    "otel-collector",
+			Image:   defaultOtelCollectorImage,
+			Command: []string{"--config=env:AOT_CONFIG_CONTENT"},
+			Env: map[string]string{
+				"AOT_CONFIG_CONTENT": config,
+				"AWS_REGION":         awsRegion(in),
+			},
+			Ports: []PortDef{
+				{Name: "otlp-grpc", ContainerPort: 4317, Protocol: "tcp"},
+				{Name: "otlp-http", ContainerPort: 4318, Protocol: "tcp"},
+			},
+			Essential: &essential,
+		},
+		ServiceConnect: &ServiceConnectConfig{
+			Namespace: namespace,
+			Services: []ServiceConnectService{{
+				PortMappingName: "otlp-grpc",
+				DNSName:         name,
+				Port:            4317,
+			}},
+		},
+	}
+	if err := d.backend.UpsertService(ctx, svc); err != nil {
+		return registry.AssetResult{}, fmt.Errorf("upsert otel gateway: %w", err)
 	}
 	return registry.AssetResult{Outputs: map[string]string{
-		"endpoint":  "http://localhost:4317",
+		"endpoint":  gatewayEndpoint(in),
 		"namespace": observabilityNamespace(in),
-		"logGroup":  observabilityLogGroup(in),
+		"logGroup":  logGroup,
+		"service":   name,
 	}}, nil
 }
 
-// Destroy is a no-op: the sidecar lifecycle follows the target ECS service.
+// Destroy removes a gateway service. Sidecar-mode observability has no
+// standalone resource.
 func (d *ObservabilityDriver) Destroy(ctx context.Context, in registry.AssetInput) error {
-	return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	spec, err := decodeObservability(in)
+	if err != nil {
+		return err
+	}
+	switch observabilityMode(spec) {
+	case "gateway", "auto", "collector":
+		return d.backend.DeleteService(ctx, in.Target.Cluster, gatewayServiceName(in))
+	default:
+		return nil
+	}
 }
 
 func decodeObservability(in registry.AssetInput) (*assetdefs.ObservabilitySpec, error) {
@@ -86,6 +191,33 @@ func decodeObservability(in registry.AssetInput) (*assetdefs.ObservabilitySpec, 
 		return nil, fmt.Errorf("expected ObservabilitySpec, got %T", typed)
 	}
 	return spec, nil
+}
+
+func observabilityMode(spec *assetdefs.ObservabilitySpec) string {
+	if spec == nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(spec.Mode)) {
+	case "":
+		return "sidecar"
+	default:
+		return strings.ToLower(strings.TrimSpace(spec.Mode))
+	}
+}
+
+func gatewayServiceName(in registry.AssetInput) string {
+	return driverutil.ResourceName("otel-gateway", in.Target, in.PartitionName, in.IntentName, "")
+}
+
+func serviceConnectNamespace() string {
+	if value := strings.TrimSpace(os.Getenv("GUARDIAN_SERVICE_CONNECT_NAMESPACE")); value != "" {
+		return value
+	}
+	return "strata.local"
+}
+
+func gatewayEndpoint(in registry.AssetInput) string {
+	return fmt.Sprintf("http://%s.%s:4317", gatewayServiceName(in), serviceConnectNamespace())
 }
 
 // observabilityAssetNames returns the sorted names of the intent's
@@ -150,6 +282,9 @@ func observabilitySidecars(in registry.AssetInput) ([]ContainerDef, error) {
 	if !ok {
 		return nil, fmt.Errorf("expected ObservabilitySpec, got %T", typed)
 	}
+	if mode := observabilityMode(spec); mode != "" && mode != "sidecar" {
+		return nil, nil
+	}
 	config, err := otelCollectorConfig(in, spec)
 	if err != nil {
 		return nil, err
@@ -194,6 +329,8 @@ func otelCollectorConfig(in registry.AssetInput, spec *assetdefs.ObservabilitySp
 			return content, nil
 		}
 	}
+	cloudwatchEnabled := spec.CloudWatch == nil || *spec.CloudWatch
+	mode := observabilityMode(spec)
 	exporters := map[string]any{
 		"awsemf": map[string]any{
 			"namespace":               observabilityNamespace(in),
@@ -225,7 +362,19 @@ func otelCollectorConfig(in registry.AssetInput, spec *assetdefs.ObservabilitySp
 		},
 	}
 	processors := map[string]any{"batch": map[string]any{}}
-	if containsStringFold(spec.Exporters, "xray", "awsxray") {
+	if cloudwatchEnabled {
+		exporters["awscloudwatchlogs"] = map[string]any{
+			"region":          awsRegion(in),
+			"log_group_name":  observabilityLogGroup(in),
+			"log_stream_name": in.Asset.Name,
+		}
+		pipelines["logs"] = map[string]any{
+			"receivers":  []string{"otlp"},
+			"processors": []string{"batch"},
+			"exporters":  []string{"awscloudwatchlogs"},
+		}
+	}
+	if cloudwatchEnabled && (mode == "gateway" || mode == "auto" || mode == "collector") || containsStringFold(spec.Exporters, "xray", "awsxray") {
 		exporters["awsxray"] = map[string]any{"region": awsRegion(in)}
 		// The X-Ray exporter derives the service segment name from peer.service
 		// before falling back to the resource service.name, and telemetrygen (as

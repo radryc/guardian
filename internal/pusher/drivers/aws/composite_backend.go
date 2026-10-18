@@ -95,6 +95,9 @@ func (b *CompositeBackend) DeleteService(ctx context.Context, cluster, name stri
 func (b *CompositeBackend) AttachServiceToTargetGroup(ctx context.Context, cluster, service, container, tgARN string, port int, sgID string) error {
 	return b.SDK.AttachServiceToTargetGroup(ctx, cluster, service, container, tgARN, port, sgID)
 }
+func (b *CompositeBackend) EnsureObservabilityTaskRole(ctx context.Context) (string, error) {
+	return b.SDK.EnsureObservabilityTaskRole(ctx)
+}
 func (b *CompositeBackend) UpsertLoadBalancer(ctx context.Context, lb LoadBalancer) (string, error) {
 	return b.SDK.UpsertLoadBalancer(ctx, lb)
 }

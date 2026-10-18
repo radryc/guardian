@@ -451,7 +451,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
-	container.Env = driverutil.ApplyOtelEnv(env, in, "kubernetes")
+	container.Env = driverutil.ApplyObservabilityEnv(env, in, "kubernetes", "otel-collector.otel.svc.cluster.local:4317")
 	container.Image = spec.Image
 	deployment := Deployment{
 		Namespace:         namespace(in),
@@ -904,10 +904,17 @@ func (d *ObservabilityDriver) Check(ctx context.Context, in registry.AssetInput)
 }
 
 func (d *ObservabilityDriver) ObserveState(ctx context.Context, in registry.AssetInput) (*taskdomain.HealthObservation, *taskdomain.ApplyReadiness, error) {
+	if spec, err := decodeObservability(in); err == nil && observabilityEnvOnly(spec) {
+		return &taskdomain.HealthObservation{Status: taskdomain.HealthHealthy, Summary: "observability environment injection is ready"},
+			&taskdomain.ApplyReadiness{Status: taskdomain.ApplyReadinessReady, Summary: "observability environment injection is ready"}, nil
+	}
 	return d.observeServiceBackedState(ctx, in, workloadName(in, "obs"), serviceName(in, "obs"), "kubernetes observability stack is ready")
 }
 
 func (d *ObservabilityDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdomain.DriftReport, error) {
+	if spec, err := decodeObservability(in); err == nil && observabilityEnvOnly(spec) {
+		return inSyncDrift(in.Asset.Name, "observability environment injection is applied by target compute assets"), nil
+	}
 	payload, err := loadWorkloadPayload(ctx, in)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
@@ -919,6 +926,13 @@ func (d *ObservabilityDriver) Apply(ctx context.Context, in registry.AssetInput)
 	spec, err := decodeObservability(in)
 	if err != nil {
 		return registry.AssetResult{}, err
+	}
+	if observabilityEnvOnly(spec) {
+		endpoint := strings.TrimSpace(spec.Endpoint)
+		if endpoint == "" {
+			endpoint = "otel-collector.otel.svc.cluster.local:4317"
+		}
+		return registry.AssetResult{Outputs: map[string]string{"endpoint": endpoint, "mode": "env"}}, nil
 	}
 	payload, err := loadWorkloadPayload(ctx, in)
 	if err != nil {
@@ -993,6 +1007,9 @@ func (d *ObservabilityDriver) Apply(ctx context.Context, in registry.AssetInput)
 func (d *ObservabilityDriver) Destroy(ctx context.Context, in registry.AssetInput) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if spec, err := decodeObservability(in); err == nil && observabilityEnvOnly(spec) {
+		return nil
 	}
 	if err := d.backend.DeleteDeployment(namespace(in), workloadName(in, "obs")); err != nil {
 		return err
@@ -1428,6 +1445,18 @@ func decodeObservability(in registry.AssetInput) (*assetdefs.ObservabilitySpec, 
 		return nil, fmt.Errorf("expected ObservabilitySpec, got %T", typed)
 	}
 	return spec, nil
+}
+
+func observabilityEnvOnly(spec *assetdefs.ObservabilitySpec) bool {
+	if spec == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(spec.Mode)) {
+	case "auto", "env":
+		return true
+	default:
+		return false
+	}
 }
 
 func computeHash(in registry.AssetInput, spec *assetdefs.ComputeSpec) string {

@@ -36,6 +36,31 @@ func ValidatePartition(p *partitiondomain.Partition) error {
 			return err
 		}
 	}
+	switch p.Spec.Defaults.Observability.AutoInstrument {
+	case "", "otelc", "none":
+	default:
+		return fmt.Errorf("invalid observability autoInstrument %q", p.Spec.Defaults.Observability.AutoInstrument)
+	}
+	switch p.Spec.Defaults.Observability.CloudWatch {
+	case "", "auto", "true", "false":
+	default:
+		return fmt.Errorf("invalid observability cloudwatch %q", p.Spec.Defaults.Observability.CloudWatch)
+	}
+	switch p.Spec.Defaults.Observability.Instrumentation {
+	case "", "auto", "env", "sidecar", "gateway", "collector":
+	default:
+		return fmt.Errorf("invalid observability instrumentation %q", p.Spec.Defaults.Observability.Instrumentation)
+	}
+	if interval := p.Spec.Defaults.Probes.Interval; interval != "" {
+		if err := validateInterval(interval); err != nil {
+			return fmt.Errorf("invalid probe interval: %w", err)
+		}
+	}
+	for _, port := range p.Spec.Defaults.Probes.TCPPorts {
+		if port <= 0 || port > 65535 {
+			return fmt.Errorf("invalid probe TCP port %d", port)
+		}
+	}
 	return nil
 }
 
