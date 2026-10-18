@@ -185,6 +185,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		state.Health = statedomain.CloneHealthObservation(result.Health)
 		state.ApplyReadiness = statedomain.CloneApplyReadiness(result.ApplyReadiness)
 		state.AssetObservations = statedomain.CloneAssetObservationMap(result.AssetObservations)
+		recordAssetObservations(result)
 		state.LastError = nil
 		driftSettled := result.Drift == nil || result.Drift.Status == "InSync" || len(result.Drift.ChangedAssets) == 0
 		if state.IntentType == intentdomain.TypeObserved {
@@ -338,6 +339,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		state.Health = statedomain.CloneHealthObservation(result.Health)
 		state.ApplyReadiness = statedomain.CloneApplyReadiness(result.ApplyReadiness)
 		state.AssetObservations = statedomain.CloneAssetObservationMap(result.AssetObservations)
+		recordAssetObservations(result)
 		state.Outputs = copyStringMap(result.Outputs)
 		if !applyResultSettled(result) {
 			state.LastError = nil
