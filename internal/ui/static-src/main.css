@@ -2512,3 +2512,5 @@ body,
 [data-theme] .progressing-asset-item { color: var(--ui-muted) !important; }
 [data-theme] .progressing-assets-header { color: var(--ui-accent) !important; }
 [data-theme] .fact { background: var(--ui-elevated) !important; border-color: var(--ui-border) !important; color: var(--ui-muted) !important; }
+
+.set-manage-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ui-text); font-weight: 600; }

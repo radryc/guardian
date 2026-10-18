@@ -63,7 +63,7 @@ export function initSetsPanel(options: SetsOptions): void {
   opts = options;
   document.getElementById("newSetButton")?.addEventListener("click", () => openSetEditor());
   document.getElementById("createPartitionButton")?.addEventListener("click", () => openSetEditor());
-  document.getElementById("manageSetsButton")?.addEventListener("click", () => openSetEditor());
+  document.getElementById("manageSetsButton")?.addEventListener("click", () => openManageSets());
   document.getElementById("partitionSearch")?.addEventListener("input", renderSidebar);
   document.getElementById("setCards")?.addEventListener("click", (event) => {
     const target = (event.target as HTMLElement).closest<HTMLElement>("[data-open-set]");
@@ -444,7 +444,6 @@ function legendRow(label: string, value: number, kind: string): string {
 
 // ── Set editor / picker / delete ─────────────────────
 function openSetEditor(set?: SetRecord, parentId?: string): void {
-  if (!set && parentId === undefined && opts.getSelectedSet() === "ungrouped") return;
   const editing = Boolean(set && set.id !== "ungrouped");
   const parent = set?.parentId ?? parentId ?? "";
   const parentOptions = sets.filter((candidate) => candidate.id !== set?.id).map((candidate) =>
@@ -496,11 +495,41 @@ async function deleteSet(set?: SetRecord): Promise<void> {
   try {
     await fetchJSON(`/api/sets/${encodeURIComponent(set.id)}`, { method: "DELETE" });
     opts.onToast("Set deleted.", "success");
+    closeModal();
     opts.onOpenSet("");
     await refreshSets();
   } catch (error: any) {
     opts.onToast(error?.message?.includes("not empty") ? "Move partitions and subsets first." : error?.message ?? "Could not delete set.", "error");
   }
+}
+
+function openManageSets(): void {
+  const rows = sets.map((set) => {
+    const parent = set.parentId ? sets.find((candidate) => candidate.id === set.parentId) : undefined;
+    return `<div class="set-picker-row">
+      <span class="set-manage-name">${escapeHtml(set.name)}</span>
+      <span class="pill">${set.partitionCount ?? set.partitions?.length ?? 0} partitions${parent ? ` · ${escapeHtml(parent.name)}` : ""}</span>
+      <button class="btn-secondary" style="padding:2px 7px;font-size:10px;" data-manage-edit="${escapeAttr(set.id)}">Edit</button>
+      <button class="btn-ghost" style="padding:2px 7px;font-size:10px;" data-manage-delete="${escapeAttr(set.id)}">Delete</button>
+    </div>`;
+  }).join("");
+  openModal(`<div class="set-modal-head"><h2>Manage sets</h2><button class="btn-ghost" data-modal-close>×</button></div>
+    <div class="set-modal-body"><div class="set-picker-list">${rows || `<div class="empty-state">No sets yet.</div>`}</div></div>
+    <div class="set-modal-actions"><button class="btn-ghost" data-modal-close>Close</button><button class="btn-primary" id="setManageNew">New set</button></div>`);
+  document.getElementById("setManageNew")?.addEventListener("click", () => openSetEditor());
+  setModal?.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    const edit = target.closest<HTMLElement>("[data-manage-edit]");
+    if (edit) {
+      openSetEditor(sets.find((set) => set.id === edit.dataset.manageEdit));
+      return;
+    }
+    const del = target.closest<HTMLElement>("[data-manage-delete]");
+    if (del) {
+      const set = sets.find((candidate) => candidate.id === del.dataset.manageDelete);
+      if (set) deleteSet(set).then(() => { closeModal(); openManageSets(); }).catch(opts.onError);
+    }
+  });
 }
 
 function openPartitionPicker(setId: string): void {
