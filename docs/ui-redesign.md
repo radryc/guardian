@@ -3,6 +3,9 @@
 Status: draft for review. Scope: the Guardian web UI
 (`internal/ui/templates/index.html`, `internal/ui/static-src/*`).
 
+Mockups: `docs/mockups/overview.html`, `application.html`, `sets.html`,
+`fleet.html` (see `docs/mockups/README.md`).
+
 ## 1. Goal
 
 Guardian should feel like one small tool that an on-call SRE can use at 3am,
@@ -72,7 +75,35 @@ Selecting an application opens a partition view:
 - Topology / Rollouts / History become partition-scoped tabs. They no longer
   appear when no partition is selected.
 
-This is a **navigation change only**; every existing panel and endpoint stays.
+This is a navigation change plus a virtual-set metadata store; every existing
+panel and endpoint stays.
+
+### Virtual sets
+
+Partitions are grouped into **named, nested sets** for navigation. A set is
+metadata only: it never changes ownership, deployment, or MonoFS paths.
+
+```
+Department X — AWS Production
+  └── Payments
+        demo-deploy
+        demo-build
+        Refunds          (empty subset)
+  └── Platform
+```
+
+- One parent per set, arbitrary depth, cycles rejected.
+- A partition can appear in multiple sets, with one optional **primary set**.
+- Each set has a description and labels (`department`, `cloud`, `account`,
+  `region`, `env`, `owner`) so “department X in AWS” is readable.
+- The sidebar tree replaces the flat partition list. Counts and health roll up
+  through children; children are lazy-loaded.
+- **Ungrouped** is a virtual set for partitions not in any set.
+- Set metadata lives in the Guardian store (`/.registry/sets`), not in repos.
+- Set pages are paginated; “Add partitions” searches by name/repo/path and
+  supports multi-select. This is how thousands of partitions stay navigable.
+- Unassigned is a partition state, not a set: a partition can be grouped in a
+  set and still have no repository binding.
 
 ## 5. Screen designs
 
@@ -81,13 +112,17 @@ This is a **navigation change only**; every existing panel and endpoint stays.
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ Overview                                            [Search]  [Refresh]  │
-│ 4 applications · 3 healthy · 1 needs attention        last reconcile 12s  │
+│ 5 applications · 2 healthy · 1 observed · 2 need attention   reconcile 12s│
 ├──────────────────────────────────────────────────────────────────────────┤
-│ NEEDS ATTENTION (1)                                                      │
+│ NEEDS ATTENTION (2)                                                      │
 │ ┌──────────────────────────────────────────────────────────────────────┐ │
 │ │ ● demo-observe   ObservedDrifted   1 drifted resource  12s ago       │ │
 │ │   SSM parameter /strata-demo/observe/value changed outside Guardian  │ │
 │ │   [View drift]  [History]                                            │ │
+│ ├──────────────────────────────────────────────────────────────────────┤ │
+│ │ ● demo-new   Unassigned   no repository assigned                     │ │
+│ │   Desired state has no source of truth until a repo is bound.        │ │
+│ │   [Bind repo]  [Open Fleet]                                          │ │
 │ └──────────────────────────────────────────────────────────────────────┘ │
 │                                                                          │
 │ RECENTLY CHANGED                                                         │
@@ -95,14 +130,33 @@ This is a **navigation change only**; every existing panel and endpoint stays.
 │ demo-build    Healthy      image :demo       applied 6m ago     [open]  │
 │ demo-import   Observed     snapshot          checked 1m ago     [open]  │
 │                                                                          │
-│ ALL APPLICATIONS (4)                                  [Healthy ▾] [New]  │
+│ ALL APPLICATIONS (5)                                  [Healthy ▾] [New]  │
 │ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ │
 │ │ demo-deploy   │ │ demo-build    │ │ demo-import   │ │ demo-observe  │ │
 │ │ ● Healthy     │ │ ● Healthy     │ │ ● Observed    │ │ ● Attention   │ │
-│ │ 4 assets      │ │ 3 assets      │ │ observed only │ │ 1 drift       │ │
+│ │ source …      │ │ source …      │ │ source …      │ │ source …      │ │
 │ │ Native CDK    │ │ Native CDK    │ │ Adopted       │ │ Observe only  │ │
 │ └───────────────┘ └───────────────┘ └───────────────┘ └───────────────┘ │
+│ ┌───────────────┐                                                       │
+│ │ demo-new      │                                                       │
+│ │ ● Unassigned  │  no repository · [Bind repo]                          │
+│ └───────────────┘                                                       │
 └──────────────────────────────────────────────────────────────────────────┘
+```
+
+The sidebar is a **set tree**, not a flat partition list:
+
+```
+Department X — AWS Production (4)
+  └── Payments (3)
+        demo-deploy
+        demo-build
+        demo-new (unassigned)
+        Refunds (0)
+  └── Platform (1)
+Department Y — AWS Development (1)
+  └── demo-observe
+Ungrouped (0)
 ```
 
 Changes from today:
@@ -110,19 +164,19 @@ Changes from today:
 - One health sentence replaces the six-cell stat strip. The numbers are still
   available in the sentence and in filters; they no longer dominate the page.
 - **Needs attention** is the first thing on the page and includes the *reason*
-  and the next action, not just a status.
+  and the next action, not just a status. Assignment gaps are attention items.
 - **Recently changed** answers "what changed?" without opening History.
-- **All applications** is a filtered card grid; the existing intent map and
-  service-health cards move into the partition view (they are detail, not
-  overview).
-- Empty state: "Nothing needs attention. 4 applications healthy." with a link
+- **All applications** is a filtered card grid; each card shows its source
+  repo and MonoFS path. The intent map and service-health cards move into the
+  partition view.
+- Empty state: "Nothing needs attention. 5 applications healthy." with a link
   to recent changes.
 
 ### 5.2 Application / partition view
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ ← Overview   demo-observe                              [Reconcile] [⋯]   │
+│ ← Overview   demo-observe                              [Check now] [⋯]   │
 │ ● ObservedDrifted · Observe only · account 7553… · us-east-1             │
 │ last observed 12s ago · 1 drifted resource                               │
 ├──────────────────────────────────────────────────────────────────────────┤
@@ -145,6 +199,10 @@ Changes from today:
   (intent map, service health, recent events) only for this partition.
 - Drift gets a first-class card: resource, desired vs live, and a History link.
   This is the S3 demo's "it did not fix it" moment.
+- **Source & targets** is a full-width card on Summary: repository, branch/
+  commit, repo path, MonoFS path, payload path, selector, target pusher, and
+  per-intent pusher mapping. Missing repo or unregistered pusher turns the card
+  into an explicit warning with the next action.
 - **Rollouts** and **History** keep their current content; they are scoped here.
 
 ### 5.3 Adopt — one queue
@@ -191,6 +249,38 @@ Changes from today:
 - Keep the current tables and add a health dot + last-ingest/error column.
 - The row is the unit of action: "open repo", "remove binding", "re-register".
 - The page answers "is my fleet connected?" before "what are the URLs?".
+- **Fleet is the only global view.** Partition pages show only the repos and
+  pushers assigned to that partition; “Manage in Fleet” opens the filtered
+  global view.
+
+### 5.5 Set page — named, nested navigation
+
+```
+Breadcrumb: Sets / Department X — AWS Production / Payments
+
+Payments                                      [Add partitions] [Edit set]
+Customer payment services for Department X, AWS prod, us-east-1.
+department X · cloud AWS · account 7806… · region us-east-1 · owner payments-team
+
+3 partitions · 2 healthy · 1 unassigned       parent: Department X · 1 subset
+
+SUBSETS
+  Refunds (0)  ·  empty
+
+PARTITIONS                                    [Assignment: all] [Status: all]
+  demo-deploy  Healthy      strata-demo-deploy   /partitions/demo-deploy   Assigned ✓
+  demo-build   Healthy      strata-demo-build    /partitions/demo-build    Assigned ✓
+  demo-new     Unassigned   —                    /partitions/demo-new      Unassigned  [Bind repo]
+  Showing 1–3 of 3
+```
+
+- The set page shows **only its own partitions and child sets**.
+- Each partition row carries the source repo, MonoFS path, and assignment
+  state, so ownership is visible where the grouping happens.
+- Set details show parent, labels, visibility, created/updated, and the rule
+  that membership is virtual.
+- Delete is disabled while a set contains partitions or subsets. Move the
+  contents first.
 
 ## 6. Status model
 
@@ -242,30 +332,48 @@ Rules:
 - Add empty-state copy and CLI hint to Unmanaged Stacks and Pushers & Repos.
 - Keep the current tab set behind a feature flag if needed; no route changes.
 
-### Phase 2 — partition-scoped navigation (3–5 days)
+### Phase 2 — partition-scoped navigation and assignment (3–5 days)
 
 - Hide Topology/Rollouts/History until a partition is selected.
 - Merge Unmanaged Stacks + Scan & Import into **Adopt**.
 - Merge Pushers & Repos into **Fleet**.
-- Add the Summary tab and the drift card.
+- Add the Summary tab, the drift card, and the **Source & targets** card.
+- Add the scoped assignment aggregate to the partition API (repos by binding,
+  pushers by intent, paths, warnings).
+- Remove Pushers & Repos from the partition tab bar; link to filtered Fleet.
 - Keep deep links working (`/#partition/demo-observe/history`).
 
-### Phase 3 — polish (optional)
+### Phase 3 — virtual sets (5–8 days)
+
+- Set records and membership index in the Guardian store
+  (`/.registry/sets`, `/.registry/set-memberships`).
+- Tree API with ACL-filtered counts and lazy children.
+- Sidebar set tree, pinned/recent sets, **Ungrouped**.
+- Set page: description, labels, subsets, paginated partition table with
+  source/MonoFS path/assignment columns.
+- Create/edit/move/delete sets (admin-only; delete blocked while non-empty).
+- “Add partitions” multi-select picker with name/repo/path search.
+
+### Phase 4 — polish (optional)
 
 - Command palette, saved filters, keyboard shortcuts.
-- "Copy CLI command" on every action.
-- Screenshot-based tests for the three primary screens.
+- “Copy CLI command” on every action.
+- Screenshot-based tests for the primary screens.
 
-## 9. Open questions for review
+## 9. Decisions applied
 
-1. Do we keep the current eight-tab navigation for this iteration, or adopt the
-   four-destination IA in §4? The latter is the bigger simplification but
-   changes muscle memory.
-2. Is the primary landing question "what is broken?" (attention-first, as
-   designed) or "show me all applications" (card grid first)?
-3. Should **Adopt** and **Fleet** stay separate top-level screens? They serve
-   different personas (platform admin vs on-call), but both are "setup" work.
-4. Which statuses are canonical for the API? I propose the seven in §6; the
-   current API also emits `Stable`, `Needs action`, and `Progressing`.
-5. Do you want an HTML mockup of the Overview and Application screens next, or
-   should I implement Phase 1 directly?
+The mockups follow the recommended defaults:
+
+1. **Four destinations** — Overview, Adopt, Fleet, Build.
+2. **Attention-first overview** — needs-attention rows appear before the app grid.
+3. **Adopt and Fleet stay separate** — setup/admin work vs. daily operations.
+4. **Status vocabulary** — the seven canonical statuses in §6.
+5. **Virtual sets** — nested, many-to-many membership with one optional primary
+   set; descriptions and labels are first-class.
+6. **Unassigned is attention, not blocking** — manual/observe-only partitions
+   remain valid.
+7. **Delete non-empty set is blocked** — move or delete contents first.
+8. **Set edits are admin-only** — contents are filtered by the partition ACL.
+
+Next step: review `docs/mockups/` before implementation. The mockups are design
+artifacts; they do not change the production UI.

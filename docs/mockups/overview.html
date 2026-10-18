@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Guardian — Overview mockup</title>
+  <link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="brand" href="overview.html"><span class="brand-mark"></span>Guardian</a>
+  <div class="crumb"><span>Local</span><span class="sep">/</span><strong>Overview</strong></div>
+  <div class="spacer"></div>
+  <span class="pill">v0.18.0 · e83877a</span>
+  <span class="pill"><span class="dot"></span>updated 12s ago</span>
+</nav>
+
+<div class="shell">
+  <aside class="sidebar">
+    <nav class="nav">
+      <button class="nav-item active">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="7" height="7" rx="1.5"/><rect x="11" y="2" width="7" height="7" rx="1.5"/><rect x="2" y="11" width="7" height="7" rx="1.5"/><rect x="11" y="11" width="7" height="7" rx="1.5"/></svg>
+        <span>Overview</span>
+      </button>
+      <button class="nav-item">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4.5h14M3 10h14M3 15.5h9"/><circle cx="16" cy="15.5" r="2"/></svg>
+        <span>Adopt</span>
+      </button>
+      <a class="nav-item" href="fleet.html">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="10" cy="5" rx="6.5" ry="2.5"/><path d="M3.5 5v5c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5V5"/><path d="M3.5 10v5c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5v-5"/></svg>
+        <span>Fleet</span>
+      </a>
+      <button class="nav-item">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="6" height="6" rx="1.5"/><rect x="12" y="12" width="6" height="6" rx="1.5"/><path d="M8 5h4a3 3 0 0 1 3 3v4"/></svg>
+        <span>Build</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-rule"></div>
+
+    <div class="sidebar-section">
+      <div class="section-label">Sets</div>
+      <div class="set-toolbar">
+        <input class="search" type="search" placeholder="Search sets and partitions" aria-label="Search sets and partitions">
+        <a class="btn ghost small" href="sets.html">+</a>
+      </div>
+
+      <div class="set-tree">
+        <a class="set-row active" href="overview.html"><span class="chevron">▾</span><span class="name">All applications</span><span class="count">5</span><span class="health amber"></span></a>
+        <div class="set-divider"></div>
+
+        <a class="set-row" href="sets.html"><span class="chevron">▾</span><span class="name">Department X — AWS Production</span><span class="count">4</span><span class="health amber"></span></a>
+        <a class="set-row depth-1" href="sets.html"><span class="chevron">▾</span><span class="name">Payments</span><span class="count">3</span><span class="health amber"></span></a>
+        <a class="set-row depth-2 partition" href="application.html"><span class="status-dot green"></span><span class="name">demo-deploy</span></a>
+        <a class="set-row depth-2 partition" href="application.html"><span class="status-dot green"></span><span class="name">demo-build</span></a>
+        <a class="set-row depth-2 partition" href="fleet.html"><span class="status-dot amber"></span><span class="name">demo-new</span><span class="count">unassigned</span></a>
+        <a class="set-row depth-2" href="sets.html"><span class="chevron">▸</span><span class="name">Refunds</span><span class="count">0</span></a>
+        <a class="set-row depth-1" href="sets.html"><span class="chevron">▸</span><span class="name">Platform</span><span class="count">1</span><span class="health neutral"></span></a>
+
+        <a class="set-row" href="sets.html"><span class="chevron">▾</span><span class="name">Department Y — AWS Development</span><span class="count">1</span><span class="health amber"></span></a>
+        <a class="set-row depth-1 partition" href="application.html"><span class="status-dot amber"></span><span class="name">demo-observe</span></a>
+
+        <a class="set-row" href="sets.html"><span class="chevron">▸</span><span class="name">Ungrouped</span><span class="count">0</span></a>
+      </div>
+
+      <div class="set-divider"></div>
+      <div class="set-tree">
+        <a class="set-row action" href="sets.html"><span class="chevron">+</span><span class="name">New set</span></a>
+        <a class="set-row action" href="sets.html"><span class="chevron">⌘</span><span class="name">Manage sets</span></a>
+      </div>
+
+      <div class="section-label" style="margin-top: 14px;">Pinned</div>
+      <div class="set-tree">
+        <a class="set-row" href="sets.html"><span class="star on">★</span><span class="name">Payments</span><span class="count">3</span></a>
+        <a class="set-row" href="sets.html"><span class="star on">★</span><span class="name">Department Y — Development</span><span class="count">1</span></a>
+      </div>
+    </div>
+
+    <div class="sidebar-actions">
+      <button class="btn ghost wide">Refresh</button>
+      <button class="btn primary wide">New application</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="page-head">
+      <div>
+        <p class="eyebrow">Control center</p>
+        <h1>Overview</h1>
+        <p class="subtitle">What is deployed, what is broken, and what changed.</p>
+      </div>
+      <div class="head-right">
+        <button class="btn">View all applications</button>
+      </div>
+    </header>
+
+    <div class="content">
+
+      <div class="health-line">
+        <strong>5 applications</strong>
+        <span class="sep">·</span>
+        <span><span class="status-dot green"></span> 2 healthy</span>
+        <span><span class="status-dot neutral"></span> 1 observed</span>
+        <span><span class="status-dot amber"></span> 2 need attention</span>
+        <span class="right">last reconcile 12s ago · all accounts reachable</span>
+      </div>
+
+      <section class="card attention-card">
+        <div class="card-head">
+          <div>
+            <h2>Needs attention</h2>
+            <p class="subtitle">Drift, failures, and assignment gaps are listed first.</p>
+          </div>
+          <span class="meta">2 items</span>
+        </div>
+        <div class="attention-row" style="margin-top: 12px;">
+          <div class="attention-main">
+            <div class="attention-title">
+              <span class="app">demo-observe</span>
+              <span class="status-text amber">ObservedDrifted</span>
+              <span class="badge amber">Observe only</span>
+            </div>
+            <div class="attention-reason">
+              SSM parameter <code>/strata-demo/observe/value</code> changed outside Guardian
+              · desired <code>"observe-me"</code> · live <code>"drifted-by-demo"</code>
+            </div>
+          </div>
+          <div class="attention-actions">
+            <a class="btn small" href="application.html">View drift</a>
+            <button class="btn ghost small">History</button>
+          </div>
+        </div>
+        <div class="attention-row">
+          <div class="attention-main">
+            <div class="attention-title">
+              <span class="app">demo-new</span>
+              <span class="status-text amber">Unassigned</span>
+              <span class="badge">No source</span>
+            </div>
+            <div class="attention-reason">
+              No repository is assigned. Desired state has no source of truth until a repo is bound.
+            </div>
+          </div>
+          <div class="attention-actions">
+            <a class="btn small" href="fleet.html">Bind repo</a>
+            <a class="btn ghost small" href="fleet.html">Open Fleet</a>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>Recently changed</h2>
+            <p class="subtitle">The last deployment or observed change per application.</p>
+          </div>
+          <span class="meta">last 15 minutes</span>
+        </div>
+        <div style="padding-top: 10px;">
+          <table class="table">
+            <thead>
+              <tr><th>Application</th><th>Status</th><th>Change</th><th>When</th><th></th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <div class="app-name">demo-deploy</div>
+                  <div class="repo-sub">strata-demo-deploy · /partitions/demo-deploy</div>
+                </td>
+                <td><span class="status-dot green"></span> <span class="status-text green">Healthy</span></td>
+                <td><span class="mono">rollout dep_9a2a</span> applied</td>
+                <td class="when">4m ago</td>
+                <td><a class="open" href="application.html">Open →</a></td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="app-name">demo-build</div>
+                  <div class="repo-sub">strata-demo-build · /partitions/demo-build</div>
+                </td>
+                <td><span class="status-dot green"></span> <span class="status-text green">Healthy</span></td>
+                <td><span class="mono">image demo:65ee4e0</span> deployed</td>
+                <td class="when">6m ago</td>
+                <td><a class="open" href="application.html">Open →</a></td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="app-name">demo-import</div>
+                  <div class="repo-sub">strata-demo-import · /partitions/demo-import</div>
+                </td>
+                <td><span class="status-dot neutral"></span> <span class="status-text neutral">Observed</span></td>
+                <td><span class="mono">snapshot</span> refreshed</td>
+                <td class="when">1m ago</td>
+                <td><a class="open" href="application.html">Open →</a></td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="app-name">demo-observe</div>
+                  <div class="repo-sub">strata-demo-observe · /partitions/demo-observe</div>
+                </td>
+                <td><span class="status-dot amber"></span> <span class="status-text amber">ObservedDrifted</span></td>
+                <td><span class="mono">1 resource</span> drifted</td>
+                <td class="when">12s ago</td>
+                <td><a class="open" href="application.html">Open →</a></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <div class="section-bar">
+        <span class="title">All applications</span>
+        <div class="right">
+          <button class="btn small ghost">Status: all</button>
+          <button class="btn small ghost">New</button>
+        </div>
+      </div>
+
+      <div class="app-grid">
+        <a class="app-card" href="application.html">
+          <div class="top"><span class="status-dot green"></span><span class="name">demo-deploy</span></div>
+          <div class="status"><span class="status-text green">Healthy</span><span style="color: var(--faint);">·</span><span style="color: var(--muted);">4 assets</span></div>
+          <div class="details"><span>account 7806…</span><span>us-east-1</span></div>
+          <div class="repo-sub">strata-demo-deploy · /partitions/demo-deploy</div>
+          <div class="foot"><span class="badge blue">Native CDK</span><span class="open">Open →</span></div>
+        </a>
+        <a class="app-card" href="application.html">
+          <div class="top"><span class="status-dot green"></span><span class="name">demo-build</span></div>
+          <div class="status"><span class="status-text green">Healthy</span><span style="color: var(--faint);">·</span><span style="color: var(--muted);">3 assets</span></div>
+          <div class="details"><span>account 7806…</span><span>us-east-1</span></div>
+          <div class="repo-sub">strata-demo-build · /partitions/demo-build</div>
+          <div class="foot"><span class="badge blue">Native CDK</span><span class="open">Open →</span></div>
+        </a>
+        <a class="app-card" href="application.html">
+          <div class="top"><span class="status-dot neutral"></span><span class="name">demo-import</span></div>
+          <div class="status"><span class="status-text neutral">Observed</span><span style="color: var(--faint);">·</span><span style="color: var(--muted);">1 intent</span></div>
+          <div class="details"><span>account 6772…</span><span>us-east-1</span></div>
+          <div class="repo-sub">strata-demo-import · /partitions/demo-import</div>
+          <div class="foot"><span class="badge">Adopted from AWS</span><span class="open">Open →</span></div>
+        </a>
+        <a class="app-card" href="application.html">
+          <div class="top"><span class="status-dot amber"></span><span class="name">demo-observe</span></div>
+          <div class="status"><span class="status-text amber">ObservedDrifted</span><span style="color: var(--faint);">·</span><span style="color: var(--muted);">1 intent</span></div>
+          <div class="details"><span>account 7553…</span><span>us-east-1</span></div>
+          <div class="repo-sub">strata-demo-observe · /partitions/demo-observe</div>
+          <div class="foot"><span class="badge">Observe only</span><span class="open">Open →</span></div>
+        </a>
+        <a class="app-card" href="fleet.html">
+          <div class="top"><span class="status-dot amber"></span><span class="name">demo-new</span><span class="badge amber">Unassigned</span></div>
+          <div class="status"><span class="status-text amber">No source</span><span style="color: var(--faint);">·</span><span style="color: var(--muted);">0 intents</span></div>
+          <div class="details"><span>account 7806…</span><span>us-east-1</span></div>
+          <div class="repo-sub" style="color: var(--amber);">No repository assigned</div>
+          <div class="foot"><span class="badge">Manual</span><span class="open">Bind repo →</span></div>
+        </a>
+      </div>
+
+    </div>
+
+    <p class="mockup-note">
+      Static design mockup — not the production UI.
+      <a href="sets.html">Sets →</a> · <a href="fleet.html">Fleet →</a> · <a href="application.html">Application →</a>
+    </p>
+  </main>
+</div>
+
+</body>
+</html>
