@@ -119,9 +119,21 @@ func TestRepoBindings(t *testing.T) {
 	if err := store.PutRepo(ctx, badSelector); err == nil {
 		t.Fatalf("expected invalid selector error")
 	}
-	noBindings := &Repo{Name: "strata", Pusher: "aws-1"}
-	if err := store.PutRepo(ctx, noBindings); err == nil {
-		t.Fatalf("expected missing binding error")
+	// A repo can be registered before it has a pusher or partition bindings,
+	// then bound later from Connections or `guardianctl repo assign`.
+	unbound := &Repo{Name: "unbound", Source: "/.repos/github.com/example/unbound", SourceType: "monofs"}
+	if err := store.PutRepo(ctx, unbound); err != nil {
+		t.Fatalf("PutRepo(unbound) error = %v", err)
+	}
+	loaded, err = store.GetRepo(ctx, "unbound")
+	if err != nil {
+		t.Fatalf("GetRepo(unbound) error = %v", err)
+	}
+	if loaded.Pusher != "" || len(loaded.BindingList()) != 0 {
+		t.Fatalf("unbound repo = %+v", loaded)
+	}
+	if badSource := (&Repo{Name: "bad-source", SourceType: "monofs", Source: "relative/path"}); badSource.Validate() == nil {
+		t.Fatalf("expected invalid monofs source error")
 	}
 }
 

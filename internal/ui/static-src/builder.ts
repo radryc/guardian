@@ -1750,7 +1750,7 @@ function assignmentBlockHtml(assignments: any): string {
   const pushers = Array.isArray(assignments?.pushers) ? assignments.pushers : [];
   const warnings = Array.isArray(assignments?.warnings) ? assignments.warnings : [];
   const repo = repos[0];
-  const target = pushers.map((p: any) => `${p.name}${p.registered === false ? " (unregistered)" : ""}`).join(", ") || "no target pusher";
+  const target = pushers.map((p: any) => `${p.name}${p.registered === false ? " (unregistered)" : ""}`).join(", ") || "no pusher";
   return `
     <div class="builder-assignment-block">
       ${repo ? `
@@ -1758,7 +1758,7 @@ function assignmentBlockHtml(assignments: any): string {
         <div class="builder-assignment-row"><span>Repo path</span><code>${escapeHtml(repo.repoPath ?? "")}</code></div>
         <div class="builder-assignment-row"><span>MonoFS</span><code>${escapeHtml(repo.monofsPath ?? "")}</code></div>
       ` : `<div class="builder-assignment-note">No repository bound yet.</div>`}
-      <div class="builder-assignment-row"><span>Targets</span><code>${escapeHtml(target)}</code></div>
+      <div class="builder-assignment-row"><span>Pusher</span><code>${escapeHtml(target)}</code></div>
       ${warnings.length ? `<div class="builder-assignment-warning">${warnings.map((w: string) => escapeHtml(w)).join("<br>")}</div>` : ""}
     </div>`;
 }

@@ -59,6 +59,9 @@ type PartitionSummary struct {
 	Status        string            `json:"status"`
 	DisplayStatus string            `json:"displayStatus"`
 	Health        string            `json:"health"`
+	// Locked is true when any intent in the partition is locked. The sidebar
+	// uses it to show a white dot instead of the health color.
+	Locked bool `json:"locked,omitempty"`
 	// Origin mirrors the partition detail origin (deployed/adopted/observed).
 	Origin       string `json:"origin,omitempty"`
 	OriginLabel  string `json:"originLabel,omitempty"`
@@ -504,6 +507,9 @@ func summarizePartition(detail *PartitionDetailResponse) PartitionSummary {
 		summary.Errors = append(summary.Errors, detail.CompilerError)
 	}
 	for _, intent := range detail.Intents {
+		if intent.Locked {
+			summary.Locked = true
+		}
 		summary.AssetCount += len(intent.Assets)
 		switch intent.Health {
 		case "healthy":
