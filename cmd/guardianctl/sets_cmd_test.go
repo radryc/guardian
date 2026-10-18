@@ -77,7 +77,7 @@ func TestSetsCLILifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create parent: %v", err)
 	}
-	child, err := storeSets.Create(ctx, &setstore.Set{Name: "Child", ParentID: parent.ID})
+	child, err := storeSets.Create(ctx, &setstore.Set{Name: "Child", ParentID: parent.ID, Labels: map[string]string{"team": "platform", "env": "demo"}})
 	if err != nil {
 		t.Fatalf("create child: %v", err)
 	}
@@ -100,6 +100,20 @@ func TestSetsCLILifecycle(t *testing.T) {
 	}
 	if got.Description != "updated" || !got.Pinned || len(got.Partitions) != 2 {
 		t.Fatalf("child after update = %+v", got)
+	}
+	if err := run(setsUpdateCommand(store, printer), []string{"--set", child.ID, "--remove-label", "team"}); err != nil {
+		t.Fatalf("remove label: %v", err)
+	}
+	got, _ = storeSets.Get(ctx, child.ID)
+	if _, ok := got.Labels["team"]; ok || got.Labels["env"] != "demo" {
+		t.Fatalf("labels after remove = %+v", got.Labels)
+	}
+	if err := run(setsUpdateCommand(store, printer), []string{"--set", child.ID, "--clear-labels", "--clear-description"}); err != nil {
+		t.Fatalf("clear metadata: %v", err)
+	}
+	got, _ = storeSets.Get(ctx, child.ID)
+	if len(got.Labels) != 0 || got.Description != "" {
+		t.Fatalf("metadata after clear = %+v", got)
 	}
 	if err := run(setsDeleteCommand(store, printer), []string{"--set", child.ID}); err == nil {
 		t.Fatal("delete non-empty set should fail")

@@ -139,10 +139,14 @@ func setsUpdateCommand(store guardianapi.Store, printer *output.Printer) *comman
 	setRef := flags.String("set", "", "set id or name")
 	name := flags.String("name", "", "new display name")
 	description := flags.String("description", "", "new description")
+	clearDescription := flags.Bool("clear-description", false, "clear the description")
 	parent := flags.String("parent", "", "new parent set id (empty leaves unchanged)")
 	pinned := flags.String("pinned", "", "true|false (empty leaves unchanged)")
+	clearLabels := flags.Bool("clear-labels", false, "remove all labels before applying --label")
 	var labels stringListFlag
 	flags.Var(&labels, "label", "key=value label to merge (repeatable)")
+	var removeLabels stringListFlag
+	flags.Var(&removeLabels, "remove-label", "label key to remove (repeatable)")
 	return &command.Command{Description: "Update a virtual set by id or name", Flags: flags, Run: func(ctx context.Context, args []string) error {
 		set, err := resolveSet(ctx, store, *setRef)
 		if err != nil {
@@ -151,7 +155,9 @@ func setsUpdateCommand(store guardianapi.Store, printer *output.Printer) *comman
 		if strings.TrimSpace(*name) != "" {
 			set.Name = *name
 		}
-		if *description != "" {
+		if *clearDescription {
+			set.Description = ""
+		} else if *description != "" {
 			set.Description = *description
 		}
 		if strings.TrimSpace(*parent) != "" {
@@ -163,6 +169,15 @@ func setsUpdateCommand(store guardianapi.Store, printer *output.Printer) *comman
 		}
 		if strings.TrimSpace(*pinned) != "" {
 			set.Pinned = strings.EqualFold(strings.TrimSpace(*pinned), "true")
+		}
+		if *clearLabels {
+			set.Labels = map[string]string{}
+		}
+		if set.Labels == nil {
+			set.Labels = map[string]string{}
+		}
+		for _, key := range removeLabels {
+			delete(set.Labels, strings.TrimSpace(key))
 		}
 		for key, value := range labelMap(labels) {
 			set.Labels[key] = value
