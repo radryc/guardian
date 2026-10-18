@@ -17,6 +17,7 @@ import (
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
 	orchestratorcommon "github.com/rydzu/ainfra/guardian/internal/orchestrator/common"
 	"github.com/rydzu/ainfra/guardian/internal/paths"
+	probepkg "github.com/rydzu/ainfra/guardian/internal/pusher/drivers/probe"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/driverutil"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/secrets"
@@ -65,6 +66,7 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 	reg.Register(&ObservabilityDriver{base})
 	reg.Register(&K8sResourceDriver{base})
 	reg.Register(&NetworkDriver{base})
+	reg.Register(probepkg.New())
 }
 
 func (d *VolumeDriver) Type() string                         { return "Volume" }
