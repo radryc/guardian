@@ -58,6 +58,28 @@ func TestSetsEnsureIsIdempotent(t *testing.T) {
 	if sets[0].Labels["scope"] != "core" {
 		t.Fatalf("labels = %v", sets[0].Labels)
 	}
+	// Missing partitions are planning metadata: --allow-missing records them
+	// now so the partition is grouped as soon as its config appears.
+	allowArgs := append(append([]string{}, args...), "--allow-missing")
+	if err := cmd.Flags.Parse(allowArgs); err != nil {
+		t.Fatalf("parse allow-missing: %v", err)
+	}
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("ensure allow-missing: %v", err)
+	}
+	sets, err = setstore.New(store).List(ctx)
+	if err != nil {
+		t.Fatalf("list after allow-missing: %v", err)
+	}
+	found := false
+	for _, partition := range sets[0].Partitions {
+		if partition == "missing" {
+			found = true
+		}
+	}
+	if !found || len(sets[0].Partitions) != 3 {
+		t.Fatalf("partitions after allow-missing = %v, want missing recorded", sets[0].Partitions)
+	}
 }
 
 func TestSetsCLILifecycle(t *testing.T) {

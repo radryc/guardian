@@ -73,3 +73,53 @@ func TestMoveRejectsCycles(t *testing.T) {
 		t.Fatalf("Move err = %v, want ErrCycle", err)
 	}
 }
+
+func TestSyncPartitionConfigAddsMembershipAndCreatesMissingSet(t *testing.T) {
+	ctx := context.Background()
+	store := New(memory.New())
+	core, err := store.Create(ctx, &Set{Name: "Core"})
+	if err != nil {
+		t.Fatalf("create Core: %v", err)
+	}
+	manual, err := store.Create(ctx, &Set{Name: "Manual"})
+	if err != nil {
+		t.Fatalf("create Manual: %v", err)
+	}
+	if _, err := store.AddPartitions(ctx, manual.ID, []string{"agent"}, nil, false); err != nil {
+		t.Fatalf("manual membership: %v", err)
+	}
+
+	// "Department X" is not pre-created: the partition config defines it.
+	if err := store.SyncPartitionConfig(ctx, "agent", []string{"Core", "Department X"}, "Core"); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	gotCore, _ := store.Get(ctx, core.ID)
+	if !containsString(gotCore.Partitions, "agent") {
+		t.Fatalf("Core partitions = %v, want agent", gotCore.Partitions)
+	}
+	gotManual, _ := store.Get(ctx, manual.ID)
+	if !containsString(gotManual.Partitions, "agent") {
+		t.Fatalf("manual membership was not preserved: %v", gotManual.Partitions)
+	}
+	department, err := store.FindByName(ctx, "Department X")
+	if err != nil {
+		t.Fatalf("Department X not created: %v", err)
+	}
+	if !containsString(department.Partitions, "agent") {
+		t.Fatalf("Department X partitions = %v, want agent", department.Partitions)
+	}
+	primary, err := store.PrimarySet(ctx, "agent")
+	if err != nil || primary != core.ID {
+		t.Fatalf("primary = %q, err = %v, want %q", primary, err, core.ID)
+	}
+
+	// Sync is idempotent.
+	if err := store.SyncPartitionConfig(ctx, "agent", []string{"Core", "Department X"}, "Core"); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	gotCore, _ = store.Get(ctx, core.ID)
+	if len(gotCore.Partitions) != 1 {
+		t.Fatalf("Core duplicated membership: %v", gotCore.Partitions)
+	}
+}

@@ -24,6 +24,7 @@ import (
 	"github.com/rydzu/ainfra/guardian/internal/orchestrator/common"
 	"github.com/rydzu/ainfra/guardian/internal/orchestrator/dispatcher"
 	"github.com/rydzu/ainfra/guardian/internal/paths"
+	setstore "github.com/rydzu/ainfra/guardian/internal/sets"
 	"github.com/rydzu/ainfra/guardian/internal/telemetry"
 	"github.com/rydzu/ainfra/guardian/internal/versioning/revisions"
 	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
@@ -236,6 +237,12 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 		return nil
 	} else if !errors.Is(derr, os.ErrNotExist) {
 		return fail(derr)
+	}
+
+	if partitionConfig, parseErr := manifest.ParsePartition(configContent); parseErr == nil {
+		if syncErr := setstore.New(r.store).SyncPartitionConfig(ctx, partitionName, partitionConfig.Spec.Sets, partitionConfig.Spec.PrimarySet); syncErr != nil {
+			log.Printf("reconciler: partition=%s virtual set sync error: %v", partitionName, syncErr)
+		}
 	}
 
 	intentEntries, err := r.store.ListDir(ctx, paths.PartitionIntentsDir(partitionName))
@@ -849,6 +856,9 @@ func (r *Reconciler) syncPartitionSchedules(ctx context.Context) error {
 			log.Printf("reconciler: discovery: partition=%s config parse error: %v", name, parseErr)
 			r.schedulePartitionJob(name, r.intervalStr, 0)
 			continue
+		}
+		if err := setstore.New(r.store).SyncPartitionConfig(ctx, name, partition.Spec.Sets, partition.Spec.PrimarySet); err != nil {
+			log.Printf("reconciler: discovery: partition=%s virtual set sync error: %v", name, err)
 		}
 		if partition.Spec.Reconciliation.Mode == "manual" {
 			// A deletion-marked partition must keep reconciling until teardown
