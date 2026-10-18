@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Guardian — Fleet mockup</title>
+  <link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="brand" href="overview.html"><span class="brand-mark"></span>Guardian</a>
+  <div class="crumb"><span>Local</span><span class="sep">/</span><strong>Fleet</strong></div>
+  <div class="spacer"></div>
+  <span class="pill">v0.18.0 · e83877a</span>
+  <span class="pill"><span class="dot"></span>updated 12s ago</span>
+</nav>
+
+<div class="shell">
+  <aside class="sidebar">
+    <nav class="nav">
+      <a class="nav-item" href="overview.html">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="7" height="7" rx="1.5"/><rect x="11" y="2" width="7" height="7" rx="1.5"/><rect x="2" y="11" width="7" height="7" rx="1.5"/><rect x="11" y="11" width="7" height="7" rx="1.5"/></svg>
+        <span>Overview</span>
+      </a>
+      <button class="nav-item">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4.5h14M3 10h14M3 15.5h9"/><circle cx="16" cy="15.5" r="2"/></svg>
+        <span>Adopt</span>
+      </button>
+      <a class="nav-item active" href="fleet.html">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="10" cy="5" rx="6.5" ry="2.5"/><path d="M3.5 5v5c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5V5"/><path d="M3.5 10v5c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5v-5"/></svg>
+        <span>Fleet</span>
+      </a>
+      <button class="nav-item">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="6" height="6" rx="1.5"/><rect x="12" y="12" width="6" height="6" rx="1.5"/><path d="M8 5h4a3 3 0 0 1 3 3v4"/></svg>
+        <span>Build</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-rule"></div>
+
+    <div class="sidebar-section">
+      <div class="section-label">Sets</div>
+      <div class="set-toolbar">
+        <input class="search" type="search" placeholder="Search sets and partitions" aria-label="Search sets and partitions">
+        <a class="btn ghost small" href="sets.html">+</a>
+      </div>
+
+      <div class="set-tree">
+        <a class="set-row" href="overview.html"><span class="chevron">▸</span><span class="name">All applications</span><span class="count">5</span><span class="health amber"></span></a>
+        <div class="set-divider"></div>
+
+        <a class="set-row" href="sets.html"><span class="chevron">▸</span><span class="name">Department X — AWS Production</span><span class="count">4</span><span class="health amber"></span></a>
+        <a class="set-row depth-1" href="sets.html"><span class="chevron">▸</span><span class="name">Payments</span><span class="count">3</span><span class="health amber"></span></a>
+        <a class="set-row depth-1" href="sets.html"><span class="chevron">▸</span><span class="name">Platform</span><span class="count">1</span><span class="health neutral"></span></a>
+
+        <a class="set-row" href="sets.html"><span class="chevron">▸</span><span class="name">Department Y — AWS Development</span><span class="count">1</span><span class="health amber"></span></a>
+        <a class="set-row" href="sets.html"><span class="chevron">▸</span><span class="name">Ungrouped</span><span class="count">0</span></a>
+      </div>
+
+      <div class="set-divider"></div>
+      <div class="set-tree">
+        <a class="set-row action" href="sets.html"><span class="chevron">+</span><span class="name">New set</span></a>
+        <a class="set-row action" href="sets.html"><span class="chevron">⌘</span><span class="name">Manage sets</span></a>
+      </div>
+    </div>
+
+    <div class="sidebar-actions">
+      <button class="btn ghost wide">Refresh</button>
+      <button class="btn primary wide">Register agent</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="page-head">
+      <div>
+        <p class="eyebrow">Control center</p>
+        <h1>Fleet</h1>
+        <p class="subtitle">Agents and source repositories. Partition pages show only what is assigned to them.</p>
+      </div>
+      <div class="head-right">
+        <button class="btn">Register agent</button>
+        <button class="btn primary">Add repository</button>
+      </div>
+    </header>
+
+    <div class="content">
+
+      <div class="health-line">
+        <strong>3 agents</strong>
+        <span class="sep">·</span>
+        <span><span class="status-dot green"></span> all ready</span>
+        <span class="sep">·</span>
+        <strong>4 repositories</strong>
+        <span class="sep">·</span>
+        <span><span class="status-dot amber"></span> 1 unassigned partition</span>
+        <span class="right">global inventory · partition views are scoped</span>
+      </div>
+
+      <div class="filter-bar">
+        <input class="search" type="search" placeholder="Search agents, repos, partitions…" aria-label="Search fleet">
+        <select class="select" aria-label="Filter by set">
+          <option>Set: all</option>
+          <option>Department X — AWS Production</option>
+          <option>Department Y — AWS Development</option>
+          <option>Ungrouped</option>
+        </select>
+        <select class="select" aria-label="Filter by status">
+          <option>Status: all</option>
+          <option>Ready</option>
+          <option>Attention</option>
+          <option>Unassigned</option>
+        </select>
+        <button class="btn small ghost">Clear</button>
+      </div>
+
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>Agents</h2>
+            <p class="subtitle">One agent per AWS account. The observed read API is used for scans and drift.</p>
+          </div>
+          <span class="meta">3 ready</span>
+        </div>
+        <div class="agent-list" style="margin-top: 10px;">
+          <div class="agent-row">
+            <div>
+              <div class="agent-name">aws-780603797542</div>
+              <div class="agent-sub">account 780603797542 · us-east-1</div>
+              <div class="agent-url">http://172.18.0.1:19090</div>
+            </div>
+            <div class="agent-sub">registered 2h ago</div>
+            <div class="agent-parts">
+              <span class="binding-chip">demo-deploy</span>
+              <span class="binding-chip">demo-build</span>
+            </div>
+            <div class="agent-state"><span class="badge green">● ready</span></div>
+          </div>
+          <div class="agent-row">
+            <div>
+              <div class="agent-name">aws-677296948949</div>
+              <div class="agent-sub">account 677296948949 · us-east-1</div>
+              <div class="agent-url">http://172.18.0.1:19091</div>
+            </div>
+            <div class="agent-sub">registered 2h ago</div>
+            <div class="agent-parts"><span class="binding-chip">demo-import</span></div>
+            <div class="agent-state"><span class="badge green">● ready</span></div>
+          </div>
+          <div class="agent-row">
+            <div>
+              <div class="agent-name">aws-755370915520</div>
+              <div class="agent-sub">account 755370915520 · us-east-1</div>
+              <div class="agent-url">http://172.18.0.1:19092</div>
+            </div>
+            <div class="agent-sub">registered 2h ago</div>
+            <div class="agent-parts"><span class="binding-chip">demo-observe</span></div>
+            <div class="agent-state"><span class="badge green">● ready</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>Repositories</h2>
+            <p class="subtitle">A repository can feed several partitions. Bindings define the payload path per partition.</p>
+          </div>
+          <span class="meta">4 bound · 0 unbound</span>
+        </div>
+        <div style="padding-top: 10px;">
+          <table class="table repo-table">
+            <thead>
+              <tr><th>Repository</th><th>Bindings</th><th>Branch / commit</th><th>Last ingest</th><th>Status</th><th></th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <div class="repo-name">strata-demo-deploy</div>
+                  <div class="repo-sub">github.com/radryc/strata-demo-deploy</div>
+                </td>
+                <td>
+                  <div class="binding-chips">
+                    <span class="binding-chip">demo-deploy <span class="path">/partitions/demo-deploy/payloads/aws</span></span>
+                  </div>
+                </td>
+                <td><span class="mono">main · e83877a</span></td>
+                <td class="when">4m ago</td>
+                <td><span class="status-dot green"></span> <span class="status-text green">In sync</span></td>
+                <td><a class="open" href="application.html">Open →</a></td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="repo-name">strata-demo-build</div>
+                  <div class="repo-sub">github.com/radryc/strata-demo-build</div>
+                </td>
+                <td>
+                  <div class="binding-chips">
+                    <span class="binding-chip">demo-build <span class="path">/partitions/demo-build/payloads/aws</span></span>
+                  </div>
+                </td>
+                <td><span class="mono">main · e83877a</span></td>
+                <td class="when">6m ago</td>
+                <td><span class="status-dot green"></span> <span class="status-text green">In sync</span></td>
+                <td><a class="open" href="application.html">Open →</a></td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="repo-name">strata-demo-import</div>
+                  <div class="repo-sub">github.com/radryc/strata-demo-import</div>
+                </td>
+                <td>
+                  <div class="binding-chips">
+                    <span class="binding-chip">demo-import <span class="path">/partitions/demo-import/payloads/aws</span></span>
+                  </div>
+                </td>
+                <td><span class="mono">main · f87af8f</span></td>
+                <td class="when">1m ago</td>
+                <td><span class="status-dot neutral"></span> <span class="status-text neutral">Observed</span></td>
+                <td><a class="open" href="application.html">Open →</a></td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="repo-name">strata-demo-observe</div>
+                  <div class="repo-sub">github.com/radryc/strata-demo-observe</div>
+                </td>
+                <td>
+                  <div class="binding-chips">
+                    <span class="binding-chip">demo-observe <span class="path">/partitions/demo-observe/payloads/aws</span></span>
+                  </div>
+                </td>
+                <td><span class="mono">main · f87af8f</span></td>
+                <td class="when">1m ago</td>
+                <td><span class="status-dot amber"></span> <span class="status-text amber">Drift</span></td>
+                <td><a class="open" href="application.html">Open →</a></td>
+              </tr>
+              <tr class="binding-tr">
+                <td colspan="6">
+                  <div class="binding-panel">
+                    <div class="title">Binding details · demo-observe</div>
+                    <div class="path-list" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));">
+                      <div class="path-row"><span class="label">Repo path</span><code>guardian/partitions/demo-observe/</code><button class="copy-btn">copy</button></div>
+                      <div class="path-row"><span class="label">MonoFS</span><code>/partitions/demo-observe/</code><button class="copy-btn">copy</button></div>
+                      <div class="path-row"><span class="label">Payload</span><code>/partitions/demo-observe/payloads/aws</code><button class="copy-btn">copy</button></div>
+                      <div class="path-row"><span class="label">Selector</span><code>StrataDemoObserve</code><button class="copy-btn">copy</button></div>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>Unassigned partitions</h2>
+            <p class="subtitle">Partitions with no repository binding. They can still be grouped in a set.</p>
+          </div>
+          <span class="meta">1</span>
+        </div>
+        <div class="attention-row" style="margin-top: 10px;">
+          <div class="attention-main">
+            <div class="attention-title">
+              <span class="app">demo-new</span>
+              <span class="status-text amber">Unassigned</span>
+              <span class="badge">No source</span>
+            </div>
+            <div class="attention-reason">
+              Set: Payments · account 7806… · us-east-1 · no repository binding.
+            </div>
+          </div>
+          <div class="attention-actions">
+            <button class="btn small">Bind repo</button>
+            <a class="btn ghost small" href="sets.html">Open set</a>
+          </div>
+        </div>
+      </section>
+
+      <div class="set-layout">
+        <section class="card">
+          <div class="card-head"><div><h2>Unbound repositories</h2></div><span class="meta">0</span></div>
+          <div class="empty-state">No unbound repositories. Every repository feeds at least one partition.</div>
+        </section>
+        <section class="card">
+          <div class="card-head"><div><h2>Unused agents</h2></div><span class="meta">0</span></div>
+          <div class="empty-state">No unused agents. Every agent has at least one assigned partition.</div>
+        </section>
+      </div>
+
+    </div>
+
+    <p class="mockup-note">
+      Static design mockup — not the production UI.
+      <a href="overview.html">← Overview</a> · <a href="sets.html">Sets →</a> · <a href="application.html">Application →</a>
+    </p>
+  </main>
+</div>
+
+</body>
+</html>
