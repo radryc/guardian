@@ -36,7 +36,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the full architecture.
   compiles CDK-expressible assets into one generated TypeScript stack.
 - **Asset** — typed building block: Compute, ImageBuild, CDKStack, Database,
   SQLDatabase, Volume, Config, Network, Secret, LoadBalancer, TraefikRoute,
-  ObjectStore, Observability, K8sResource.
+  ObjectStore, Observability, Probe, K8sResource.
 - **Rollout / rollback** — spec changes on applied intents become deployment
   revisions; failed applies record a rollback and preserve the pushed manifest
   for retry, while operators can restore archived tags explicitly.
