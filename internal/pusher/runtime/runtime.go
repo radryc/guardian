@@ -531,6 +531,7 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 			PartitionName: t.Partition,
 			IntentName:    t.Intent,
 			IntentType:    t.IntentType,
+			PusherName:    t.TargetPusher,
 			Asset:         asset,
 			Assets:        assetIndex,
 			AssetVersions: t.AssetVersions,

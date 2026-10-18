@@ -25,7 +25,7 @@ type Config struct {
 
 func LoadConfig(component, instanceID string) (Config, error) {
 	cfg := Config{
-		Endpoint:  strings.TrimSpace(os.Getenv("GUARDIAN_OTEL_ENDPOINT")),
+		Endpoint:  envFirst("OTEL_EXPORTER_OTLP_ENDPOINT", "GUARDIAN_OTEL_ENDPOINT"),
 		Component: strings.TrimSpace(component),
 	}
 	if cfg.Component == "" {
@@ -38,11 +38,11 @@ func LoadConfig(component, instanceID string) (Config, error) {
 	if cfg.Endpoint == "" {
 		return cfg, nil
 	}
-	cfg.ServiceName = strings.TrimSpace(os.Getenv("GUARDIAN_OTEL_SERVICE_NAME"))
+	cfg.ServiceName = envFirst("OTEL_SERVICE_NAME", "GUARDIAN_OTEL_SERVICE_NAME")
 	if cfg.ServiceName == "" {
 		cfg.ServiceName = defaultServiceName
 	}
-	insecure := strings.TrimSpace(os.Getenv("GUARDIAN_OTEL_INSECURE"))
+	insecure := envFirst("OTEL_EXPORTER_OTLP_INSECURE", "GUARDIAN_OTEL_INSECURE")
 	if insecure == "" {
 		cfg.Insecure = true
 	} else {
@@ -63,4 +63,13 @@ func LoadConfig(component, instanceID string) (Config, error) {
 		cfg.MetricInterval = value
 	}
 	return cfg, nil
+}
+
+func envFirst(keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
