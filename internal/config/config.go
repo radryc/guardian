@@ -94,6 +94,10 @@ type GuardianConfig struct {
 	// observed APIs for report-only AWS intents. Empty disables the collector.
 	ObservedInterval string `yaml:"observedInterval"`
 	ObservedTimeout  string `yaml:"observedTimeout"`
+	// ObservedDetectDrift runs CloudFormation drift detection on each observed
+	// pass (billable API calls, slower). Without it only DescribeStacks state
+	// is collected and out-of-band resource changes are not reported.
+	ObservedDetectDrift bool `yaml:"observedDetectDrift"`
 	// AutoDeployOnIngest reconciles every partition bound to a repo right after
 	// that repo is ingested (UI or CLI), so a merge deploys without a manual
 	// reconcile. Defaults to true; set false for manual-approval workflows.
@@ -161,6 +165,7 @@ func Default() *Config {
 			FlowMetricsTimeout:   "2s",
 			ObservedInterval:     "5m",
 			ObservedTimeout:      "30s",
+			ObservedDetectDrift:  false,
 			AutoDeployOnIngest:   true,
 		},
 		Compliance: ComplianceConfig{},

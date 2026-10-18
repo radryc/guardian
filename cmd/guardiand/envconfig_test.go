@@ -23,6 +23,7 @@ func TestApplyGuardianEnvConfigPushers(t *testing.T) {
 	t.Setenv("GUARDIAN_PUSHERS", "aws-111:/.queues/aws-111,aws-222:/.queues/aws-222")
 	t.Setenv("GUARDIAN_OBSERVED_INTERVAL", "1m")
 	t.Setenv("GUARDIAN_OBSERVED_TIMEOUT", "15s")
+	t.Setenv("GUARDIAN_OBSERVED_DETECT_DRIFT", "true")
 
 	cfg := config.Default()
 	applyGuardianEnvConfig(cfg)
@@ -39,12 +40,16 @@ func TestApplyGuardianEnvConfigPushers(t *testing.T) {
 	if cfg.Guardian.ObservedTimeout != "15s" {
 		t.Fatalf("observed timeout = %q", cfg.Guardian.ObservedTimeout)
 	}
+	if !cfg.Guardian.ObservedDetectDrift {
+		t.Fatalf("observed detect drift should be enabled")
+	}
 }
 
 func TestApplyGuardianEnvConfigDefaultsUntouched(t *testing.T) {
 	t.Setenv("GUARDIAN_PUSHERS", "")
 	t.Setenv("GUARDIAN_OBSERVED_INTERVAL", "")
 	t.Setenv("GUARDIAN_OBSERVED_TIMEOUT", "")
+	t.Setenv("GUARDIAN_OBSERVED_DETECT_DRIFT", "")
 
 	cfg := config.Default()
 	defaultPushers := len(cfg.Pushers)
@@ -63,6 +68,7 @@ func TestApplyGuardianEnvConfigInvalidPushersIgnored(t *testing.T) {
 	t.Setenv("GUARDIAN_PUSHERS", ",,bad,")
 	t.Setenv("GUARDIAN_OBSERVED_INTERVAL", "")
 	t.Setenv("GUARDIAN_OBSERVED_TIMEOUT", "")
+	t.Setenv("GUARDIAN_OBSERVED_DETECT_DRIFT", "")
 
 	cfg := config.Default()
 	defaultPushers := len(cfg.Pushers)

@@ -43,13 +43,14 @@ type Endpoint struct {
 // MonoFS and persists snapshots plus intent state. It never queues tasks and
 // never applies anything.
 type Collector struct {
-	Store      guardianapi.Store
-	Dispatcher *dispatcher.Dispatcher
-	Endpoints  map[string]Endpoint
-	Resolver   EndpointResolver
-	Interval   time.Duration
-	Timeout    time.Duration
-	MaxEvents  int
+	Store       guardianapi.Store
+	Dispatcher  *dispatcher.Dispatcher
+	Endpoints   map[string]Endpoint
+	Resolver    EndpointResolver
+	Interval    time.Duration
+	Timeout     time.Duration
+	MaxEvents   int
+	DetectDrift bool
 }
 
 // Run polls until the context is cancelled.
@@ -290,7 +291,7 @@ func (c *Collector) observeAsset(ctx context.Context, partition string, intent *
 	// Refresh live state first so a stack with no EventBridge history yet is
 	// still observable. Refresh failures are recorded but not fatal: the
 	// event-fed cache may still have state.
-	if _, err := endpoint.Client.Refresh(ctx, account, region, []string{stackName}, false); err != nil {
+	if _, err := endpoint.Client.Refresh(ctx, account, region, []string{stackName}, c.DetectDrift); err != nil {
 		result.summary = "refresh failed: " + err.Error()
 	}
 	state, found, err := endpoint.Client.Stack(ctx, account, region, stackName)
