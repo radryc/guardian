@@ -35,6 +35,12 @@ func (r *Runner) discover(ctx context.Context) ([]Target, error) {
 			continue
 		}
 		partition := entry.Name
+		defaultPusher := ""
+		if raw, err := r.cfg.Store.ReadFile(ctx, paths.PartitionConfig(partition)); err == nil {
+			if parsed, err := manifest.ParsePartition(raw); err == nil {
+				defaultPusher = strings.TrimSpace(parsed.Spec.Defaults.TargetPusher)
+			}
+		}
 		intentEntries, err := r.cfg.Store.ListDir(ctx, paths.PartitionIntentsDir(partition))
 		if err != nil {
 			continue
@@ -48,7 +54,11 @@ func (r *Runner) discover(ctx context.Context) ([]Target, error) {
 			if err != nil || intent == nil {
 				continue
 			}
-			if strings.TrimSpace(intent.Spec.TargetPusher) != r.cfg.Pusher {
+			targetPusher := strings.TrimSpace(intent.Spec.TargetPusher)
+			if targetPusher == "" {
+				targetPusher = defaultPusher
+			}
+			if targetPusher != r.cfg.Pusher {
 				continue
 			}
 			state, err := r.loadIntentState(ctx, partition, intentName)
