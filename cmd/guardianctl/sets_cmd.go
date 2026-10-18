@@ -62,26 +62,170 @@ func setsEnsureCommand(store guardianapi.Store, printer *output.Printer) *comman
 				return err
 			}
 		}
-		var add []string
-		for _, partition := range partitions {
-			if _, statErr := store.Stat(ctx, paths.PartitionConfig(partition)); statErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: partition %s does not exist; skipping\n", partition)
-				continue
-			}
-			add = append(add, partition)
-		}
+		add := existingPartitions(ctx, store, partitions)
 		if len(add) > 0 {
 			set, err = sets.AddPartitions(ctx, set.ID, add, nil, *primary)
 			if err != nil {
 				return err
 			}
 		}
+		return printSet(printer, set, "ready")
+	}}
+}
+
+func setsCreateCommand(store guardianapi.Store, printer *output.Printer) *command.Command {
+	flags := flag.NewFlagSet("sets create", flag.ContinueOnError)
+	flags.SetOutput(ioDiscard{})
+	name := flags.String("name", "", "set display name")
+	description := flags.String("description", "", "set description")
+	parent := flags.String("parent", "", "parent set id (optional)")
+	var labels stringListFlag
+	flags.Var(&labels, "label", "key=value label (repeatable)")
+	pinned := flags.Bool("pinned", false, "pin the set")
+	return &command.Command{Description: "Create a virtual set", Flags: flags, Run: func(ctx context.Context, args []string) error {
+		if strings.TrimSpace(*name) == "" {
+			return fmt.Errorf("--name is required")
+		}
+		set, err := setstore.New(store).Create(ctx, &setstore.Set{Name: *name, Description: *description, ParentID: *parent, Labels: labelMap(labels), Pinned: *pinned})
+		if err != nil {
+			return err
+		}
+		return printSet(printer, set, "created")
+	}}
+}
+
+func setsShowCommand(store guardianapi.Store, printer *output.Printer) *command.Command {
+	flags := flag.NewFlagSet("sets show", flag.ContinueOnError)
+	flags.SetOutput(ioDiscard{})
+	setRef := flags.String("set", "", "set id or name")
+	return &command.Command{Description: "Show a virtual set by id or name", Flags: flags, Run: func(ctx context.Context, args []string) error {
+		set, err := resolveSet(ctx, store, *setRef)
+		if err != nil {
+			return err
+		}
 		if printer.Format == "json" {
 			printer.PrintJSON(set)
 			return nil
 		}
-		printer.PrintText("set %s ready (%d partitions)\n", set.ID, len(set.Partitions))
+		printer.PrintText("id:          %s\nname:        %s\nparent:      %s\ndescription: %s\npinned:      %t\npartitions:  %s\n",
+			set.ID, set.Name, set.ParentID, set.Description, set.Pinned, strings.Join(set.Partitions, ", "))
+		if len(set.Labels) > 0 {
+			printer.PrintText("labels:      ")
+			first := true
+			for key, value := range set.Labels {
+				if !first {
+					printer.PrintText(", ")
+				}
+				printer.PrintText("%s=%s", key, value)
+				first = false
+			}
+			printer.PrintText("\n")
+		}
 		return nil
+	}}
+}
+
+func setsUpdateCommand(store guardianapi.Store, printer *output.Printer) *command.Command {
+	flags := flag.NewFlagSet("sets update", flag.ContinueOnError)
+	flags.SetOutput(ioDiscard{})
+	setRef := flags.String("set", "", "set id or name")
+	name := flags.String("name", "", "new display name")
+	description := flags.String("description", "", "new description")
+	parent := flags.String("parent", "", "new parent set id (empty leaves unchanged)")
+	pinned := flags.String("pinned", "", "true|false (empty leaves unchanged)")
+	var labels stringListFlag
+	flags.Var(&labels, "label", "key=value label to merge (repeatable)")
+	return &command.Command{Description: "Update a virtual set by id or name", Flags: flags, Run: func(ctx context.Context, args []string) error {
+		set, err := resolveSet(ctx, store, *setRef)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(*name) != "" {
+			set.Name = *name
+		}
+		if *description != "" {
+			set.Description = *description
+		}
+		if strings.TrimSpace(*parent) != "" {
+			set.ParentID = *parent
+		}
+		if strings.TrimSpace(*pinned) != "" {
+			set.Pinned = strings.EqualFold(strings.TrimSpace(*pinned), "true")
+		}
+		for key, value := range labelMap(labels) {
+			set.Labels[key] = value
+		}
+		set, err = setstore.New(store).Update(ctx, set)
+		if err != nil {
+			return err
+		}
+		return printSet(printer, set, "updated")
+	}}
+}
+
+func setsMoveCommand(store guardianapi.Store, printer *output.Printer) *command.Command {
+	flags := flag.NewFlagSet("sets move", flag.ContinueOnError)
+	flags.SetOutput(ioDiscard{})
+	setRef := flags.String("set", "", "set id or name")
+	parent := flags.String("parent", "", "new parent set id (empty moves to root)")
+	return &command.Command{Description: "Move a virtual set under a new parent", Flags: flags, Run: func(ctx context.Context, args []string) error {
+		set, err := resolveSet(ctx, store, *setRef)
+		if err != nil {
+			return err
+		}
+		moved, err := setstore.New(store).Move(ctx, set.ID, *parent)
+		if err != nil {
+			return err
+		}
+		return printSet(printer, moved, "moved")
+	}}
+}
+
+func setsDeleteCommand(store guardianapi.Store, printer *output.Printer) *command.Command {
+	flags := flag.NewFlagSet("sets delete", flag.ContinueOnError)
+	flags.SetOutput(ioDiscard{})
+	setRef := flags.String("set", "", "set id or name")
+	return &command.Command{Description: "Delete an empty virtual set by id or name", Flags: flags, Run: func(ctx context.Context, args []string) error {
+		set, err := resolveSet(ctx, store, *setRef)
+		if err != nil {
+			return err
+		}
+		if err := setstore.New(store).Delete(ctx, set.ID); err != nil {
+			return err
+		}
+		if printer.Format == "json" {
+			printer.PrintJSON(map[string]string{"status": "deleted", "id": set.ID})
+			return nil
+		}
+		printer.PrintText("deleted set %s\n", set.ID)
+		return nil
+	}}
+}
+
+func setsAssignCommand(store guardianapi.Store, printer *output.Printer) *command.Command {
+	flags := flag.NewFlagSet("sets assign", flag.ContinueOnError)
+	flags.SetOutput(ioDiscard{})
+	setRef := flags.String("set", "", "set id or name")
+	var add stringListFlag
+	flags.Var(&add, "add", "partition to add (repeatable)")
+	var remove stringListFlag
+	flags.Var(&remove, "remove", "partition to remove (repeatable)")
+	primary := flags.Bool("primary", false, "mark added partitions' primary set")
+	return &command.Command{Description: "Add or remove partitions from a virtual set", Flags: flags, Run: func(ctx context.Context, args []string) error {
+		set, err := resolveSet(ctx, store, *setRef)
+		if err != nil {
+			return err
+		}
+		for _, partition := range add {
+			if _, statErr := store.Stat(ctx, paths.PartitionConfig(partition)); statErr != nil {
+				return fmt.Errorf("partition %q not found", partition)
+			}
+		}
+		updated, err := setstore.New(store).AddPartitions(ctx, set.ID, add, remove, *primary)
+		if err != nil {
+			return err
+		}
+		return printSet(printer, updated, "updated")
 	}}
 }
 
@@ -104,6 +248,30 @@ func setsListCommand(store guardianapi.Store, printer *output.Printer) *command.
 	}}
 }
 
+func resolveSet(ctx context.Context, store guardianapi.Store, ref string) (*setstore.Set, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil, fmt.Errorf("--set is required")
+	}
+	sets := setstore.New(store)
+	if set, err := sets.Get(ctx, ref); err == nil {
+		return set, nil
+	}
+	return sets.FindByName(ctx, ref)
+}
+
+func existingPartitions(ctx context.Context, store guardianapi.Store, partitions []string) []string {
+	out := make([]string, 0, len(partitions))
+	for _, partition := range partitions {
+		if _, err := store.Stat(ctx, paths.PartitionConfig(partition)); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: partition %s does not exist; skipping\n", partition)
+			continue
+		}
+		out = append(out, partition)
+	}
+	return out
+}
+
 func labelMap(values []string) map[string]string {
 	out := map[string]string{}
 	for _, value := range values {
@@ -118,4 +286,13 @@ func labelMap(values []string) map[string]string {
 		}
 	}
 	return out
+}
+
+func printSet(printer *output.Printer, set *setstore.Set, verb string) error {
+	if printer.Format == "json" {
+		printer.PrintJSON(set)
+		return nil
+	}
+	printer.PrintText("set %s %s (%d partitions)\n", set.ID, verb, len(set.Partitions))
+	return nil
 }
