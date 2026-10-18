@@ -95,12 +95,12 @@
       </nav>
 
       <section id="sidebarPartitionSection" class="flex-1 min-h-0 overflow-y-auto px-2.5 pb-4">
-        <div class="px-0.5 mb-2 text-[10px] font-bold uppercase tracking-[0.1em] text-[#566778]">Partitions</div>
+        <div class="px-0.5 mb-2 text-[10px] font-bold uppercase tracking-[0.1em] text-[#566778]">Sets</div>
         <div class="flex gap-1.5 mb-2">
-          <input id="partitionSearch" class="search-input flex-1" type="search" placeholder="Search partitions">
-          <button id="createPartitionButton" class="btn-ghost">New</button>
+          <input id="partitionSearch" class="search-input flex-1" type="search" placeholder="Search sets and partitions">
+          <button id="createPartitionButton" class="btn-ghost" title="New set">New set</button>
         </div>
-        <div id="partitionList" class="grid gap-1 text-sm text-[#566778]">Loading partitions…</div>
+        <div id="partitionList" class="grid gap-1 text-sm text-[#566778]">Loading sets…</div>
       </section>
 
       <section class="shrink-0 border-t border-white/[0.09] px-2.5 py-3">
@@ -132,17 +132,6 @@
 
       <section id="overviewHealthLine" class="overview-health-line hidden"></section>
 
-      <section id="appGridSection" class="px-6 py-5">
-        <div class="flex items-center gap-2.5 mb-3.5 flex-wrap">
-          <span class="text-[11px] font-bold uppercase tracking-[0.09em] text-[#566778] flex-1">Partitions</span>
-          <div class="flex gap-1.5">
-            <input id="appGridSearch" class="search-input w-44" type="search" placeholder="Filter partitions…">
-            <button id="overviewCreatePartitionButton" class="btn-ghost">New</button>
-          </div>
-        </div>
-        <div id="appGrid" class="grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-2.5 text-sm text-[#566778]">Loading partitions…</div>
-      </section>
-
       <section id="selectedPartitionHero" class="mx-6 mb-0 rounded-lg border border-white/[0.09] bg-[#0D1220] p-5">
         <div id="heroContent" class="text-sm text-[#566778]">Select a partition to inspect its current shape.</div>
       </section>
@@ -153,6 +142,11 @@
         <button class="tab-button" data-tab-target="rolloutsPanel">Rollouts</button>
         <button class="tab-button" data-tab-target="historyPanel">History</button>
       </div>
+
+      <!-- Set page -->
+      <section id="setPanel" class="panel hidden px-6 py-5">
+        <div id="setPage" class="text-sm text-[#566778]">Select a set.</div>
+      </section>
 
       <!-- Overview panel -->
       <section id="overviewPanel" class="panel active px-6 py-5 space-y-5">
@@ -169,19 +163,19 @@
         <article class="card">
           <div class="card-header">
             <h2 class="card-title">Needs attention</h2>
-            <p class="muted text-[13px]">Failing and drifted assets are grouped here first.</p>
+            <p class="muted text-[13px]">Failing, progressing, and drifted partitions are grouped here first.</p>
           </div>
           <div id="attentionAssetsList" class="text-sm text-[#566778]">Loading attention view…</div>
         </article>
         <div class="overview-map-grid">
-          <article class="card">
+          <article class="card" id="intentMapCard">
             <div class="card-header">
               <h2 class="card-title">Intent map</h2>
               <p class="muted text-[13px]">Friendly summaries for each blueprint and its assets.</p>
             </div>
             <div id="intentCards" class="text-sm text-[#566778]">Loading intents…</div>
           </article>
-          <article class="card">
+          <article class="card" id="serviceHealthCard">
             <div class="card-header">
               <h2 class="card-title">Service health</h2>
               <p class="muted text-[13px]">Current health derived from reconcile, diff, and push state.</p>
@@ -189,13 +183,35 @@
             <div id="serviceHealthCards" class="text-sm text-[#566778]">Loading services…</div>
           </article>
         </div>
-        <article class="card">
+        <article class="card" id="recentEventsCard">
           <div class="card-header">
             <h2 class="card-title">Recent events</h2>
             <p class="muted text-[13px]">Latest lifecycle changes and deployment actions.</p>
           </div>
           <div id="recentEventsList" class="text-sm text-[#566778]">Loading recent activity…</div>
         </article>
+      </section>
+
+      <section id="setCardsSection" class="px-6 py-5">
+        <div class="flex items-center gap-2.5 mb-3.5 flex-wrap">
+          <span class="text-[11px] font-bold uppercase tracking-[0.09em] text-[#566778] flex-1">Sets</span>
+          <div class="flex gap-1.5">
+            <button id="newSetButton" class="btn-secondary">New set</button>
+            <button id="manageSetsButton" class="btn-ghost">Manage sets</button>
+          </div>
+        </div>
+        <div id="setCards" class="set-card-grid text-sm text-[#566778]">Loading sets…</div>
+      </section>
+
+      <section id="appGridSection" class="px-6 py-5">
+        <div class="flex items-center gap-2.5 mb-3.5 flex-wrap">
+          <span class="text-[11px] font-bold uppercase tracking-[0.09em] text-[#566778] flex-1">Partitions</span>
+          <div class="flex gap-1.5">
+            <input id="appGridSearch" class="search-input w-44" type="search" placeholder="Filter partitions…">
+            <button id="overviewCreatePartitionButton" class="btn-ghost">New</button>
+          </div>
+        </div>
+        <div id="appGrid" class="grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-2.5 text-sm text-[#566778]">Loading partitions…</div>
       </section>
 
       <!-- Topology panel -->
@@ -575,6 +591,7 @@
     </main>
   </div>
 
+  <div id="setModalRoot"></div>
   <div id="toastContainer" class="fixed bottom-5 right-5 z-[200] flex flex-col gap-2 pointer-events-none"></div>
   <script src="/static/app.js" defer></script>
 </body>

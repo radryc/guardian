@@ -20,6 +20,7 @@ import { initScanPanel, renderScanPanel } from "./scan";
 import { initRegistryPanel, renderRegistryPanel } from "./registry";
 import { initUnmanagedPanel, renderUnmanagedPanel } from "./unmanaged";
 import { initBuilderPanel } from "./builder";
+import { initSetsPanel, renderSets, selectedSetName } from "./sets";
 
 // ── Bootstrap ────────────────────────────────────────
 const state: AppState = createState();
@@ -196,9 +197,7 @@ async function refreshOverview(loadSelected = true): Promise<void> {
   const current = state.selectedPartition;
   const names = (state.overview?.partitions ?? []).map((p: any) => p.name as string);
 
-  if (!current && names.length > 0) {
-    await selectPartition(names[0], false);
-  } else if (current && names.includes(current) && loadSelected) {
+  if (current && names.includes(current) && loadSelected) {
     await selectPartition(current, false);
   } else if (!names.length) {
     state.selectedPartition = "";
@@ -211,6 +210,9 @@ async function refreshOverview(loadSelected = true): Promise<void> {
     renderRollouts();
     renderTopologyPanel();
     syncLocationState();
+  }
+  if (!state.selectedPartition) {
+    renderPartitionDetail();
   }
   setSync("Updated just now");
 }
@@ -267,7 +269,7 @@ function activatePanel(panelId: string, scope?: PanelScope): void {
   document.querySelectorAll("[data-tab-target]").forEach((btn) => {
     btn.classList.toggle("active", (btn as HTMLElement).dataset.tabTarget === panelId);
   });
-  const navTarget = ["topologyPanel", "rolloutsPanel", "historyPanel"].includes(panelId)
+  const navTarget = ["topologyPanel", "rolloutsPanel", "historyPanel", "setPanel"].includes(panelId)
     ? "overviewPanel"
     : panelId === "scanPanel" ? "unmanagedPanel" : panelId;
   document.querySelectorAll(".nav-item[data-tab-target]").forEach((btn) => {
@@ -284,9 +286,13 @@ function activatePanel(panelId: string, scope?: PanelScope): void {
   renderPartitionDetail();
   renderHistory();
   renderRollouts();
-  renderScanPanel({ targetPartition, resetTarget });
-  renderRegistryPanel({ targetPartition, resetTarget });
-  renderUnmanagedPanel({ targetPartition, resetTarget });
+  if (panelId === "scanPanel" || panelId === "unmanagedPanel") {
+    renderScanPanel({ targetPartition, resetTarget });
+    renderUnmanagedPanel({ targetPartition, resetTarget });
+  }
+  if (panelId === "registryPanel") {
+    renderRegistryPanel({ targetPartition, resetTarget });
+  }
   if (panelId === "builderPanel") {
     if (scope === "new") {
       builder.open();
@@ -297,6 +303,7 @@ function activatePanel(panelId: string, scope?: PanelScope): void {
     }
   }
   renderPageChrome();
+  renderSets();
 
   if (panelId === "historyPanel" && state.selectedPartition) {
     ensureHistoryLoaded().catch(handleError);
@@ -315,8 +322,10 @@ function hydrateStateFromLocation(): void {
   const params = new URLSearchParams(window.location.search);
   const partition = params.get("partition");
   if (partition) state.selectedPartition = partition.trim();
+  const set = params.get("set");
+  if (set) state.selectedSet = set.trim();
   const panel = params.get("panel");
-  if (["overviewPanel", "builderPanel", "topologyPanel", "rolloutsPanel", "historyPanel", "scanPanel", "registryPanel", "unmanagedPanel"].includes(panel ?? "")) {
+  if (["overviewPanel", "builderPanel", "topologyPanel", "rolloutsPanel", "historyPanel", "scanPanel", "registryPanel", "unmanagedPanel", "setPanel"].includes(panel ?? "")) {
     state.activePanel = panel!;
   }
   const rawLimit = Number.parseInt(params.get("historyLimit") ?? "", 10);
@@ -334,6 +343,8 @@ function syncLocationState(): void {
   else params.delete("partition");
   if (state.activePanel && state.activePanel !== "overviewPanel") params.set("panel", state.activePanel);
   else params.delete("panel");
+  if (state.selectedSet) params.set("set", state.selectedSet);
+  else params.delete("set");
   if (state.historyOptions.limit !== 10) params.set("historyLimit", String(state.historyOptions.limit));
   else params.delete("historyLimit");
   if (state.historyOptions.since) params.set("historySince", state.historyOptions.since);
@@ -484,7 +495,7 @@ function renderSummary(): void {
 function renderPartitionBrowser(): void {
   const showOverviewChooser = state.activePanel === "overviewPanel" && !state.selectedPartition;
 
-  renderPartitionList();
+  renderSets();
   if (showOverviewChooser) {
     renderAppGrid();
   } else {
@@ -551,10 +562,11 @@ function renderAppGrid(): void {
   const container = document.getElementById("appGrid");
   if (!container) return;
   const search = ((document.getElementById("appGridSearch") as HTMLInputElement)?.value ?? "").trim().toLowerCase();
-  const partitions = (state.overview?.partitions ?? []).filter((p: any) => {
+  const allPartitions = (state.overview?.partitions ?? []).filter((p: any) => {
     if (!search) return true;
     return `${p.name} ${Object.values(p.labels ?? {}).join(" ")}`.toLowerCase().includes(search);
   });
+  const partitions = allPartitions.slice(0, 12);
   if (!partitions.length) {
     container.className = "grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-2.5 empty-state text-sm text-[#566778]";
     container.textContent = state.overview ? "No partitions match the filter." : "Loading partitions…";
@@ -585,6 +597,12 @@ function renderAppGrid(): void {
       </button>
     `;
   }).join("");
+  if (allPartitions.length > partitions.length) {
+    const hint = document.createElement("div");
+    hint.className = "app-grid-hint";
+    hint.textContent = `Showing ${partitions.length} of ${allPartitions.length} partitions. Use the set tree or search to narrow the list.`;
+    container.appendChild(hint);
+  }
   container.querySelectorAll<HTMLElement>("[data-partition]").forEach((tile) => {
     tile.addEventListener("click", () => selectPartition(tile.dataset.partition!).catch(handleError));
   });
@@ -605,13 +623,12 @@ function renderPartitionDetail(): void {
   if (!detail) {
     hero.className = "loading-state text-sm text-[#566778]";
     hero.textContent = "Select a partition to inspect its current shape.";
-    (["intentCards","attentionAssetsList","serviceHealthCards","recentEventsList"] as const).forEach((id) => {
-      const el = document.getElementById(id);
-      if (el) { el.className = "loading-state text-sm text-[#566778]"; el.textContent = "Choose a partition."; }
-    });
+    renderGlobalAttention();
+    setDetailCardsVisible(false);
     renderPageChrome();
     return;
   }
+  setDetailCardsVisible(true);
 
   const health = detail.health ?? {};
   const partitionLabels = { ...(detail.partition?.manifest?.metadata?.labels ?? {}), ...(detail.partition?.manifest?.spec?.labels ?? {}) };
@@ -757,6 +774,43 @@ function heroMetric(label: string, value: number): string {
 }
 
 // ── Render: attention assets ──────────────────────────
+function setDetailCardsVisible(visible: boolean): void {
+  for (const id of ["intentMapCard", "serviceHealthCard", "recentEventsCard"]) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = visible ? "" : "none";
+  }
+}
+
+function renderGlobalAttention(): void {
+  const container = document.getElementById("attentionAssetsList");
+  if (!container) return;
+  const items = (state.overview?.partitions ?? []).filter((p: any) => {
+    const health = String(p.health ?? "").toLowerCase();
+    return health !== "healthy" && health !== "observed";
+  }).slice(0, 12);
+  if (!items.length) {
+    container.className = "empty-state text-sm text-[#566778]";
+    container.textContent = "Nothing needs attention right now.";
+    return;
+  }
+  container.className = "attention-asset-list";
+  container.innerHTML = items.map((p: any) => `
+    <article class="attention-asset-card attention-asset-card-${escapeAttr(p.health ?? "attention")}">
+      <div class="attention-asset-card-header">
+        <div>
+          <h3>${escapeHtml(p.name)}</h3>
+          <div class="muted">${escapeHtml(p.displayStatus ?? humanize(p.health ?? "attention"))} · ${p.intentCount ?? 0} intents · ${p.assetCount ?? 0} assets</div>
+        </div>
+        <button class="btn-secondary" data-global-partition="${escapeAttr(p.name)}">Open →</button>
+      </div>
+      ${p.summary ? `<p class="muted mt-1">${escapeHtml(p.summary)}</p>` : ""}
+    </article>
+  `).join("");
+  container.querySelectorAll<HTMLElement>("[data-global-partition]").forEach((btn) => {
+    btn.addEventListener("click", () => selectPartition(btn.dataset.globalPartition!).catch(handleError));
+  });
+}
+
 function renderAttentionAssets(): void {
   const container = document.getElementById("attentionAssetsList");
   if (!container) return;
@@ -2136,6 +2190,7 @@ function renderTopologyDetailsPanel(): void {
 // ── Render: page chrome ───────────────────────────────
 const PANEL_COPY: Record<string, { eyebrow: string; title: string }> = {
   overviewPanel: { eyebrow: "Control center", title: "Overview" },
+  setPanel: { eyebrow: "Set", title: "Set" },
   registryPanel: { eyebrow: "Control center", title: "Connections" },
   unmanagedPanel: { eyebrow: "Control center", title: "Adopt" },
   scanPanel: { eyebrow: "Control center", title: "Adopt" },
@@ -2160,6 +2215,7 @@ function renderPageChrome(): void {
   };
   const partitionScoped = ["overviewPanel", "topologyPanel", "rolloutsPanel", "historyPanel"].includes(activePanel);
   set("appGridSection", showOverviewChooser);
+  set("setCardsSection", showOverviewChooser);
   set("summaryGrid", false);
   set("selectedPartitionHero", overviewOnly && hasSelection);
   set("sidebarPartitionSection", true);
@@ -2169,7 +2225,11 @@ function renderPageChrome(): void {
   if (tabsRow) tabsRow.style.display = partitionScoped && hasSelection ? "flex" : "none";
 
   setText("pageEyebrow", copy.eyebrow);
-  setText("pageTitle", copy.title);
+  setText("pageTitle", activePanel === "setPanel"
+    ? selectedSetName()
+    : activePanel === "overviewPanel" && hasSelection
+      ? state.selectedPartition
+      : copy.title);
 
   let subtitle = "Monitor partitions, inspect topology, and review history.";
   let pills = "";
@@ -2193,6 +2253,10 @@ function renderPageChrome(): void {
   if (activePanel === "registryPanel") {
     subtitle = "Agents, source repositories, and partition bindings.";
   }
+  if (activePanel === "setPanel") {
+    subtitle = "Named group of partitions; membership is virtual.";
+    pills = "";
+  }
   if (activePanel === "unmanagedPanel" || activePanel === "scanPanel") {
     subtitle = "Bring existing AWS stacks under repository ownership.";
   }
@@ -2214,9 +2278,11 @@ function renderPageChrome(): void {
   if (pillsEl) { pillsEl.innerHTML = pills; pillsEl.style.display = pills.trim() ? "" : "none"; }
 
   const topnavEl = document.getElementById("topnavPartition");
-  const topnavLabel = partitionScoped && state.selectedPartition
-    ? state.selectedPartition
-    : copy.title || "Overview";
+  const topnavLabel = activePanel === "setPanel"
+    ? selectedSetName()
+    : partitionScoped && state.selectedPartition
+      ? state.selectedPartition
+      : copy.title || "Overview";
   if (topnavEl) topnavEl.textContent = topnavLabel;
 }
 
@@ -2661,8 +2727,29 @@ function wireEvents(): void {
   initScanPanel(handleError);
   initRegistryPanel(handleError);
   initUnmanagedPanel(handleError);
-  document.getElementById("partitionSearch")?.addEventListener("input", renderPartitionList);
   document.getElementById("adoptScanButton")?.addEventListener("click", () => activatePanel("scanPanel"));
+  initSetsPanel({
+    getOverview: () => state.overview,
+    getSelectedPartition: () => state.selectedPartition,
+    getSelectedSet: () => state.selectedSet,
+    onSelectPartition: (name: string) => {
+      state.selectedSet = "";
+      activatePanel("overviewPanel");
+      selectPartition(name).catch(handleError);
+    },
+    onOpenSet: (id: string) => {
+      state.selectedSet = id;
+      if (id) {
+        activatePanel("setPanel");
+      } else {
+        state.selectedPartition = "";
+        activatePanel("overviewPanel");
+      }
+    },
+    onOpenConnections: () => activatePanel("registryPanel"),
+    onToast: toast,
+    onError: handleError,
+  });
   document.querySelectorAll<HTMLElement>("[data-adopt-tab]").forEach((btn) => {
     btn.addEventListener("click", () => activatePanel(btn.dataset.adoptTab ?? "unmanagedPanel"));
   });
@@ -2684,7 +2771,6 @@ function wireEvents(): void {
   const startNewPartition = () => {
     activatePanel("builderPanel", "new");
   };
-  document.getElementById("createPartitionButton")?.addEventListener("click", startNewPartition);
   document.getElementById("overviewCreatePartitionButton")?.addEventListener("click", startNewPartition);
   document.getElementById("appGridSearch")?.addEventListener("input", renderAppGrid);
   document.getElementById("historyFilter")?.addEventListener("input", renderHistory);
