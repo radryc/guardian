@@ -221,6 +221,19 @@ func main() {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	runtimepkg.StartRegistration(ctx, store, runtimepkg.PusherInfo{
+		Name:         pusherName,
+		Provider:     "aws",
+		Account:      account,
+		Region:       region,
+		ShardIndex:   shardIndex,
+		ShardCount:   shardCount,
+		Capabilities: []string{"metrics", "logs", "traces", "probes", "observed", "cloudwatch"},
+		OTLPEndpoint: telemetryCfg.Endpoint,
+		CollectorURL: probes.HTTPEndpoint(telemetryCfg.Endpoint),
+		WorkerID:     workerID,
+	})
+
 	probeCfg := probes.ConfigFromEnv()
 	probeCfg.Store = store
 	probeCfg.Pusher = pusherName
@@ -283,8 +296,11 @@ func main() {
 		reader := awsread.NewAWSReader(readerConfig)
 		promQL := awsread.NewPromQLClient(readerConfig)
 		readServer := &http.Server{
-			Addr:    awsReadAddr,
-			Handler: awsread.NewHandler(reader, awsReadToken).WithPromQL(promQL).WithObserved(observedService),
+			Addr: awsReadAddr,
+			Handler: awsread.NewHandler(reader, awsReadToken).
+				WithPromQL(promQL).
+				WithObserved(observedService).
+				WithIdentity(pusherName, account, region),
 		}
 		goroutines++
 		go func() {
