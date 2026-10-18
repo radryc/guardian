@@ -91,6 +91,10 @@ func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		if !hasRepo(repos, registry.NativeRepoName) {
+			repos = append(repos, nativeRepo())
+			sort.Slice(repos, func(i, j int) bool { return repos[i].Name < repos[j].Name })
+		}
 		writeJSON(w, http.StatusOK, repoListResponse{Repos: repos})
 	case http.MethodPost:
 		var repo registry.Repo
@@ -125,6 +129,10 @@ func (s *Server) handleRepoRoute(w http.ResponseWriter, r *http.Request) {
 	case action == "" && r.Method == http.MethodGet:
 		repo, err := registryStore.GetRepo(r.Context(), name)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) && name == registry.NativeRepoName {
+				writeJSON(w, http.StatusOK, nativeRepo())
+				return
+			}
 			if errors.Is(err, os.ErrNotExist) {
 				writeError(w, http.StatusNotFound, fmt.Errorf("repo %q not found", name))
 				return
@@ -134,6 +142,10 @@ func (s *Server) handleRepoRoute(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, repo)
 	case action == "" && r.Method == http.MethodDelete:
+		if name == registry.NativeRepoName {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("native source is built in and cannot be removed"))
+			return
+		}
 		if err := registryStore.DeleteRepo(r.Context(), name); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -165,12 +177,17 @@ func (s *Server) handleRepoBindings(w http.ResponseWriter, r *http.Request, name
 	store := registry.New(s.store)
 	repo, err := store.GetRepo(r.Context(), name)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			writeError(w, http.StatusNotFound, fmt.Errorf("repo %q not found", name))
+		if errors.Is(err, os.ErrNotExist) && name == registry.NativeRepoName {
+			native := nativeRepo()
+			repo = &native
+		} else {
+			if errors.Is(err, os.ErrNotExist) {
+				writeError(w, http.StatusNotFound, fmt.Errorf("repo %q not found", name))
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err)
-		return
 	}
 	if body.Bindings != nil {
 		repo.Bindings = *body.Bindings
@@ -188,6 +205,10 @@ func (s *Server) handleRepoBindings(w http.ResponseWriter, r *http.Request, name
 }
 
 func (s *Server) handleRepoIngest(w http.ResponseWriter, r *http.Request, name string) {
+	if name == registry.NativeRepoName {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("native source has no repository to ingest"))
+		return
+	}
 	registryStore := registry.New(s.store)
 	repo, err := registryStore.GetRepo(r.Context(), name)
 	if err != nil {
@@ -213,6 +234,10 @@ func (s *Server) handleRepoIngest(w http.ResponseWriter, r *http.Request, name s
 // handleRepoNotify records a CI merge notification and, when the cloud
 // assembly is already in MonoFS, regenerates the observed partition intents.
 func (s *Server) handleRepoNotify(w http.ResponseWriter, r *http.Request, name string) {
+	if name == registry.NativeRepoName {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("native source has no repository to notify"))
+		return
+	}
 	registryStore := registry.New(s.store)
 	repo, err := registryStore.GetRepo(r.Context(), name)
 	if err != nil {
@@ -332,6 +357,25 @@ func (s *Server) resolveRepoAssembly(ctx context.Context, repo *registry.Repo, b
 		}
 	}
 	return "", fmt.Errorf("no cloud assembly found for repo %s partition %s; push a cdk.out to %s or run `guardianctl repo sync --name %s`", repo.Name, binding.Partition, strings.TrimRight(payloadDir, "/")+"/cdk.out", repo.Name)
+}
+
+func nativeRepo() registry.Repo {
+	return registry.Repo{
+		APIVersion:  "guardian/v1alpha1",
+		Kind:        "RepoRegistration",
+		Name:        registry.NativeRepoName,
+		SourceType:  "native",
+		Description: "Native platform source; no repository required",
+	}
+}
+
+func hasRepo(repos []registry.Repo, name string) bool {
+	for _, repo := range repos {
+		if repo.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func firstNonEmpty(values ...string) string {

@@ -23,6 +23,7 @@ interface RepoBinding {
 interface Repo {
   name: string;
   pusher: string;
+  sourceType?: string;
   bindings?: RepoBinding[];
   partition?: string;
   path?: string;
@@ -272,12 +273,13 @@ function renderSetPage(): void {
   const visible = partitions.slice(0, 50);
   const rows = visible.map(({ name, summary, repo }) => {
     const binding = repo?.bindings?.find((candidate) => candidate.partition === name) ?? (repo?.partition === name ? { partition: name, path: repo.path } : undefined);
-    const path = binding?.path || `/partitions/${name}/payloads/aws`;
+    const native = repo?.sourceType === "native";
+    const path = native ? "no repository required" : binding?.path || `/partitions/${name}/payloads/aws`;
     return `<tr>
-      <td><div class="app-name">${escapeHtml(name)}</div><div class="repo-sub">${repo ? "assigned repo" : "no repository"}</div></td>
+      <td><div class="app-name">${escapeHtml(name)}</div><div class="repo-sub">${native ? "native source" : repo ? "assigned repo" : "no repository"}</div></td>
       <td><span class="status-dot status-dot-${escapeAttr(partitionDot(summary))}"></span> <span class="status-text">${escapeHtml(summary?.displayStatus ?? summary?.health ?? "Unknown")}</span></td>
       <td class="source-cell">
-        ${repo ? `<span class="mono">${escapeHtml(repo.name)}</span>` : `<span style="color:var(--ui-amber)">No repository</span>`}
+        ${native ? `<span class="mono">Native platform</span>` : repo ? `<span class="mono">${escapeHtml(repo.name)}</span>` : `<span style="color:var(--ui-amber)">No repository</span>`}
         <div class="path-cell">${escapeHtml(path)}</div>
       </td>
       <td>${repo ? `<span class="assign-ok">Assigned ✓</span>` : platformSet ? `<span class="assign-none">Native</span>` : `<span class="assign-warn">Unassigned</span>`}</td>

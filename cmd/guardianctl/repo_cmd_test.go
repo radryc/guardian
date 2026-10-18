@@ -49,4 +49,16 @@ func TestRepoCLIRegistersSourceThenBindsLater(t *testing.T) {
 	if repo.Pusher != "aws-1" || len(repo.PartitionNames()) != 1 || repo.PartitionNames()[0] != "prod" {
 		t.Fatalf("repo after bind = %+v", repo)
 	}
+
+	native := repoAssignCommand(store, printer)
+	if err := run(native, []string{"--name", "native", "--partition", "platform"}); err != nil {
+		t.Fatalf("native bind: %v", err)
+	}
+	nativeRepo, err := reg.GetRepo(ctx, "native")
+	if err != nil {
+		t.Fatalf("get native repo: %v", err)
+	}
+	if nativeRepo.SourceType != "native" || len(nativeRepo.PartitionNames()) != 1 || nativeRepo.PartitionNames()[0] != "platform" {
+		t.Fatalf("native repo = %+v", nativeRepo)
+	}
 }
