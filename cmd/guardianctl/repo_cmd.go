@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -653,6 +654,35 @@ func applyRepoConfig(ctx context.Context, registryStore *registry.Store, dir str
 
 func applyRepoConfigValues(ctx context.Context, registryStore *registry.Store, config *repoconfig.Config, sourceOverride string) error {
 	if pusher := config.PusherRegistration(); pusher != nil {
+		// Repo config files are credential-free; they normally declare only the
+		// pusher name/account/region. Merge those over the existing registration
+		// instead of clearing the observed API URL and token that `pusher add`
+		// stored (otherwise repo apply makes the pusher unusable).
+		if existing, err := registryStore.GetPusher(ctx, pusher.Name); err == nil {
+			if pusher.ObservedAPIURL == "" {
+				pusher.ObservedAPIURL = existing.ObservedAPIURL
+			}
+			if pusher.Token == "" {
+				pusher.Token = existing.Token
+			}
+			if pusher.TokenEnv == "" {
+				pusher.TokenEnv = existing.TokenEnv
+			}
+			if pusher.Account == "" {
+				pusher.Account = existing.Account
+			}
+			if pusher.Region == "" {
+				pusher.Region = existing.Region
+			}
+			if pusher.Description == "" {
+				pusher.Description = existing.Description
+			}
+			if len(pusher.Labels) == 0 {
+				pusher.Labels = existing.Labels
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("read pusher registration: %w", err)
+		}
 		if err := registryStore.PutPusher(ctx, pusher); err != nil {
 			return fmt.Errorf("apply pusher registration: %w", err)
 		}
