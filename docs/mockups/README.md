@@ -9,11 +9,16 @@ set pages described below.
 
 | File | What it shows |
 |---|---|
-| `overview.html` | Health-first overview, assignment gaps, and the virtual-set tree |
+| `overview.html` | Set-first overview: set cards, health rollups, assignment gaps, and virtual-set tree |
 | `application.html` | Partition summary with the new **Source & targets** card |
 | `sets.html` | A nested set page: description, labels, subsets, scoped partitions |
 | `connections.html` | Global inventory of agents and repositories, with filters and unassigned work |
 | `mockup.css` | Shared styles; mirrors the existing dark visual language |
+
+The overview deliberately does **not** render every partition. It shows top-level
+set cards and a bounded “Find a partition” search; individual partitions are
+reached through the set tree or the paginated search. That is the design for
+thousands of partitions.
 
 ## Design decisions used here
 
@@ -42,8 +47,9 @@ These follow the recommended defaults from the design review:
    MonoFS path, payload path, target pusher, and per-intent mapping.
 2. **`sets.html`** — the nested tree, description/labels, child set, and the
    partition table with source path and assignment state.
-3. **`overview.html`** — unassigned work is surfaced in Needs attention and on
-   the application card.
+3. **`overview.html`** — top-level set cards, health rollups, unassigned work in
+   Needs attention, and the bounded “Find a partition” search instead of a
+   ten-thousand-card grid.
 4. **`connections.html`** — all agents/repos live here; partition pages show only the
    ones assigned to them.
 

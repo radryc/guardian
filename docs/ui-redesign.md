@@ -116,41 +116,49 @@ Department X — AWS Production
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ Overview                                            [Search]  [Refresh]  │
-│ 5 applications · 2 healthy · 1 observed · 2 need attention   reconcile 12s│
+│ 2 sets · 5 partitions · 2 healthy · 1 observed · 2 need attention        │
 ├──────────────────────────────────────────────────────────────────────────┤
 │ NEEDS ATTENTION (2)                                                      │
 │ ┌──────────────────────────────────────────────────────────────────────┐ │
-│ │ ● demo-observe   ObservedDrifted   1 drifted resource  12s ago       │ │
+│ │ ● demo-observe   ObservedDrifted   Department Y · 1 drifted resource │ │
 │ │   SSM parameter /strata-demo/observe/value changed outside Guardian  │ │
 │ │   [View drift]  [History]                                            │ │
 │ ├──────────────────────────────────────────────────────────────────────┤ │
-│ │ ● demo-new   Unassigned   no repository assigned                     │ │
+│ │ ● demo-new   Unassigned   Payments · Department X                    │ │
 │ │   Desired state has no source of truth until a repo is bound.        │ │
-│ │   [Bind repo]  [Open Connections]                                          │ │
+│ │   [Bind repo]  [Open set]                                            │ │
 │ └──────────────────────────────────────────────────────────────────────┘ │
 │                                                                          │
-│ RECENTLY CHANGED                                                         │
-│ demo-deploy   Healthy      rollout dep_9a2a  applied 4m ago     [open]  │
-│ demo-build    Healthy      image :demo       applied 6m ago     [open]  │
-│ demo-import   Observed     snapshot          checked 1m ago     [open]  │
+│ SETS                                                    [Status ▾] [View all]
+│ ┌───────────────────────────────────┐ ┌───────────────────────────────────┐
+│ │ Department X — AWS Production     │ │ Department Y — AWS Development    │
+│ │ 4 partitions · 2 subsets          │ │ 1 partition · 0 subsets           │
+│ │ production workloads · AWS · prod │ │ development workloads · AWS · dev │
+│ │ ██████░░░░  2 healthy · 1 observed│ │ ░░░░░░░░░░  1 attention           │
+│ │ 1 attention · 1 unassigned        │ │ demo-observe · Observe only       │
+│ │ Payments · Platform        Open → │ │ Open →                            │
+│ └───────────────────────────────────┘ └───────────────────────────────────┘
+│ ┌───────────────────────────────────┐
+│ │ Ungrouped (0)                     │
+│ │ no partitions outside a set       │
+│ └───────────────────────────────────┘
 │                                                                          │
-│ ALL APPLICATIONS (5)                                  [Healthy ▾] [New]  │
-│ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ │
-│ │ demo-deploy   │ │ demo-build    │ │ demo-import   │ │ demo-observe  │ │
-│ │ ● Healthy     │ │ ● Healthy     │ │ ● Observed    │ │ ● Attention   │ │
-│ │ source …      │ │ source …      │ │ source …      │ │ source …      │ │
-│ │ Native CDK    │ │ Native CDK    │ │ Adopted       │ │ Observe only  │ │
-│ └───────────────┘ └───────────────┘ └───────────────┘ └───────────────┘ │
-│ ┌───────────────┐                                                       │
-│ │ demo-new      │                                                       │
-│ │ ● Unassigned  │  no repository · [Bind repo]                          │
-│ └───────────────┘                                                       │
+│ RECENTLY CHANGED                                                         │
+│ demo-deploy   Payments     Healthy      rollout dep_9a2a  4m ago [open] │
+│ demo-build    Payments     Healthy      image :demo       6m ago [open] │
+│ demo-import   Platform     Observed     snapshot          1m ago [open] │
+│ demo-observe  Department Y ObservedDrift 1 resource       12s ago [open]│
+│                                                                          │
+│ FIND A PARTITION                                                         │
+│ [Search partitions by name, repo, or MonoFS path…]        [Browse all]   │
+│ Partition lists are paginated and filtered by your access.              │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
 The sidebar is a **set tree**, not a flat partition list:
 
 ```
+All sets (2)
 Department X — AWS Production (4)
   └── Payments (3)
         demo-deploy
@@ -165,16 +173,17 @@ Ungrouped (0)
 
 Changes from today:
 
-- One health sentence replaces the six-cell stat strip. The numbers are still
-  available in the sentence and in filters; they no longer dominate the page.
-- **Needs attention** is the first thing on the page and includes the *reason*
-  and the next action, not just a status. Assignment gaps are attention items.
-- **Recently changed** answers "what changed?" without opening History.
-- **All applications** is a filtered card grid; each card shows its source
-  repo and MonoFS path. The intent map and service-health cards move into the
-  partition view.
-- Empty state: "Nothing needs attention. 5 applications healthy." with a link
-  to recent changes.
+- **Sets are the overview unit.** The page shows one card per top-level set
+  with description, labels, counts, rollup, and attention — not thousands of
+  partition cards. The flat partition grid is replaced by set cards plus a
+  search/paginated “Find a partition” path.
+- **Needs attention** is the first thing on the page and includes the set
+  context and the next action. Assignment gaps are attention items.
+- **Recently changed** answers "what changed?" and includes the set name.
+- **Set rows** in the sidebar show a segmented health bar; the set page has the
+  numeric rollup.
+- Empty state: "Nothing needs attention. 2 sets healthy." with a link to
+  recent changes.
 
 ### 5.2 Application / partition view
 
