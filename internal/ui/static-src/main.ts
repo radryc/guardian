@@ -64,7 +64,32 @@ function rolloutsRefreshMs(): number {
 const FAST_REFRESH_BURST_MS = 60_000;
 const STALE_SNAPSHOT_AFTER_MS = 60_000;
 
+const THEME_KEY = "guardian.theme";
+const THEMES = ["midnight", "graphite", "ocean", "forest", "daylight"];
+
+function initThemePicker(): void {
+  const select = document.getElementById("themeSelect") as HTMLSelectElement | null;
+  let saved = "midnight";
+  try {
+    const stored = localStorage.getItem(THEME_KEY);
+    if (stored && THEMES.includes(stored)) saved = stored;
+  } catch { /* localStorage unavailable */ }
+  applyTheme(saved);
+  if (!select) return;
+  select.value = saved;
+  select.addEventListener("change", () => applyTheme(select.value));
+}
+
+function applyTheme(theme: string): void {
+  const next = THEMES.includes(theme) ? theme : "midnight";
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem(THEME_KEY, next); } catch { /* ignore */ }
+  const select = document.getElementById("themeSelect") as HTMLSelectElement | null;
+  if (select && select.value !== next) select.value = next;
+}
+
 document.addEventListener("DOMContentLoaded", () => {
+  initThemePicker();
   hydrateStateFromLocation();
   wireEvents();
   bootstrap().catch(handleError);
@@ -240,6 +265,12 @@ function activatePanel(panelId: string, scope?: PanelScope): void {
   });
   document.querySelectorAll("[data-tab-target]").forEach((btn) => {
     btn.classList.toggle("active", (btn as HTMLElement).dataset.tabTarget === panelId);
+  });
+  const navTarget = ["topologyPanel", "rolloutsPanel", "historyPanel"].includes(panelId)
+    ? "overviewPanel"
+    : panelId === "scanPanel" ? "unmanagedPanel" : panelId;
+  document.querySelectorAll(".nav-item[data-tab-target]").forEach((btn) => {
+    btn.classList.toggle("active", (btn as HTMLElement).dataset.tabTarget === navTarget);
   });
 
   const targetPartition = scope === "existing" ? state.selectedPartition : "";
@@ -435,6 +466,14 @@ function renderSummary(): void {
   setText("summaryStable", s.healthyAssets ?? s.servicesHealthy ?? 0);
   setText("summaryAttention", s.attentionAssets ?? s.servicesAttention ?? 0);
   setText("summaryFailed", s.failingAssets ?? s.failedIntents ?? 0);
+  const line = document.getElementById("overviewHealthLine");
+  if (line) {
+    line.innerHTML = `<strong>${s.partitions ?? 0} applications</strong>
+      <span class="sep">·</span><span><span class="status-dot status-dot-healthy"></span> ${s.healthyAssets ?? 0} healthy</span>
+      <span><span class="status-dot status-dot-attention"></span> ${s.attentionAssets ?? 0} attention</span>
+      <span><span class="status-dot status-dot-failing"></span> ${s.failingAssets ?? 0} failing</span>
+      <span class="right">${s.assets ?? 0} assets across ${s.intents ?? 0} intents</span>`;
+  }
 }
 
 // ── Render: partition browser (sidebar vs app-grid) ───
@@ -1996,7 +2035,10 @@ function renderTopologyDetailsPanel(): void {
 
 // ── Render: page chrome ───────────────────────────────
 const PANEL_COPY: Record<string, { eyebrow: string; title: string }> = {
-  overviewPanel: { eyebrow: "Control center", title: "Control Center" },
+  overviewPanel: { eyebrow: "Control center", title: "Overview" },
+  registryPanel: { eyebrow: "Control center", title: "Connections" },
+  unmanagedPanel: { eyebrow: "Control center", title: "Adopt" },
+  scanPanel: { eyebrow: "Control center", title: "Adopt" },
   builderPanel:  { eyebrow: "Visual editor",  title: "Build" },
   topologyPanel: { eyebrow: "Deployment graph", title: "Topology" },
   rolloutsPanel: { eyebrow: "Release timeline", title: "Rollouts" },
@@ -2016,10 +2058,15 @@ function renderPageChrome(): void {
     const el = document.getElementById(id);
     if (el) el.style.display = visible ? "" : "none";
   };
+  const partitionScoped = ["overviewPanel", "topologyPanel", "rolloutsPanel", "historyPanel"].includes(activePanel);
   set("appGridSection", showOverviewChooser);
-  set("summaryGrid", showOverviewChooser);
+  set("summaryGrid", false);
   set("selectedPartitionHero", overviewOnly && hasSelection);
   set("sidebarPartitionSection", true);
+  const healthLine = document.getElementById("overviewHealthLine");
+  if (healthLine) healthLine.style.display = showOverviewChooser ? "flex" : "none";
+  const tabsRow = document.getElementById("partitionTabs");
+  if (tabsRow) tabsRow.style.display = partitionScoped && hasSelection ? "flex" : "none";
 
   setText("pageEyebrow", copy.eyebrow);
   setText("pageTitle", copy.title);
@@ -2043,6 +2090,12 @@ function renderPageChrome(): void {
     subtitle = detail ? `Compose intents and assets for ${detail.partition.manifest.metadata.name}.` : "Compose a new partition or edit an existing one.";
     pills = detail ? `<span class="pill">${escapeHtml(detail.partition.manifest.metadata.name)}</span><span class="pill">${detail.intents?.length ?? 0} intents</span>` : "";
   }
+  if (activePanel === "registryPanel") {
+    subtitle = "Agents, source repositories, and partition bindings.";
+  }
+  if (activePanel === "unmanagedPanel" || activePanel === "scanPanel") {
+    subtitle = "Bring existing AWS stacks under repository ownership.";
+  }
   if (activePanel === "topologyPanel") {
     subtitle = detail ? `Topology for ${detail.partition.manifest.metadata.name}.` : "Select a partition to inspect its graph.";
     pills = detail ? `<span class="pill">${escapeHtml(detail.partition.manifest.metadata.name)}</span><span class="pill">${detail.topology?.nodes?.length ?? 0} nodes</span>` : "";
@@ -2061,7 +2114,10 @@ function renderPageChrome(): void {
   if (pillsEl) { pillsEl.innerHTML = pills; pillsEl.style.display = pills.trim() ? "" : "none"; }
 
   const topnavEl = document.getElementById("topnavPartition");
-  if (topnavEl) topnavEl.textContent = state.selectedPartition || detail?.partition?.manifest?.metadata?.name || copy.title || "Control Center";
+  const topnavLabel = partitionScoped && state.selectedPartition
+    ? state.selectedPartition
+    : copy.title || "Overview";
+  if (topnavEl) topnavEl.textContent = topnavLabel;
 }
 
 // ── Helpers ───────────────────────────────────────────
@@ -2506,6 +2562,7 @@ function wireEvents(): void {
   initRegistryPanel(handleError);
   initUnmanagedPanel(handleError);
   document.getElementById("partitionSearch")?.addEventListener("input", renderPartitionList);
+  document.getElementById("adoptScanButton")?.addEventListener("click", () => activatePanel("scanPanel"));
   document.getElementById("refreshButton")?.addEventListener("click", () => refreshOverview(true).catch(handleError));
   document.getElementById("reconcileButton")?.addEventListener("click", reconcileSelected);
   const startNewPartition = () => {
