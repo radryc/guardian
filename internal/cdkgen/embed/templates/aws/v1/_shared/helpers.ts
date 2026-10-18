@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import * as cdk from 'aws-cdk-lib';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
@@ -111,7 +112,27 @@ export function buildEnvironment(env: any, partition: string, intent: string, as
       out[key] = value === null || value === undefined ? '' : String(value);
     }
   }
-  let attrs = `guardian.partition=${partition},guardian.intent=${intent},guardian.asset=${asset}`;
+  const fullName = [partition, intent, asset].filter((part) => Boolean(part)).join('.');
+  let serviceName = fullName;
+  let truncated = false;
+  if (serviceName.length > 200) {
+    serviceName = `${serviceName.slice(0, 189)}.${createHash('sha256').update(fullName).digest('hex').slice(0, 10)}`;
+    truncated = true;
+  }
+  if (!out.OTEL_SERVICE_NAME) {
+    out.OTEL_SERVICE_NAME = serviceName;
+  }
+  const generated = [
+    `service.name=${out.OTEL_SERVICE_NAME}`,
+    `service.namespace=${partition}`,
+    `guardian.partition=${partition}`,
+    `guardian.intent=${intent}`,
+    `guardian.asset=${asset}`,
+    'guardian.provider=aws',
+    `guardian.service.full_name=${fullName}`,
+    `guardian.service.truncated=${truncated ? 'true' : 'false'}`,
+  ];
+  let attrs = generated.join(',');
   if (out.OTEL_RESOURCE_ATTRIBUTES) {
     attrs += `,${out.OTEL_RESOURCE_ATTRIBUTES}`;
   }
