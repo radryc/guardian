@@ -273,7 +273,7 @@ function renderSetPage(): void {
     const binding = repo?.bindings?.find((candidate) => candidate.partition === name) ?? (repo?.partition === name ? { partition: name, path: repo.path } : undefined);
     const path = binding?.path || `/partitions/${name}/payloads/aws`;
     return `<tr>
-      <td><div class="app-name">${escapeHtml(name)}</div><div class="repo-sub">${repo ? "primary set" : "no repository"}</div></td>
+      <td><div class="app-name">${escapeHtml(name)}</div><div class="repo-sub">${repo ? "assigned repo" : "no repository"}</div></td>
       <td><span class="status-dot status-dot-${escapeAttr(summary?.health ?? "neutral")}"></span> <span class="status-text">${escapeHtml(summary?.displayStatus ?? summary?.health ?? "Unknown")}</span></td>
       <td class="source-cell">
         ${repo ? `<span class="mono">${escapeHtml(repo.name)}</span>` : `<span style="color:var(--ui-amber)">No repository</span>`}
