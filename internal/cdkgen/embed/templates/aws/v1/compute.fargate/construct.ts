@@ -79,6 +79,28 @@ export function computeFargate(stack: cdk.Stack, name: string, call: AssetCall):
     essential: true,
   });
 
+  // ContainerImage.fromRegistry() tells CDK nothing about the registry, so a
+  // private ECR image gets no pull permissions on the execution role (CDK only
+  // adds them for fromEcrRepository). Without this the task stops with
+  // "unable to retrieve ecr registry auth: ... ecr:GetAuthorizationToken".
+  const ecrRepository = ecrRepositoryArn(String(props.image));
+  if (ecrRepository) {
+    const executionRole = taskDefinition.obtainExecutionRole();
+    executionRole.addToPrincipalPolicy(new iam.PolicyStatement({
+      actions: ['ecr:GetAuthorizationToken'],
+      resources: ['*'],
+    }));
+    executionRole.addToPrincipalPolicy(new iam.PolicyStatement({
+      actions: [
+        'ecr:BatchCheckLayerAvailability',
+        'ecr:GetDownloadUrlForLayer',
+        'ecr:BatchGetImage',
+      ],
+      resources: [ecrRepository],
+    }));
+  }
+
+
   const addedVolumes = new Set<string>();
   for (const mount of objectList(props.volumeMounts)) {
     const volumeName = String(mount.volume || '');
@@ -138,4 +160,20 @@ export function computeFargate(stack: cdk.Stack, name: string, call: AssetCall):
     containerName,
     port: firstPort(props.ports),
   };
+}
+
+/**
+ * ecrRepositoryArn returns the repository ARN for a private ECR image
+ * reference (`<account>.dkr.ecr.<region>.amazonaws.com/<repo>[:tag|@digest]`),
+ * or undefined when the image is not hosted in private ECR.
+ */
+function ecrRepositoryArn(image: string): string | undefined {
+  const match = image.match(
+    /^(\d{12})\.dkr\.ecr(?:-fips)?\.([a-z0-9-]+)\.amazonaws\.com(?:\.cn)?\/([^:@]+)(?::[^/]+|@sha256:[0-9a-f]{64})?$/,
+  );
+  if (!match) {
+    return undefined;
+  }
+  const [, account, region, repository] = match;
+  return `arn:aws:ecr:${region}:${account}:repository/${repository}`;
 }
