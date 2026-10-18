@@ -32,6 +32,16 @@ A repo can feed several partitions and a partition several repos; bindings carry
 a stack selector, payload path and account/region override, and contain no
 credentials (`registry.RepoBinding`).
 
+Platform-wide assignments can be seeded declaratively:
+
+```bash
+guardianctl repo seed --file deploy/bootstrap/repos.yaml
+```
+
+The file is a `RepoRegistry` with a `repos:` list; each entry uses the same
+fields as `guardianctl repo add`. Seeding is idempotent and is safe to run on
+every bootstrap.
+
 ## Changes
 
 ### 1. Deploy after repo ingestion
