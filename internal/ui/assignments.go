@@ -21,6 +21,7 @@ type PartitionAssignments struct {
 
 type PartitionRepoAssignment struct {
 	Name          string               `json:"name"`
+	SourceType    string               `json:"sourceType,omitempty"`
 	Source        string               `json:"source,omitempty"`
 	Branch        string               `json:"branch,omitempty"`
 	Commit        string               `json:"commit,omitempty"`
@@ -84,6 +85,7 @@ func (s *Server) buildPartitionAssignments(ctx context.Context, partition string
 			payloadPath := binding.PayloadDir()
 			assignment := PartitionRepoAssignment{
 				Name:          repo.Name,
+				SourceType:    repo.SourceType,
 				Source:        repo.Source,
 				Branch:        repo.Branch,
 				Commit:        repo.LastSyncCommit,

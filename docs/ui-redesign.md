@@ -133,6 +133,10 @@ Department X — AWS Production
   separate from health so a partition is not counted twice.
 - **Ungrouped** is a virtual set for partitions not in any set.
 - Set metadata lives in the Guardian store (`/.registry/sets`), not in repos.
+- A built-in `native` source represents partitions that do not need a
+  repository (control-plane/native state). It can be bound like a repo from
+  Connections, never ingests, and counts as a valid assignment. External
+  Git/MonoFS sources can also be registered without a pusher and bound later.
 - A partition can declare membership in its config:
   ```yaml
   spec:
