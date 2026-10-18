@@ -310,3 +310,57 @@ func TestRegistryAPINotifyRecordsAndIngests(t *testing.T) {
 		t.Fatalf("repo record missing notification: %s", rec.Body.String())
 	}
 }
+
+func TestRegistryAPIRegistersRepoBeforePusherAndBindings(t *testing.T) {
+	srv, _ := newRegistryTestServer(t)
+
+	rec := registryRequest(t, srv, http.MethodPost, "/api/repos", map[string]any{
+		"name":       "source-only",
+		"source":     "https://github.com/example/source.git",
+		"sourceType": "git",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST standalone repo status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	rec = registryRequest(t, srv, http.MethodPost, "/api/repos", map[string]any{
+		"name": "monofs-source", "source": "/.repos/github.com/example/source", "sourceType": "monofs",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST monofs repo status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	rec = registryRequest(t, srv, http.MethodPost, "/api/repos", map[string]any{
+		"name": "bad-monofs", "source": "github.com/example/source", "sourceType": "monofs",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST invalid monofs repo status = %d, want 400", rec.Code)
+	}
+
+	rec = registryRequest(t, srv, http.MethodPost, "/api/repos/source-only/ingest", nil)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "no pusher") {
+		t.Fatalf("ingest before pusher = %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = registryRequest(t, srv, http.MethodPost, "/api/pushers", map[string]any{
+		"name": "aws-1", "account": "123456789012", "region": "eu-west-1", "observedApiUrl": "http://x",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST pusher status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	rec = registryRequest(t, srv, http.MethodPut, "/api/repos/source-only/bindings", map[string]any{
+		"pusher":   "aws-1",
+		"bindings": []map[string]any{{"partition": "prod", "selector": "Prod-*"}},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT late bindings status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	rec = registryRequest(t, srv, http.MethodGet, "/api/repos/source-only", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET repo status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"source-only", "aws-1", "prod", "Prod-*", "sourceType"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("repo body missing %q: %s", want, body)
+		}
+	}
+}

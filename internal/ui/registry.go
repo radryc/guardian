@@ -155,7 +155,8 @@ func (s *Server) handleRepoRoute(w http.ResponseWriter, r *http.Request) {
 // the source URL and pusher link private.
 func (s *Server) handleRepoBindings(w http.ResponseWriter, r *http.Request, name string) {
 	var body struct {
-		Bindings []registry.RepoBinding `json:"bindings"`
+		Bindings *[]registry.RepoBinding `json:"bindings"`
+		Pusher   *string                 `json:"pusher"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("decode bindings: %w", err))
@@ -171,9 +172,14 @@ func (s *Server) handleRepoBindings(w http.ResponseWriter, r *http.Request, name
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	repo.Bindings = body.Bindings
-	repo.Partition = ""
-	repo.Path = ""
+	if body.Bindings != nil {
+		repo.Bindings = *body.Bindings
+		repo.Partition = ""
+		repo.Path = ""
+	}
+	if body.Pusher != nil {
+		repo.Pusher = strings.TrimSpace(*body.Pusher)
+	}
 	if err := store.PutRepo(r.Context(), repo); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -256,6 +262,9 @@ func (s *Server) handleRepoNotify(w http.ResponseWriter, r *http.Request, name s
 }
 
 func (s *Server) ingestRepoFromStore(ctx context.Context, registryStore *registry.Store, repo *registry.Repo) ([]string, error) {
+	if strings.TrimSpace(repo.Pusher) == "" {
+		return nil, fmt.Errorf("repo %q has no pusher; assign a pusher before ingest", repo.Name)
+	}
 	imported, err := s.importRepoPartitionsFromStore(ctx, repo)
 	if err != nil {
 		_ = registryStore.RecordSync(ctx, repo.Name, "", err)

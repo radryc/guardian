@@ -733,7 +733,7 @@ function renderAssignments(): void {
         </div>
         <span class="right">${intents.map((intent: string) => `<span class="assignment-chip">${escapeHtml(intent)}</span>`).join("")}</span>
       </div>`;
-  }).join("") : `<div class="assignment-empty">No target pusher found for this partition.</div>`;
+  }).join("") : `<div class="assignment-empty">No pusher found for this partition.</div>`;
 
   const warningsHtml = warnings.length ? `
     <div class="assignment-warnings">
@@ -750,8 +750,8 @@ function renderAssignments(): void {
     </div>
     <div class="assignment-block">
       <div class="assignment-block-head">
-        <span class="assignment-title">Targets</span>
-        <span class="assignment-chip">${pushers.length} assigned</span>
+        <span class="assignment-title">Pusher</span>
+        <span class="assignment-chip">${pushers.length} pusher${pushers.length === 1 ? "" : "s"}</span>
       </div>
       ${pusherHtml}
     </div>

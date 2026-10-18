@@ -403,6 +403,7 @@ body.diagnostics-open { overflow: hidden; }
 .status-dot-neutral   { background: #566778; }
 .status-dot-drifted   { background: #FCB519; }
 .status-dot-drifted-locked { background: #F5A623; }
+.status-dot-locked { background: #FFFFFF; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35); }
 .status-row { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
 
 /* ── App tile (partition card in overview) ─────────── */

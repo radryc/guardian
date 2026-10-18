@@ -25,6 +25,7 @@ interface Repo {
   bindings?: RepoBinding[];
   path?: string;
   source?: string;
+  sourceType?: string;
   branch?: string;
   assemblySubdir?: string;
   lastSyncedAt?: string;
@@ -56,6 +57,7 @@ export function initRegistryPanel(errorHandler: (error: any) => void): void {
   onError = errorHandler;
   document.getElementById("pusherSaveButton")?.addEventListener("click", () => savePusher().catch(onError));
   document.getElementById("repoSaveButton")?.addEventListener("click", () => saveRepo().catch(onError));
+  document.getElementById("repoSourceType")?.addEventListener("change", updateSourceFields);
   document.getElementById("repoAssignSave")?.addEventListener("click", () => saveAssignments().catch(onError));
   document.getElementById("repoAssignCancel")?.addEventListener("click", closeAssign);
   wireBindingPicker("repoPartitionPicker", formBindings);
@@ -108,8 +110,11 @@ export function renderRegistryPanel(options: TargetPartitionOptions = {}): void 
   } else {
     renderPushers();
     renderRepos();
+    renderRepoPusherOptions();
+    renderAssignPusherOptions();
     renderBindingPicker("repoPartitionPicker", formBindings);
     renderBindingPicker("repoAssignPicker", assignBindings);
+    updateSourceFields();
   }
 }
 
@@ -188,8 +193,10 @@ async function loadRegistry(): Promise<void> {
   renderPushers();
   renderRepos();
   renderRepoPusherOptions();
+  renderAssignPusherOptions();
   renderBindingPicker("repoPartitionPicker", formBindings);
   renderBindingPicker("repoAssignPicker", assignBindings);
+  updateSourceFields();
 }
 
 function renderPushers(): void {
@@ -226,6 +233,7 @@ function renderRepos(): void {
       const chips = bindings.length
         ? bindings.map((binding) => `<span class="pill">${escapeHtml(binding.partition)}${binding.selector ? ` <span class="text-[#566778]">· ${escapeHtml(binding.selector)}</span>` : ""}</span>`).join(" ")
         : `<span class="pill">no partitions</span>`;
+      const sourceType = repo.sourceType === "monofs" ? "MonoFS" : "Git";
       const syncLine = repo.lastSyncError
         ? `<div class="text-[12px] text-[#f87171] truncate">${escapeHtml(repo.lastSyncError)}</div>`
         : repo.lastSyncedAt
@@ -237,12 +245,12 @@ function renderRepos(): void {
           <div class="min-w-0">
             <div class="text-sm text-[#dbe7f7] font-semibold">${escapeHtml(repo.name)}</div>
             <div class="flex flex-wrap gap-1 mt-1">${chips}</div>
-            <div class="text-[12px] text-[#7f93ad] truncate mt-1">pusher ${escapeHtml(repo.pusher)} · ${escapeHtml(repo.source || repo.path || "no source")}</div>
+            <div class="text-[12px] text-[#7f93ad] truncate mt-1">${sourceType} · pusher ${escapeHtml(repo.pusher || "unassigned")} · ${escapeHtml(repo.source || repo.path || "no source")}</div>
             ${syncLine}
           </div>
           <div class="flex items-center gap-2 shrink-0">
             <button class="btn-secondary text-[12px] px-2 py-0.5" data-repo-action="assign" data-repo-name="${escapeAttr(repo.name)}">Assign</button>
-            <button class="btn-secondary text-[12px] px-2 py-0.5" data-repo-action="ingest" data-repo-name="${escapeAttr(repo.name)}">Ingest</button>
+            <button class="btn-secondary text-[12px] px-2 py-0.5" data-repo-action="ingest" data-repo-name="${escapeAttr(repo.name)}"${repo.pusher ? "" : ` disabled title="Assign a pusher first"`}>Ingest</button>
             <button class="btn-ghost text-[12px]" data-repo-action="delete" data-repo-name="${escapeAttr(repo.name)}">Remove</button>
           </div>
         </div>
@@ -255,8 +263,30 @@ function renderRepoPusherOptions(): void {
   const select = document.getElementById("repoPusher") as HTMLSelectElement | null;
   if (!select) return;
   const current = select.value;
-  select.innerHTML = pushers.map((pusher) => `<option value="${escapeAttr(pusher.name)}">${escapeHtml(pusher.name)}</option>`).join("");
+  select.innerHTML = `<option value="">— none (bind later) —</option>` +
+    pushers.map((pusher) => `<option value="${escapeAttr(pusher.name)}">${escapeHtml(pusher.name)}</option>`).join("");
   if (current) select.value = current;
+}
+
+function renderAssignPusherOptions(current?: string): void {
+  const select = document.getElementById("repoAssignPusher") as HTMLSelectElement | null;
+  if (!select) return;
+  const selected = current ?? select.value;
+  select.innerHTML = `<option value="">— none (bind later) —</option>` +
+    pushers.map((pusher) => `<option value="${escapeAttr(pusher.name)}">${escapeHtml(pusher.name)}</option>`).join("");
+  if (selected && pushers.some((pusher) => pusher.name === selected)) {
+    select.value = selected;
+  }
+}
+
+function updateSourceFields(): void {
+  const type = (document.getElementById("repoSourceType") as HTMLSelectElement | null)?.value ?? "git";
+  const label = document.getElementById("repoSourceLabel");
+  const source = document.getElementById("repoSource") as HTMLInputElement | null;
+  const branch = document.getElementById("repoBranchField");
+  if (label) label.textContent = type === "monofs" ? "MonoFS repository path" : "Git URL or local checkout";
+  if (source) source.placeholder = type === "monofs" ? "/.repos/github.com/org/strata" : "https://github.com/org/strata.git";
+  if (branch) branch.hidden = type === "monofs";
 }
 
 async function savePusher(): Promise<void> {
@@ -297,26 +327,29 @@ async function saveRepo(): Promise<void> {
   if (busy) return;
   const value = (id: string): string => (document.getElementById(id) as HTMLInputElement | null)?.value?.trim() ?? "";
   const name = value("repoName");
+  const sourceType = (document.getElementById("repoSourceType") as HTMLSelectElement | null)?.value ?? "git";
   const pusher = (document.getElementById("repoPusher") as HTMLSelectElement | null)?.value ?? "";
   const bindings = collectBindings(formBindings);
-  if (!pusher) {
-    toast("Register a pusher first", "error");
-    return;
-  }
+  const source = value("repoSource");
   if (!name) {
     toast("Repository name is required", "error");
     return;
   }
-  if (bindings.length === 0) {
-    toast("Assign at least one partition", "error");
+  if (!source) {
+    toast("Repository source is required", "error");
+    return;
+  }
+  if (sourceType === "monofs" && !source.startsWith("/") && !source.startsWith("monofs://")) {
+    toast("MonoFS sources must start with / or monofs://", "error");
     return;
   }
   const payload = {
     name,
+    sourceType,
     pusher,
     bindings,
-    source: value("repoSource"),
-    branch: value("repoBranch"),
+    source,
+    branch: sourceType === "git" ? value("repoBranch") : "",
     assemblySubdir: value("repoAssemblySubdir") || "cdk.out",
     description: value("repoDescription"),
   };
@@ -345,6 +378,7 @@ function startAssign(name: string): void {
   if (!repo) return;
   assignRepoName = name;
   assignBindings.clear();
+  renderAssignPusherOptions(repo.pusher ?? "");
   for (const binding of repoBindings(repo)) {
     assignBindings.set(binding.partition, { selector: binding.selector ?? "", path: binding.path ?? "" });
   }
@@ -364,16 +398,13 @@ function closeAssign(): void {
 async function saveAssignments(): Promise<void> {
   if (busy || !assignRepoName) return;
   const bindings = collectBindings(assignBindings);
-  if (bindings.length === 0) {
-    toast("Assign at least one partition", "error");
-    return;
-  }
+  const pusher = (document.getElementById("repoAssignPusher") as HTMLSelectElement | null)?.value ?? "";
   busy = true;
   try {
     await fetchJSON(`/api/repos/${encodeURIComponent(assignRepoName)}/bindings`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bindings }),
+      body: JSON.stringify({ bindings, pusher }),
     });
     toast(`Assignments updated for ${assignRepoName}`, "success");
     closeAssign();
