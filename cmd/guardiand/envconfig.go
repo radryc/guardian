@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 //	GUARDIAN_PUSHERS            comma list of name:queueDir entries
 //	GUARDIAN_OBSERVED_INTERVAL  observed collector interval (empty disables)
 //	GUARDIAN_OBSERVED_TIMEOUT   observed collector request timeout
+//	GUARDIAN_OBSERVED_DETECT_DRIFT  run CloudFormation drift detection each pass
 //
 // It is how the multi-account demo wires aws-<account> queues and the observed
 // collector into a guardiand that was started from the default config.
@@ -32,6 +34,11 @@ func applyGuardianEnvConfig(cfg *config.Config) {
 	}
 	if value := strings.TrimSpace(os.Getenv("GUARDIAN_OBSERVED_TIMEOUT")); value != "" {
 		cfg.Guardian.ObservedTimeout = value
+	}
+	if value := strings.TrimSpace(os.Getenv("GUARDIAN_OBSERVED_DETECT_DRIFT")); value != "" {
+		if enabled, err := strconv.ParseBool(value); err == nil {
+			cfg.Guardian.ObservedDetectDrift = enabled
+		}
 	}
 }
 
