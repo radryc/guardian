@@ -56,6 +56,8 @@ Status: implemented; verification in progress. This plan turns `docs/ui-redesign
       description, labels, parent, subsets, scoped partition table
       (status, repo, MonoFS path, assignment), health rollup, set details.
 - [x] Add create/edit/move/delete set and add/remove partitions UI.
+- [x] Add `guardianctl sets ensure` and seed **Core** (control plane) and
+      **Department X** (all `demo-*` AWS deployments) during demo `up`.
 - [x] Commit (`d75f58b`).
 
 ## Phase 4 — polish and verification
