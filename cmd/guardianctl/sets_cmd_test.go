@@ -5,6 +5,7 @@ import (
 	"io"
 	"testing"
 
+	"github.com/rydzu/ainfra/guardian/internal/cli/command"
 	"github.com/rydzu/ainfra/guardian/internal/cli/output"
 	"github.com/rydzu/ainfra/guardian/internal/paths"
 	setstore "github.com/rydzu/ainfra/guardian/internal/sets"
@@ -56,5 +57,64 @@ func TestSetsEnsureIsIdempotent(t *testing.T) {
 	}
 	if sets[0].Labels["scope"] != "core" {
 		t.Fatalf("labels = %v", sets[0].Labels)
+	}
+}
+
+func TestSetsCLILifecycle(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{
+		Writes: []guardianapi.PathWrite{
+			{LogicalPath: paths.PartitionConfig("p1"), Content: []byte("apiVersion: guardian/v1alpha1\nkind: Partition\nmetadata:\n  name: p1\n")},
+			{LogicalPath: paths.PartitionConfig("p2"), Content: []byte("apiVersion: guardian/v1alpha1\nkind: Partition\nmetadata:\n  name: p2\n")},
+		},
+		Context: guardianapi.MutationContext{PrincipalID: "test"},
+	}); err != nil {
+		t.Fatalf("seed partitions: %v", err)
+	}
+	storeSets := setstore.New(store)
+	parent, err := storeSets.Create(ctx, &setstore.Set{Name: "Parent"})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	child, err := storeSets.Create(ctx, &setstore.Set{Name: "Child", ParentID: parent.ID})
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	printer := &output.Printer{Writer: io.Discard}
+	run := func(cmd *command.Command, args []string) error {
+		if err := cmd.Flags.Parse(args); err != nil {
+			t.Fatalf("parse %s: %v", cmd.Description, err)
+		}
+		return cmd.Run(ctx, cmd.Flags.Args())
+	}
+	if err := run(setsAssignCommand(store, printer), []string{"--set", child.ID, "--add", "p1", "--add", "p2"}); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	if err := run(setsUpdateCommand(store, printer), []string{"--set", child.ID, "--description", "updated", "--pinned", "true"}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	got, err := storeSets.Get(ctx, child.ID)
+	if err != nil {
+		t.Fatalf("get child: %v", err)
+	}
+	if got.Description != "updated" || !got.Pinned || len(got.Partitions) != 2 {
+		t.Fatalf("child after update = %+v", got)
+	}
+	if err := run(setsDeleteCommand(store, printer), []string{"--set", child.ID}); err == nil {
+		t.Fatal("delete non-empty set should fail")
+	}
+	if err := run(setsMoveCommand(store, printer), []string{"--set", child.ID, "--parent", ""}); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	got, _ = storeSets.Get(ctx, child.ID)
+	if got.ParentID != "" {
+		t.Fatalf("parent = %q, want root", got.ParentID)
+	}
+	if err := run(setsAssignCommand(store, printer), []string{"--set", child.ID, "--remove", "p1", "--remove", "p2"}); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if err := run(setsDeleteCommand(store, printer), []string{"--set", child.ID}); err != nil {
+		t.Fatalf("delete empty: %v", err)
 	}
 }
