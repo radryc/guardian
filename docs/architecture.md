@@ -90,7 +90,7 @@ An intent (`internal/domain/intent`) is a deployable unit:
 Public asset types (`internal/domain/asset/catalog.go`): `Compute`,
 `ImageBuild`, `CDKStack`, `Database`, `SQLDatabase`, `Volume`, `Config`,
 `Network`, `Secret`, `LoadBalancer`, `TraefikRoute`, `ObjectStore`,
-`Observability`, `K8sResource`. Internal-only: `AWSResource` (raw CFN
+`Observability`, `Probe`, `K8sResource`. Internal-only: `AWSResource` (raw CFN
 fallback) and `GeneratedStack` (the compiled CDK stack carried through the
 task pipeline).
 
