@@ -300,6 +300,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/repos/", s.handleRepoRoute)
 	mux.HandleFunc("/api/aws/unmanaged", s.handleUnmanaged)
 	mux.HandleFunc("/api/aws/unmanaged/", s.handleUnmanagedRoute)
+	mux.HandleFunc("/api/sets", s.handleSets)
+	mux.HandleFunc("/api/sets/", s.handleSetRoute)
 	return mux
 }
 
