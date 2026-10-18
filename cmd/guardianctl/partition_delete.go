@@ -31,10 +31,14 @@ func partitionDeleteCommand(store guardianapi.Store, printer *output.Printer) *c
 	force := flags.Bool("force", false, "purge all partition files immediately without destroying resources")
 	wait := flags.Bool("wait", false, "wait until teardown completes")
 	waitTimeout := flags.Duration("wait-timeout", defaultPartitionWaitTimeout, "maximum time to wait when --wait is set")
+	timeoutAlias := flags.Duration("timeout", defaultPartitionWaitTimeout, "alias for --wait-timeout")
 	waitInterval := flags.Duration("wait-interval", defaultPartitionWaitInterval, "poll interval when --wait is set")
 	return &command.Command{Description: "Delete a partition after destroying its resources", Flags: flags, Run: func(ctx context.Context, args []string) error {
 		if *partitionName == "" {
 			return fmt.Errorf("--partition is required")
+		}
+		if *timeoutAlias != defaultPartitionWaitTimeout && *waitTimeout == defaultPartitionWaitTimeout {
+			*waitTimeout = *timeoutAlias
 		}
 		if *force {
 			return forceDeletePartition(ctx, store, printer, *partitionName)
