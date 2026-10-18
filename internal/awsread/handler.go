@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +20,10 @@ type Handler struct {
 	// PromQL proxies PromQL to CloudWatch's Prometheus-compatible API.
 	PromQL PromQLProxier
 	// Observed serves observed CloudFormation stack state for Guardian.
-	Observed awsobserve.Provider
+	Observed   awsobserve.Provider
+	PusherName string
+	Account    string
+	Region     string
 }
 
 // NewHandler builds an HTTP handler for the reader.
@@ -39,6 +43,14 @@ func (h *Handler) WithObserved(provider awsobserve.Provider) *Handler {
 	return h
 }
 
+// WithIdentity attaches the pusher/account/region metadata surfaced by /v1/aws/meta.
+func (h *Handler) WithIdentity(pusher, account, region string) *Handler {
+	h.PusherName = strings.TrimSpace(pusher)
+	h.Account = strings.TrimSpace(account)
+	h.Region = strings.TrimSpace(region)
+	return h
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !h.authorized(r) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -48,6 +60,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == "/healthz":
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	case path == "/v1/aws/meta":
+		h.handleMeta(w, r)
 	case path == "/v1/aws/metrics":
 		h.handleListMetrics(w, r)
 	case path == "/v1/aws/metrics/query":
@@ -151,6 +165,45 @@ func (h *Handler) authorized(r *http.Request) bool {
 		return strings.TrimSpace(strings.TrimPrefix(header, "Bearer ")) == h.Token
 	}
 	return false
+}
+
+func (h *Handler) handleMeta(w http.ResponseWriter, r *http.Request) {
+	metrics, _ := h.Reader.ListMetrics(r.Context(), "", "")
+	namespaceSet := map[string]struct{}{}
+	metricSet := map[string]struct{}{}
+	for _, metric := range metrics {
+		if metric.Namespace != "" {
+			namespaceSet[metric.Namespace] = struct{}{}
+		}
+		if metric.MetricName != "" {
+			metricSet[metric.MetricName] = struct{}{}
+		}
+	}
+	logGroups, _ := h.Reader.ListLogGroups(r.Context())
+	services, _ := h.Reader.ListServices(r.Context())
+	observedStacks := 0
+	if h.Observed != nil {
+		observedStacks = len(h.Observed.List(h.Account, h.Region))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pusher":           h.PusherName,
+		"account":          h.Account,
+		"region":           h.Region,
+		"metricNamespaces": mapKeys(namespaceSet),
+		"metricNames":      mapKeys(metricSet),
+		"logGroups":        logGroups,
+		"xrayServices":     services,
+		"observedStacks":   observedStacks,
+	})
+}
+
+func mapKeys(values map[string]struct{}) []string {
+	out := make([]string, 0, len(values))
+	for value := range values {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (h *Handler) handleListMetrics(w http.ResponseWriter, r *http.Request) {

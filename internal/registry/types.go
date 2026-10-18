@@ -38,11 +38,24 @@ func parseSelector(selector string) ([]string, error) {
 
 // Pusher is a registered AWS pusher.
 type Pusher struct {
-	APIVersion     string            `json:"apiVersion"`
-	Kind           string            `json:"kind"`
-	Name           string            `json:"name"`
-	Account        string            `json:"account,omitempty"`
-	Region         string            `json:"region,omitempty"`
+	APIVersion  string `json:"apiVersion"`
+	Kind        string `json:"kind"`
+	Name        string `json:"name"`
+	Provider    string `json:"provider,omitempty"`
+	Account     string `json:"account,omitempty"`
+	Region      string `json:"region,omitempty"`
+	Cluster     string `json:"cluster,omitempty"`
+	KubeContext string `json:"kubeContext,omitempty"`
+	ShardIndex  int    `json:"shardIndex,omitempty"`
+	ShardCount  int    `json:"shardCount,omitempty"`
+	Version     string `json:"version,omitempty"`
+	// Capabilities lists observed/query capabilities: metrics, logs, traces,
+	// observed, cloudwatch.
+	Capabilities   []string          `json:"capabilities,omitempty"`
+	OTLPEndpoint   string            `json:"otlpEndpoint,omitempty"`
+	CollectorURL   string            `json:"collectorUrl,omitempty"`
+	Status         string            `json:"status,omitempty"`
+	LastHeartbeat  time.Time         `json:"lastHeartbeat,omitempty"`
 	ObservedAPIURL string            `json:"observedApiUrl"`
 	Token          string            `json:"token,omitempty"`
 	TokenEnv       string            `json:"tokenEnv,omitempty"`
@@ -169,8 +182,18 @@ func (p *Pusher) Normalize() {
 	p.APIVersion = "guardian/v1alpha1"
 	p.Kind = "PusherRegistration"
 	p.Name = strings.TrimSpace(p.Name)
+	p.Provider = strings.TrimSpace(p.Provider)
+	if p.Provider == "" && p.Account != "" {
+		p.Provider = "aws"
+	}
 	p.Account = strings.TrimSpace(p.Account)
 	p.Region = strings.TrimSpace(p.Region)
+	p.Cluster = strings.TrimSpace(p.Cluster)
+	p.KubeContext = strings.TrimSpace(p.KubeContext)
+	p.Version = strings.TrimSpace(p.Version)
+	p.OTLPEndpoint = strings.TrimSpace(p.OTLPEndpoint)
+	p.CollectorURL = strings.TrimRight(strings.TrimSpace(p.CollectorURL), "/")
+	p.Status = strings.TrimSpace(p.Status)
 	p.ObservedAPIURL = strings.TrimRight(strings.TrimSpace(p.ObservedAPIURL), "/")
 	p.Token = strings.TrimSpace(p.Token)
 	p.TokenEnv = strings.TrimSpace(p.TokenEnv)
@@ -186,11 +209,17 @@ func (p *Pusher) Validate() error {
 	if !namePattern.MatchString(p.Name) {
 		return fmt.Errorf("invalid pusher name %q", p.Name)
 	}
-	if p.ObservedAPIURL == "" {
-		return fmt.Errorf("observedApiUrl is required")
+	switch p.Provider {
+	case "", "aws", "kubernetes", "docker", "local":
+	default:
+		return fmt.Errorf("invalid pusher provider %q", p.Provider)
 	}
-	if !strings.HasPrefix(p.ObservedAPIURL, "http://") && !strings.HasPrefix(p.ObservedAPIURL, "https://") {
-		return fmt.Errorf("observedApiUrl must be an http(s) URL")
+	if p.ObservedAPIURL != "" {
+		if !strings.HasPrefix(p.ObservedAPIURL, "http://") && !strings.HasPrefix(p.ObservedAPIURL, "https://") {
+			return fmt.Errorf("observedApiUrl must be an http(s) URL")
+		}
+	} else if p.Provider == "" || p.Provider == "aws" {
+		return fmt.Errorf("observedApiUrl is required")
 	}
 	if p.Token != "" && p.TokenEnv != "" {
 		return fmt.Errorf("provide at most one of token or tokenEnv")

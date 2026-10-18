@@ -55,9 +55,19 @@ func (s *Server) handlePushers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePusherRoute(w http.ResponseWriter, r *http.Request) {
-	name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/pushers/"), "/")
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/pushers/"), "/")
+	name := rest
+	action := ""
+	if idx := strings.Index(rest, "/"); idx >= 0 {
+		name = rest[:idx]
+		action = strings.Trim(rest[idx+1:], "/")
+	}
 	if name == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("pusher name is required"))
+		return
+	}
+	if action != "" && action != "metadata" {
+		writeError(w, http.StatusNotFound, fmt.Errorf("unknown pusher action %q", action))
 		return
 	}
 	switch r.Method {

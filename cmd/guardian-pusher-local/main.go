@@ -133,6 +133,18 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	runtimepkg.StartRegistration(ctx, store, runtimepkg.PusherInfo{
+		Name:         pusherName,
+		Provider:     "local",
+		Cluster:      pusherName,
+		ShardIndex:   shardIndex,
+		ShardCount:   shardCount,
+		Capabilities: []string{"metrics", "logs", "traces", "probes"},
+		OTLPEndpoint: telemetryCfg.Endpoint,
+		CollectorURL: probes.HTTPEndpoint(telemetryCfg.Endpoint),
+		WorkerID:     workerID,
+	})
+
 	probeCfg := probes.ConfigFromEnv()
 	probeCfg.Store = store
 	probeCfg.Pusher = pusherName

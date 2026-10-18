@@ -192,6 +192,7 @@ func main() {
 			}
 		}()
 	}
+	registry.StartMetrics(ctx, store)
 
 	dispatcher := dispatcher.NewDispatcher(store, cfg.Guardian.PrincipalID)
 	compliancePublisher := compliance.NewNoop()
