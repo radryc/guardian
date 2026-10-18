@@ -5,6 +5,7 @@ import (
 	"time"
 
 	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
+	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
 )
 
@@ -148,5 +149,21 @@ func TestBuildDeploymentViewDerivesStatus(t *testing.T) {
 	}
 	if view.DisplayStatus != "Error" {
 		t.Fatalf("deployment display status = %q, want Error", view.DisplayStatus)
+	}
+}
+
+func TestSummarizePartitionMarksLocked(t *testing.T) {
+	detail := &PartitionDetailResponse{
+		Partition: PartitionDocument{Manifest: partitiondomain.Partition{
+			Metadata: partitiondomain.Metadata{Name: "agent"},
+		}},
+		Intents: []IntentDocument{
+			{Name: "agent", Locked: true},
+			{Name: "other"},
+		},
+	}
+	summary := summarizePartition(detail)
+	if !summary.Locked {
+		t.Fatal("summary.Locked = false, want true when any intent is locked")
 	}
 }

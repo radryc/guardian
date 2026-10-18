@@ -172,7 +172,7 @@ function renderSidebar(): void {
         const summary = overviewPartition(partition);
         const partitionActive = partition === selectedPartition;
         rows.push(`<div class="set-tree-row set-tree-partition ${partitionActive ? "active" : ""}" style="padding-left:${20 + depth * 12}px" data-set-partition="${escapeAttr(partition)}" role="button" tabindex="0">
-          <span class="status-dot status-dot-${escapeAttr(summary?.health ?? "neutral")}"></span>
+          <span class="status-dot status-dot-${escapeAttr(partitionDot(summary))}"></span>
           <span class="set-tree-name">${escapeHtml(partition)}</span>
         </div>`);
       }
@@ -275,7 +275,7 @@ function renderSetPage(): void {
     const path = binding?.path || `/partitions/${name}/payloads/aws`;
     return `<tr>
       <td><div class="app-name">${escapeHtml(name)}</div><div class="repo-sub">${repo ? "assigned repo" : "no repository"}</div></td>
-      <td><span class="status-dot status-dot-${escapeAttr(summary?.health ?? "neutral")}"></span> <span class="status-text">${escapeHtml(summary?.displayStatus ?? summary?.health ?? "Unknown")}</span></td>
+      <td><span class="status-dot status-dot-${escapeAttr(partitionDot(summary))}"></span> <span class="status-text">${escapeHtml(summary?.displayStatus ?? summary?.health ?? "Unknown")}</span></td>
       <td class="source-cell">
         ${repo ? `<span class="mono">${escapeHtml(repo.name)}</span>` : `<span style="color:var(--ui-amber)">No repository</span>`}
         <div class="path-cell">${escapeHtml(path)}</div>
@@ -387,6 +387,13 @@ function currentSet(): SetRecord | undefined {
 
 function overviewPartition(name: string): any {
   return (opts.getOverview()?.partitions ?? []).find((partition: any) => partition.name === name);
+}
+
+// A locked intent is a strong signal: show a white dot regardless of the
+// partition's health color, so operators can spot protected partitions at a
+// glance in the set tree.
+function partitionDot(summary: any): string {
+  return summary?.locked ? "locked" : (summary?.health ?? "neutral");
 }
 
 function repoForPartition(name: string): Repo | undefined {

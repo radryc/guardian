@@ -483,7 +483,7 @@
         <article class="card">
           <div class="card-header">
             <h2 class="card-title">Source repository</h2>
-            <p class="muted text-[13px]">Associate a repository (git URL or MonoFS path) with a pusher and one or more partitions. Ingest generates observed intents per CloudFormation stack, filtered by each binding's selector.</p>
+            <p class="muted text-[13px]">Add a Git or MonoFS repository. A pusher and partition bindings are optional: register the source first and bind it when the target is ready. Ingest generates observed intents per CloudFormation stack, filtered by each binding's selector.</p>
           </div>
           <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
             <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
@@ -497,13 +497,20 @@
             <div class="grid gap-1 text-[12px] text-[#9BB0CF] md:col-span-3">
               <span>Partitions</span>
               <div id="repoPartitionPicker" class="grid gap-1 max-h-56 overflow-y-auto rounded border border-white/[0.07] p-2"></div>
-              <p class="text-[11px] text-[#566778]">Assign one or more existing partitions. Optional stack selector and payload path per partition; one repo can feed many partitions.</p>
+              <p class="text-[11px] text-[#566778]">Optional — bind partitions now or later. One repo can feed many partitions; each binding can set a stack selector and payload path.</p>
             </div>
+            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+              <span>Source type</span>
+              <select id="repoSourceType" class="search-input">
+                <option value="git">Git repository</option>
+                <option value="monofs">MonoFS repository</option>
+              </select>
+            </label>
             <label class="grid gap-1 text-[12px] text-[#9BB0CF] md:col-span-2">
-              <span>Source (git URL or MonoFS path)</span>
+              <span id="repoSourceLabel">Git URL or local checkout</span>
               <input id="repoSource" class="search-input" type="text" placeholder="https://github.com/org/strata.git">
             </label>
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+            <label id="repoBranchField" class="grid gap-1 text-[12px] text-[#9BB0CF]">
               <span>Branch</span>
               <input id="repoBranch" class="search-input" type="text" placeholder="main">
             </label>
@@ -526,14 +533,18 @@
           <div id="repoList" class="grid gap-2 text-sm text-[#566778]">Loading repositories…</div>
           <div id="repoAssignPanel" class="hidden mt-3 rounded border border-[#00ADE4]/40 bg-[#00ADE4]/[0.05] p-3">
             <div class="flex items-center justify-between gap-2 mb-2">
-              <span class="text-[13px] font-semibold text-[#E5ECF4]">Assign partitions to <span id="repoAssignName"></span></span>
+              <span class="text-[13px] font-semibold text-[#E5ECF4]">Bind <span id="repoAssignName"></span> to partitions</span>
               <button id="repoAssignCancel" class="btn-ghost text-[12px]">Cancel</button>
             </div>
+            <label class="grid gap-1 text-[12px] text-[#9BB0CF] mb-2">
+              <span>Pusher</span>
+              <select id="repoAssignPusher" class="search-input"></select>
+            </label>
             <div id="repoAssignPicker" class="grid gap-1 max-h-56 overflow-y-auto"></div>
             <div class="mt-3">
-              <button id="repoAssignSave" class="btn-primary">Save assignments</button>
+              <button id="repoAssignSave" class="btn-primary">Save bindings</button>
             </div>
-            <p class="text-[11px] text-[#566778] mt-2">Only assignments are written. The repo source and credentials are not read or changed here.</p>
+            <p class="text-[11px] text-[#566778] mt-2">Bindings are optional. The repo source and credentials are not changed here.</p>
           </div>
         </article>
       </section>

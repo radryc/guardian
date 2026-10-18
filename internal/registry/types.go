@@ -76,19 +76,22 @@ type Repo struct {
 	Partition string `json:"partition,omitempty"`
 	// Bindings maps this repo to the partitions it feeds. A repo can feed many
 	// partitions and a partition can be fed by many repos.
-	Bindings       []RepoBinding `json:"bindings,omitempty"`
-	Path           string        `json:"path,omitempty"`
-	Source         string        `json:"source,omitempty"`
-	Branch         string        `json:"branch,omitempty"`
-	AssemblySubdir string        `json:"assemblySubdir,omitempty"`
-	Account        string        `json:"account,omitempty"`
-	Region         string        `json:"region,omitempty"`
-	Description    string        `json:"description,omitempty"`
-	CreatedAt      time.Time     `json:"createdAt"`
-	UpdatedAt      time.Time     `json:"updatedAt"`
-	LastSyncedAt   time.Time     `json:"lastSyncedAt,omitempty"`
-	LastSyncCommit string        `json:"lastSyncCommit,omitempty"`
-	LastSyncError  string        `json:"lastSyncError,omitempty"`
+	Bindings []RepoBinding `json:"bindings,omitempty"`
+	Path     string        `json:"path,omitempty"`
+	Source   string        `json:"source,omitempty"`
+	// SourceType is "git" (Git URL/local checkout) or "monofs" (logical
+	// MonoFS path). It is inferred from Source when omitted.
+	SourceType     string    `json:"sourceType,omitempty"`
+	Branch         string    `json:"branch,omitempty"`
+	AssemblySubdir string    `json:"assemblySubdir,omitempty"`
+	Account        string    `json:"account,omitempty"`
+	Region         string    `json:"region,omitempty"`
+	Description    string    `json:"description,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+	LastSyncedAt   time.Time `json:"lastSyncedAt,omitempty"`
+	LastSyncCommit string    `json:"lastSyncCommit,omitempty"`
+	LastSyncError  string    `json:"lastSyncError,omitempty"`
 	// LastNotifiedAt/Commit record the most recent CI merge notification, even
 	// when the assembly was not yet available to ingest.
 	LastNotifiedAt     time.Time `json:"lastNotifiedAt,omitempty"`
@@ -201,6 +204,14 @@ func (r *Repo) Normalize() {
 	r.Partition = strings.TrimSpace(r.Partition)
 	r.Path = strings.TrimSpace(r.Path)
 	r.Source = strings.TrimSpace(r.Source)
+	r.SourceType = strings.ToLower(strings.TrimSpace(r.SourceType))
+	if r.SourceType == "" && r.Source != "" {
+		if strings.HasPrefix(r.Source, "/") || strings.HasPrefix(r.Source, "monofs://") {
+			r.SourceType = "monofs"
+		} else {
+			r.SourceType = "git"
+		}
+	}
 	r.Branch = strings.TrimSpace(r.Branch)
 	r.AssemblySubdir = strings.TrimSpace(r.AssemblySubdir)
 	if r.AssemblySubdir == "" {
@@ -250,11 +261,13 @@ func (r *Repo) Validate() error {
 	if !namePattern.MatchString(r.Name) {
 		return fmt.Errorf("invalid repo name %q", r.Name)
 	}
-	if r.Pusher == "" {
-		return fmt.Errorf("pusher is required")
+	switch r.SourceType {
+	case "", "git", "monofs":
+	default:
+		return fmt.Errorf("sourceType must be git or monofs")
 	}
-	if len(r.Bindings) == 0 {
-		return fmt.Errorf("at least one partition binding is required")
+	if r.SourceType == "monofs" && r.Source != "" && !strings.HasPrefix(r.Source, "/") && !strings.HasPrefix(r.Source, "monofs://") {
+		return fmt.Errorf("MonoFS source must be an absolute logical path or monofs:// URL")
 	}
 	for _, binding := range r.Bindings {
 		if !namePattern.MatchString(binding.Partition) {

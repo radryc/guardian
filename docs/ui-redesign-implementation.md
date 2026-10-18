@@ -33,7 +33,9 @@ Status: implemented; verification in progress. This plan turns `docs/ui-redesign
 - [x] Add a compact assignment section to the builder inspector:
       repo, paths, target pusher, set; link to Connections for changes.
 - [x] Make Adopt a single page with sub-tabs: unmanaged stacks and scan.
-- [x] Connections remains the only global agents/repos view.
+- [x] Connections remains the only global agents/repos view. Repos can be
+      registered as Git or MonoFS sources before a pusher/partition binding,
+      then bound later.
 - [x] Commit (`3d49f49`).
 
 ## Phase 3 — virtual sets
@@ -52,6 +54,7 @@ Status: implemented; verification in progress. This plan turns `docs/ui-redesign
       All sets, nested sets, Ungrouped, pinned sets, search.
 - [x] Overview shows top-level set cards with descriptions, labels,
       partition/subset counts, health rollup, and assignment summary.
+- [x] Show a white dot for locked partitions in the set tree.
 - [x] Add a set page with:
       description, labels, parent, subsets, scoped partition table
       (status, repo, MonoFS path, assignment), health rollup, set details.
@@ -60,6 +63,9 @@ Status: implemented; verification in progress. This plan turns `docs/ui-redesign
       **Department X** (all `demo-*` AWS deployments) during demo `up`.
 - [x] Add CLI parity: `sets create|list|show|update|move|delete|assign` and
       `partition assignments` for the scoped repo/pusher view.
+- [x] Sync additive set membership from `partition.yaml` (`spec.sets`,
+      `spec.primarySet`); create missing sets automatically. Membership works
+      without a repository and is refreshed by partition discovery.
 - [x] Commit (`d75f58b`).
 
 ## Phase 4 — polish and verification

@@ -144,11 +144,13 @@ func (s *Store) PutRepo(ctx context.Context, repo *Repo) error {
 	if err := repo.Validate(); err != nil {
 		return err
 	}
-	if _, err := s.GetPusher(ctx, repo.Pusher); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return &UnknownPusherError{Name: repo.Pusher}
+	if repo.Pusher != "" {
+		if _, err := s.GetPusher(ctx, repo.Pusher); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return &UnknownPusherError{Name: repo.Pusher}
+			}
+			return err
 		}
-		return err
 	}
 	existing, err := s.GetRepo(ctx, repo.Name)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {

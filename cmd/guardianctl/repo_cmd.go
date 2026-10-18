@@ -30,7 +30,8 @@ func repoAddCommand(store guardianapi.Store, printer *output.Printer) *command.C
 	name := flags.String("name", "", "repo name")
 	pusher := flags.String("pusher", "", "target pusher name")
 	partition := flags.String("partition", "", "target partition name")
-	source := flags.String("source", "", "git URL or local directory")
+	source := flags.String("source", "", "git URL, local directory, or MonoFS logical path")
+	sourceType := flags.String("source-type", "", "source type: git or monofs (inferred when omitted)")
 	branch := flags.String("branch", "", "git branch")
 	assemblySubdir := flags.String("assembly-subdir", "cdk.out", "assembly directory relative to the repo root")
 	path := flags.String("path", "", "logical MonoFS payload dir (default /partitions/<partition>/payloads/aws)")
@@ -44,6 +45,7 @@ func repoAddCommand(store guardianapi.Store, printer *output.Printer) *command.C
 			Pusher:         *pusher,
 			Partition:      *partition,
 			Source:         *source,
+			SourceType:     *sourceType,
 			Branch:         *branch,
 			AssemblySubdir: *assemblySubdir,
 			Path:           *path,
@@ -67,7 +69,15 @@ func repoAddCommand(store guardianapi.Store, printer *output.Printer) *command.C
 			printer.PrintJSON(repo)
 			return nil
 		}
-		printer.PrintText("registered repo %s -> %s via pusher %s\n", repo.Name, strings.Join(repo.PartitionNames(), ", "), repo.Pusher)
+		pusherLabel := repo.Pusher
+		if pusherLabel == "" {
+			pusherLabel = "unassigned"
+		}
+		partitions := strings.Join(repo.PartitionNames(), ", ")
+		if partitions == "" {
+			partitions = "unassigned"
+		}
+		printer.PrintText("registered repo %s -> %s via pusher %s\n", repo.Name, partitions, pusherLabel)
 		return nil
 	}}
 }
@@ -88,9 +98,9 @@ func repoListCommand(store guardianapi.Store, printer *output.Printer) *command.
 			if !repo.LastSyncedAt.IsZero() {
 				lastSync = repo.LastSyncedAt.Format("2006-01-02 15:04")
 			}
-			rows = append(rows, []string{repo.Name, strings.Join(repo.PartitionNames(), ","), repo.Pusher, repo.Source, lastSync, repo.LastSyncError})
+			rows = append(rows, []string{repo.Name, strings.Join(repo.PartitionNames(), ","), repo.SourceType, repo.Pusher, repo.Source, lastSync, repo.LastSyncError})
 		}
-		printer.PrintTable([]string{"NAME", "PARTITION", "PUSHER", "SOURCE", "LAST SYNC", "ERROR"}, rows)
+		printer.PrintTable([]string{"NAME", "PARTITION", "TYPE", "PUSHER", "SOURCE", "LAST SYNC", "ERROR"}, rows)
 		return nil
 	}}
 }
@@ -117,6 +127,7 @@ func repoAssignCommand(store guardianapi.Store, printer *output.Printer) *comman
 	name := flags.String("name", "", "repo name")
 	bindingsJSON := flags.String("bindings", "", `JSON array of bindings, e.g. [{"partition":"prod","selector":"Prod-*"}]`)
 	partitions := flags.String("partition", "", "comma-separated partition names (simple bindings)")
+	pusher := flags.String("pusher", "", "set or replace the repo pusher (optional)")
 	selector := flags.String("selector", "", "stack selector applied to every --partition")
 	path := flags.String("path", "", "payload dir applied to every --partition")
 	account := flags.String("account", "", "account override applied to every --partition")
@@ -129,17 +140,22 @@ func repoAssignCommand(store guardianapi.Store, printer *output.Printer) *comman
 		if err != nil {
 			return err
 		}
-		if len(bindings) == 0 {
-			return fmt.Errorf("provide --bindings or --partition")
+		if len(bindings) == 0 && strings.TrimSpace(*pusher) == "" {
+			return fmt.Errorf("provide --bindings, --partition, or --pusher")
 		}
 		registryStore := registry.New(store)
 		repo, err := registryStore.GetRepo(ctx, strings.TrimSpace(*name))
 		if err != nil {
 			return err
 		}
-		repo.Bindings = bindings
-		repo.Partition = ""
-		repo.Path = ""
+		if len(bindings) > 0 {
+			repo.Bindings = bindings
+			repo.Partition = ""
+			repo.Path = ""
+		}
+		if strings.TrimSpace(*pusher) != "" {
+			repo.Pusher = strings.TrimSpace(*pusher)
+		}
 		if err := registryStore.PutRepo(ctx, repo); err != nil {
 			return err
 		}
@@ -361,6 +377,9 @@ func repoSources(store guardianapi.Store, repo *registry.Repo, override string) 
 		return repoimport.NewLocalSource(source), nil
 	}
 	logical := strings.TrimSpace(source)
+	if strings.HasPrefix(logical, "monofs://") {
+		logical = "/" + strings.TrimLeft(strings.TrimPrefix(logical, "monofs://"), "/")
+	}
 	if !strings.HasPrefix(logical, "/") {
 		logical = repoDisplayLogicalPath(source)
 		if logical == "" {
@@ -437,6 +456,9 @@ func reconcileRepoPartitions(ctx context.Context, store guardianapi.Store, repo 
 // ingestRegisteredRepo regenerates observed intents for a registered repo from
 // an assembly already in MonoFS. One bundle is generated per partition binding.
 func ingestRegisteredRepo(ctx context.Context, store guardianapi.Store, registryStore *registry.Store, repo *registry.Repo, assemblyOverride string) ([]string, error) {
+	if strings.TrimSpace(repo.Pusher) == "" {
+		return nil, fmt.Errorf("repo %s has no pusher; assign one before ingest", repo.Name)
+	}
 	pusher, err := registryStore.GetPusher(ctx, repo.Pusher)
 	if err != nil {
 		return nil, err
@@ -483,6 +505,9 @@ func ingestRegisteredRepo(ctx context.Context, store guardianapi.Store, registry
 // partition can be fed by several repos/bindings. Partition authoring is
 // credential-free: inline Secret values are rejected.
 func syncRepoBundle(ctx context.Context, store guardianapi.Store, registryStore *registry.Store, repo *registry.Repo, sourceDir, assembly string, synth, reconcile bool, printer *output.Printer) error {
+	if strings.TrimSpace(repo.Pusher) == "" {
+		return fmt.Errorf("repo %s has no pusher; assign one before sync", repo.Name)
+	}
 	pusher, err := registryStore.GetPusher(ctx, repo.Pusher)
 	if err != nil {
 		return err
