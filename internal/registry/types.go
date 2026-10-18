@@ -182,11 +182,11 @@ func (p *Pusher) Normalize() {
 	p.APIVersion = "guardian/v1alpha1"
 	p.Kind = "PusherRegistration"
 	p.Name = strings.TrimSpace(p.Name)
+	p.Account = strings.TrimSpace(p.Account)
 	p.Provider = strings.TrimSpace(p.Provider)
-	if p.Provider == "" && p.Account != "" {
+	if p.Provider == "" && (p.Account != "" || strings.HasPrefix(p.Name, "aws-")) {
 		p.Provider = "aws"
 	}
-	p.Account = strings.TrimSpace(p.Account)
 	p.Region = strings.TrimSpace(p.Region)
 	p.Cluster = strings.TrimSpace(p.Cluster)
 	p.KubeContext = strings.TrimSpace(p.KubeContext)
