@@ -255,6 +255,86 @@ func (s *Store) AddPartitions(ctx context.Context, id string, add []string, remo
 	return updated, nil
 }
 
+// SyncPartitionConfig applies the set membership declared by a partition
+// manifest. Membership is additive: sets that already contain the partition
+// are left alone, and manually-added memberships are preserved. A missing set
+// is created using the reference as its display name so a partition config can
+// define its own grouping without a separate seed step.
+func (s *Store) SyncPartitionConfig(ctx context.Context, partition string, refs []string, primary string) error {
+	partition = strings.TrimSpace(partition)
+	if partition == "" {
+		return fmt.Errorf("partition name is required")
+	}
+	primary = strings.TrimSpace(primary)
+	refs = normalizeList(refs)
+	if primary != "" {
+		refs = normalizeList(append(refs, primary))
+	}
+	for _, ref := range refs {
+		set, err := s.resolveOrCreate(ctx, ref)
+		if err != nil {
+			return err
+		}
+		isPrimary := primary != "" && (ref == primary || set.ID == primary || set.Name == primary)
+		if err := s.ensureMembership(ctx, set.ID, partition, isPrimary); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) resolveOrCreate(ctx context.Context, ref string) (*Set, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil, fmt.Errorf("set name is required")
+	}
+	if set, err := s.Get(ctx, ref); err == nil {
+		return set, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if set, err := s.FindByName(ctx, ref); err == nil {
+		return set, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	return s.Create(ctx, &Set{Name: ref})
+}
+
+func (s *Store) ensureMembership(ctx context.Context, setID, partition string, primary bool) error {
+	set, err := s.Get(ctx, setID)
+	if err != nil {
+		return err
+	}
+	if !containsString(set.Partitions, partition) {
+		set.Partitions = append(set.Partitions, partition)
+		sort.Strings(set.Partitions)
+		if _, err := s.Update(ctx, set); err != nil {
+			return err
+		}
+	}
+	if !primary {
+		return nil
+	}
+	current, err := s.PrimarySet(ctx, partition)
+	if err != nil {
+		return err
+	}
+	if current == setID {
+		return nil
+	}
+	return s.SetPrimary(ctx, setID, partition)
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Store) SetPrimary(ctx context.Context, setID, partition string) error {
 	record := primaryRecord{SetID: strings.TrimSpace(setID)}
 	payload, err := json.MarshalIndent(record, "", "  ")

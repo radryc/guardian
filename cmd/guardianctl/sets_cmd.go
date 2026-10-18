@@ -33,6 +33,7 @@ func setsEnsureCommand(store guardianapi.Store, printer *output.Printer) *comman
 	var partitions stringListFlag
 	flags.Var(&partitions, "partition", "partition to add (repeatable; missing partitions are skipped)")
 	primary := flags.Bool("primary", false, "mark added partitions' primary set")
+	allowMissing := flags.Bool("allow-missing", false, "add partitions even when no partition config exists yet")
 	return &command.Command{Description: "Create or update a virtual set and add partitions idempotently", Flags: flags, Run: func(ctx context.Context, args []string) error {
 		setName := strings.TrimSpace(*name)
 		if setName == "" {
@@ -66,7 +67,10 @@ func setsEnsureCommand(store guardianapi.Store, printer *output.Printer) *comman
 				return err
 			}
 		}
-		add := existingPartitions(ctx, store, partitions)
+		add := partitions
+		if !*allowMissing {
+			add = existingPartitions(ctx, store, partitions)
+		}
 		if len(add) > 0 {
 			set, err = sets.AddPartitions(ctx, set.ID, add, nil, *primary)
 			if err != nil {
