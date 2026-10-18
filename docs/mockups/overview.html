@@ -51,7 +51,7 @@
       </div>
 
       <div class="set-tree">
-        <a class="set-row active" href="overview.html"><span class="chevron">▾</span><span class="name">All applications</span><span class="count">5</span><span class="rollup" title="2 healthy · 1 observed · 2 attention"><span class="seg green" style="flex:2"></span><span class="seg neutral"></span><span class="seg amber" style="flex:2"></span></span></a>
+        <a class="set-row active" href="overview.html"><span class="chevron">▾</span><span class="name">All sets</span><span class="count">2</span><span class="rollup" title="2 healthy · 1 observed · 2 attention"><span class="seg green" style="flex:2"></span><span class="seg neutral"></span><span class="seg amber" style="flex:2"></span></span></a>
         <div class="set-divider"></div>
 
         <a class="set-row" href="sets.html"><span class="chevron">▾</span><span class="name">Department X — AWS Production</span><span class="count">4</span><span class="rollup" title="2 healthy · 1 observed · 1 attention"><span class="seg green" style="flex:2"></span><span class="seg neutral"></span><span class="seg amber"></span></span></a>
@@ -83,7 +83,7 @@
 
     <div class="sidebar-actions">
       <button class="btn ghost wide">Refresh</button>
-      <button class="btn primary wide">New application</button>
+      <button class="btn primary wide">New set</button>
     </div>
   </aside>
 
@@ -92,17 +92,19 @@
       <div>
         <p class="eyebrow">Control center</p>
         <h1>Overview</h1>
-        <p class="subtitle">What is deployed, what is broken, and what changed.</p>
+        <p class="subtitle">What is deployed across your sets, and what changed.</p>
       </div>
       <div class="head-right">
-        <button class="btn">View all applications</button>
+        <a class="btn" href="sets.html">Manage sets</a>
       </div>
     </header>
 
     <div class="content">
 
       <div class="health-line">
-        <strong>5 applications</strong>
+        <strong>2 sets</strong>
+        <span class="sep">·</span>
+        <span>5 partitions</span>
         <span class="sep">·</span>
         <span><span class="status-dot green"></span> 2 healthy</span>
         <span><span class="status-dot neutral"></span> 1 observed</span>
@@ -114,7 +116,7 @@
         <div class="card-head">
           <div>
             <h2>Needs attention</h2>
-            <p class="subtitle">Drift, failures, and assignment gaps are listed first.</p>
+            <p class="subtitle">Drift, failures, and assignment gaps across every set.</p>
           </div>
           <span class="meta">2 items</span>
         </div>
@@ -126,8 +128,9 @@
               <span class="badge amber">Observe only</span>
             </div>
             <div class="attention-reason">
-              SSM parameter <code>/strata-demo/observe/value</code> changed outside Guardian
-              · desired <code>"observe-me"</code> · live <code>"drifted-by-demo"</code>
+              Department Y — AWS Development · SSM parameter
+              <code>/strata-demo/observe/value</code> changed outside Guardian
+              · 1 drifted resource
             </div>
           </div>
           <div class="attention-actions">
@@ -143,28 +146,123 @@
               <span class="badge">No source</span>
             </div>
             <div class="attention-reason">
-              No repository is assigned. Desired state has no source of truth until a repo is bound.
+              Payments · Department X — AWS Production · no repository is assigned.
+              Desired state has no source of truth until a repo is bound.
             </div>
           </div>
           <div class="attention-actions">
             <a class="btn small" href="connections.html">Bind repo</a>
-            <a class="btn ghost small" href="connections.html">Open Connections</a>
+            <a class="btn ghost small" href="sets.html">Open set</a>
           </div>
         </div>
       </section>
+
+      <div class="section-bar">
+        <span class="title">Sets</span>
+        <div class="right">
+          <button class="btn small ghost">Status: all</button>
+          <a class="btn small ghost" href="sets.html">View all sets</a>
+        </div>
+      </div>
+
+      <div class="set-grid">
+        <a class="set-card" href="sets.html">
+          <div class="set-card-head">
+            <span class="name">Department X — AWS Production</span>
+            <span class="right">Open →</span>
+          </div>
+          <div class="set-card-desc">
+            Production workloads for Department X in AWS account 7806…, us-east-1.
+            Owned by the payments and platform teams.
+          </div>
+          <div class="set-card-labels">
+            <span class="chip"><span class="k">department</span> X</span>
+            <span class="chip"><span class="k">cloud</span> AWS</span>
+            <span class="chip"><span class="k">env</span> prod</span>
+          </div>
+          <div class="set-card-stats">
+            <strong>4 partitions</strong>
+            <span>·</span>
+            <span>2 subsets</span>
+            <span>·</span>
+            <span style="color: var(--amber);">1 unassigned</span>
+          </div>
+          <div class="rollup-lg" title="2 healthy · 1 observed · 1 attention">
+            <span class="seg green" style="flex:2"></span>
+            <span class="seg neutral"></span>
+            <span class="seg amber"></span>
+          </div>
+          <div class="set-card-legend">
+            <span class="item"><span class="status-dot green"></span> 2 healthy</span>
+            <span class="item"><span class="status-dot neutral"></span> 1 observed</span>
+            <span class="item"><span class="status-dot amber"></span> 1 attention</span>
+          </div>
+          <div class="set-card-foot">
+            <span class="badge">Payments · Platform</span>
+            <span class="action">View set →</span>
+          </div>
+        </a>
+
+        <a class="set-card" href="sets.html">
+          <div class="set-card-head">
+            <span class="name">Department Y — AWS Development</span>
+            <span class="right">Open →</span>
+          </div>
+          <div class="set-card-desc">
+            Development workloads for Department Y in AWS, us-east-1.
+            Observe-only services live here.
+          </div>
+          <div class="set-card-labels">
+            <span class="chip"><span class="k">department</span> Y</span>
+            <span class="chip"><span class="k">cloud</span> AWS</span>
+            <span class="chip"><span class="k">env</span> dev</span>
+          </div>
+          <div class="set-card-stats">
+            <strong>1 partition</strong>
+            <span>·</span>
+            <span>0 subsets</span>
+            <span>·</span>
+            <span style="color: var(--amber);">1 attention</span>
+          </div>
+          <div class="rollup-lg" title="1 attention">
+            <span class="seg amber"></span>
+          </div>
+          <div class="set-card-legend">
+            <span class="item"><span class="status-dot amber"></span> 1 attention</span>
+          </div>
+          <div class="set-card-foot">
+            <span class="badge">demo-observe</span>
+            <span class="action">View set →</span>
+          </div>
+        </a>
+
+        <div class="set-card empty">
+          <div class="set-card-head">
+            <span class="name">Ungrouped</span>
+            <span class="right" style="color: var(--faint);">0</span>
+          </div>
+          <div class="set-card-desc">
+            No partitions are outside a set. Everything is grouped and easy to find.
+          </div>
+          <div class="set-card-foot">
+            <span class="badge">empty</span>
+            <span class="action" style="color: var(--muted);">No action needed</span>
+          </div>
+        </div>
+      </div>
 
       <section class="card">
         <div class="card-head">
           <div>
             <h2>Recently changed</h2>
-            <p class="subtitle">The last deployment or observed change per application.</p>
+            <p class="subtitle">The last deployment or observed change per partition.</p>
           </div>
           <span class="meta">last 15 minutes</span>
         </div>
         <div style="padding-top: 10px;">
           <table class="table">
             <thead>
-              <tr><th>Application</th><th>Status</th><th>Change</th><th>When</th><th></th></tr>
+              <tr><th>Application</th><th>Set</th><th>Status</th><th>Change</th><th>When</th><th></th></tr>
             </thead>
             <tbody>
               <tr>
@@ -172,6 +270,7 @@
                   <div class="app-name">demo-deploy</div>
                   <div class="repo-sub">strata-demo-deploy · /partitions/demo-deploy</div>
                 </td>
+                <td><span class="badge">Payments</span></td>
                 <td><span class="status-dot green"></span> <span class="status-text green">Healthy</span></td>
                 <td><span class="mono">rollout dep_9a2a</span> applied</td>
                 <td class="when">4m ago</td>
@@ -182,6 +281,7 @@
                   <div class="app-name">demo-build</div>
                   <div class="repo-sub">strata-demo-build · /partitions/demo-build</div>
                 </td>
+                <td><span class="badge">Payments</span></td>
                 <td><span class="status-dot green"></span> <span class="status-text green">Healthy</span></td>
                 <td><span class="mono">image demo:65ee4e0</span> deployed</td>
                 <td class="when">6m ago</td>
@@ -192,6 +292,7 @@
                   <div class="app-name">demo-import</div>
                   <div class="repo-sub">strata-demo-import · /partitions/demo-import</div>
                 </td>
+                <td><span class="badge">Platform</span></td>
                 <td><span class="status-dot neutral"></span> <span class="status-text neutral">Observed</span></td>
                 <td><span class="mono">snapshot</span> refreshed</td>
                 <td class="when">1m ago</td>
@@ -202,6 +303,7 @@
                   <div class="app-name">demo-observe</div>
                   <div class="repo-sub">strata-demo-observe · /partitions/demo-observe</div>
                 </td>
+                <td><span class="badge">Department Y</span></td>
                 <td><span class="status-dot amber"></span> <span class="status-text amber">ObservedDrifted</span></td>
                 <td><span class="mono">1 resource</span> drifted</td>
                 <td class="when">12s ago</td>
@@ -212,51 +314,22 @@
         </div>
       </section>
 
-      <div class="section-bar">
-        <span class="title">All applications</span>
-        <div class="right">
-          <button class="btn small ghost">Status: all</button>
-          <button class="btn small ghost">New</button>
+      <section class="card browse-card">
+        <div class="card-head">
+          <div>
+            <h2>Find a partition</h2>
+            <p class="subtitle">The overview shows sets, not every partition. Search the full list only when you need it.</p>
+          </div>
+          <span class="meta">5 visible</span>
         </div>
-      </div>
-
-      <div class="app-grid">
-        <a class="app-card" href="application.html">
-          <div class="top"><span class="status-dot green"></span><span class="name">demo-deploy</span></div>
-          <div class="status"><span class="status-text green">Healthy</span><span style="color: var(--faint);">·</span><span style="color: var(--muted);">4 assets</span></div>
-          <div class="details"><span>account 7806…</span><span>us-east-1</span></div>
-          <div class="repo-sub">strata-demo-deploy · /partitions/demo-deploy</div>
-          <div class="foot"><span class="badge blue">Native CDK</span><span class="open">Open →</span></div>
-        </a>
-        <a class="app-card" href="application.html">
-          <div class="top"><span class="status-dot green"></span><span class="name">demo-build</span></div>
-          <div class="status"><span class="status-text green">Healthy</span><span style="color: var(--faint);">·</span><span style="color: var(--muted);">3 assets</span></div>
-          <div class="details"><span>account 7806…</span><span>us-east-1</span></div>
-          <div class="repo-sub">strata-demo-build · /partitions/demo-build</div>
-          <div class="foot"><span class="badge blue">Native CDK</span><span class="open">Open →</span></div>
-        </a>
-        <a class="app-card" href="application.html">
-          <div class="top"><span class="status-dot neutral"></span><span class="name">demo-import</span></div>
-          <div class="status"><span class="status-text neutral">Observed</span><span style="color: var(--faint);">·</span><span style="color: var(--muted);">1 intent</span></div>
-          <div class="details"><span>account 6772…</span><span>us-east-1</span></div>
-          <div class="repo-sub">strata-demo-import · /partitions/demo-import</div>
-          <div class="foot"><span class="badge">Adopted from AWS</span><span class="open">Open →</span></div>
-        </a>
-        <a class="app-card" href="application.html">
-          <div class="top"><span class="status-dot amber"></span><span class="name">demo-observe</span></div>
-          <div class="status"><span class="status-text amber">ObservedDrifted</span><span style="color: var(--faint);">·</span><span style="color: var(--muted);">1 intent</span></div>
-          <div class="details"><span>account 7553…</span><span>us-east-1</span></div>
-          <div class="repo-sub">strata-demo-observe · /partitions/demo-observe</div>
-          <div class="foot"><span class="badge">Observe only</span><span class="open">Open →</span></div>
-        </a>
-        <a class="app-card" href="connections.html">
-          <div class="top"><span class="status-dot amber"></span><span class="name">demo-new</span><span class="badge amber">Unassigned</span></div>
-          <div class="status"><span class="status-text amber">No source</span><span style="color: var(--faint);">·</span><span style="color: var(--muted);">0 intents</span></div>
-          <div class="details"><span>account 7806…</span><span>us-east-1</span></div>
-          <div class="repo-sub" style="color: var(--amber);">No repository assigned</div>
-          <div class="foot"><span class="badge">Manual</span><span class="open">Bind repo →</span></div>
-        </a>
-      </div>
+        <div class="browse-row">
+          <input class="search" type="search" placeholder="Search partitions by name, repo, or MonoFS path…" aria-label="Search partitions">
+          <a class="btn primary" href="sets.html">Browse all</a>
+        </div>
+        <div class="browse-hint">
+          The partition list is paginated and filtered by your access. The set tree is the fast path for everyday navigation.
+        </div>
+      </section>
 
     </div>
 
