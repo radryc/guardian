@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/rydzu/ainfra/guardian/internal/cli/command"
@@ -10,6 +12,57 @@ import (
 	"github.com/rydzu/ainfra/guardian/internal/registry"
 	"github.com/rydzu/ainfra/guardian/internal/store/memory"
 )
+
+func TestRepoSeedRegistersBindings(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	printer := &output.Printer{Writer: io.Discard}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repos.yaml")
+	content := `apiVersion: guardian/v1alpha1
+kind: RepoRegistry
+repos:
+  - name: doctor
+    sourceType: git
+    source: https://github.com/radryc/doctor.git
+    bindings:
+      - partition: doctor
+        path: /partitions/doctor
+  - name: lb
+    sourceType: git
+    source: https://github.com/radryc/lb.git
+    bindings:
+      - partition: lb-agent
+        path: /partitions/lb-agent
+      - partition: lb-edge
+        path: /partitions/lb-edge
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := repoSeedCommand(store, printer)
+	if err := cmd.Flags.Parse([]string{"--file", path}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("repo seed: %v", err)
+	}
+	reg := registry.New(store)
+	doctor, err := reg.GetRepo(ctx, "doctor")
+	if err != nil {
+		t.Fatalf("get doctor repo: %v", err)
+	}
+	if doctor.SourceType != "git" || len(doctor.PartitionNames()) != 1 || doctor.PartitionNames()[0] != "doctor" {
+		t.Fatalf("doctor repo = %+v", doctor)
+	}
+	lb, err := reg.GetRepo(ctx, "lb")
+	if err != nil {
+		t.Fatalf("get lb repo: %v", err)
+	}
+	if names := lb.PartitionNames(); len(names) != 2 || names[0] != "lb-agent" || names[1] != "lb-edge" {
+		t.Fatalf("lb bindings = %v", names)
+	}
+}
 
 func TestRepoCLIRegistersSourceThenBindsLater(t *testing.T) {
 	ctx := context.Background()

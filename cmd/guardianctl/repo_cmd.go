@@ -23,6 +23,7 @@ import (
 	"github.com/rydzu/ainfra/guardian/internal/repoconfig"
 	"github.com/rydzu/ainfra/guardian/internal/repoimport"
 	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"gopkg.in/yaml.v3"
 )
 
 func repoAddCommand(store guardianapi.Store, printer *output.Printer) *command.Command {
@@ -78,6 +79,42 @@ func repoAddCommand(store guardianapi.Store, printer *output.Printer) *command.C
 			partitions = "unassigned"
 		}
 		printer.PrintText("registered repo %s -> %s via pusher %s\n", repo.Name, partitions, pusherLabel)
+		return nil
+	}}
+}
+
+func repoSeedCommand(store guardianapi.Store, printer *output.Printer) *command.Command {
+	flags := flag.NewFlagSet("repo seed", flag.ContinueOnError)
+	file := flags.String("file", "", "YAML file containing a RepoRegistry")
+	return &command.Command{Description: "Register multiple repositories and partition assignments from a YAML file", Flags: flags, Run: func(ctx context.Context, args []string) error {
+		if strings.TrimSpace(*file) == "" {
+			return fmt.Errorf("--file is required")
+		}
+		raw, err := os.ReadFile(filepath.Clean(*file))
+		if err != nil {
+			return err
+		}
+		var registryFile struct {
+			APIVersion string          `yaml:"apiVersion"`
+			Kind       string          `yaml:"kind"`
+			Repos      []registry.Repo `yaml:"repos"`
+		}
+		if err := yaml.Unmarshal(raw, &registryFile); err != nil {
+			return fmt.Errorf("parse repo registry: %w", err)
+		}
+		store := registry.New(store)
+		for idx := range registryFile.Repos {
+			repo := &registryFile.Repos[idx]
+			if err := store.PutRepo(ctx, repo); err != nil {
+				return fmt.Errorf("repo %s: %w", repo.Name, err)
+			}
+			if printer.Format != "json" {
+				printer.PrintText("seeded repo %s -> %s\n", repo.Name, strings.Join(repo.PartitionNames(), ", "))
+			}
+		}
+		if printer.Format == "json" {
+			printer.PrintJSON(registryFile.Repos)
+		}
 		return nil
 	}}
 }
