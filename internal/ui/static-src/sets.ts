@@ -265,6 +265,7 @@ function renderSetPage(): void {
   const partitions = (set.partitions ?? []).map((name) => ({ name, summary: overviewPartition(name), repo: repoForPartition(name) }));
   const rollupNames = set.id === "ungrouped" ? (set.partitions ?? []) : descendantPartitions(set);
   const health = healthForNames(rollupNames);
+  const platformSet = (set.labels?.scope ?? "").toLowerCase() === "core";
   const children = sets.filter((candidate) => candidate.parentId === set.id);
   const parent = set.parentId ? sets.find((candidate) => candidate.id === set.parentId) : undefined;
   const labels = Object.entries(set.labels ?? {}).map(([key, value]) => `<span class="chip"><span class="k">${escapeHtml(key)}</span> ${escapeHtml(value)}</span>`).join("");
@@ -279,7 +280,7 @@ function renderSetPage(): void {
         ${repo ? `<span class="mono">${escapeHtml(repo.name)}</span>` : `<span style="color:var(--ui-amber)">No repository</span>`}
         <div class="path-cell">${escapeHtml(path)}</div>
       </td>
-      <td>${repo ? `<span class="assign-ok">Assigned ✓</span>` : `<span class="assign-warn">Unassigned</span>`}</td>
+      <td>${repo ? `<span class="assign-ok">Assigned ✓</span>` : platformSet ? `<span class="assign-none">Native</span>` : `<span class="assign-warn">Unassigned</span>`}</td>
       <td><button class="btn-secondary" style="padding:2px 8px;font-size:10px;" data-set-partition="${escapeAttr(name)}">Open →</button></td>
     </tr>`;
   }).join("");
@@ -318,7 +319,7 @@ function renderSetPage(): void {
           <span><span class="status-dot status-dot-healthy"></span> ${health.healthy} healthy</span>
           <span><span class="status-dot status-dot-pending"></span> ${health.progressing} progressing</span>
           <span><span class="status-dot status-dot-attention"></span> ${health.attention} attention</span>
-          <span class="right">${children.length} subsets · ${unassigned} unassigned</span>
+          <span class="right">${children.length} subsets · ${platformSet ? "native platform" : `${unassigned} unassigned`}</span>
         </div>
       </section>
       <div class="set-page-layout">
@@ -343,8 +344,9 @@ function renderSetPage(): void {
             </div>
             <div class="set-divider"></div>
             <div class="kv-list">
+              ${platformSet ? `<div class="kv-row"><span class="kv-label">Assignment</span><span class="kv-value">native platform · no repo binding</span></div>` : `
               <div class="kv-row"><span class="kv-label">Assigned</span><span class="kv-value">${assigned} of ${rollupNames.length}</span></div>
-              <div class="kv-row"><span class="kv-label">Unassigned</span><span class="kv-value" style="color:${unassigned ? "var(--ui-amber)" : "inherit"}">${unassigned}</span></div>
+              <div class="kv-row"><span class="kv-label">Unassigned</span><span class="kv-value" style="color:${unassigned ? "var(--ui-amber)" : "inherit"}">${unassigned}</span></div>`}
               <div class="kv-row"><span class="kv-label">Sources</span><span class="kv-value">${[...new Set(rollupItems.map((p) => p.repo?.name).filter(Boolean))].join(", ") || "—"}</span></div>
               <div class="kv-row"><span class="kv-label">Pushers</span><span class="kv-value">${[...new Set(rollupItems.map((p) => p.repo?.pusher).filter(Boolean))].join(", ") || "—"}</span></div>
             </div>
