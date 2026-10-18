@@ -261,6 +261,9 @@ func (b *Backend) DeleteService(ctx context.Context, cluster, name string) error
 func (b *Backend) AttachServiceToTargetGroup(ctx context.Context, cluster, service, container, tgARN string, port int, sgID string) error {
 	return nil
 }
+func (b *Backend) EnsureObservabilityTaskRole(ctx context.Context) (string, error) {
+	return "arn:aws:iam::test:role/guardian-otel-sidecar-role", nil
+}
 func (b *Backend) UpsertLoadBalancer(ctx context.Context, lb LoadBalancer) (string, error) {
 	return "arn:aws:elasticloadbalancing:test:test:loadbalancer/test", nil
 }

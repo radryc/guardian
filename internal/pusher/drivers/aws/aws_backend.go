@@ -448,8 +448,9 @@ func (b *AWSBackend) upsertTaskDefinition(ctx context.Context, client *ecs.Clien
 		execRole = role
 	}
 
-	// Collector sidecars publish metrics (CloudWatch EMF) and traces (X-Ray),
-	// so they need a task role with the corresponding permissions.
+	// Collector sidecars and gateways publish metrics (CloudWatch EMF) and
+	// traces (X-Ray), so they need a task role with the corresponding
+	// permissions.
 	taskRole := svc.TaskRole
 	if taskRole == "" && len(svc.Sidecars) > 0 {
 		role, rerr := b.ensureObservabilityTaskRole(ctx)
@@ -473,6 +474,43 @@ func (b *AWSBackend) upsertTaskDefinition(ctx context.Context, client *ecs.Clien
 		return "", err
 	}
 	return awsroot.ToString(out.TaskDefinition.TaskDefinitionArn), nil
+}
+
+func toServiceConnectConfiguration(config *ServiceConnectConfig) *ecstypes.ServiceConnectConfiguration {
+	if config == nil || strings.TrimSpace(config.Namespace) == "" {
+		return nil
+	}
+	services := make([]ecstypes.ServiceConnectService, 0, len(config.Services))
+	for _, service := range config.Services {
+		if service.PortMappingName == "" || service.Port == 0 {
+			continue
+		}
+		entry := ecstypes.ServiceConnectService{
+			PortName:      awsroot.String(service.PortMappingName),
+			DiscoveryName: awsroot.String(firstNonEmptyString(service.DNSName, service.PortMappingName)),
+		}
+		if service.Port > 0 {
+			entry.ClientAliases = []ecstypes.ServiceConnectClientAlias{{
+				Port:    awsroot.Int32(int32(service.Port)),
+				DnsName: awsroot.String(firstNonEmptyString(service.DNSName, service.PortMappingName)),
+			}}
+		}
+		services = append(services, entry)
+	}
+	return &ecstypes.ServiceConnectConfiguration{
+		Enabled:   true,
+		Namespace: awsroot.String(config.Namespace),
+		Services:  services,
+	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func toECSContainerDefinition(container ContainerDef, logGroup, region string) ecstypes.ContainerDefinition {
@@ -554,6 +592,12 @@ func (b *AWSBackend) ensureExecutionRole(ctx context.Context) (string, error) {
 		PolicyDocument: awsroot.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["secretsmanager:GetSecretValue","ssm:GetParameters","kms:Decrypt"],"Resource":"*"}]}`),
 	})
 	return awsroot.ToString(created.Role.Arn), nil
+}
+
+// EnsureObservabilityTaskRole returns the shared ECS task role used by OTel
+// collectors and gateways.
+func (b *AWSBackend) EnsureObservabilityTaskRole(ctx context.Context) (string, error) {
+	return b.ensureObservabilityTaskRole(ctx)
 }
 
 // ensureObservabilityTaskRole returns the ARN of the shared ECS task role used
@@ -696,6 +740,9 @@ func (b *AWSBackend) upsertECSService(ctx context.Context, client *ecs.Client, s
 		NetworkConfiguration: netConf,
 		Tags:                 toECSTags(svc.Tags),
 	}
+	if svc.ServiceConnect != nil {
+		createIn.ServiceConnectConfiguration = toServiceConnectConfiguration(svc.ServiceConnect)
+	}
 
 	if svc.TargetGroupARN != "" {
 		createIn.LoadBalancers = []ecstypes.LoadBalancer{
@@ -718,14 +765,18 @@ func (b *AWSBackend) upsertECSService(ctx context.Context, client *ecs.Client, s
 		return derr
 	}
 	if derr == nil && len(existing.Services) > 0 && awsroot.ToString(existing.Services[0].Status) == "ACTIVE" {
-		_, upErr := client.UpdateService(ctx, &ecs.UpdateServiceInput{
+		updateIn := &ecs.UpdateServiceInput{
 			Cluster:              awsroot.String(svc.Cluster),
 			Service:              awsroot.String(svc.Name),
 			TaskDefinition:       awsroot.String(taskDefARN),
 			DesiredCount:         awsroot.Int32(int32(svc.DesiredCount)),
 			NetworkConfiguration: netConf,
 			ForceNewDeployment:   true,
-		})
+		}
+		if svc.ServiceConnect != nil {
+			updateIn.ServiceConnectConfiguration = toServiceConnectConfiguration(svc.ServiceConnect)
+		}
+		_, upErr := client.UpdateService(ctx, updateIn)
 		return upErr
 	}
 

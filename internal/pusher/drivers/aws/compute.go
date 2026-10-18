@@ -113,13 +113,31 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 		return registry.AssetResult{}, err
 	}
 	env = driverutil.ApplyOtelEnv(env, in, "aws")
-	if len(sidecars) > 0 {
-		if strings.TrimSpace(env["OTEL_EXPORTER_OTLP_ENDPOINT"]) == "" {
-			env["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:4317"
+	settings := driverutil.ObservabilityForAsset(in)
+	mode := strings.ToLower(strings.TrimSpace(settings.Mode))
+	if mode == "" {
+		mode = "sidecar"
+	}
+	if strings.TrimSpace(env["OTEL_EXPORTER_OTLP_ENDPOINT"]) == "" {
+		switch mode {
+		case "gateway", "auto", "collector":
+			endpoint := strings.TrimSpace(settings.Endpoint)
+			if endpoint == "" {
+				endpoint = gatewayEndpoint(in)
+			}
+			env["OTEL_EXPORTER_OTLP_ENDPOINT"] = endpoint
+		case "env":
+			if endpoint := strings.TrimSpace(settings.Endpoint); endpoint != "" {
+				env["OTEL_EXPORTER_OTLP_ENDPOINT"] = endpoint
+			}
+		default:
+			if len(sidecars) > 0 {
+				env["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:4317"
+			}
 		}
-		if strings.TrimSpace(env["OTEL_EXPORTER_OTLP_PROTOCOL"]) == "" {
-			env["OTEL_EXPORTER_OTLP_PROTOCOL"] = "grpc"
-		}
+	}
+	if strings.TrimSpace(env["OTEL_EXPORTER_OTLP_ENDPOINT"]) != "" && strings.TrimSpace(env["OTEL_EXPORTER_OTLP_PROTOCOL"]) == "" {
+		env["OTEL_EXPORTER_OTLP_PROTOCOL"] = "grpc"
 	}
 
 	secrets := resolveComputeSecrets(in, spec)
