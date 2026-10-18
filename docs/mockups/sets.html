@@ -36,14 +36,14 @@
         </svg>
         <span>Connections</span>
       </a>
-      <button class="nav-item">
+      <a class="nav-item" href="adopt.html">
         <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4.5h14M3 10h14M3 15.5h9"/><circle cx="16" cy="15.5" r="2"/></svg>
         <span>Adopt</span>
-      </button>
-      <button class="nav-item">
+      </a>
+      <a class="nav-item" href="build.html">
         <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="6" height="6" rx="1.5"/><rect x="12" y="12" width="6" height="6" rx="1.5"/><path d="M8 5h4a3 3 0 0 1 3 3v4"/></svg>
         <span>Build</span>
-      </button>
+      </a>
     </nav>
 
     <div class="sidebar-rule"></div>
@@ -175,28 +175,26 @@
                 <button class="btn small ghost">Status: all</button>
               </div>
             </div>
-            <div style="padding-top: 10px;">
+            <div class="table-scroll" style="padding-top: 10px;">
               <table class="table">
                 <thead>
-                  <tr><th>Application</th><th>Status</th><th>Source repo</th><th>MonoFS path</th><th>Assignment</th><th>Last change</th><th></th></tr>
+                  <tr><th>Application</th><th>Status</th><th>Source repo</th><th>MonoFS path</th><th>Assignment</th><th></th></tr>
                 </thead>
                 <tbody>
                   <tr>
-                    <td><div class="app-name">demo-deploy</div><div class="repo-sub">primary set</div></td>
+                    <td><div class="app-name">demo-deploy</div><div class="repo-sub">primary set · 4m ago</div></td>
                     <td><span class="status-dot green"></span> <span class="status-text green">Healthy</span></td>
                     <td class="source-cell"><span class="mono">strata-demo-deploy</span></td>
                     <td class="path-cell">/partitions/demo-deploy</td>
                     <td><span class="assign-ok">Assigned ✓</span></td>
-                    <td class="when">4m ago</td>
                     <td><a class="open" href="application.html">Open →</a></td>
                   </tr>
                   <tr>
-                    <td><div class="app-name">demo-build</div><div class="repo-sub">primary set</div></td>
+                    <td><div class="app-name">demo-build</div><div class="repo-sub">primary set · 6m ago</div></td>
                     <td><span class="status-dot green"></span> <span class="status-text green">Healthy</span></td>
                     <td class="source-cell"><span class="mono">strata-demo-build</span></td>
                     <td class="path-cell">/partitions/demo-build</td>
                     <td><span class="assign-ok">Assigned ✓</span></td>
-                    <td class="when">6m ago</td>
                     <td><a class="open" href="application.html">Open →</a></td>
                   </tr>
                   <tr>
@@ -205,7 +203,6 @@
                     <td class="source-cell" style="color: var(--amber);">No repository</td>
                     <td class="path-cell">/partitions/demo-new</td>
                     <td><span class="assign-warn">Unassigned</span></td>
-                    <td class="when">—</td>
                     <td><a class="btn small" href="connections.html">Bind repo</a></td>
                   </tr>
                 </tbody>

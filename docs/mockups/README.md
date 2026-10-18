@@ -12,6 +12,8 @@ set pages described below.
 | `overview.html` | Set-first overview: set cards, health rollups, assignment gaps, and virtual-set tree |
 | `application.html` | Partition summary with the new **Source & targets** card |
 | `sets.html` | A nested set page: description, labels, subsets, scoped partitions |
+| `adopt.html` | Unmanaged stack queue, account scan, and the adoption PR panel |
+| `build.html` | Visual builder with palette, canvas, inspector, assignment, and validation |
 | `connections.html` | Global inventory of agents and repositories, with filters and unassigned work |
 | `mockup.css` | Shared styles; mirrors the existing dark visual language |
 
@@ -50,8 +52,12 @@ These follow the recommended defaults from the design review:
 3. **`overview.html`** — top-level set cards, health rollups, unassigned work in
    Needs attention, and the bounded “Find a partition” search instead of a
    ten-thousand-card grid.
-4. **`connections.html`** — all agents/repos live here; partition pages show only the
-   ones assigned to them.
+4. **`adopt.html`** — scan an account, review unmanaged stacks, and see the
+   repo/set/pusher/path summary before opening the adoption PR.
+5. **`build.html`** — palette + canvas + inspector, with the assignment block
+   and a validation warning in the Problems bar.
+6. **`connections.html`** — all agents/repos live here; partition pages show only
+   the ones assigned to them.
 
 These are design artifacts, not production UI. The real implementation will
 reuse the existing templates and styles.

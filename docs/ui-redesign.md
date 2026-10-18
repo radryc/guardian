@@ -4,7 +4,8 @@ Status: draft for review. Scope: the Guardian web UI
 (`internal/ui/templates/index.html`, `internal/ui/static-src/*`).
 
 Mockups: `docs/mockups/overview.html`, `application.html`, `sets.html`,
-`connections.html` (see `docs/mockups/README.md`).
+`adopt.html`, `build.html`, `connections.html` (see
+`docs/mockups/README.md`).
 
 ## 1. Goal
 
@@ -237,6 +238,9 @@ Changes from today:
 - **Adopt** opens the existing associate-repo dialog (repo URL, partition).
 - The row explains *what happens next*: "Guardian will open a pull request;
   merge it to bind the stack to the repo."
+- The adoption panel shows the full assignment before the PR: repo URL,
+  partition, set, target pusher, binding path, selector, and the resulting
+  repo/MonoFS paths. The only write is the pull request.
 - Remove the separate "Scan & Import" top-level tab.
 
 ### 5.4 Connections — agents, accounts, repos
@@ -294,6 +298,23 @@ PARTITIONS                                    [Assignment: all] [Status: all]
   that membership is virtual.
 - Delete is disabled while a set contains partitions or subsets. Move the
   contents first.
+
+### 5.6 Build — visual partition builder
+
+Build uses the canvas/palette/inspector design in
+`docs/ui-partition-builder.md`. The mockup adds the ownership pieces:
+
+- **Assignment block** in the inspector: repository, repo path, MonoFS path,
+  target pusher, and set. These are required before Save/Deploy.
+- **Draft row** in the set tree while the partition is unsaved; the set count
+  does not include drafts.
+- **Problems bar** validates the whole draft: missing pusher, missing repo,
+  path collision, account/region mismatch, and the mutable image tag warning
+  shown in the mockup.
+- **Save draft** is explicit; Deploy is a separate action and remains disabled
+  while there are blocking problems.
+- Raw YAML stays available for power users, but the canvas and inspector are
+  the primary surface.
 
 ## 6. Status model
 
@@ -353,6 +374,9 @@ Rules:
 - Add the Summary tab, the drift card, and the **Source & targets** card.
 - Add the scoped assignment aggregate to the partition API (repos by binding,
   pushers by intent, paths, warnings).
+- Adopt: scan + adoption panel with the full assignment summary before the PR.
+- Build: assignment block (repo, repo path, MonoFS path, pusher, set) and
+  validation problems before Save/Deploy.
 - Remove Pushers & Repos from the partition tab bar; link to filtered Connections.
 - Keep deep links working (`/#partition/demo-observe/history`).
 
