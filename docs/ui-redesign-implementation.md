@@ -56,7 +56,7 @@ Status: implemented; verification in progress. This plan turns `docs/ui-redesign
       description, labels, parent, subsets, scoped partition table
       (status, repo, MonoFS path, assignment), health rollup, set details.
 - [x] Add create/edit/move/delete set and add/remove partitions UI.
-- [x] Commit (pending).
+- [x] Commit (`d75f58b`).
 
 ## Phase 4 — polish and verification
 
@@ -64,7 +64,7 @@ Status: implemented; verification in progress. This plan turns `docs/ui-redesign
 - [x] `npm run build:ui`, `go build`, relevant Go tests.
 - [x] Update docs (`docs/ui-redesign.md`, `docs/mockups/README.md`) with the
       shipped behavior.
-- [x] Commit (`pending`).
+- [x] Commit (`f668051`); managed-set polish in `15e8830`.
 
 ## Acceptance
 
