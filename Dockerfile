@@ -16,13 +16,16 @@ COPY --from=kvs go.mod /src/kvs/go.mod
 COPY --from=kvs go.sum /src/kvs/go.sum
 RUN go mod download
 
+ARG OTELC_VERSION=v1.0.0
+RUN GOBIN=/usr/local/bin go install go.opentelemetry.io/otelc/tool/cmd/otelc@${OTELC_VERSION}
+
 COPY cmd ./cmd
 COPY internal ./internal
 COPY pkg ./pkg
 COPY --from=monofs . /src/monofs
 COPY --from=kvs . /src/kvs
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 otelc go build \
 	-trimpath \
 	-ldflags "-s -w -X github.com/rydzu/ainfra/guardian/internal/buildinfo.Version=${BUILD_VERSION} -X github.com/rydzu/ainfra/guardian/internal/buildinfo.Commit=${BUILD_COMMIT} -X github.com/rydzu/ainfra/guardian/internal/buildinfo.BuildTime=${BUILD_TIME}" \
 	-o /out/guardiand ./cmd/guardiand
@@ -34,6 +37,7 @@ ARG BUILD_COMMIT=unknown
 ARG BUILD_TIME=unknown
 
 RUN apk add --no-cache ca-certificates
+ENV OTEL_GO_DISABLED_INSTRUMENTATIONS=nethttp
 
 LABEL org.opencontainers.image.version=${BUILD_VERSION}
 LABEL org.opencontainers.image.revision=${BUILD_COMMIT}

@@ -57,4 +57,20 @@ func TestImageBuildValidate(t *testing.T) {
 	if err := (imageBuildDefinition{}).Validate(buildArgsEmptyValue, ValidationContext{}); err == nil {
 		t.Fatal("Validate(buildArgsEmptyValue) expected error (empty value)")
 	}
+
+	validInstrumentation := &ImageBuildSpec{
+		Repository:      "demo-api",
+		BuildContext:    "/home/user/src/demo",
+		Dockerfile:      "Dockerfile",
+		Instrumentation: "otelc",
+	}
+	if err := (imageBuildDefinition{}).Validate(validInstrumentation, ValidationContext{}); err != nil {
+		t.Fatalf("Validate(validInstrumentation) error = %v", err)
+	}
+
+	invalidInstrumentation := *validInstrumentation
+	invalidInstrumentation.Instrumentation = "ebpf"
+	if err := (imageBuildDefinition{}).Validate(&invalidInstrumentation, ValidationContext{}); err == nil {
+		t.Fatal("Validate(invalidInstrumentation) expected error")
+	}
 }
