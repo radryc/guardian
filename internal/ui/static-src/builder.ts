@@ -136,6 +136,7 @@ interface Issue {
 interface BuilderOptions {
   getSelectedPartition: () => string;
   onOpenPartition: (name: string) => void;
+  onOpenConnections: () => void;
   onToast: (message: string, type?: "success" | "error" | "info") => void;
   onError: (error: any) => void;
 }
@@ -246,6 +247,7 @@ let storedDraftAvailable = false;
 let connectState: { intentUid: string; assetName: string; connector: ConnectorDef } | null = null;
 let armedConnect: { intentUid: string; assetName: string; connector: ConnectorDef } | null = null;
 let rawJsonEdits = new Map<string, string>();
+let currentAssignments: any = null;
 let switchPromptedFor = "";
 let intentTemplates: IntentTemplate[] = [];
 let initialized = false;
@@ -392,6 +394,7 @@ function renderBuilder(): void {
 async function loadPartition(name: string): Promise<void> {
   await ensureCatalog();
   const detail = await fetchJSON(`/api/partitions/${encodeURIComponent(name)}`);
+  currentAssignments = detail?.assignments ?? null;
   draft = draftFromDetail(name, detail);
   undoStack = [];
   redoStack = [];
@@ -403,6 +406,7 @@ async function loadPartition(name: string): Promise<void> {
 
 // ── Draft lifecycle ──────────────────────────────────
 function newDraft(): Draft {
+  currentAssignments = null;
   return {
     editingPartition: "",
     isNew: true,
@@ -1704,6 +1708,13 @@ function renderPartitionInspector(inspector: HTMLElement): void {
           <select id="builderDefaultPusher" class="search-input">${pusherOptions(partition.spec.defaults?.targetPusher ?? "")}</select>
         </label>
       </section>
+      <section class="builder-inspector-section">
+        <h4>Assignment</h4>
+        ${currentAssignments ? assignmentBlockHtml(currentAssignments) : `
+          <div class="builder-assignment-note">Repository assignment is managed in Connections. Save the partition first, then bind a repo.</div>
+        `}
+        <button id="builderOpenConnections" class="btn-secondary" style="width:100%;margin-top:6px;">Manage in Connections</button>
+      </section>
     </div>`;
   const nameInput = document.getElementById("builderPartitionName") as HTMLInputElement | null;
   nameInput?.addEventListener("change", () => {
@@ -1732,6 +1743,24 @@ function renderPartitionInspector(inspector: HTMLElement): void {
     draft!.partition.spec.defaults.targetPusher = value;
     draft!.dirty = true;
   });
+}
+
+function assignmentBlockHtml(assignments: any): string {
+  const repos = Array.isArray(assignments?.repos) ? assignments.repos : [];
+  const pushers = Array.isArray(assignments?.pushers) ? assignments.pushers : [];
+  const warnings = Array.isArray(assignments?.warnings) ? assignments.warnings : [];
+  const repo = repos[0];
+  const target = pushers.map((p: any) => `${p.name}${p.registered === false ? " (unregistered)" : ""}`).join(", ") || "no target pusher";
+  return `
+    <div class="builder-assignment-block">
+      ${repo ? `
+        <div class="builder-assignment-row"><span>Repo</span><code>${escapeHtml(repo.name ?? "")}</code></div>
+        <div class="builder-assignment-row"><span>Repo path</span><code>${escapeHtml(repo.repoPath ?? "")}</code></div>
+        <div class="builder-assignment-row"><span>MonoFS</span><code>${escapeHtml(repo.monofsPath ?? "")}</code></div>
+      ` : `<div class="builder-assignment-note">No repository bound yet.</div>`}
+      <div class="builder-assignment-row"><span>Targets</span><code>${escapeHtml(target)}</code></div>
+      ${warnings.length ? `<div class="builder-assignment-warning">${warnings.map((w: string) => escapeHtml(w)).join("<br>")}</div>` : ""}
+    </div>`;
 }
 
 function renderIntentInspector(inspector: HTMLElement, intent: IntentDraft): void {
@@ -2940,6 +2969,10 @@ function bindSimpleField(id: string, apply: (value: string) => void): void {
 // ── Global wiring ────────────────────────────────────
 export function wireBuilderPanel(): void {
   document.getElementById("builderSave")?.addEventListener("click", () => save().catch(opts.onError));
+  document.getElementById("builderOpenConnections")?.addEventListener("click", () => opts.onOpenConnections());
+  document.getElementById("builderInspector")?.addEventListener("click", (event) => {
+    if ((event.target as HTMLElement).closest("#builderOpenConnections")) opts.onOpenConnections();
+  });
   document.getElementById("builderAutoLayout")?.addEventListener("click", () => autoLayoutAll());
   document.getElementById("builderDiscard")?.addEventListener("click", () => discardDraft());
   document.getElementById("builderRestoreDraft")?.addEventListener("click", () => restoreStoredDraft());
