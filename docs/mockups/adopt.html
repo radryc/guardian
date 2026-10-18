@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Guardian — Adopt mockup</title>
+  <link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="brand" href="overview.html"><span class="brand-mark"></span>Guardian</a>
+  <div class="crumb"><span>Local</span><span class="sep">/</span><strong>Adopt</strong></div>
+  <div class="spacer"></div>
+  <span class="pill">v0.18.0 · e83877a</span>
+  <span class="pill"><span class="dot"></span>updated 12s ago</span>
+</nav>
+
+<div class="shell">
+  <aside class="sidebar">
+    <nav class="nav">
+      <a class="nav-item" href="overview.html">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="7" height="7" rx="1.5"/><rect x="11" y="2" width="7" height="7" rx="1.5"/><rect x="2" y="11" width="7" height="7" rx="1.5"/><rect x="11" y="11" width="7" height="7" rx="1.5"/></svg>
+        <span>Overview</span>
+      </a>
+      <a class="nav-item" href="connections.html">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M8.5 11.5l3-3"/>
+          <path d="M6.8 13.2l-1.1 1.1a2.6 2.6 0 0 1-3.7-3.7l2.5-2.5a2.6 2.6 0 0 1 3.7 0"/>
+          <path d="M13.2 6.8l1.1-1.1a2.6 2.6 0 0 1 3.7 3.7l-2.5 2.5a2.6 2.6 0 0 1-3.7 0"/>
+        </svg>
+        <span>Connections</span>
+      </a>
+      <a class="nav-item active" href="adopt.html">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4.5h14M3 10h14M3 15.5h9"/><circle cx="16" cy="15.5" r="2"/></svg>
+        <span>Adopt</span>
+      </a>
+      <a class="nav-item" href="build.html">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="6" height="6" rx="1.5"/><rect x="12" y="12" width="6" height="6" rx="1.5"/><path d="M8 5h4a3 3 0 0 1 3 3v4"/></svg>
+        <span>Build</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-rule"></div>
+
+    <div class="sidebar-section">
+      <div class="section-label">Sets</div>
+      <div class="set-toolbar">
+        <input class="search" type="search" placeholder="Search sets and partitions" aria-label="Search sets and partitions">
+        <a class="btn ghost small" href="sets.html">+</a>
+      </div>
+
+      <div class="set-tree">
+        <a class="set-row" href="overview.html"><span class="chevron">▸</span><span class="name">All sets</span><span class="count">2</span><span class="rollup" title="2 healthy · 1 observed · 2 attention"><span class="seg green" style="flex:2"></span><span class="seg neutral"></span><span class="seg amber" style="flex:2"></span></span></a>
+        <div class="set-divider"></div>
+        <a class="set-row" href="sets.html"><span class="chevron">▸</span><span class="name">Department X — AWS Production</span><span class="count">4</span><span class="rollup" title="2 healthy · 1 observed · 1 attention"><span class="seg green" style="flex:2"></span><span class="seg neutral"></span><span class="seg amber"></span></span></a>
+        <a class="set-row depth-1" href="sets.html"><span class="chevron">▸</span><span class="name">Payments</span><span class="count">3</span><span class="rollup" title="2 healthy · 1 attention"><span class="seg green" style="flex:2"></span><span class="seg amber"></span></span></a>
+        <a class="set-row depth-1" href="sets.html"><span class="chevron">▸</span><span class="name">Platform</span><span class="count">1</span><span class="rollup" title="1 observed"><span class="seg neutral"></span></span></a>
+        <a class="set-row" href="sets.html"><span class="chevron">▸</span><span class="name">Department Y — AWS Development</span><span class="count">1</span><span class="rollup" title="1 attention"><span class="seg amber"></span></span></a>
+        <a class="set-row" href="sets.html"><span class="chevron">▸</span><span class="name">Ungrouped</span><span class="count">0</span></a>
+      </div>
+
+      <div class="set-divider"></div>
+      <div class="set-tree">
+        <a class="set-row action" href="sets.html"><span class="chevron">+</span><span class="name">New set</span></a>
+        <a class="set-row action" href="sets.html"><span class="chevron">⌘</span><span class="name">Manage sets</span></a>
+      </div>
+    </div>
+
+    <div class="sidebar-actions">
+      <button class="btn ghost wide">Refresh</button>
+      <button class="btn primary wide">Scan account</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="page-head">
+      <div>
+        <p class="eyebrow">Control center</p>
+        <h1>Adopt</h1>
+        <p class="subtitle">Bring existing AWS stacks under repository ownership without changing them in AWS.</p>
+      </div>
+      <div class="head-right">
+        <button class="btn">Refresh</button>
+        <button class="btn primary">Scan account</button>
+      </div>
+    </header>
+
+    <div class="content">
+
+      <div class="health-line">
+        <strong>2 unmanaged stacks</strong>
+        <span class="sep">·</span>
+        <span>2 accounts scanned</span>
+        <span class="sep">·</span>
+        <span>0 in progress</span>
+        <span class="right">last scan 2m ago · reads CloudFormation only</span>
+      </div>
+
+      <div class="filter-bar">
+        <input class="search" type="search" placeholder="Search stacks, accounts, resources…" aria-label="Search unmanaged stacks">
+        <select class="select" aria-label="Filter by account">
+          <option>Account: all</option>
+          <option>demo-2 · 677296948949</option>
+          <option>demo-3 · 755370915520</option>
+        </select>
+        <select class="select" aria-label="Filter by region">
+          <option>Region: all</option>
+          <option>us-east-1</option>
+        </select>
+        <select class="select" aria-label="Filter by state">
+          <option>State: unmanaged</option>
+          <option>missing repo</option>
+          <option>adopted</option>
+        </select>
+        <button class="btn small ghost">Clear</button>
+      </div>
+
+      <div class="adopt-layout">
+
+        <div style="display: grid; gap: 14px;">
+
+          <section class="card">
+            <div class="card-head">
+              <div>
+                <h2>Unmanaged stacks</h2>
+                <p class="subtitle">Live CloudFormation stacks that are not bound to a repository-backed partition.</p>
+              </div>
+              <span class="meta">2 stacks</span>
+            </div>
+            <div class="table-scroll" style="padding-top: 10px;">
+              <table class="table">
+                <thead>
+                  <tr><th>Stack</th><th>Account</th><th>Region</th><th>Status</th><th>Resources</th><th>Last seen</th><th></th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>
+                      <div class="app-name">DemoImportStack</div>
+                      <div class="repo-sub">no repository assigned</div>
+                    </td>
+                    <td><span class="mono">677296948949</span><div class="repo-sub">demo-2</div></td>
+                    <td>us-east-1</td>
+                    <td><span class="status-dot green"></span> CREATE_COMPLETE</td>
+                    <td><div class="resource-chips"><span class="resource-chip">AWS::S3::Bucket</span><span class="resource-chip">AWS::SSM::Parameter</span><span class="resource-chip">AWS::SNS::Topic</span></div></td>
+                    <td class="when">2m ago</td>
+                    <td><button class="btn small primary">Adopt</button></td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <div class="app-name">StrataDemoObserve</div>
+                      <div class="repo-sub">no repository assigned</div>
+                    </td>
+                    <td><span class="mono">755370915520</span><div class="repo-sub">demo-3</div></td>
+                    <td>us-east-1</td>
+                    <td><span class="status-dot green"></span> CREATE_COMPLETE</td>
+                    <td><div class="resource-chips"><span class="resource-chip">AWS::S3::Bucket</span><span class="resource-chip">AWS::SSM::Parameter</span><span class="resource-chip">AWS::SecretsManager::Secret</span></div></td>
+                    <td class="when">2m ago</td>
+                    <td><button class="btn small primary">Adopt</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="pager">
+              <span>Showing 1–2 of 2 · read-only scan</span>
+              <span class="spacer"></span>
+              <button class="btn small ghost" disabled>Previous</button>
+              <button class="btn small ghost" disabled>Next</button>
+            </div>
+          </section>
+
+          <section class="card scan-card">
+            <div class="card-head">
+              <div>
+                <h2>Scan an account</h2>
+                <p class="subtitle">Find stacks that exist in AWS but not in Guardian.</p>
+              </div>
+              <span class="meta">no writes to AWS</span>
+            </div>
+            <div class="scan-row">
+              <select class="select" aria-label="Account profile">
+                <option>strata-demo2-1 · 780603797542</option>
+                <option>strata-demo2-2 · 677296948949</option>
+                <option>strata-demo2-3 · 755370915520</option>
+              </select>
+              <select class="select" aria-label="Region">
+                <option>us-east-1</option>
+                <option>eu-west-1</option>
+              </select>
+              <button class="btn primary">Scan account</button>
+            </div>
+            <div class="scan-note">
+              The scan reads CloudFormation through the account’s pusher. It never changes resources.
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <div>
+                <h2>How adoption works</h2>
+                <p class="subtitle">The CloudFormation stack stays as it is; ownership moves to the repository.</p>
+              </div>
+            </div>
+            <div class="card-body wizard-steps">
+              <div class="wizard-step"><span class="num">1</span><div><strong>Scan</strong> the account and pick an unmanaged stack.</div></div>
+              <div class="wizard-step"><span class="num">2</span><div><strong>Choose the repo, partition, set, and target pusher.</strong> Guardian derives the repo path and MonoFS path.</div></div>
+              <div class="wizard-step"><span class="num">3</span><div><strong>Open a pull request</strong> with the partition, intents, and payload binding.</div></div>
+              <div class="wizard-step"><span class="num">4</span><div><strong>Merge.</strong> The partition becomes <strong>Observed</strong>; Guardian never applied to the stack.</div></div>
+            </div>
+          </section>
+
+        </div>
+
+        <div style="display: grid; gap: 14px;">
+
+          <section class="card adopt-panel">
+            <div class="card-head">
+              <div>
+                <h2>Adopt stack</h2>
+                <p class="subtitle">DemoImportStack · demo-2 · us-east-1</p>
+              </div>
+              <span class="badge amber">unmanaged</span>
+            </div>
+            <div class="card-body">
+              <div class="form-grid">
+                <div class="field">
+                  <label for="adopt-repo">Repository URL</label>
+                  <input id="adopt-repo" class="input mono" value="https://github.com/radryc/strata-demo-import.git">
+                </div>
+                <div class="field">
+                  <label for="adopt-partition">Partition</label>
+                  <input id="adopt-partition" class="input mono" value="demo-import">
+                </div>
+                <div class="field">
+                  <label for="adopt-set">Set</label>
+                  <select id="adopt-set" class="select">
+                    <option>Payments · Department X — AWS Production</option>
+                    <option>Platform · Department X — AWS Production</option>
+                    <option>Department Y — AWS Development</option>
+                    <option>Ungrouped</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="adopt-pusher">Target pusher</label>
+                  <select id="adopt-pusher" class="select">
+                    <option>aws-677296948949 · us-east-1</option>
+                    <option>aws-780603797542 · us-east-1</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="adopt-path">Binding path (MonoFS)</label>
+                  <input id="adopt-path" class="input mono" value="/partitions/demo-import/payloads/aws">
+                </div>
+                <div class="field">
+                  <label for="adopt-selector">Stack selector</label>
+                  <input id="adopt-selector" class="input mono" value="DemoImportStack">
+                </div>
+              </div>
+
+              <div class="adopt-summary" style="margin-top: 10px;">
+                <div class="line"><span class="k">Repo path</span><span class="v">guardian/partitions/demo-import/</span></div>
+                <div class="line"><span class="k">MonoFS path</span><span class="v">/partitions/demo-import/</span></div>
+                <div class="line"><span class="k">Branch</span><span class="v">monofs/guardian/adopt-demo-import · PR</span></div>
+                <div class="line"><span class="k">Outcome</span><span class="v">Observed · never applied</span></div>
+              </div>
+
+              <div class="desc" style="margin-top: 9px; font-size: 10.5px; color: var(--faint);">
+                This opens a pull request. Merging it binds the stack to the repository;
+                no CloudFormation change is made during adoption.
+              </div>
+
+              <div style="display: flex; gap: 6px; margin-top: 10px;">
+                <button class="btn primary" style="flex: 1;">Open adoption PR</button>
+                <button class="btn ghost">Cancel</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <div><h2>Recently adopted</h2></div>
+              <span class="meta">this account</span>
+            </div>
+            <div class="card-body">
+              <div class="kv-list">
+                <div class="kv-row"><span class="kv-label">demo-import</span><span class="kv-value">Observed · 8m ago</span></div>
+                <div class="kv-row"><span class="kv-label">demo-observe</span><span class="kv-value">Observed · 12m ago</span></div>
+              </div>
+              <div class="desc" style="margin-top: 8px; font-size: 10.5px; color: var(--faint);">
+                Adopted stacks disappear from the unmanaged queue once the PR is merged and the partition is imported.
+              </div>
+            </div>
+          </section>
+
+        </div>
+      </div>
+    </div>
+
+    <p class="mockup-note">
+      Static design mockup — not the production UI.
+      <a href="overview.html">← Overview</a> · <a href="connections.html">Connections</a> · <a href="build.html">Build →</a>
+    </p>
+  </main>
+</div>
+
+</body>
+</html>
