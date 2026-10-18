@@ -77,6 +77,22 @@ func (s *Store) List(ctx context.Context) ([]Set, error) {
 	return out, nil
 }
 
+// FindByName returns the first set with the given display name. Set names are
+// not unique in storage, but the demo/default sets use names as stable keys.
+func (s *Store) FindByName(ctx context.Context, name string) (*Set, error) {
+	name = strings.TrimSpace(name)
+	all, err := s.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range all {
+		if all[i].Name == name {
+			return &all[i], nil
+		}
+	}
+	return nil, os.ErrNotExist
+}
+
 func (s *Store) Get(ctx context.Context, id string) (*Set, error) {
 	data, err := s.store.ReadFile(ctx, paths.SetRecord(id))
 	if err != nil {

@@ -464,7 +464,7 @@
     <div class="set-card-legend">${Vi(n)}</div>
     <div class="set-card-foot"><span class="badge">${o.length?`Nested set`:`Set`}</span><span class="action">View set →</span></div>
   </button>`}function ji(){let e=document.getElementById(`setPage`);if(!e)return;let t=H.getSelectedSet();if(!t){e.innerHTML=`<div class="card empty-state">Select a set from the sidebar.</div>`;return}let n=t===`ungrouped`?Mi():U.find(e=>e.id===t);if(!n){e.innerHTML=`<div class="card empty-state">Set not found.</div>`;return}let r=(n.partitions??[]).map(e=>({name:e,summary:Pi(e),repo:Fi(e)})),o=n.id===`ungrouped`?n.partitions??[]:Ii(n),s=zi(o),l=U.filter(e=>e.parentId===n.id),u=n.parentId?U.find(e=>e.id===n.parentId):void 0,d=Object.entries(n.labels??{}).map(([e,t])=>`<span class="chip"><span class="k">${i(e)}</span> ${i(t)}</span>`).join(``),f=r.slice(0,50),p=f.map(({name:e,summary:t,repo:n})=>{let r=(n?.bindings?.find(t=>t.partition===e)??(n?.partition===e?{partition:e,path:n.path}:void 0))?.path||`/partitions/${e}/payloads/aws`;return`<tr>
-      <td><div class="app-name">${i(e)}</div><div class="repo-sub">${n?`primary set`:`no repository`}</div></td>
+      <td><div class="app-name">${i(e)}</div><div class="repo-sub">${n?`assigned repo`:`no repository`}</div></td>
       <td><span class="status-dot status-dot-${a(t?.health??`neutral`)}"></span> <span class="status-text">${i(t?.displayStatus??t?.health??`Unknown`)}</span></td>
       <td class="source-cell">
         ${n?`<span class="mono">${i(n.name)}</span>`:`<span style="color:var(--ui-amber)">No repository</span>`}
