@@ -149,6 +149,21 @@ func waitForPartitionStatus(ctx context.Context, store guardianapi.Store, partit
 		if strings.EqualFold(status.Status, want) {
 			return status, nil
 		}
+		// Observe-only partitions report a healthy partition state while their
+		// intents carry the meaningful status (Observed/ObservedDrifted), so
+		// match the wanted status against every intent as well.
+		if len(status.IntentStatuses) > 0 {
+			allMatch := true
+			for _, intentStatus := range status.IntentStatuses {
+				if !strings.EqualFold(strings.TrimSpace(intentStatus), want) {
+					allMatch = false
+					break
+				}
+			}
+			if allMatch {
+				return status, nil
+			}
+		}
 		if strings.EqualFold(want, "Healthy") && (strings.EqualFold(status.Status, "Failing") || strings.EqualFold(status.Status, "Invalid")) {
 			return status, fmt.Errorf("partition %s reached %s: %s", partition, status.Status, status.Summary)
 		}
