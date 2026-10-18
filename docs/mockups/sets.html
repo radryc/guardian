@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Guardian — Set mockup</title>
+  <link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="brand" href="overview.html"><span class="brand-mark"></span>Guardian</a>
+  <div class="crumb">
+    <span>Local</span><span class="sep">/</span>
+    <a href="sets.html" style="color: var(--muted);">Sets</a><span class="sep">/</span>
+    <a href="sets.html" style="color: var(--muted);">Department X — AWS Production</a><span class="sep">/</span>
+    <strong>Payments</strong>
+  </div>
+  <div class="spacer"></div>
+  <span class="pill">v0.18.0 · e83877a</span>
+  <span class="pill"><span class="dot"></span>updated 12s ago</span>
+</nav>
+
+<div class="shell">
+  <aside class="sidebar">
+    <nav class="nav">
+      <a class="nav-item active" href="overview.html">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="7" height="7" rx="1.5"/><rect x="11" y="2" width="7" height="7" rx="1.5"/><rect x="2" y="11" width="7" height="7" rx="1.5"/><rect x="11" y="11" width="7" height="7" rx="1.5"/></svg>
+        <span>Overview</span>
+      </a>
+      <button class="nav-item">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4.5h14M3 10h14M3 15.5h9"/><circle cx="16" cy="15.5" r="2"/></svg>
+        <span>Adopt</span>
+      </button>
+      <a class="nav-item" href="fleet.html">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="10" cy="5" rx="6.5" ry="2.5"/><path d="M3.5 5v5c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5V5"/><path d="M3.5 10v5c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5v-5"/></svg>
+        <span>Fleet</span>
+      </a>
+      <button class="nav-item">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="6" height="6" rx="1.5"/><rect x="12" y="12" width="6" height="6" rx="1.5"/><path d="M8 5h4a3 3 0 0 1 3 3v4"/></svg>
+        <span>Build</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-rule"></div>
+
+    <div class="sidebar-section">
+      <div class="section-label">Sets</div>
+      <div class="set-toolbar">
+        <input class="search" type="search" placeholder="Search sets and partitions" aria-label="Search sets and partitions">
+        <a class="btn ghost small" href="sets.html">+</a>
+      </div>
+
+      <div class="set-tree">
+        <a class="set-row" href="overview.html"><span class="chevron">▸</span><span class="name">All applications</span><span class="count">5</span><span class="health amber"></span></a>
+        <div class="set-divider"></div>
+
+        <a class="set-row" href="sets.html"><span class="chevron">▾</span><span class="name">Department X — AWS Production</span><span class="count">4</span><span class="health amber"></span></a>
+        <a class="set-row depth-1 active" href="sets.html"><span class="chevron">▾</span><span class="name">Payments</span><span class="count">3</span><span class="health amber"></span></a>
+        <a class="set-row depth-2 partition" href="application.html"><span class="status-dot green"></span><span class="name">demo-deploy</span></a>
+        <a class="set-row depth-2 partition" href="application.html"><span class="status-dot green"></span><span class="name">demo-build</span></a>
+        <a class="set-row depth-2 partition" href="fleet.html"><span class="status-dot amber"></span><span class="name">demo-new</span><span class="count">unassigned</span></a>
+        <a class="set-row depth-2" href="sets.html"><span class="chevron">▸</span><span class="name">Refunds</span><span class="count">0</span></a>
+        <a class="set-row depth-1" href="sets.html"><span class="chevron">▸</span><span class="name">Platform</span><span class="count">1</span><span class="health neutral"></span></a>
+
+        <a class="set-row" href="sets.html"><span class="chevron">▸</span><span class="name">Department Y — AWS Development</span><span class="count">1</span><span class="health amber"></span></a>
+        <a class="set-row" href="sets.html"><span class="chevron">▸</span><span class="name">Ungrouped</span><span class="count">0</span></a>
+      </div>
+
+      <div class="set-divider"></div>
+      <div class="set-tree">
+        <a class="set-row action" href="sets.html"><span class="chevron">+</span><span class="name">New set</span></a>
+        <a class="set-row action" href="sets.html"><span class="chevron">⌘</span><span class="name">Manage sets</span></a>
+      </div>
+
+      <div class="section-label" style="margin-top: 14px;">Pinned</div>
+      <div class="set-tree">
+        <a class="set-row" href="sets.html"><span class="star on">★</span><span class="name">Payments</span><span class="count">3</span></a>
+        <a class="set-row" href="sets.html"><span class="star on">★</span><span class="name">Department Y — Development</span><span class="count">1</span></a>
+      </div>
+    </div>
+
+    <div class="sidebar-actions">
+      <button class="btn ghost wide">Refresh</button>
+      <button class="btn primary wide">Add partition</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="page-head">
+      <div>
+        <p class="eyebrow">Set</p>
+        <h1>Payments</h1>
+        <p class="subtitle">Customer payment services for Department X in AWS production.</p>
+      </div>
+      <div class="head-right">
+        <button class="btn primary">Add partitions</button>
+        <button class="btn">New subset</button>
+        <button class="btn ghost">Edit set</button>
+      </div>
+    </header>
+
+    <div class="content">
+
+      <section class="card set-hero">
+        <div class="set-hero-top">
+          <div>
+            <div class="app-title-line">
+              <h1 style="font-size: 20px;">Payments</h1>
+              <span class="badge amber">3 partitions</span>
+              <span class="badge">Nested set</span>
+            </div>
+            <p class="set-desc">
+              Customer payment services for Department X, running in AWS production
+              (account 7806…) in us-east-1. Owned by <strong style="color: var(--text);">payments-team</strong>;
+              changes are reviewed by the platform group.
+            </p>
+            <div class="chip-row">
+              <span class="chip"><span class="k">department</span> Department X</span>
+              <span class="chip"><span class="k">cloud</span> AWS</span>
+              <span class="chip"><span class="k">account</span> 780603797542</span>
+              <span class="chip"><span class="k">region</span> us-east-1</span>
+              <span class="chip"><span class="k">env</span> prod</span>
+              <span class="chip"><span class="k">owner</span> payments-team</span>
+            </div>
+          </div>
+          <div class="right">
+            <button class="btn ghost small">★ Pin</button>
+            <a class="btn ghost small" href="fleet.html">Manage in Fleet</a>
+          </div>
+        </div>
+        <div class="set-stats">
+          <strong>3 partitions</strong>
+          <span class="sep">·</span>
+          <span><span class="status-dot green"></span> 2 healthy</span>
+          <span><span class="status-dot amber"></span> 1 unassigned</span>
+          <span class="right">parent: Department X — AWS Production · last change 4m ago</span>
+        </div>
+      </section>
+
+      <div class="set-layout">
+
+        <div style="display: grid; gap: 14px;">
+
+          <section class="card">
+            <div class="card-head">
+              <div>
+                <h2>Subsets</h2>
+                <p class="subtitle">Nested sets roll up into this set’s health and counts.</p>
+              </div>
+              <span class="meta">1 subset</span>
+            </div>
+            <div class="card-body">
+              <div class="subset-grid">
+                <a class="subset-card" href="sets.html">
+                  <div class="name">Refunds</div>
+                  <div class="meta">0 partitions · no source yet</div>
+                  <div class="foot"><span class="badge">empty</span><span style="margin-left: auto; color: var(--accent); font-size: 11px;">Open →</span></div>
+                </a>
+                <button class="subset-card" style="text-align: left; border-style: dashed; color: var(--faint);">
+                  <div class="name" style="color: var(--muted);">+ New subset</div>
+                  <div class="meta">Group a smaller area inside Payments</div>
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <div>
+                <h2>Partitions</h2>
+                <p class="subtitle">Only applications assigned to this set are listed here.</p>
+              </div>
+              <div class="right" style="margin-left: auto; display: flex; gap: 5px;">
+                <button class="btn small ghost">Assignment: all</button>
+                <button class="btn small ghost">Status: all</button>
+              </div>
+            </div>
+            <div style="padding-top: 10px;">
+              <table class="table">
+                <thead>
+                  <tr><th>Application</th><th>Status</th><th>Source repo</th><th>MonoFS path</th><th>Assignment</th><th>Last change</th><th></th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><div class="app-name">demo-deploy</div><div class="repo-sub">primary set</div></td>
+                    <td><span class="status-dot green"></span> <span class="status-text green">Healthy</span></td>
+                    <td class="source-cell"><span class="mono">strata-demo-deploy</span></td>
+                    <td class="path-cell">/partitions/demo-deploy</td>
+                    <td><span class="assign-ok">Assigned ✓</span></td>
+                    <td class="when">4m ago</td>
+                    <td><a class="open" href="application.html">Open →</a></td>
+                  </tr>
+                  <tr>
+                    <td><div class="app-name">demo-build</div><div class="repo-sub">primary set</div></td>
+                    <td><span class="status-dot green"></span> <span class="status-text green">Healthy</span></td>
+                    <td class="source-cell"><span class="mono">strata-demo-build</span></td>
+                    <td class="path-cell">/partitions/demo-build</td>
+                    <td><span class="assign-ok">Assigned ✓</span></td>
+                    <td class="when">6m ago</td>
+                    <td><a class="open" href="application.html">Open →</a></td>
+                  </tr>
+                  <tr>
+                    <td><div class="app-name">demo-new</div><div class="repo-sub">primary set · added 2h ago</div></td>
+                    <td><span class="status-dot amber"></span> <span class="status-text amber">Unassigned</span></td>
+                    <td class="source-cell" style="color: var(--amber);">No repository</td>
+                    <td class="path-cell">/partitions/demo-new</td>
+                    <td><span class="assign-warn">Unassigned</span></td>
+                    <td class="when">—</td>
+                    <td><a class="btn small" href="fleet.html">Bind repo</a></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="pager">
+              <span>Showing 1–3 of 3</span>
+              <span class="spacer"></span>
+              <button class="btn small ghost" disabled>Previous</button>
+              <button class="btn small ghost" disabled>Next</button>
+            </div>
+          </section>
+
+        </div>
+
+        <div style="display: grid; gap: 14px;">
+
+          <section class="card">
+            <div class="card-head">
+              <div><h2>Set details</h2></div>
+              <span class="meta">virtual</span>
+            </div>
+            <div class="card-body set-detail">
+              <div class="kv-row"><span class="kv-label">Parent</span><span class="kv-value"><a href="sets.html" style="color: var(--accent);">Department X — AWS Production</a></span></div>
+              <div class="kv-row"><span class="kv-label">Visibility</span><span class="kv-value">all users · contents filtered by ACL</span></div>
+              <div class="kv-row"><span class="kv-label">Members</span><span class="kv-value">3 partitions · 1 subset</span></div>
+              <div class="kv-row"><span class="kv-label">Ownership</span><span class="kv-value">navigation only · does not change deploy ownership</span></div>
+              <div class="kv-row"><span class="kv-label">Created</span><span class="kv-value">2026-10-12 · by admin@example.com</span></div>
+              <div class="kv-row"><span class="kv-label">Updated</span><span class="kv-value">2h ago · partition demo-new added</span></div>
+              <div class="desc" style="margin-top: 4px;">
+                A partition can appear in more than one set. This set is the primary
+                set for <strong style="color: var(--text);">demo-deploy</strong> and
+                <strong style="color: var(--text);">demo-build</strong>.
+              </div>
+              <div style="display: flex; gap: 5px; margin-top: 4px;">
+                <button class="btn small">Move set</button>
+                <button class="btn small ghost" disabled title="Delete is blocked while the set has partitions or subsets">Delete set</button>
+              </div>
+              <div style="color: var(--faint); font-size: 10.5px;">
+                Delete is disabled while the set contains partitions or subsets.
+                Move the contents first.
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <div><h2>Assignment summary</h2></div>
+            </div>
+            <div class="card-body">
+              <div class="kv-list">
+                <div class="kv-row"><span class="kv-label">Assigned</span><span class="kv-value">2 of 3 partitions</span></div>
+                <div class="kv-row"><span class="kv-label">Unassigned</span><span class="kv-value" style="color: var(--amber);">1 · demo-new</span></div>
+                <div class="kv-row"><span class="kv-label">Sources</span><span class="kv-value">strata-demo-deploy, strata-demo-build</span></div>
+                <div class="kv-row"><span class="kv-label">Pushers</span><span class="kv-value">aws-780603797542</span></div>
+              </div>
+              <div style="margin-top: 9px;">
+                <a class="btn small ghost" href="fleet.html">Open in Fleet →</a>
+              </div>
+            </div>
+          </section>
+
+        </div>
+      </div>
+    </div>
+
+    <p class="mockup-note">
+      Static design mockup — not the production UI.
+      <a href="overview.html">← Overview</a> · <a href="application.html">Application →</a> · <a href="fleet.html">Fleet →</a>
+    </p>
+  </main>
+</div>
+
+</body>
+</html>

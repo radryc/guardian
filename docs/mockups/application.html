@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Guardian — Application mockup</title>
+  <link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <a class="brand" href="overview.html"><span class="brand-mark"></span>Guardian</a>
+  <div class="crumb"><span>Local</span><span class="sep">/</span><a href="overview.html" style="color: var(--muted);">Overview</a><span class="sep">/</span><strong>demo-observe</strong></div>
+  <div class="spacer"></div>
+  <span class="pill">v0.18.0 · e83877a</span>
+  <span class="pill"><span class="dot" style="background: var(--amber);"></span>observed 12s ago</span>
+</nav>
+
+<div class="shell">
+  <aside class="sidebar">
+    <nav class="nav">
+      <button class="nav-item active">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="7" height="7" rx="1.5"/><rect x="11" y="2" width="7" height="7" rx="1.5"/><rect x="2" y="11" width="7" height="7" rx="1.5"/><rect x="11" y="11" width="7" height="7" rx="1.5"/></svg>
+        <span>Overview</span>
+      </button>
+      <button class="nav-item">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4.5h14M3 10h14M3 15.5h9"/><circle cx="16" cy="15.5" r="2"/></svg>
+        <span>Adopt</span>
+      </button>
+      <a class="nav-item" href="fleet.html">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><ellipse cx="10" cy="5" rx="6.5" ry="2.5"/><path d="M3.5 5v5c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5V5"/><path d="M3.5 10v5c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5v-5"/></svg>
+        <span>Fleet</span>
+      </a>
+      <button class="nav-item">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="6" height="6" rx="1.5"/><rect x="12" y="12" width="6" height="6" rx="1.5"/><path d="M8 5h4a3 3 0 0 1 3 3v4"/></svg>
+        <span>Build</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-rule"></div>
+
+    <div class="sidebar-section">
+      <div class="section-label">Sets</div>
+      <div class="set-toolbar">
+        <input class="search" type="search" placeholder="Search sets and partitions" aria-label="Search sets and partitions">
+        <a class="btn ghost small" href="sets.html">+</a>
+      </div>
+
+      <div class="set-tree">
+        <a class="set-row" href="overview.html"><span class="chevron">▸</span><span class="name">All applications</span><span class="count">5</span><span class="health amber"></span></a>
+        <div class="set-divider"></div>
+
+        <a class="set-row" href="sets.html"><span class="chevron">▸</span><span class="name">Department X — AWS Production</span><span class="count">4</span><span class="health amber"></span></a>
+        <a class="set-row depth-1" href="sets.html"><span class="chevron">▸</span><span class="name">Payments</span><span class="count">3</span><span class="health amber"></span></a>
+        <a class="set-row depth-1" href="sets.html"><span class="chevron">▸</span><span class="name">Platform</span><span class="count">1</span><span class="health neutral"></span></a>
+
+        <a class="set-row" href="sets.html"><span class="chevron">▾</span><span class="name">Department Y — AWS Development</span><span class="count">1</span><span class="health amber"></span></a>
+        <a class="set-row depth-1 partition active" href="application.html"><span class="status-dot amber"></span><span class="name">demo-observe</span></a>
+
+        <a class="set-row" href="sets.html"><span class="chevron">▸</span><span class="name">Ungrouped</span><span class="count">0</span></a>
+      </div>
+
+      <div class="set-divider"></div>
+      <div class="set-tree">
+        <a class="set-row action" href="sets.html"><span class="chevron">+</span><span class="name">New set</span></a>
+        <a class="set-row action" href="sets.html"><span class="chevron">⌘</span><span class="name">Manage sets</span></a>
+      </div>
+
+      <div class="section-label" style="margin-top: 14px;">Pinned</div>
+      <div class="set-tree">
+        <a class="set-row" href="sets.html"><span class="star on">★</span><span class="name">Payments</span><span class="count">3</span></a>
+        <a class="set-row" href="sets.html"><span class="star on">★</span><span class="name">Department Y — Development</span><span class="count">1</span></a>
+      </div>
+    </div>
+
+    <div class="sidebar-actions">
+      <button class="btn ghost wide">Refresh</button>
+      <button class="btn primary wide">Check now</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="page-head app-head">
+      <div>
+        <p class="eyebrow">Application</p>
+        <div class="app-title-line">
+          <h1>demo-observe</h1>
+          <span class="status-text amber">ObservedDrifted</span>
+          <span class="badge">Observe only</span>
+          <span class="assignment-ok">✓ Source assigned</span>
+        </div>
+        <div class="app-meta">
+          <span>set <a href="sets.html" style="color: var(--muted); text-decoration: underline; text-underline-offset: 2px;">Department Y — AWS Development</a></span>
+          <span>account <span class="mono">755370915520</span></span>
+          <span>us-east-1</span>
+          <span>last observed 12s ago</span>
+          <span>1 drifted resource</span>
+        </div>
+      </div>
+      <div class="head-right">
+        <button class="btn primary">Check now</button>
+        <button class="btn ghost">More</button>
+      </div>
+    </header>
+
+    <div class="tabs">
+      <button class="tab active">Summary</button>
+      <button class="tab">Topology</button>
+      <button class="tab">Rollouts</button>
+      <button class="tab">History</button>
+    </div>
+
+    <div class="content">
+
+      <section class="card assignment-card">
+        <div class="card-head">
+          <div>
+            <h2>Source &amp; targets</h2>
+            <p class="subtitle">Where the desired state comes from, and where it is applied.</p>
+          </div>
+          <span class="assignment-ok">✓ Assignment complete</span>
+        </div>
+        <div class="card-body assignment-grid">
+
+          <div class="assignment-block">
+            <div class="assignment-block-head">
+              <span class="name">strata-demo-observe</span>
+              <span class="badge">Observe only</span>
+              <span class="right">
+                <button class="btn ghost small">Open repo ↗</button>
+                <button class="btn ghost small">Open in MonoFS</button>
+              </span>
+            </div>
+
+            <div class="kv-list">
+              <div class="kv-row"><span class="kv-label">Source</span><span class="kv-value">github.com/radryc/strata-demo-observe</span></div>
+              <div class="kv-row"><span class="kv-label">Branch</span><span class="kv-value">main · f87af8f · last ingest 1m ago</span></div>
+              <div class="kv-row"><span class="kv-label">Binding</span><span class="kv-value">demo-observe · selector StrataDemoObserve</span></div>
+            </div>
+
+            <div class="path-list">
+              <div class="path-row"><span class="label">Repo path</span><code>guardian/partitions/demo-observe/</code><button class="copy-btn">copy</button></div>
+              <div class="path-row"><span class="label">MonoFS</span><code>/partitions/demo-observe/</code><button class="copy-btn">copy</button></div>
+              <div class="path-row"><span class="label">Payload</span><code>/partitions/demo-observe/payloads/aws</code><button class="copy-btn">copy</button></div>
+              <div class="path-row"><span class="label">Config</span><code>/partitions/demo-observe/config.yaml</code><button class="copy-btn">copy</button></div>
+            </div>
+          </div>
+
+          <div class="assignment-block">
+            <div class="assignment-block-head">
+              <span class="name">Targets</span>
+              <span class="badge green">1 assigned</span>
+              <span class="right"><a class="btn ghost small" href="fleet.html">Manage in Fleet</a></span>
+            </div>
+
+            <div class="target-list">
+              <div class="target-row">
+                <span class="status-dot green"></span>
+                <div>
+                  <div class="name">aws-755370915520</div>
+                  <div class="meta">account 755370915520 · us-east-1</div>
+                </div>
+                <span class="right"><span class="badge">ready</span></span>
+              </div>
+            </div>
+
+            <div class="kv-list">
+              <div class="kv-row"><span class="kv-label">Intent map</span><span class="kv-value">strata-demo-observe → aws-755370915520</span></div>
+              <div class="kv-row"><span class="kv-label">Access</span><span class="kv-value">observe-only · never applies</span></div>
+            </div>
+
+            <div class="assignment-warn" style="border: 1px solid rgba(245, 166, 35, 0.25); border-radius: 6px; padding: 8px 9px;">
+              <div class="warning-title">Observe only</div>
+              <div class="warning-body">Guardian reads this stack and reports drift. It never applies changes.</div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <div class="detail-grid">
+
+        <section class="card drift-card">
+          <div class="card-head">
+            <div class="drift-title">
+              <span class="status-dot amber"></span>
+              <h2>Drift</h2>
+              <span class="badge amber">1 resource</span>
+            </div>
+            <span class="meta">detected 12s ago</span>
+          </div>
+          <div class="card-body drift-body">
+            <div>
+              <div class="drift-resource">SSM parameter · /strata-demo/observe/value</div>
+              <div class="drift-note" style="margin-top: 3px;">Changed outside Guardian. The rest of the stack is in sync.</div>
+            </div>
+
+            <div class="drift-values">
+              <div class="drift-value">
+                <div class="label">Desired</div>
+                <div class="val">observe-me</div>
+              </div>
+              <div class="drift-value">
+                <div class="label">Live</div>
+                <div class="val" style="color: var(--amber);">drifted-by-demo</div>
+              </div>
+            </div>
+
+            <div class="drift-note">
+              <strong style="color: var(--text);">Observe only.</strong>
+              Guardian will report this and will not change the resource.
+              Restore it in AWS, or hand the change back to the owning team.
+            </div>
+
+            <div class="drift-actions">
+              <button class="btn small">View in History</button>
+              <button class="btn ghost small">Copy CLI</button>
+              <button class="btn ghost small">Open in AWS ↗</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <div><h2>Snapshot</h2></div>
+            <span class="meta">observed</span>
+          </div>
+          <div class="card-body">
+            <table class="table" style="margin: 0 -16px;">
+              <tbody>
+                <tr><td style="color: var(--faint);">Stack</td><td><span class="mono">StrataDemoObserve</span></td></tr>
+                <tr><td style="color: var(--faint);">Stack status</td><td>CREATE_COMPLETE</td></tr>
+                <tr><td style="color: var(--faint);">Mode</td><td>Observe only · never applies</td></tr>
+                <tr><td style="color: var(--faint);">Last observed</td><td>12s ago</td></tr>
+                <tr><td style="color: var(--faint);">Observed assets</td><td>1 generated stack</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <h2>Intents</h2>
+              <p class="subtitle">Desired shape derived from the repository.</p>
+            </div>
+            <span class="meta">1 intent</span>
+          </div>
+          <div style="padding-top: 10px;">
+            <table class="table intent-table">
+              <thead><tr><th>Intent</th><th>Status</th><th>Target pusher</th><th>Assets</th><th>Last check</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><div class="intent-name">strata-demo-observe</div><div class="intent-sub">observed</div></td>
+                  <td><span class="status-dot amber"></span> <span class="status-text amber">ObservedDrifted</span></td>
+                  <td><span class="mono">aws-755370915520</span></td>
+                  <td>1 generated stack</td>
+                  <td class="when">12s ago</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <div><h2>Recent events</h2></div>
+            <span class="meta">History</span>
+          </div>
+          <div class="card-body events">
+            <div class="event amber">
+              <span class="icon"></span>
+              <div class="body"><div class="line">Drift detected on 1 resource</div><div class="kind">drift.detected</div></div>
+              <span class="time">12s</span>
+            </div>
+            <div class="event">
+              <span class="icon"></span>
+              <div class="body"><div class="line">Observed snapshot refreshed</div><div class="kind">observed.snapshot</div></div>
+              <span class="time">12s</span>
+            </div>
+            <div class="event">
+              <span class="icon"></span>
+              <div class="body"><div class="line">Snapshot back in sync</div><div class="kind">observed.snapshot</div></div>
+              <span class="time">1m</span>
+            </div>
+            <div class="event">
+              <span class="icon"></span>
+              <div class="body"><div class="line">Partition imported from repo</div><div class="kind">partition.imported</div></div>
+              <span class="time">8m</span>
+            </div>
+          </div>
+        </section>
+
+      </div>
+    </div>
+
+    <p class="mockup-note">
+      Static design mockup — not the production UI.
+      <a href="overview.html">← Overview</a> · <a href="sets.html">Sets →</a> · <a href="fleet.html">Fleet →</a>
+    </p>
+  </main>
+</div>
+
+</body>
+</html>
