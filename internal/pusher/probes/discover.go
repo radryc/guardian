@@ -2,12 +2,13 @@ package probes
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -16,10 +17,66 @@ import (
 	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
 	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
 	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
+	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
 	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
 	"github.com/rydzu/ainfra/guardian/internal/paths"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/driverutil"
+	"github.com/rydzu/ainfra/guardian/internal/pusher/secrets"
 )
+
+// probePolicy is the effective probe configuration for one partition. It
+// starts from pusher-level defaults and is overridden by partition defaults.
+type probePolicy struct {
+	Enabled       bool
+	Interval      time.Duration
+	Timeout       time.Duration
+	Retries       int
+	HTTPPaths     []string
+	TCPPorts      []int
+	MaxTargets    int
+	AllowExternal bool
+}
+
+func (r *Runner) defaultProbePolicy() probePolicy {
+	return probePolicy{
+		Enabled:       r.cfg.Enabled,
+		Interval:      r.cfg.Interval,
+		Timeout:       r.cfg.Timeout,
+		Retries:       r.cfg.Retries,
+		HTTPPaths:     append([]string(nil), r.cfg.HTTPPaths...),
+		TCPPorts:      append([]int(nil), r.cfg.TCPPorts...),
+		AllowExternal: r.cfg.AllowExternal,
+	}
+}
+
+func (r *Runner) partitionProbePolicy(defaults partitiondomain.ProbeDefaults) probePolicy {
+	policy := r.defaultProbePolicy()
+	if defaults.Enabled != nil {
+		policy.Enabled = *defaults.Enabled
+	}
+	if value := strings.TrimSpace(defaults.Interval); value != "" {
+		policy.Interval = parseDuration(value, policy.Interval)
+	}
+	if value := strings.TrimSpace(defaults.Timeout); value != "" {
+		policy.Timeout = parseDuration(value, policy.Timeout)
+	}
+	if defaults.Retries != nil && *defaults.Retries >= 0 {
+		policy.Retries = *defaults.Retries
+	}
+	if len(defaults.HTTPPaths) > 0 {
+		policy.HTTPPaths = append([]string(nil), defaults.HTTPPaths...)
+	}
+	if len(defaults.TCPPorts) > 0 {
+		policy.TCPPorts = append([]int(nil), defaults.TCPPorts...)
+	}
+	if defaults.MaxTargets != nil && *defaults.MaxTargets > 0 {
+		policy.MaxTargets = *defaults.MaxTargets
+	}
+	if defaults.AllowExternal != nil {
+		policy.AllowExternal = *defaults.AllowExternal
+	}
+	return policy
+}
 
 func (r *Runner) discover(ctx context.Context) ([]Target, error) {
 	entries, err := r.cfg.Store.ListDir(ctx, paths.PartitionsRoot())
@@ -36,15 +93,21 @@ func (r *Runner) discover(ctx context.Context) ([]Target, error) {
 		}
 		partition := entry.Name
 		defaultPusher := ""
+		policy := r.defaultProbePolicy()
 		if raw, err := r.cfg.Store.ReadFile(ctx, paths.PartitionConfig(partition)); err == nil {
 			if parsed, err := manifest.ParsePartition(raw); err == nil {
 				defaultPusher = strings.TrimSpace(parsed.Spec.Defaults.TargetPusher)
+				policy = r.partitionProbePolicy(parsed.Spec.Defaults.Probes)
 			}
+		}
+		if !policy.Enabled {
+			continue
 		}
 		intentEntries, err := r.cfg.Store.ListDir(ctx, paths.PartitionIntentsDir(partition))
 		if err != nil {
 			continue
 		}
+		partitionTargets := make([]Target, 0)
 		for _, intentEntry := range intentEntries {
 			if intentEntry.IsDir || !strings.HasSuffix(intentEntry.Name, ".yaml") {
 				continue
@@ -65,14 +128,37 @@ func (r *Runner) discover(ctx context.Context) ([]Target, error) {
 			if err != nil || state == nil {
 				continue
 			}
-			targets = append(targets, r.targetsForIntent(intent, state)...)
+			partitionTargets = append(partitionTargets, r.targetsForIntent(ctx, intent, state, policy)...)
 		}
+		sortTargets(partitionTargets)
+		if policy.MaxTargets > 0 && len(partitionTargets) > policy.MaxTargets {
+			partitionTargets = partitionTargets[:policy.MaxTargets]
+		}
+		targets = append(targets, partitionTargets...)
 	}
-	sort.Slice(targets, func(i, j int) bool { return targets[i].ID < targets[j].ID })
-	if len(targets) > r.cfg.MaxTargets {
+	sortTargets(targets)
+	if r.cfg.ShardCount > 1 {
+		owned := targets[:0]
+		for _, target := range targets {
+			if r.ownsShard(target.ID) {
+				owned = append(owned, target)
+			}
+		}
+		targets = owned
+	}
+	if r.cfg.MaxTargets > 0 && len(targets) > r.cfg.MaxTargets {
 		targets = targets[:r.cfg.MaxTargets]
 	}
 	return targets, nil
+}
+
+func (r *Runner) ownsShard(id string) bool {
+	if r.cfg.ShardCount <= 1 {
+		return true
+	}
+	sum := sha256.Sum256([]byte(id))
+	index := int(binary.BigEndian.Uint64(sum[:8]) % uint64(r.cfg.ShardCount))
+	return index == r.cfg.ShardIndex
 }
 
 func (r *Runner) loadIntent(ctx context.Context, partition, intent string) (*intentView, error) {
@@ -105,7 +191,7 @@ func (r *Runner) loadIntentState(ctx context.Context, partition, intent string) 
 	return &state, nil
 }
 
-func (r *Runner) targetsForIntent(intent *intentView, state *statedomain.IntentState) []Target {
+func (r *Runner) targetsForIntent(ctx context.Context, intent *intentView, state *statedomain.IntentState, policy probePolicy) []Target {
 	targets := make([]Target, 0)
 	explicitTargets := map[string]bool{}
 	outputs := state.Outputs
@@ -114,13 +200,14 @@ func (r *Runner) targetsForIntent(intent *intentView, state *statedomain.IntentS
 		if asset.Type != assetdomain.TypeProbe {
 			continue
 		}
-		target, ok := r.explicitProbe(intent, state, asset, outputs)
-		if !ok {
-			continue
-		}
-		targets = append(targets, target)
-		if target.Asset != "" {
+		target, managed, ok := r.explicitProbe(ctx, intent, state, asset, outputs, policy)
+		if managed && target.Asset != "" {
+			// A disabled Probe asset still owns its target asset: autoprobes
+			// must not silently replace it.
 			explicitTargets[target.Asset] = true
+		}
+		if ok {
+			targets = append(targets, target)
 		}
 	}
 
@@ -134,40 +221,55 @@ func (r *Runner) targetsForIntent(intent *intentView, state *statedomain.IntentS
 		default:
 			continue
 		}
-		target, ok := r.autoprobeTarget(intent, state, asset, output, value)
-		if ok {
-			targets = append(targets, target)
-		}
+		targets = append(targets, r.autoprobeTargets(intent, asset, output, value, policy)...)
 	}
 	return targets
 }
 
-func (r *Runner) explicitProbe(intent *intentView, state *statedomain.IntentState, asset assetdomain.Spec, outputs map[string]string) (Target, bool) {
+func (r *Runner) explicitProbe(ctx context.Context, intent *intentView, state *statedomain.IntentState, asset assetdomain.Spec, outputs map[string]string, policy probePolicy) (Target, bool, bool) {
 	typed, _, err := assetdefs.Decode(asset)
 	if err != nil {
-		return Target{}, false
+		return Target{}, false, false
 	}
 	spec, ok := typed.(*assetdefs.ProbeSpec)
-	if !ok || (spec.Enabled != nil && !*spec.Enabled) {
-		return Target{}, false
+	if !ok {
+		return Target{}, false, false
 	}
-	assetName := spec.Target
+	assetName := strings.TrimSpace(spec.Target)
 	if assetName == "" {
 		assetName = asset.Name
 	}
 	resolved := resolveProbeAddress(spec, outputs, assetName)
-	if resolved == "" && spec.URL == "" && spec.Address == "" && spec.Name == "" {
-		return Target{}, false
-	}
 	probeType := strings.ToLower(strings.TrimSpace(spec.Type))
 	if probeType == "" {
 		probeType = inferProbeType(resolved, spec.Port)
 	}
-	interval := parseDuration(spec.Interval, r.cfg.Interval)
-	timeout := parseDuration(spec.Timeout, r.cfg.Timeout)
-	retries := r.cfg.Retries
+	if probeType == "dns" && resolved == "" {
+		resolved = strings.TrimSpace(spec.Name)
+	}
+	managed := Target{Asset: assetName}
+	if spec.Enabled != nil && !*spec.Enabled {
+		return managed, true, false
+	}
+	if resolved == "" && spec.URL == "" && spec.Address == "" {
+		return managed, true, false
+	}
+	external := strings.TrimSpace(spec.Target) == "" &&
+		(strings.TrimSpace(spec.URL) != "" ||
+			strings.TrimSpace(spec.Address) != "" ||
+			(probeType == "dns" && strings.TrimSpace(spec.Name) != ""))
+	if external && !policy.AllowExternal {
+		return managed, true, false
+	}
+	interval := parseDuration(spec.Interval, policy.Interval)
+	timeout := parseDuration(spec.Timeout, policy.Timeout)
+	retries := policy.Retries
 	if spec.Retries != nil {
 		retries = *spec.Retries
+	}
+	headers, err := secrets.ResolveStringMap(ctx, r.cfg.Resolver, spec.Headers)
+	if err != nil {
+		headers = nil
 	}
 	target := Target{
 		Name:         firstNonEmpty(spec.Name, asset.Name),
@@ -181,8 +283,9 @@ func (r *Runner) explicitProbe(intent *intentView, state *statedomain.IntentStat
 		Address:      spec.Address,
 		Port:         spec.Port,
 		Path:         spec.Path,
+		Paths:        append([]string(nil), policy.HTTPPaths...),
 		Method:       firstNonEmpty(spec.Method, "GET"),
-		Headers:      spec.Headers,
+		Headers:      headers,
 		ExpectStatus: spec.ExpectStatus,
 		ExpectBody:   spec.ExpectBody,
 		ExpectIPs:    spec.ExpectIPs,
@@ -205,40 +308,64 @@ func (r *Runner) explicitProbe(intent *intentView, state *statedomain.IntentStat
 	target.Service = identity.Name
 	target.FullName = identity.FullName
 	target.ID = ProbeID(r.cfg.Pusher, intent.Partition, intent.Name, assetName, target.Name, target.Type, targetValue(target))
-	return target, true
+	return target, true, true
 }
 
-func (r *Runner) autoprobeTarget(intent *intentView, state *statedomain.IntentState, asset, output, value string) (Target, bool) {
+func (r *Runner) autoprobeTargets(intent *intentView, asset, output, value string, policy probePolicy) []Target {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return Target{}, false
+		return nil
 	}
 	probeType := inferProbeType(value, 0)
 	if output == "dns_name" {
 		probeType = "http"
 	}
-	target := Target{
-		Name:      "auto-" + probeType,
+	name := "auto-" + probeType
+	if output != "" {
+		name += "-" + output
+	}
+	base := Target{
+		Name:      name,
 		Partition: intent.Partition,
 		Intent:    intent.Name,
 		Asset:     asset,
 		Mode:      "auto",
 		Type:      probeType,
-		Interval:  r.cfg.Interval,
-		Timeout:   r.cfg.Timeout,
-		Retries:   r.cfg.Retries,
+		Paths:     append([]string(nil), policy.HTTPPaths...),
+		Interval:  policy.Interval,
+		Timeout:   policy.Timeout,
+		Retries:   policy.Retries,
 	}
 	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
-		target.URL = value
+		base.URL = value
 	} else {
-		target.Address = value
-		target.Port = portFromAddress(value)
+		base.Address = value
+		base.Port = portFromAddress(value)
 	}
 	identity := driverutil.CanonicalServiceIdentity(intent.Partition, intent.Name, asset)
-	target.Service = identity.Name
-	target.FullName = identity.FullName
-	target.ID = ProbeID(r.cfg.Pusher, intent.Partition, intent.Name, asset, target.Name, target.Type, targetValue(target))
-	return target, true
+	base.Service = identity.Name
+	base.FullName = identity.FullName
+
+	// Host-only outputs have no port. Try the configured TCP ports instead of
+	// silently probing port 80 only.
+	if base.Type == "tcp" && base.Port == 0 && len(policy.TCPPorts) > 0 {
+		targets := make([]Target, 0, len(policy.TCPPorts))
+		for _, port := range policy.TCPPorts {
+			if port <= 0 {
+				continue
+			}
+			target := base
+			target.Port = port
+			target.Name = fmt.Sprintf("%s-%d", base.Name, port)
+			target.ID = ProbeID(r.cfg.Pusher, intent.Partition, intent.Name, asset, target.Name, target.Type, targetValue(target))
+			targets = append(targets, target)
+		}
+		if len(targets) > 0 {
+			return targets
+		}
+	}
+	base.ID = ProbeID(r.cfg.Pusher, intent.Partition, intent.Name, asset, base.Name, base.Type, targetValue(base))
+	return []Target{base}
 }
 
 func resolveProbeAddress(spec *assetdefs.ProbeSpec, outputs map[string]string, asset string) string {

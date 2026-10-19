@@ -26,10 +26,12 @@ export function observabilityOtelSidecar(stack: cdk.Stack, name: string, call: A
     observabilityGateway(stack, name, call, targets);
     return;
   }
-  const config = renderOtelConfig(name, props, generated, cdk.Stack.of(stack).region);
+  const sidecarLogGroup = `${generated.logGroup}-sidecar`;
+  const sidecarGenerated = { ...generated, logGroup: sidecarLogGroup } as any;
+  const config = renderOtelConfig(name, props, sidecarGenerated, cdk.Stack.of(stack).region);
   for (const target of targets) {
     const logGroup = new logs.LogGroup(stack, `OtelLogs${id}${constructId(target.assetName)}`, {
-      logGroupName: generated.logGroup,
+      logGroupName: sidecarGenerated.logGroup,
       retention: logs.RetentionDays.ONE_MONTH,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
@@ -58,8 +60,8 @@ export function observabilityOtelSidecar(stack: cdk.Stack, name: string, call: A
     }));
   }
   exportOutput(stack, name, 'endpoint', 'http://localhost:4317');
-  exportOutput(stack, name, 'namespace', generated.namespace);
-  exportOutput(stack, name, 'logGroup', generated.logGroup);
+  exportOutput(stack, name, 'namespace', sidecarGenerated.namespace);
+  exportOutput(stack, name, 'logGroup', sidecarGenerated.logGroup);
 }
 
 function observabilityGateway(stack: cdk.Stack, name: string, call: AssetCall, targets: ComputeHandle[]): void {
@@ -126,7 +128,7 @@ function observabilityGateway(stack: cdk.Stack, name: string, call: AssetCall, t
     });
   }
   const dnsName = `otel-${dnsPart(call.partition)}-${dnsPart(call.intent)}`;
-  new ecs.FargateService(stack, `ObsGwService${id}`, {
+  const service = new ecs.FargateService(stack, `ObsGwService${id}`, {
     cluster,
     taskDefinition,
     serviceName: `obs-gateway-${id}`.slice(0, 255),
@@ -139,6 +141,10 @@ function observabilityGateway(stack: cdk.Stack, name: string, call: AssetCall, t
       services: [{ portMappingName: 'otlp-grpc', dnsName, port: 4317 }],
     },
   });
+  // The ECS service resolves the namespace by name at create time; without an
+  // explicit dependency CloudFormation can create both concurrently and the
+  // service fails with "Failed to retrieve namespace".
+  service.node.addDependency(namespace);
   for (const target of targets) {
     target.container.addEnvironment('OTEL_EXPORTER_OTLP_ENDPOINT', `http://${dnsName}:4317`);
     target.container.addEnvironment('OTEL_EXPORTER_OTLP_PROTOCOL', 'grpc');
@@ -166,6 +172,7 @@ function renderOtelConfig(asset: string, props: any, generated: any, region: str
     },
   };
   const metricExporters = ['awsemf'];
+  const extensions: Record<string, any> = {};
   const endpoint = String(props.endpoint || '').trim();
   if (endpoint) {
     const protocol = String(props.protocol || '').toLowerCase();
@@ -176,6 +183,17 @@ function renderOtelConfig(asset: string, props: any, generated: any, region: str
       exporters.otlp = { endpoint };
       metricExporters.push('otlp');
     }
+  }
+  if (cloudwatchEnabled) {
+    // Native CloudWatch OTLP metric ingestion + PromQL. EMF is still sent for
+    // classic CloudWatch metrics; this exporter feeds the native OTel store.
+    exporters.otlphttp = {
+      metrics_endpoint: `https://otlp.${region}.amazonaws.com/v1/metrics`,
+      auth: { authenticator: 'sigv4auth' },
+      compression: 'gzip',
+    };
+    metricExporters.push('otlphttp');
+    extensions.sigv4auth = { region, service: 'monitoring' };
   }
   const processors: Record<string, any> = { batch: {} };
   const pipelines: Record<string, any> = {
@@ -206,6 +224,7 @@ function renderOtelConfig(asset: string, props: any, generated: any, region: str
     receivers: { otlp: { protocols: { grpc: { endpoint: '0.0.0.0:4317' }, http: { endpoint: '0.0.0.0:4318' } } } },
     processors,
     exporters,
-    service: { pipelines },
+    extensions,
+    service: { extensions: Object.keys(extensions), pipelines },
   });
 }

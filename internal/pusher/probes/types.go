@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rydzu/ainfra/guardian/internal/pusher/secrets"
 	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
 )
 
@@ -35,6 +36,7 @@ type Config struct {
 	TCPPorts          []int
 	OTLPEndpoint      string
 	Store             guardianapi.Store
+	Resolver          secrets.Resolver
 }
 
 type Target struct {
@@ -51,6 +53,7 @@ type Target struct {
 	Address      string
 	Port         int
 	Path         string
+	Paths        []string
 	Method       string
 	Headers      map[string]string
 	ExpectStatus []int
@@ -95,6 +98,9 @@ type Snapshot struct {
 	Pusher     string    `json:"pusher"`
 	Cluster    string    `json:"cluster,omitempty"`
 	Partition  string    `json:"partition"`
+	WorkerID   string    `json:"workerID,omitempty"`
+	ShardIndex int       `json:"shardIndex,omitempty"`
+	ShardCount int       `json:"shardCount,omitempty"`
 	UpdatedAt  time.Time `json:"updatedAt"`
 	Probes     []Result  `json:"probes"`
 }

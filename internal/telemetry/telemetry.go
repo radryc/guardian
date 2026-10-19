@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -36,7 +38,8 @@ var (
 )
 
 func Setup(ctx context.Context, cfg Config) (*Handle, error) {
-	if strings.TrimSpace(cfg.Endpoint) == "" {
+	endpoint := normalizeEndpoint(cfg.Endpoint)
+	if endpoint == "" {
 		return &Handle{}, nil
 	}
 	res, err := resource.New(ctx,
@@ -48,9 +51,9 @@ func Setup(ctx context.Context, cfg Config) (*Handle, error) {
 		return nil, fmt.Errorf("build telemetry resource: %w", err)
 	}
 
-	traceOpts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(cfg.Endpoint)}
-	metricOpts := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(cfg.Endpoint)}
-	logOpts := []otlploggrpc.Option{otlploggrpc.WithEndpoint(cfg.Endpoint)}
+	traceOpts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(endpoint)}
+	metricOpts := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(endpoint)}
+	logOpts := []otlploggrpc.Option{otlploggrpc.WithEndpoint(endpoint)}
 	if cfg.Insecure {
 		traceOpts = append(traceOpts, otlptracegrpc.WithInsecure())
 		metricOpts = append(metricOpts, otlpmetricgrpc.WithInsecure())
@@ -171,6 +174,14 @@ func addTraceSpanAttrs(ctx context.Context, record *apilog.Record) {
 	)
 }
 
+func normalizeEndpoint(endpoint string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	if parsed, err := url.Parse(endpoint); err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
+		return parsed.Host
+	}
+	return endpoint
+}
+
 func buildResourceAttributes(cfg Config) []attribute.KeyValue {
 	info := buildinfo.Current()
 	attrs := []attribute.KeyValue{
@@ -194,6 +205,16 @@ func buildResourceAttributes(cfg Config) []attribute.KeyValue {
 	}
 	if cfg.InstanceID != "" {
 		attrs = append(attrs, attribute.String("service.instance.id", cfg.InstanceID))
+	}
+	keys := make([]string, 0, len(cfg.ResourceAttributes))
+	for key, value := range cfg.ResourceAttributes {
+		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		attrs = append(attrs, attribute.String(key, cfg.ResourceAttributes[key]))
 	}
 	return attrs
 }

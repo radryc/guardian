@@ -641,6 +641,7 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 	reg.Register("pusher", "remove", storeCommand(pusherRemoveCommand(store, printer)))
 	reg.Register("probe", "list", storeCommand(probeListCommand(store, printer)))
 	reg.Register("probe", "show", storeCommand(probeShowCommand(store, printer)))
+	reg.Register("observability", "identities", storeCommand(observabilityIdentitiesCommand(store, printer)))
 	reg.Register("repo", "add", storeCommand(repoAddCommand(store, printer)))
 	reg.Register("repo", "seed", storeCommand(repoSeedCommand(store, printer)))
 	reg.Register("repo", "list", storeCommand(repoListCommand(store, printer)))

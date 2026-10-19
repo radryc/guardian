@@ -17,12 +17,15 @@ import (
 )
 
 type partitionAssignmentRepo struct {
-	Name        string `json:"name"`
-	Source      string `json:"source,omitempty"`
-	Branch      string `json:"branch,omitempty"`
-	PayloadPath string `json:"payloadPath"`
-	Selector    string `json:"selector,omitempty"`
-	Pusher      string `json:"pusher"`
+	Name          string `json:"name"`
+	SourceType    string `json:"sourceType,omitempty"`
+	Source        string `json:"source,omitempty"`
+	Branch        string `json:"branch,omitempty"`
+	PartitionPath string `json:"partitionPath,omitempty"`
+	SourcePath    string `json:"sourcePath,omitempty"`
+	PayloadPath   string `json:"payloadPath,omitempty"`
+	Selector      string `json:"selector,omitempty"`
+	Pusher        string `json:"pusher"`
 }
 
 type partitionAssignmentPusher struct {
@@ -63,13 +66,17 @@ func partitionAssignmentsCommand(store guardianapi.Store, printer *output.Printe
 					continue
 				}
 				out.Repos = append(out.Repos, partitionAssignmentRepo{
-					Name: repo.Name, Source: repo.Source, Branch: repo.Branch,
+					Name: repo.Name, SourceType: repo.SourceType, Source: repo.Source, Branch: repo.Branch,
+					PartitionPath: binding.PartitionDir(), SourcePath: firstNonEmpty(binding.SourcePath, repo.Source),
 					PayloadPath: binding.PayloadDir(), Selector: binding.Selector, Pusher: repo.Pusher,
 				})
 			}
 		}
 		if len(out.Repos) == 0 {
-			out.Warnings = append(out.Warnings, "no repository assigned")
+			out.Repos = append(out.Repos, partitionAssignmentRepo{
+				Name: registry.NativeRepoName, SourceType: "native", Source: "native",
+				PartitionPath: paths.PartitionRoot(partition), SourcePath: "native/control-plane",
+			})
 		}
 		pushers, err := registry.New(store).ListPushers(ctx)
 		if err != nil {
@@ -97,6 +104,9 @@ func partitionAssignmentsCommand(store guardianapi.Store, printer *output.Printe
 				continue
 			}
 			pusher := strings.TrimSpace(parsed.Spec.TargetPusher)
+			if pusher == "" {
+				pusher = strings.TrimSpace(parsed.Spec.Target.Cluster)
+			}
 			if pusher == "" {
 				continue
 			}

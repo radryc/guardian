@@ -39,6 +39,12 @@ func (s *Service) Detect(ctx context.Context) (*Result, error) {
 	extraWarnings := make([]string, 0)
 	list := make([]Pusher, 0, len(pushers))
 	for _, pusher := range pushers {
+		// Unmanaged-stack discovery only applies to providers that expose the
+		// AWS observed read API. Kubernetes/Docker/local pushers are normal
+		// Guardian targets and must not produce "observed API URL" warnings.
+		if !supportsObservedAPI(pusher) {
+			continue
+		}
 		endpoint, ok := s.resolve(pusher.Name)
 		if !ok {
 			extraWarnings = append(extraWarnings, fmt.Sprintf("pusher %s has no observed API URL", pusher.Name))
@@ -57,6 +63,29 @@ func (s *Service) Detect(ctx context.Context) (*Result, error) {
 	}
 	result.Warnings = append(extraWarnings, result.Warnings...)
 	return result, nil
+}
+
+// supportsObservedAPI reports whether a pusher can serve the AWS observed read
+// API. Legacy records may omit Provider, so fall back to the account/name shape
+// used by AWS pushers.
+func supportsObservedAPI(pusher registry.Pusher) bool {
+	provider := strings.ToLower(strings.TrimSpace(pusher.Provider))
+	if provider == "" {
+		provider = strings.ToLower(strings.TrimSpace(pusher.Labels["kind"]))
+	}
+	switch provider {
+	case "kubernetes", "k8s", "docker", "local":
+		return false
+	case "aws":
+		return true
+	}
+	if strings.TrimSpace(pusher.ObservedAPIURL) != "" {
+		return true
+	}
+	if strings.TrimSpace(pusher.Account) != "" {
+		return true
+	}
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(pusher.Name)), "aws-")
 }
 
 // Associate registers the repo record, publishes the observed snapshot through

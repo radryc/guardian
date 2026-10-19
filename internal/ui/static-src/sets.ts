@@ -15,6 +15,8 @@ export interface SetsOptions {
 interface RepoBinding {
   partition: string;
   path?: string;
+  partitionPath?: string;
+  sourcePath?: string;
   selector?: string;
   account?: string;
   region?: string;
@@ -29,6 +31,7 @@ interface Repo {
   path?: string;
   source?: string;
   branch?: string;
+  description?: string;
 }
 
 interface SetRecord {
@@ -272,17 +275,17 @@ function renderSetPage(): void {
   const labels = Object.entries(set.labels ?? {}).map(([key, value]) => `<span class="chip"><span class="k">${escapeHtml(key)}</span> ${escapeHtml(value)}</span>`).join("");
   const visible = partitions.slice(0, 50);
   const rows = visible.map(({ name, summary, repo }) => {
-    const binding = repo?.bindings?.find((candidate) => candidate.partition === name) ?? (repo?.partition === name ? { partition: name, path: repo.path } : undefined);
-    const native = repo?.sourceType === "native";
-    const path = native ? "no repository required" : binding?.path || `/partitions/${name}/payloads/aws`;
+    const binding = repo.bindings?.find((candidate) => candidate.partition === name) ?? (repo.partition === name ? { partition: name, path: repo.path } : undefined);
+    const native = repo.sourceType === "native";
+    const path = native ? `/partitions/${name}` : binding?.path || `/partitions/${name}/payloads/aws`;
     return `<tr>
-      <td><div class="app-name">${escapeHtml(name)}</div><div class="repo-sub">${native ? "native source" : repo ? "assigned repo" : "no repository"}</div></td>
+      <td><div class="app-name">${escapeHtml(name)}</div><div class="repo-sub">${native ? "native source" : "assigned repo"}</div></td>
       <td><span class="status-dot status-dot-${escapeAttr(partitionDot(summary))}"></span> <span class="status-text">${escapeHtml(summary?.displayStatus ?? summary?.health ?? "Unknown")}</span></td>
       <td class="source-cell">
-        ${native ? `<span class="mono">Native platform</span>` : repo ? `<span class="mono">${escapeHtml(repo.name)}</span>` : `<span style="color:var(--ui-amber)">No repository</span>`}
+        ${native ? `<span class="mono">Native platform</span>` : `<span class="mono">${escapeHtml(repo.name)}</span>`}
         <div class="path-cell">${escapeHtml(path)}</div>
       </td>
-      <td>${repo ? `<span class="assign-ok">Assigned ✓</span>` : platformSet ? `<span class="assign-none">Native</span>` : `<span class="assign-warn">Unassigned</span>`}</td>
+      <td>${native ? `<span class="assign-ok">Native ✓</span>` : platformSet ? `<span class="assign-none">Native</span>` : `<span class="assign-ok">Assigned ✓</span>`}</td>
       <td><button class="btn-secondary" style="padding:2px 8px;font-size:10px;" data-set-partition="${escapeAttr(name)}">Open →</button></td>
     </tr>`;
   }).join("");
@@ -398,8 +401,17 @@ function partitionDot(summary: any): string {
   return summary?.locked ? "locked" : (summary?.health ?? "neutral");
 }
 
-function repoForPartition(name: string): Repo | undefined {
-  return repos.find((repo) => (repo.bindings ?? []).some((binding) => binding.partition === name) || repo.partition === name);
+const NATIVE_REPO: Repo = {
+  name: "native",
+  pusher: "",
+  sourceType: "native",
+  description: "Native platform source; no repository required",
+  bindings: [],
+};
+
+function repoForPartition(name: string): Repo {
+  return repos.find((repo) => (repo.bindings ?? []).some((binding) => binding.partition === name) || repo.partition === name)
+    ?? NATIVE_REPO;
 }
 
 function descendantPartitions(set: SetRecord): string[] {

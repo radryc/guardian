@@ -4,6 +4,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
+	"github.com/rydzu/ainfra/guardian/internal/observability"
 )
 
 var assetObservationCurrent = promauto.NewGaugeVec(prometheus.GaugeOpts{
@@ -29,7 +30,7 @@ func recordAssetObservations(result *taskdomain.TaskResult) {
 		if observation.ApplyReadiness != nil && observation.ApplyReadiness.Status != "" {
 			readiness = string(observation.ApplyReadiness.Status)
 		}
-		service := result.Partition + "." + result.Intent + "." + asset
+		service := observability.CanonicalServiceIdentity(result.Partition, result.Intent, asset).Name
 		assetObservationCurrent.WithLabelValues(result.Partition, result.Intent, asset, service, status, readiness).Set(1)
 	}
 }

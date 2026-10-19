@@ -1755,7 +1755,8 @@ function assignmentBlockHtml(assignments: any): string {
     <div class="builder-assignment-block">
       ${repo ? `
         <div class="builder-assignment-row"><span>Repo</span><code>${escapeHtml(repo.name ?? "")}</code></div>
-        <div class="builder-assignment-row"><span>Repo path</span><code>${escapeHtml(repo.repoPath ?? "")}</code></div>
+        <div class="builder-assignment-row"><span>Partition path</span><code>${escapeHtml(repo.partitionPath ?? repo.repoPath ?? "")}</code></div>
+        <div class="builder-assignment-row"><span>Source path</span><code>${escapeHtml(repo.sourcePath ?? repo.source ?? "")}</code></div>
         <div class="builder-assignment-row"><span>MonoFS</span><code>${escapeHtml(repo.monofsPath ?? "")}</code></div>
       ` : `<div class="builder-assignment-note">No repository bound yet.</div>`}
       <div class="builder-assignment-row"><span>Pusher</span><code>${escapeHtml(target)}</code></div>

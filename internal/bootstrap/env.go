@@ -170,8 +170,10 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["MONOFS_OIDC_CLIENT_SECRET"] = envOrDefault("MONOFS_OIDC_CLIENT_SECRET", "")
 	env["MONOFS_OIDC_REDIRECT_URL"] = envOrDefault("MONOFS_OIDC_REDIRECT_URL", "")
 	env["MONOFS_OIDC_AUTH_URL"] = envOrDefault("MONOFS_OIDC_AUTH_URL", "")
+	env["MONOFS_OIDC_END_SESSION_URL"] = envOrDefault("MONOFS_OIDC_END_SESSION_URL", "")
 	env["MONOFS_ROUTER_OIDC_REDIRECT_URL"] = envOrDefault("MONOFS_ROUTER_OIDC_REDIRECT_URL", "")
 	env["MONOFS_ROUTER_OIDC_AUTH_URL"] = envOrDefault("MONOFS_ROUTER_OIDC_AUTH_URL", "")
+	env["MONOFS_ROUTER_OIDC_END_SESSION_URL"] = envOrDefault("MONOFS_ROUTER_OIDC_END_SESSION_URL", "")
 	env["MONOFS_AUTHZ_ENFORCE_UI"] = envOrDefault("MONOFS_AUTHZ_ENFORCE_UI", "false")
 
 	// --- Repo-managed access policy (pkg/authz/policy) ---

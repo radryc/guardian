@@ -283,6 +283,7 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/api/v1/status/buildinfo", s.handleBuildInfo)
 	mux.HandleFunc("/api/client-config", s.handleClientConfig)
+	mux.HandleFunc("/api/me", s.handleMe)
 	mux.HandleFunc("/api/access/policy", s.handleAccessPolicy)
 	mux.HandleFunc("/api/access/explain", s.handleAccessExplain)
 	mux.HandleFunc("/api/m2m/overview", s.handleM2MOverview)
@@ -298,6 +299,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/pushers/", s.handlePusherRoute)
 	mux.HandleFunc("/api/probes", s.handleProbes)
 	mux.HandleFunc("/api/probes/", s.handleProbeRoute)
+	mux.HandleFunc("/api/observability/identities", s.handleObservabilityIdentities)
 	mux.HandleFunc("/api/repos", s.handleRepos)
 	mux.HandleFunc("/api/repos/", s.handleRepoRoute)
 	mux.HandleFunc("/api/aws/unmanaged", s.handleUnmanaged)
@@ -366,6 +368,27 @@ func indexBuildVersionDetail(info buildinfo.Info) string {
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleMe reports the authenticated caller so the UI can show who is signed
+// in. The access-policy middleware has already resolved the identity.
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	identity, _ := coreauthz.IdentityFromContext(r.Context())
+	display := identity.Email
+	if display == "" {
+		display = identity.Subject
+	}
+	if display == "" {
+		display = identity.ClientID
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated": !identity.IsAnonymous(),
+		"subject":       identity.Subject,
+		"email":         identity.Email,
+		"groups":        identity.Groups,
+		"client_id":     identity.ClientID,
+		"display":       display,
+	})
 }
 
 func (s *Server) handleBuildInfo(w http.ResponseWriter, r *http.Request) {

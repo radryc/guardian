@@ -201,6 +201,9 @@ func defaultObservabilityAsset(defaults partitiondomain.ObservabilityDefaults, i
 		"mode":     firstNonEmpty(defaults.Instrumentation, "auto"),
 		"targets":  targets,
 	}
+	if serviceName := strings.TrimSpace(defaults.ServiceName); serviceName != "" {
+		properties["serviceName"] = serviceName
+	}
 	if endpoint := strings.TrimSpace(defaults.OTLPEndpoint); endpoint != "" {
 		properties["endpoint"] = endpoint
 	}

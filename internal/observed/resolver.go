@@ -2,6 +2,7 @@ package observed
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -71,6 +72,12 @@ func (r *RegistryResolver) refresh() {
 	}
 	endpoints := make(map[string]Endpoint, len(pushers))
 	for _, pusher := range pushers {
+		// Non-AWS pushers do not have an observed read API. Do not cache an
+		// endpoint with an empty URL: callers would otherwise fail later with
+		// "observed API URL is not configured".
+		if strings.TrimSpace(pusher.ObservedAPIURL) == "" {
+			continue
+		}
 		endpoints[pusher.Name] = Endpoint{
 			Name:   pusher.Name,
 			Client: NewClient(pusher.ObservedAPIURL, pusher.TokenValue(), 30*time.Second),

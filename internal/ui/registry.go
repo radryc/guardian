@@ -397,8 +397,6 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-const repoPartitionsSubdir = "guardian/partitions"
-
 // importRepoPartitionsFromStore imports repo-authored partition bundles from
 // guardian/partitions/<name>/ when the repo source is a MonoFS logical path. A
 // repo is authoritative for its authored partition, so the config is written
@@ -408,9 +406,9 @@ func (s *Server) importRepoPartitionsFromStore(ctx context.Context, repo *regist
 	if !strings.HasPrefix(source, "/") {
 		return nil, nil
 	}
-	root := strings.TrimRight(source, "/") + "/" + repoPartitionsSubdir
 	imported := make([]string, 0)
 	for _, binding := range repo.BindingList() {
+		root := path.Join(strings.TrimRight(source, "/"), binding.PartitionDir())
 		ok, err := s.importStorePartition(ctx, root, binding.Partition)
 		if err != nil {
 			return imported, err
@@ -422,8 +420,7 @@ func (s *Server) importRepoPartitionsFromStore(ctx context.Context, repo *regist
 	return imported, nil
 }
 
-func (s *Server) importStorePartition(ctx context.Context, repoRoot, partition string) (bool, error) {
-	root := path.Join(repoRoot, partition)
+func (s *Server) importStorePartition(ctx context.Context, root, partition string) (bool, error) {
 	configPath := path.Join(root, "partition.yaml")
 	configRaw, err := s.store.ReadFile(ctx, configPath)
 	if err != nil && errors.Is(err, os.ErrNotExist) {

@@ -40,9 +40,23 @@ func (r *Runner) emitTelemetry(ctx context.Context, results []Result, previous m
 	metrics := make([]any, 0)
 	logs := make([]any, 0)
 	spans := make([]any, 0)
+	SortResults(results)
 	for _, result := range results {
-		resource := otelResource(result)
-		attrs := probeAttributes(result)
+		resource := otelResource(result, r.cfg)
+		attrs := metricAttributes(result, r.cfg)
+		recordAttrs := recordAttributes(result, r.cfg)
+		stateAge := 0.0
+		ageFrom := result.CheckedAt
+		if result.Success {
+			ageFrom = result.CheckedAt
+		} else if !result.LastSuccessAt.IsZero() {
+			ageFrom = result.LastSuccessAt
+		}
+		if !ageFrom.IsZero() {
+			if age := now.Sub(ageFrom).Seconds(); age > 0 {
+				stateAge = age
+			}
+		}
 		metrics = append(metrics, map[string]any{
 			"resource": resource,
 			"scopeMetrics": []any{map[string]any{
@@ -52,9 +66,9 @@ func (r *Runner) emitTelemetry(ctx context.Context, results []Result, previous m
 					metricGauge("guardian_probe_duration_seconds", "s", float64(result.DurationMs)/1000, now, attrs),
 					metricGauge("guardian_probe_last_success_timestamp_seconds", "s", timestampSeconds(result.LastSuccessAt), now, attrs),
 					metricGauge("guardian_probe_consecutive_failures", "1", float64(result.ConsecutiveFailures), now, attrs),
-					metricGauge("guardian_probe_state_age_seconds", "s", 0, now, attrs),
-					metricGauge("guardian_probe_info", "1", 1, now, append(attrs,
-						attrString("guardian.probe.target", result.Target),
+					metricGauge("guardian_probe_state_age_seconds", "s", stateAge, now, attrs),
+					metricGauge("guardian_probe_info", "1", 1, now, append(append([]any(nil), attrs...),
+						attrString("guardian.probe.target", metricTarget(result.Target)),
 						attrString("guardian.probe.path", result.Path),
 					)),
 				},
@@ -79,7 +93,7 @@ func (r *Runner) emitTelemetry(ctx context.Context, results []Result, previous m
 						"severityNumber": severity,
 						"severityText":   severityText,
 						"body":           map[string]any{"stringValue": body},
-						"attributes":     attrs,
+						"attributes":     recordAttrs,
 					}},
 				}},
 			})
@@ -94,7 +108,7 @@ func (r *Runner) emitTelemetry(ctx context.Context, results []Result, previous m
 						"kind":              1,
 						"startTimeUnixNano": strconv.FormatInt(now.Add(-time.Duration(result.DurationMs)*time.Millisecond).UnixNano(), 10),
 						"endTimeUnixNano":   strconv.FormatInt(now.UnixNano(), 10),
-						"attributes":        attrs,
+						"attributes":        recordAttrs,
 						"status":            map[string]any{"code": spanStatus(result.Success), "message": result.Error},
 					}},
 				}},
@@ -136,7 +150,11 @@ func (e *otelExporter) send(ctx context.Context, path string, payload any) error
 	return nil
 }
 
-func otelResource(result Result) map[string]any {
+func otelResource(result Result, cfg Config) map[string]any {
+	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
+	if provider == "" {
+		provider = "local"
+	}
 	attrs := []any{
 		attrString("service.name", result.Service),
 		attrString("service.namespace", result.Partition),
@@ -144,18 +162,39 @@ func otelResource(result Result) map[string]any {
 		attrString("guardian.intent", result.Intent),
 		attrString("guardian.asset", result.Asset),
 		attrString("guardian.pusher", result.Pusher),
-		attrString("guardian.provider", "probe"),
+		attrString("guardian.provider", provider),
 	}
 	if result.Cluster != "" {
-		attrs = append(attrs, attrString("guardian.cluster", result.Cluster), attrString("k8s.cluster.name", result.Cluster))
+		attrs = append(attrs, attrString("guardian.cluster", result.Cluster))
+		if provider == "kubernetes" {
+			attrs = append(attrs, attrString("k8s.cluster.name", result.Cluster))
+		}
+	}
+	if provider == "aws" {
+		if cfg.Account != "" {
+			attrs = append(attrs, attrString("guardian.account", cfg.Account))
+		}
+		if cfg.Region != "" {
+			attrs = append(attrs, attrString("guardian.region", cfg.Region))
+		}
 	}
 	if result.FullName != "" {
 		attrs = append(attrs, attrString("guardian.service.full_name", result.FullName))
+		truncated := "false"
+		if result.FullName != result.Service {
+			truncated = "true"
+		}
+		attrs = append(attrs, attrString("guardian.service.truncated", truncated))
 	}
 	return map[string]any{"attributes": attrs}
 }
 
-func probeAttributes(result Result) []any {
+// metricAttributes is the documented low-cardinality probe metric label set.
+func metricAttributes(result Result, cfg Config) []any {
+	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
+	if provider == "" {
+		provider = "local"
+	}
 	return []any{
 		attrString("pusher", result.Pusher),
 		attrString("cluster", result.Cluster),
@@ -165,10 +204,18 @@ func probeAttributes(result Result) []any {
 		attrString("probe", result.Name),
 		attrString("type", result.Type),
 		attrString("mode", result.Mode),
-		attrString("provider", "probe"),
+		attrString("provider", provider),
+	}
+}
+
+// recordAttributes adds the probe correlation fields used by logs and spans.
+// They are intentionally not part of the metric label set.
+func recordAttributes(result Result, cfg Config) []any {
+	attrs := append([]any(nil), metricAttributes(result, cfg)...)
+	return append(attrs,
 		attrString("guardian.probe.id", result.ProbeID),
 		attrString("guardian.probe.status", result.Status),
-	}
+	)
 }
 
 func metricGauge(name, unit string, value float64, at time.Time, attrs []any) map[string]any {
@@ -194,6 +241,16 @@ func boolFloat(value bool) float64 {
 		return 1
 	}
 	return 0
+}
+
+// metricTarget keeps the bounded host:port form in metric labels instead of a
+// full URL with query parameters.
+func metricTarget(value string) string {
+	value = strings.TrimSpace(value)
+	if parsed, err := url.Parse(value); err == nil && parsed.Host != "" {
+		return parsed.Host
+	}
+	return value
 }
 
 func timestampSeconds(value time.Time) float64 {

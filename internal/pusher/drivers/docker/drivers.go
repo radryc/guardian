@@ -591,7 +591,9 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
-	env = driverutil.ApplyObservabilityEnv(env, in, "docker", "otel-collector:4317")
+	if !driverutil.AutoInstrumentDisabled(spec.Labels) {
+		env = driverutil.ApplyObservabilityEnv(env, in, "docker", "otel-collector:4317")
+	}
 	desired := computeContainerNames(in, spec)
 	var primary Container
 	for idx, name := range desired {

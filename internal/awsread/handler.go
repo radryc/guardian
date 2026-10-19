@@ -127,6 +127,24 @@ func (h *Handler) handlePromQL(w http.ResponseWriter, r *http.Request, suffix st
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	// CloudWatch does not implement the Prometheus label-values operation, so
+	// serve __name__ values from ListMetrics. Grafana uses this for $metric.
+	if strings.HasPrefix(cwPath, "/api/v1/label/") && strings.HasSuffix(cwPath, "/values") {
+		name := strings.TrimSuffix(strings.TrimPrefix(cwPath, "/api/v1/label/"), "/values")
+		if fallback := h.promqlLabelValuesFallback(r.Context(), name); fallback != nil {
+			payload = fallback
+			status = http.StatusOK
+		}
+	}
+	// Some accounts return a successful but empty CloudWatch PromQL result for
+	// metrics that ListMetrics can see. Use GetMetricData for the simple
+	// selectors used by the AWS dashboards.
+	if promqlEmpty(payload) {
+		if fallback := h.promqlFallback(r.Context(), cwPath, params); fallback != nil {
+			payload = fallback
+			status = http.StatusOK
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if status == 0 {
 		status = http.StatusOK

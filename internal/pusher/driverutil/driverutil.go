@@ -10,6 +10,7 @@ import (
 	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
 	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
+	"github.com/rydzu/ainfra/guardian/internal/observability"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/secrets"
 	"github.com/rydzu/ainfra/guardian/internal/versioning/digest"
@@ -366,50 +367,40 @@ func cloneValue(in any) any {
 	}
 }
 
-// MaxServiceNameLength is the backend-safe cap for the generated service.name.
-// 200 matches the AWS X-Ray segment-name limit and is accepted by the other
-// Doctor/Grafana backends.
-const MaxServiceNameLength = 200
+// MaxServiceNameLength is kept for callers that need the identity cap.
+const MaxServiceNameLength = observability.MaxServiceNameLength
 
-// ServiceIdentity is the canonical telemetry identity of one asset.
-type ServiceIdentity struct {
-	Name      string
-	FullName  string
-	Truncated bool
-}
+// ServiceIdentity is an alias for the shared canonical identity type.
+type ServiceIdentity = observability.ServiceIdentity
 
 // CanonicalServiceIdentity builds <partition>.<intent>.<asset> and applies a
 // deterministic hash suffix when the name exceeds MaxServiceNameLength.
 func CanonicalServiceIdentity(partition, intent, asset string) ServiceIdentity {
-	parts := make([]string, 0, 3)
-	for _, part := range []string{partition, intent, asset} {
-		if trimmed := strings.TrimSpace(part); trimmed != "" {
-			parts = append(parts, trimmed)
+	return observability.CanonicalServiceIdentity(partition, intent, asset)
+}
+
+// AutoInstrumentDisabled reports whether a compute asset opts out of generated
+// observability through the documented workload label. The label is also
+// propagated to Kubernetes workloads so operators can see the opt-out.
+func AutoInstrumentDisabled(labels map[string]string) bool {
+	for key, value := range labels {
+		if strings.EqualFold(strings.TrimSpace(key), "guardian.observability/auto-instrument") {
+			return strings.EqualFold(strings.TrimSpace(value), "false")
 		}
 	}
-	full := strings.Join(parts, ".")
-	if full == "" {
-		return ServiceIdentity{}
-	}
-	if len(full) <= MaxServiceNameLength {
-		return ServiceIdentity{Name: full, FullName: full}
-	}
-	sum := digest.MustNormalizedHash([]string{full})[:10]
-	keep := MaxServiceNameLength - 1 - len(sum)
-	if keep < 1 {
-		keep = 1
-	}
-	prefix := strings.TrimRight(full[:keep], "._-")
-	if prefix == "" {
-		prefix = "service"
-	}
-	return ServiceIdentity{Name: prefix + "." + sum, FullName: full, Truncated: true}
+	return false
 }
 
 // ApplyOtelEnv injects the canonical identity and topology attributes into the
 // workload environment. Explicit OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES
 // values are preserved; generated values only fill gaps.
 func ApplyOtelEnv(env map[string]string, in registry.AssetInput, provider string) map[string]string {
+	return ApplyOtelEnvWithServiceName(env, in, provider, "")
+}
+
+// ApplyOtelEnvWithServiceName is ApplyOtelEnv with an optional partition-level
+// service-name override. Explicit workload values still win.
+func ApplyOtelEnvWithServiceName(env map[string]string, in registry.AssetInput, provider, serviceNameOverride string) map[string]string {
 	if env == nil {
 		env = map[string]string{}
 	}
@@ -420,6 +411,8 @@ func ApplyOtelEnv(env map[string]string, in registry.AssetInput, provider string
 	if serviceName == "" {
 		if existing := strings.TrimSpace(attrs["service.name"]); existing != "" {
 			serviceName = existing
+		} else if override := strings.TrimSpace(serviceNameOverride); override != "" {
+			serviceName = override
 		} else {
 			serviceName = identity.Name
 		}
@@ -441,10 +434,19 @@ func ApplyOtelEnv(env map[string]string, in registry.AssetInput, provider string
 	setGenerated("guardian.asset", in.Asset.Name)
 	setGenerated("guardian.pusher", in.PusherName)
 	setGenerated("guardian.provider", provider)
-	setGenerated("guardian.cluster", strings.TrimSpace(in.Target.Cluster))
-	for key, value := range env {
-		if strings.HasSuffix(strings.ToUpper(key), "_OTEL_SERVICE_NAME") && strings.TrimSpace(value) != "" {
-			setGenerated("service.alias", strings.TrimSpace(value))
+	if strings.EqualFold(provider, "kubernetes") || strings.EqualFold(provider, "docker") {
+		setGenerated("guardian.cluster", strings.TrimSpace(in.Target.Cluster))
+	}
+	aliasKeys := make([]string, 0, len(env))
+	for key := range env {
+		if strings.HasSuffix(strings.ToUpper(key), "_OTEL_SERVICE_NAME") {
+			aliasKeys = append(aliasKeys, key)
+		}
+	}
+	sort.Strings(aliasKeys)
+	for _, key := range aliasKeys {
+		if value := strings.TrimSpace(env[key]); value != "" {
+			setGenerated("service.alias", value)
 			break
 		}
 	}
@@ -472,8 +474,11 @@ func ApplyOtelEnv(env map[string]string, in registry.AssetInput, provider string
 // defaultEndpoint is provider-specific and is used when neither the intent nor
 // the targeting Observability asset specifies one.
 func ApplyObservabilityEnv(env map[string]string, in registry.AssetInput, provider, defaultEndpoint string) map[string]string {
-	env = ApplyOtelEnv(env, in, provider)
 	settings := ObservabilityForAsset(in)
+	if !settings.Enabled {
+		return env
+	}
+	env = ApplyOtelEnvWithServiceName(env, in, provider, settings.ServiceName)
 	endpoint := strings.TrimSpace(settings.Endpoint)
 	if endpoint == "" {
 		endpoint = strings.TrimSpace(defaultEndpoint)
@@ -484,21 +489,40 @@ func ApplyObservabilityEnv(env map[string]string, in registry.AssetInput, provid
 	if strings.TrimSpace(env["OTEL_EXPORTER_OTLP_PROTOCOL"]) == "" {
 		protocol := strings.TrimSpace(settings.Protocol)
 		if protocol == "" {
-			protocol = "grpc"
+			protocol = ProtocolForEndpoint(endpoint)
 		}
 		env["OTEL_EXPORTER_OTLP_PROTOCOL"] = protocol
 	}
 	return env
 }
 
+// ProtocolForEndpoint picks the OTLP transport that matches the endpoint. The
+// stable collector and AWS gateway use gRPC on 4317; HTTP endpoints on 4318
+// (or explicit signal paths) use HTTP/protobuf.
+func ProtocolForEndpoint(endpoint string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return "grpc"
+	}
+	lower := strings.ToLower(endpoint)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		if strings.Contains(lower, ":4318") || strings.Contains(lower, "/v1/") {
+			return "http/protobuf"
+		}
+	}
+	return "grpc"
+}
+
 // ObservabilitySettings is the effective observability configuration for one
 // compute asset, resolved from targeting Observability assets.
 type ObservabilitySettings struct {
-	Mode       string
-	Endpoint   string
-	Protocol   string
-	CloudWatch bool
-	AssetName  string
+	Enabled     bool
+	Mode        string
+	Endpoint    string
+	Protocol    string
+	ServiceName string
+	CloudWatch  bool
+	AssetName   string
 }
 
 // ObservabilityForAsset resolves the Observability asset that targets the given
@@ -523,10 +547,12 @@ func ObservabilityForAsset(in registry.AssetInput) ObservabilitySettings {
 			continue
 		}
 		settings := ObservabilitySettings{
-			Mode:      strings.ToLower(strings.TrimSpace(spec.Mode)),
-			Endpoint:  strings.TrimSpace(spec.Endpoint),
-			Protocol:  strings.TrimSpace(spec.Protocol),
-			AssetName: name,
+			Enabled:     true,
+			Mode:        strings.ToLower(strings.TrimSpace(spec.Mode)),
+			Endpoint:    strings.TrimSpace(spec.Endpoint),
+			Protocol:    strings.TrimSpace(spec.Protocol),
+			ServiceName: strings.TrimSpace(spec.ServiceName),
+			AssetName:   name,
 		}
 		if spec.CloudWatch != nil {
 			settings.CloudWatch = *spec.CloudWatch

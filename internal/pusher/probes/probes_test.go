@@ -9,6 +9,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
+	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
+	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
 )
 
 func TestProbeHTTP(t *testing.T) {
@@ -116,7 +120,7 @@ func TestProbeTelemetryUsesTargetService(t *testing.T) {
 }
 
 func TestProbeTelemetryJSONShape(t *testing.T) {
-	resource := otelResource(Result{Service: "demo.api.app", Partition: "demo", Intent: "api", Asset: "app", Pusher: "k8s-main"})
+	resource := otelResource(Result{Service: "demo.api.app", Partition: "demo", Intent: "api", Asset: "app", Pusher: "k8s-main"}, Config{Provider: "kubernetes", Cluster: "main"})
 	payload, err := json.Marshal(resource)
 	if err != nil {
 		t.Fatal(err)
@@ -133,6 +137,84 @@ func contains(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func TestSortResultsUsesTargetService(t *testing.T) {
+	results := []Result{
+		{Service: "z.intent.asset", Pusher: "a", ProbeID: "1"},
+		{Service: "a.intent.asset", Pusher: "z", ProbeID: "2"},
+		{Service: "a.intent.asset", Pusher: "b", ProbeID: "3"},
+	}
+	SortResults(results)
+	if results[0].Service != "a.intent.asset" || results[0].Pusher != "b" {
+		t.Fatalf("first result = %+v", results[0])
+	}
+	if results[1].Pusher != "z" || results[2].Service != "z.intent.asset" {
+		t.Fatalf("unexpected order: %+v", results)
+	}
+}
+
+func TestDisabledExplicitProbeSuppressesAutoprobe(t *testing.T) {
+	runner := New(Config{Pusher: "k8s-main"})
+	intent := &intentView{
+		Partition: "demo",
+		Name:      "api",
+		Spec: intentdomain.IntentSpec{Assets: []intentdomain.AssetSpec{
+			{Type: assetdomain.TypeProbe, Name: "health", Properties: map[string]any{"target": "app", "enabled": false}},
+			{Type: assetdomain.TypeCompute, Name: "app"},
+		}},
+	}
+	state := &statedomain.IntentState{Outputs: map[string]string{"app.address": "app:8080"}}
+	policy := probePolicy{Enabled: true, Interval: time.Second, Timeout: time.Second, HTTPPaths: []string{"/healthz"}}
+	if targets := runner.targetsForIntent(context.Background(), intent, state, policy); len(targets) != 0 {
+		t.Fatalf("disabled explicit probe generated targets: %+v", targets)
+	}
+}
+
+func TestSortTargetsPrioritizesExplicitAndService(t *testing.T) {
+	targets := []Target{
+		{ID: "3", Mode: "auto", Type: "tcp", Service: "a.intent.asset"},
+		{ID: "2", Mode: "auto", Type: "http", Service: "z.intent.asset"},
+		{ID: "1", Mode: "explicit", Type: "tcp", Service: "m.intent.asset"},
+	}
+	sortTargets(targets)
+	if targets[0].ID != "1" || targets[1].ID != "2" || targets[2].ID != "3" {
+		t.Fatalf("unexpected target order: %+v", targets)
+	}
+}
+
+func TestShardOwnershipIsStable(t *testing.T) {
+	first := New(Config{Pusher: "k8s-main", ShardIndex: 0, ShardCount: 2})
+	second := New(Config{Pusher: "k8s-main", ShardIndex: 1, ShardCount: 2})
+	for _, id := range []string{"a", "b", "c", "d"} {
+		if first.ownsShard(id) == second.ownsShard(id) {
+			t.Fatalf("shard ownership overlapped for %q", id)
+		}
+	}
+}
+
+func TestProbeResourceUsesProviderIdentity(t *testing.T) {
+	resource := otelResource(Result{
+		Service:   "aws-demo.api.app",
+		FullName:  "aws-demo.api.app",
+		Partition: "aws-demo",
+		Intent:    "api",
+		Asset:     "app",
+		Pusher:    "aws-123",
+	}, Config{Provider: "aws", Account: "123", Region: "us-east-1"})
+	payload, err := json.Marshal(resource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(payload)
+	for _, want := range []string{`"guardian.provider"`, `"stringValue":"aws"`, `"guardian.account"`, `"guardian.region"`, `"guardian.service.truncated"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("resource missing %s: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `"k8s.cluster.name"`) {
+		t.Fatalf("AWS resource must not set k8s.cluster.name: %s", body)
+	}
 }
 
 func TestProbeIDDeterministic(t *testing.T) {

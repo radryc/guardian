@@ -61,6 +61,7 @@ type HostBindMountSpec struct {
 type ComputeSpec struct {
 	Image                  string                 `json:"image" yaml:"image"`
 	ImagePullPolicy        string                 `json:"imagePullPolicy,omitempty" yaml:"imagePullPolicy,omitempty"`
+	Labels                 map[string]string      `json:"labels,omitempty" yaml:"labels,omitempty"`
 	ObserveExisting        bool                   `json:"observeExisting,omitempty" yaml:"observeExisting,omitempty"`
 	ExistingDeploymentName string                 `json:"existingDeploymentName,omitempty" yaml:"existingDeploymentName,omitempty"`
 	ExistingServiceName    string                 `json:"existingServiceName,omitempty" yaml:"existingServiceName,omitempty"`
@@ -120,6 +121,11 @@ func (computeDefinition) Validate(spec any, ctx ValidationContext) error {
 	}
 	if err := validateStringList(typed.Capabilities, "capabilities"); err != nil {
 		return err
+	}
+	for key := range typed.Labels {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("label key must not be empty")
+		}
 	}
 	for idx, port := range typed.Ports {
 		if port.Port == nil && port.ContainerPort == nil {

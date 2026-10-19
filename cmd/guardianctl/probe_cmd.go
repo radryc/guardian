@@ -17,6 +17,7 @@ func probeListCommand(store guardianapi.Store, printer *output.Printer) *command
 	flags := flag.NewFlagSet("probe list", flag.ContinueOnError)
 	service := flags.String("service", "", "filter by target service")
 	pusher := flags.String("pusher", "", "filter by pusher")
+	cluster := flags.String("cluster", "", "filter by cluster")
 	partition := flags.String("partition", "", "filter by partition")
 	status := flags.String("status", "", "filter by status")
 	return &command.Command{Description: "List latest probe results", Flags: flags, Run: func(ctx context.Context, args []string) error {
@@ -29,6 +30,9 @@ func probeListCommand(store guardianapi.Store, printer *output.Printer) *command
 			if *pusher != "" && result.Pusher != *pusher {
 				continue
 			}
+			if *cluster != "" && result.Cluster != *cluster {
+				continue
+			}
 			if *partition != "" && result.Partition != *partition {
 				continue
 			}
@@ -37,6 +41,7 @@ func probeListCommand(store guardianapi.Store, printer *output.Printer) *command
 			}
 			filtered = append(filtered, result)
 		}
+		probes.SortResults(filtered)
 		if printer.Format == "json" {
 			printer.PrintJSON(filtered)
 			return nil
