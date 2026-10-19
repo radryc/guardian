@@ -453,7 +453,10 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
-	container.Env = driverutil.ApplyObservabilityEnv(env, in, "kubernetes", "otel-collector.otel.svc.cluster.local:4317")
+	container.Env = env
+	if !driverutil.AutoInstrumentDisabled(spec.Labels) {
+		container.Env = driverutil.ApplyObservabilityEnv(env, in, "kubernetes", "otel-collector.otel.svc.cluster.local:4317")
+	}
 	container.Image = spec.Image
 	deployment := Deployment{
 		Namespace:         namespace(in),
@@ -466,6 +469,15 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 		AvailableReplicas: max(1, driverutil.IntValue(spec.Replicas, 1)),
 		Container:         container,
 		HostUsers:         spec.HostUsers,
+	}
+	for key, value := range spec.Labels {
+		if deployment.Labels == nil {
+			deployment.Labels = map[string]string{}
+		}
+		if _, reserved := deployment.Labels[key]; reserved {
+			continue
+		}
+		deployment.Labels[key] = value
 	}
 	applyWorkloadPayload(&deployment, payload)
 	// Join every referenced network so its NetworkPolicy selects these pods.

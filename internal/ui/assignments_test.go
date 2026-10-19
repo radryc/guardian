@@ -2,7 +2,6 @@ package ui
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -48,6 +47,12 @@ func TestBuildPartitionAssignments(t *testing.T) {
 	if repo.MonoFSPath != "/partitions/demo-observe" {
 		t.Errorf("monofs path = %q", repo.MonoFSPath)
 	}
+	if repo.PartitionPath != "guardian/partitions/demo-observe" {
+		t.Errorf("partition path = %q", repo.PartitionPath)
+	}
+	if repo.SourcePath != "https://github.com/example/strata-demo-observe.git" {
+		t.Errorf("source path = %q", repo.SourcePath)
+	}
 	if len(got.Pushers) != 1 || !got.Pushers[0].Registered {
 		t.Fatalf("pushers = %+v, want one registered", got.Pushers)
 	}
@@ -56,10 +61,43 @@ func TestBuildPartitionAssignments(t *testing.T) {
 	}
 }
 
-func TestBuildPartitionAssignmentsWarnsWhenUnassigned(t *testing.T) {
-	srv := &Server{store: memory.New()}
-	got := srv.buildPartitionAssignments(context.Background(), "orphan", nil)
-	if len(got.Warnings) == 0 || !strings.Contains(got.Warnings[0], "no repository assigned") {
-		t.Fatalf("warnings = %v, want no-repository warning", got.Warnings)
+func TestBuildPartitionAssignmentsFallsBackToNative(t *testing.T) {
+	store := memory.New()
+	if err := registry.New(store).PutPusher(context.Background(), &registry.Pusher{
+		Name: "k8s-main", Region: "local", ObservedAPIURL: "http://127.0.0.1:19090",
+	}); err != nil {
+		t.Fatalf("PutPusher: %v", err)
+	}
+	srv := &Server{store: store}
+	intents := []IntentDocument{{
+		Name: "images",
+		Manifest: intent.Intent{
+			Metadata: intent.Metadata{Name: "images"},
+			Spec: intent.IntentSpec{
+				TargetPusher: "k8s-main",
+				Assets: []intent.AssetSpec{{
+					Type:       "ImageBuild",
+					Name:       "doctor-build",
+					Properties: map[string]any{"buildContext": "~/strata/doctor"},
+				}},
+			},
+		},
+	}}
+	got := srv.buildPartitionAssignments(context.Background(), "orphan", intents)
+	if len(got.Warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", got.Warnings)
+	}
+	if len(got.Repos) != 1 {
+		t.Fatalf("repos = %+v, want native fallback", got.Repos)
+	}
+	repo := got.Repos[0]
+	if repo.Name != registry.NativeRepoName || repo.SourceType != "native" {
+		t.Fatalf("repo = %+v, want native", repo)
+	}
+	if repo.PartitionPath != "/partitions/orphan" || repo.SourcePath != "~/strata/doctor" {
+		t.Fatalf("native paths = %q / %q", repo.PartitionPath, repo.SourcePath)
+	}
+	if len(got.Pushers) != 1 || got.Pushers[0].Name != "k8s-main" {
+		t.Fatalf("pushers = %+v, want k8s-main target", got.Pushers)
 	}
 }

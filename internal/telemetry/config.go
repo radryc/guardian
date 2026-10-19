@@ -15,12 +15,13 @@ const (
 )
 
 type Config struct {
-	Endpoint       string
-	ServiceName    string
-	Component      string
-	InstanceID     string
-	Insecure       bool
-	MetricInterval time.Duration
+	Endpoint           string
+	ServiceName        string
+	Component          string
+	InstanceID         string
+	Insecure           bool
+	MetricInterval     time.Duration
+	ResourceAttributes map[string]string
 }
 
 func LoadConfig(component, instanceID string) (Config, error) {

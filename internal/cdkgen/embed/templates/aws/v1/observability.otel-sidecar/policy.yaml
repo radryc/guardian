@@ -6,3 +6,33 @@ actions:
   - logs:DescribeLogGroups
   - iam:GetRole
   - iam:PassRole
+  # The sidecar creates a Service Connect private DNS namespace and service.
+  - servicediscovery:CreatePrivateDnsNamespace
+  - servicediscovery:DeletePrivateDnsNamespace
+  - servicediscovery:DeleteNamespace
+  - servicediscovery:GetNamespace
+  - servicediscovery:GetOperation
+  - servicediscovery:ListNamespaces
+  - servicediscovery:ListOperations
+  - servicediscovery:CreateService
+  - servicediscovery:DeleteService
+  - servicediscovery:GetService
+  - servicediscovery:ListServices
+  - servicediscovery:TagResource
+  - servicediscovery:UntagResource
+  - servicediscovery:ListTagsForResource
+  # PrivateDnsNamespace also creates a Route 53 hosted zone.
+  - route53:CreateHostedZone
+  - route53:DeleteHostedZone
+  - route53:GetHostedZone
+  - route53:ListHostedZones
+  - route53:ListHostedZonesByName
+  - route53:ChangeResourceRecordSets
+  - route53:ListResourceRecordSets
+  - route53:GetChange
+  - route53:ListTagsForResource
+  - route53:ChangeTagsForResource
+  - ec2:DescribeVpcs
+  - ec2:DescribeSubnets
+  - ec2:DescribeRouteTables
+  - ec2:DescribeSecurityGroups

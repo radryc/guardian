@@ -12,7 +12,8 @@ import { Construct } from 'constructs';
  * composer (guardian/internal/cdkgen) copies exactly the selected template
  * files plus this directory into the generated stack payload.
  *
- * Keep this file dependency-free apart from aws-cdk-lib/constructs.
+ * Keep this file dependency-free apart from aws-cdk-lib/constructs and Node
+ * built-ins used for the canonical telemetry identity.
  */
 
 export interface AssetCall {
@@ -21,6 +22,8 @@ export interface AssetCall {
   refs: Record<string, any>;
   partition: string;
   intent: string;
+  account?: string;
+  region?: string;
 }
 
 export interface TemplateHandle {
@@ -105,38 +108,106 @@ export function buildPortMappings(ports: any): ecs.PortMapping[] {
   return mappings;
 }
 
-export function buildEnvironment(env: any, partition: string, intent: string, asset: string): Record<string, string> {
+function parseOtelResourceAttributes(raw: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const pair of String(raw || '').split(',')) {
+    const trimmed = pair.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const index = trimmed.indexOf('=');
+    if (index < 0) {
+      continue;
+    }
+    const key = trimmed.slice(0, index).trim();
+    if (!key) {
+      continue;
+    }
+    out[key] = trimmed.slice(index + 1).trim();
+  }
+  return out;
+}
+
+function formatOtelResourceAttributes(attrs: Record<string, string>): string {
+  return Object.keys(attrs)
+    .sort()
+    .map((key) => `${key}=${attrs[key]}`)
+    .join(',');
+}
+
+// canonicalServiceIdentity must stay byte-for-byte compatible with
+// guardian/internal/observability.CanonicalServiceIdentity:
+// digest.MustNormalizedHash([]string{full}) is SHA-256 over the JSON array.
+export function canonicalServiceIdentity(fullName: string): { name: string; truncated: boolean } {
+  if (fullName.length <= 200) {
+    return { name: fullName, truncated: false };
+  }
+  const sum = createHash('sha256').update(JSON.stringify([fullName])).digest('hex').slice(0, 10);
+  let prefix = fullName.slice(0, 189).replace(/[._-]+$/, '');
+  if (!prefix) {
+    prefix = 'service';
+  }
+  return { name: `${prefix}.${sum}`, truncated: true };
+}
+
+export function buildEnvironment(
+  env: any,
+  partition: string,
+  intent: string,
+  asset: string,
+  account = '',
+  region = '',
+): Record<string, string> {
   const out: Record<string, string> = {};
   if (env && typeof env === 'object') {
     for (const [key, value] of Object.entries(env)) {
       out[key] = value === null || value === undefined ? '' : String(value);
     }
   }
+
   const fullName = [partition, intent, asset].filter((part) => Boolean(part)).join('.');
-  let serviceName = fullName;
-  let truncated = false;
-  if (serviceName.length > 200) {
-    serviceName = `${serviceName.slice(0, 189)}.${createHash('sha256').update(fullName).digest('hex').slice(0, 10)}`;
-    truncated = true;
+  const identity = canonicalServiceIdentity(fullName);
+  const attrs = parseOtelResourceAttributes(out.OTEL_RESOURCE_ATTRIBUTES || '');
+  let serviceName = String(out.OTEL_SERVICE_NAME || '').trim();
+  if (!serviceName) {
+    serviceName = String(attrs['service.name'] || '').trim();
   }
-  if (!out.OTEL_SERVICE_NAME) {
+  if (!serviceName) {
+    serviceName = identity.name;
+  }
+  if (serviceName) {
     out.OTEL_SERVICE_NAME = serviceName;
+    attrs['service.name'] = serviceName;
   }
-  const generated = [
-    `service.name=${out.OTEL_SERVICE_NAME}`,
-    `service.namespace=${partition}`,
-    `guardian.partition=${partition}`,
-    `guardian.intent=${intent}`,
-    `guardian.asset=${asset}`,
-    'guardian.provider=aws',
-    `guardian.service.full_name=${fullName}`,
-    `guardian.service.truncated=${truncated ? 'true' : 'false'}`,
-  ];
-  let attrs = generated.join(',');
-  if (out.OTEL_RESOURCE_ATTRIBUTES) {
-    attrs += `,${out.OTEL_RESOURCE_ATTRIBUTES}`;
+
+  const setGenerated = (key: string, value: string): void => {
+    if (key in attrs || !value) {
+      return;
+    }
+    attrs[key] = value;
+  };
+  setGenerated('service.namespace', partition);
+  setGenerated('guardian.partition', partition);
+  setGenerated('guardian.intent', intent);
+  setGenerated('guardian.asset', asset);
+  setGenerated('guardian.provider', 'aws');
+  for (const key of Object.keys(out).sort()) {
+    if (/_OTEL_SERVICE_NAME$/i.test(key) && String(out[key] || '').trim()) {
+      setGenerated('service.alias', String(out[key]).trim());
+      break;
+    }
   }
-  out.OTEL_RESOURCE_ATTRIBUTES = attrs;
+  if (account) {
+    setGenerated('guardian.account', account);
+  }
+  if (region) {
+    setGenerated('guardian.region', region);
+  }
+  if (fullName) {
+    setGenerated('guardian.service.full_name', fullName);
+    setGenerated('guardian.service.truncated', identity.truncated && serviceName === identity.name ? 'true' : 'false');
+  }
+  out.OTEL_RESOURCE_ATTRIBUTES = formatOtelResourceAttributes(attrs);
   return out;
 }
 

@@ -92,8 +92,10 @@ func (r *Runner) probeOnce(ctx context.Context, target Target) (int, string, err
 }
 
 func (r *Runner) probeHTTP(ctx context.Context, target Target) (int, string, error) {
-	paths := []string{target.Path}
-	if strings.TrimSpace(target.Path) == "" {
+	paths := append([]string(nil), target.Paths...)
+	if strings.TrimSpace(target.Path) != "" {
+		paths = []string{target.Path}
+	} else if len(paths) == 0 {
 		paths = r.cfg.HTTPPaths
 	}
 	client := &http.Client{

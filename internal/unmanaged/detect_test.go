@@ -296,6 +296,33 @@ func TestServiceDetectAndAssociate(t *testing.T) {
 	}
 }
 
+func TestServiceDetectIgnoresNonAWSPushers(t *testing.T) {
+	ctx := context.Background()
+	service, registryStore := newUnmanagedTestService(t, []awsobserve.StackState{
+		{StackName: "ForeignStack", Region: "eu-west-1", StackStatus: "CREATE_COMPLETE"},
+	})
+	for _, pusher := range []registry.Pusher{
+		{Kind: "Pusher", Name: "docker-main", Provider: "docker", Cluster: "main"},
+		{Kind: "Pusher", Name: "k8s-main", Provider: "kubernetes", Cluster: "main"},
+	} {
+		if err := registryStore.PutPusher(ctx, &pusher); err != nil {
+			t.Fatalf("put pusher: %v", err)
+		}
+	}
+	result, err := service.Detect(ctx)
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	for _, warning := range result.Warnings {
+		if strings.Contains(warning, "docker-main") || strings.Contains(warning, "k8s-main") {
+			t.Fatalf("non-AWS pusher produced a warning: %v", result.Warnings)
+		}
+	}
+	if len(result.Stacks) != 1 || result.Stacks[0].StackName != "ForeignStack" {
+		t.Fatalf("stacks = %+v", result.Stacks)
+	}
+}
+
 func TestServiceAssociatePublishesThroughMonoFS(t *testing.T) {
 	ctx := context.Background()
 	publisher := &fakePublisher{result: &workspacepub.PublishResult{

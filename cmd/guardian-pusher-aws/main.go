@@ -109,6 +109,15 @@ func main() {
 	if telemetryErr != nil {
 		log.Fatalf("load telemetry config: %v", telemetryErr)
 	}
+	telemetryCfg.ServiceName = "guardian.pusher." + pusherName
+	telemetryCfg.ResourceAttributes = map[string]string{
+		"guardian.pusher":      pusherName,
+		"guardian.provider":    "aws",
+		"guardian.account":     account,
+		"guardian.region":      region,
+		"guardian.shard.index": fmt.Sprintf("%d", shardIndex),
+		"guardian.shard.count": fmt.Sprintf("%d", shardCount),
+	}
 	telemetryHandle, telemetryErr := telemetry.Setup(context.Background(), telemetryCfg)
 	if telemetryErr != nil {
 		log.Fatalf("setup telemetry: %v", telemetryErr)
@@ -236,6 +245,7 @@ func main() {
 
 	probeCfg := probes.ConfigFromEnv()
 	probeCfg.Store = store
+	probeCfg.Resolver = secrets.NewStoreResolver(store)
 	probeCfg.Pusher = pusherName
 	probeCfg.Provider = "aws"
 	probeCfg.Account = account

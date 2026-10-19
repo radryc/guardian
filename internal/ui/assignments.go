@@ -28,12 +28,17 @@ type PartitionRepoAssignment struct {
 	LastSyncedAt  time.Time            `json:"lastSyncedAt,omitempty"`
 	LastSyncError string               `json:"lastSyncError,omitempty"`
 	Binding       registry.RepoBinding `json:"binding"`
-	RepoPath      string               `json:"repoPath"`
-	RepoPathHint  string               `json:"repoPathHint,omitempty"`
-	MonoFSPath    string               `json:"monofsPath"`
-	PayloadPath   string               `json:"payloadPath"`
-	ConfigPath    string               `json:"configPath"`
-	IntentsPath   string               `json:"intentsPath"`
+	// PartitionPath is where the partition bundle lives in the repo.
+	PartitionPath string `json:"partitionPath,omitempty"`
+	// SourcePath is the repo source (Git URL, checkout, or MonoFS path) used by
+	// the partition. RepoPath is kept as a compatibility alias.
+	SourcePath   string `json:"sourcePath,omitempty"`
+	RepoPath     string `json:"repoPath,omitempty"`
+	RepoPathHint string `json:"repoPathHint,omitempty"`
+	MonoFSPath   string `json:"monofsPath"`
+	PayloadPath  string `json:"payloadPath"`
+	ConfigPath   string `json:"configPath"`
+	IntentsPath  string `json:"intentsPath"`
 }
 
 type PartitionPusherAssignment struct {
@@ -72,6 +77,11 @@ func (s *Server) buildPartitionAssignments(ctx context.Context, partition string
 		intentsByName[name] = intent
 		pusher := strings.TrimSpace(intent.Manifest.Spec.TargetPusher)
 		if pusher == "" {
+			// Older/imported intents may only carry the placement cluster.
+			// Treat that as the target pusher so the targets block stays useful.
+			pusher = strings.TrimSpace(intent.Manifest.Spec.Target.Cluster)
+		}
+		if pusher == "" {
 			continue
 		}
 		intentsByPusher[pusher] = append(intentsByPusher[pusher], name)
@@ -83,6 +93,8 @@ func (s *Server) buildPartitionAssignments(ctx context.Context, partition string
 				continue
 			}
 			payloadPath := binding.PayloadDir()
+			partitionPath := binding.PartitionDir()
+			sourcePath := firstNonEmpty(binding.SourcePath, repo.Source)
 			assignment := PartitionRepoAssignment{
 				Name:          repo.Name,
 				SourceType:    repo.SourceType,
@@ -92,8 +104,10 @@ func (s *Server) buildPartitionAssignments(ctx context.Context, partition string
 				LastSyncedAt:  repo.LastSyncedAt,
 				LastSyncError: repo.LastSyncError,
 				Binding:       binding,
-				RepoPath:      "guardian/partitions/" + partition + "/",
-				RepoPathHint:  "or .guardian/config.yaml at the repository root for CDK app repos",
+				PartitionPath: partitionPath,
+				SourcePath:    sourcePath,
+				RepoPath:      sourcePath,
+				RepoPathHint:  "partition path is the repo-relative bundle; source path is the checkout/MonoFS source used by the partition",
 				MonoFSPath:    paths.PartitionRoot(partition),
 				PayloadPath:   payloadPath,
 				ConfigPath:    paths.PartitionConfig(partition),
@@ -112,7 +126,27 @@ func (s *Server) buildPartitionAssignments(ctx context.Context, partition string
 		}
 	}
 	if len(out.Repos) == 0 {
-		out.Warnings = append(out.Warnings, "no repository assigned; desired state has no source of truth")
+		// A partition without a repo binding is native/control-plane state, not
+		// an error. Represent it with the built-in native source so every
+		// partition has an explicit assignment. If the partition's ImageBuild
+		// assets name local build contexts, surface those as the source paths.
+		sourcePaths := intentSourcePaths(intents)
+		sourcePath := "native/control-plane"
+		if len(sourcePaths) > 0 {
+			sourcePath = strings.Join(sourcePaths, ", ")
+		}
+		out.Repos = append(out.Repos, PartitionRepoAssignment{
+			Name:          registry.NativeRepoName,
+			SourceType:    "native",
+			Source:        "native",
+			PartitionPath: paths.PartitionRoot(partition),
+			SourcePath:    sourcePath,
+			RepoPath:      sourcePath,
+			RepoPathHint:  "no repository required; source paths come from the partition's image build contexts",
+			MonoFSPath:    paths.PartitionRoot(partition),
+			ConfigPath:    paths.PartitionConfig(partition),
+			IntentsPath:   paths.PartitionIntentsDir(partition),
+		})
 	}
 
 	for pusherName, intentNames := range intentsByPusher {
@@ -149,6 +183,32 @@ func (s *Server) buildPartitionAssignments(ctx context.Context, partition string
 	}
 	sort.Slice(out.Repos, func(i, j int) bool { return out.Repos[i].Name < out.Repos[j].Name })
 	sort.Slice(out.Pushers, func(i, j int) bool { return out.Pushers[i].Name < out.Pushers[j].Name })
+	return out
+}
+
+// intentSourcePaths returns the distinct local build contexts declared by a
+// partition's ImageBuild assets. These are the source paths used to produce
+// the partition's images when no repository binding exists.
+func intentSourcePaths(intents []IntentDocument) []string {
+	seen := map[string]bool{}
+	for _, intent := range intents {
+		for _, asset := range intent.Manifest.Spec.Assets {
+			if !strings.EqualFold(strings.TrimSpace(asset.Type), "ImageBuild") {
+				continue
+			}
+			value, _ := asset.Properties["buildContext"].(string)
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			seen[value] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for value := range seen {
+		out = append(out, value)
+	}
+	sort.Strings(out)
 	return out
 }
 

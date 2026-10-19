@@ -68,6 +68,7 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	probes.SortResults(out)
 	writeJSON(w, http.StatusOK, map[string]any{"probes": out})
 }
 

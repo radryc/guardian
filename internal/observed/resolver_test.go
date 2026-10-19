@@ -36,6 +36,26 @@ func TestRegistryResolverResolvesRegisteredPusher(t *testing.T) {
 	}
 }
 
+func TestRegistryResolverSkipsPushersWithoutObservedAPI(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	registryStore := registry.New(store)
+	for _, pusher := range []registry.Pusher{
+		{Name: "docker-main", Provider: "docker"},
+		{Name: "k8s-main", Provider: "kubernetes"},
+	} {
+		if err := registryStore.PutPusher(ctx, &pusher); err != nil {
+			t.Fatalf("PutPusher() error = %v", err)
+		}
+	}
+	resolver := &RegistryResolver{Static: map[string]Endpoint{}, Registry: registryStore, TTL: time.Minute}
+	for _, name := range []string{"docker-main", "k8s-main"} {
+		if _, ok := resolver.Resolve(name); ok {
+			t.Fatalf("Resolve(%s) should not return an empty endpoint", name)
+		}
+	}
+}
+
 func TestRegistryResolverStaticTakesPrecedence(t *testing.T) {
 	static := Endpoint{Name: "aws-1", Client: NewClient("http://static:19090", "", time.Second)}
 	resolver := &RegistryResolver{Static: map[string]Endpoint{"aws-1": static}}

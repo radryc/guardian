@@ -698,6 +698,13 @@ function renderAssignments(): void {
       <div class="assignment-repo assignment-repo-native">
         <div class="assignment-repo-head"><strong>Native platform</strong></div>
         <div class="assignment-meta">No repository required — desired state is native/control-plane.</div>
+        <div class="assignment-paths">
+          ${assignmentPath("Partition path", repo.partitionPath ?? repo.monofsPath)}
+          ${assignmentPath("Source path", repo.sourcePath ?? "native/control-plane")}
+          ${assignmentPath("MonoFS", repo.monofsPath)}
+          ${assignmentPath("Config", repo.configPath)}
+        </div>
+        ${repo.repoPathHint ? `<div class="assignment-meta">${escapeHtml(repo.repoPathHint)}</div>` : ""}
       </div>`;
     }
     const source = String(repo.source ?? "").trim();
@@ -714,7 +721,8 @@ function renderAssignments(): void {
         <div class="assignment-meta">branch ${escapeHtml(branch)} · commit ${escapeHtml(commit)} · last ingest ${escapeHtml(synced)}</div>
         ${selector ? `<div class="assignment-meta">binding selector ${escapeHtml(selector)}</div>` : ""}
         <div class="assignment-paths">
-          ${assignmentPath("Repo path", repo.repoPath)}
+          ${assignmentPath("Partition path", repo.partitionPath ?? repo.repoPath)}
+          ${assignmentPath("Source path", repo.sourcePath ?? source)}
           ${assignmentPath("MonoFS", repo.monofsPath)}
           ${assignmentPath("Payload", repo.payloadPath)}
           ${assignmentPath("Config", repo.configPath)}
@@ -724,7 +732,7 @@ function renderAssignments(): void {
       </div>`;
   }).join("") : `
     <div class="assignment-warning">
-      No repository is assigned to this partition.
+      No source is assigned to this partition.
       <button class="btn-secondary" style="padding:2px 8px;font-size:10px;" data-assignment-action="connections">Bind repo</button>
     </div>`;
 
@@ -740,7 +748,7 @@ function renderAssignments(): void {
         </div>
         <span class="right">${intents.map((intent: string) => `<span class="assignment-chip">${escapeHtml(intent)}</span>`).join("")}</span>
       </div>`;
-  }).join("") : `<div class="assignment-empty">No pusher found for this partition.</div>`;
+  }).join("") : `<div class="assignment-empty">No target pusher found for this partition.</div>`;
 
   const warningsHtml = warnings.length ? `
     <div class="assignment-warnings">
@@ -750,14 +758,14 @@ function renderAssignments(): void {
   grid.innerHTML = `
     <div class="assignment-block">
       <div class="assignment-block-head">
-        <span class="assignment-title">Repository</span>
+        <span class="assignment-title">Source</span>
         <span class="right"><button class="btn-secondary" style="padding:2px 8px;font-size:10px;" data-assignment-action="connections">Manage in Connections</button></span>
       </div>
       ${repoHtml}
     </div>
     <div class="assignment-block">
       <div class="assignment-block-head">
-        <span class="assignment-title">Pusher</span>
+        <span class="assignment-title">Targets</span>
         <span class="assignment-chip">${pushers.length} pusher${pushers.length === 1 ? "" : "s"}</span>
       </div>
       ${pusherHtml}

@@ -52,9 +52,22 @@ func ValidatePartition(p *partitiondomain.Partition) error {
 		return fmt.Errorf("invalid observability instrumentation %q", p.Spec.Defaults.Observability.Instrumentation)
 	}
 	if interval := p.Spec.Defaults.Probes.Interval; interval != "" {
-		if err := validateInterval(interval); err != nil {
-			return fmt.Errorf("invalid probe interval: %w", err)
+		parsed, err := time.ParseDuration(interval)
+		if err != nil || parsed <= 0 {
+			return fmt.Errorf("invalid probe interval %q", interval)
 		}
+	}
+	if timeout := p.Spec.Defaults.Probes.Timeout; timeout != "" {
+		parsed, err := time.ParseDuration(timeout)
+		if err != nil || parsed <= 0 {
+			return fmt.Errorf("invalid probe timeout %q", timeout)
+		}
+	}
+	if retries := p.Spec.Defaults.Probes.Retries; retries != nil && *retries < 0 {
+		return fmt.Errorf("invalid probe retries %d", *retries)
+	}
+	if maxTargets := p.Spec.Defaults.Probes.MaxTargets; maxTargets != nil && *maxTargets < 1 {
+		return fmt.Errorf("invalid probe maxTargets %d", *maxTargets)
 	}
 	for _, port := range p.Spec.Defaults.Probes.TCPPorts {
 		if port <= 0 || port > 65535 {

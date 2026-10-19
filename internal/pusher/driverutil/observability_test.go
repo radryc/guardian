@@ -34,6 +34,44 @@ func TestCanonicalServiceIdentityTruncatesDeterministically(t *testing.T) {
 	}
 }
 
+func TestApplyObservabilityEnvRequiresTargetingAsset(t *testing.T) {
+	in := registry.AssetInput{
+		PartitionName: "doctor",
+		IntentName:    "query",
+		PusherName:    "k8s-main",
+		Asset:         taskdomain.AbstractAsset{Type: "Compute", Name: "query"},
+		Target:        targetdomain.Placement{Cluster: "main"},
+	}
+	env := ApplyObservabilityEnv(map[string]string{"EXISTING": "1"}, in, "kubernetes", "otel-collector.otel.svc.cluster.local:4317")
+	if _, ok := env["OTEL_SERVICE_NAME"]; ok {
+		t.Fatalf("observability env injected without a targeting asset: %#v", env)
+	}
+	if env["EXISTING"] != "1" {
+		t.Fatalf("explicit env was not preserved: %#v", env)
+	}
+}
+
+func TestApplyObservabilityEnvUsesServiceNameOverride(t *testing.T) {
+	in := registry.AssetInput{
+		PartitionName: "doctor",
+		IntentName:    "query",
+		PusherName:    "k8s-main",
+		Asset:         taskdomain.AbstractAsset{Type: "Compute", Name: "query"},
+		Assets: map[string]taskdomain.AbstractAsset{
+			"observability": {
+				Type:       "Observability",
+				Name:       "observability",
+				Properties: map[string]any{"mode": "auto", "targets": []string{"query"}, "serviceName": "custom.service"},
+			},
+		},
+		Target: targetdomain.Placement{Cluster: "main"},
+	}
+	env := ApplyObservabilityEnv(nil, in, "kubernetes", "otel-collector.otel.svc.cluster.local:4317")
+	if got := env["OTEL_SERVICE_NAME"]; got != "custom.service" {
+		t.Fatalf("OTEL_SERVICE_NAME = %q", got)
+	}
+}
+
 func TestApplyOtelEnvPreservesExplicitValues(t *testing.T) {
 	in := registry.AssetInput{
 		PartitionName: "doctor",

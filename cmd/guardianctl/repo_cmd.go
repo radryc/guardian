@@ -555,11 +555,6 @@ func syncRepoBundle(ctx context.Context, store guardianapi.Store, registryStore 
 	}
 	commit := gitHead(ctx, sourceDir)
 
-	assemblyDir, assemblyErr := resolveAssemblyDir(ctx, repo, sourceDir, assembly, synth)
-	if assemblyErr != nil {
-		assemblyDir = ""
-	}
-
 	bindings := repo.BindingList()
 	if len(bindings) == 0 {
 		err := fmt.Errorf("repo %s has no partition bindings", repo.Name)
@@ -569,15 +564,19 @@ func syncRepoBundle(ctx context.Context, store guardianapi.Store, registryStore 
 
 	created := make([]string, 0)
 	for _, binding := range bindings {
-		imported, err := importRepoPartition(ctx, store, sourceDir, binding.Partition)
+		assemblyDir, assemblyErr := resolveAssemblyDir(ctx, repo, binding, sourceDir, assembly, synth)
+		if assemblyErr != nil {
+			assemblyDir = ""
+		}
+		imported, err := importRepoPartition(ctx, store, sourceDir, binding)
 		if err != nil {
 			_ = registryStore.RecordSync(ctx, repo.Name, commit, err)
 			return err
 		}
 		if assemblyDir == "" {
 			if !imported {
-				err := fmt.Errorf("repo %s partition %s: no guardian/partitions/%s and no cloud assembly: %w",
-					repo.Name, binding.Partition, binding.Partition, assemblyErr)
+				err := fmt.Errorf("repo %s partition %s: no %s and no cloud assembly: %w",
+					repo.Name, binding.Partition, binding.PartitionDir(), assemblyErr)
 				_ = registryStore.RecordSync(ctx, repo.Name, commit, err)
 				return err
 			}
@@ -645,16 +644,15 @@ func syncRepoBundle(ctx context.Context, store guardianapi.Store, registryStore 
 	return nil
 }
 
-const repoPartitionsSubdir = "guardian/partitions"
-
 // importRepoPartition pushes the repo-authored partition bundle from
-// guardian/partitions/<name>/ when the checkout contains one. It returns false
-// when the repo does not author that partition.
-func importRepoPartition(ctx context.Context, store guardianapi.Store, sourceDir, partition string) (bool, error) {
-	if strings.TrimSpace(sourceDir) == "" {
+// binding.PartitionDir() when the checkout contains one. It returns false when
+// the repo does not author that partition.
+func importRepoPartition(ctx context.Context, store guardianapi.Store, sourceDir string, binding registry.RepoBinding) (bool, error) {
+	partition := strings.TrimSpace(binding.Partition)
+	if strings.TrimSpace(sourceDir) == "" || partition == "" {
 		return false, nil
 	}
-	dir := filepath.Join(sourceDir, filepath.FromSlash(repoPartitionsSubdir), partition)
+	dir := filepath.Join(sourceDir, filepath.FromSlash(binding.PartitionDir()))
 	info, statErr := os.Stat(dir)
 	if statErr != nil || !info.IsDir() {
 		return false, nil
@@ -803,18 +801,22 @@ func materializeRepoSource(ctx context.Context, repo *registry.Repo, dir string)
 	return tempDir, cleanup, nil
 }
 
-func resolveAssemblyDir(ctx context.Context, repo *registry.Repo, sourceDir, assembly string, synth bool) (string, error) {
+func resolveAssemblyDir(ctx context.Context, repo *registry.Repo, binding registry.RepoBinding, sourceDir, assembly string, synth bool) (string, error) {
 	if strings.TrimSpace(assembly) != "" {
 		return assembly, nil
 	}
-	candidate := filepath.Join(sourceDir, repo.AssemblySubdir)
+	sourceRoot := sourceDir
+	if sourcePath := strings.Trim(strings.TrimSpace(binding.SourcePath), "/"); sourcePath != "" {
+		sourceRoot = filepath.Join(sourceDir, filepath.FromSlash(sourcePath))
+	}
+	candidate := filepath.Join(sourceRoot, repo.AssemblySubdir)
 	if _, err := os.Stat(filepath.Join(candidate, "manifest.json")); err == nil {
 		return candidate, nil
 	}
 	if !synth {
 		return "", fmt.Errorf("no cloud assembly found at %s; commit one, pass --assembly, or use --synth", candidate)
 	}
-	if err := runRepoSynth(ctx, sourceDir, repo.AssemblySubdir); err != nil {
+	if err := runRepoSynth(ctx, sourceRoot, repo.AssemblySubdir); err != nil {
 		return "", err
 	}
 	return candidate, nil
@@ -908,9 +910,17 @@ func firstNonEmpty(values ...string) string {
 }
 
 func resolveStoreAssembly(ctx context.Context, store guardianapi.Store, repo *registry.Repo, binding registry.RepoBinding) (string, error) {
-	candidates := make([]string, 0, 4)
+	candidates := make([]string, 0, 6)
 	if source := strings.TrimSpace(repo.Source); strings.HasPrefix(source, "/") {
 		candidates = append(candidates, source, strings.TrimRight(source, "/")+"/cdk.out")
+	}
+	if sourcePath := strings.TrimSpace(binding.SourcePath); sourcePath != "" {
+		if strings.HasPrefix(sourcePath, "/") {
+			candidates = append(candidates, strings.TrimRight(sourcePath, "/"), strings.TrimRight(sourcePath, "/")+"/cdk.out")
+		} else if source := strings.TrimRight(strings.TrimSpace(repo.Source), "/"); strings.HasPrefix(source, "/") {
+			joined := source + "/" + strings.Trim(sourcePath, "/")
+			candidates = append(candidates, joined, joined+"/cdk.out")
+		}
 	}
 	payloadDir := binding.PayloadDir()
 	candidates = append(candidates, strings.TrimRight(payloadDir, "/")+"/cdk.out", payloadDir)

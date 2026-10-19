@@ -400,6 +400,7 @@ func DeployPolicy(accountID, region string) string {
 			Effect: "Allow",
 			Action: []string{
 				"cloudwatch:Get*",
+				"cloudwatch:GetMetricData",
 				"cloudwatch:ListMetrics",
 				"xray:Get*",
 				"xray:BatchGetTraces",

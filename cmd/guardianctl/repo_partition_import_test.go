@@ -61,7 +61,7 @@ spec:
         content: "key: value"
 `)
 
-	imported, err := importRepoPartition(ctx, store, sourceDir, "demo")
+	imported, err := importRepoPartition(ctx, store, sourceDir, registry.RepoBinding{Partition: "demo"})
 	if err != nil {
 		t.Fatalf("importRepoPartition() error = %v", err)
 	}
@@ -100,7 +100,7 @@ spec:
         value: "super-secret"
 `)
 
-	_, err := importRepoPartition(ctx, store, sourceDir, "demo")
+	_, err := importRepoPartition(ctx, store, sourceDir, registry.RepoBinding{Partition: "demo"})
 	if err == nil || !strings.Contains(err.Error(), "inline Secret value") {
 		t.Fatalf("error = %v, want inline secret rejection", err)
 	}
@@ -109,10 +109,62 @@ spec:
 	}
 }
 
+func TestImportRepoPartitionUsesConfiguredPartitionPath(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	sourceDir := t.TempDir()
+	dir := filepath.Join(sourceDir, "partitions", "demo")
+	if err := os.MkdirAll(filepath.Join(dir, "intents"), 0o755); err != nil {
+		t.Fatalf("mkdir intents: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "partition.yaml"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Partition
+metadata:
+  name: demo
+spec:
+  deletionPolicy: orphan
+`), 0o644); err != nil {
+		t.Fatalf("write partition.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "intents", "web.yaml"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: web
+spec:
+  targetPusher: local
+  target:
+    cluster: local
+  assets:
+    - type: Config
+      name: config
+      version: v1
+      properties:
+        content: "key: value"
+`), 0o644); err != nil {
+		t.Fatalf("write intent: %v", err)
+	}
+
+	imported, err := importRepoPartition(ctx, store, sourceDir, registry.RepoBinding{
+		Partition:     "demo",
+		PartitionPath: "/partitions/demo",
+	})
+	if err != nil {
+		t.Fatalf("importRepoPartition() error = %v", err)
+	}
+	if !imported {
+		t.Fatalf("importRepoPartition() = false, want true")
+	}
+	if _, err := store.ReadFile(ctx, paths.IntentManifest("demo", "web")); err != nil {
+		t.Fatalf("intent missing: %v", err)
+	}
+}
+
 func TestImportRepoPartitionMissing(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
-	imported, err := importRepoPartition(ctx, store, t.TempDir(), "demo")
+	imported, err := importRepoPartition(ctx, store, t.TempDir(), registry.RepoBinding{Partition: "demo"})
 	if err != nil {
 		t.Fatalf("importRepoPartition() error = %v", err)
 	}

@@ -458,6 +458,12 @@ func renderStack(in Input, stackName string, plan []plannedAsset, networkVar str
 		fmt.Fprintf(&b, "    refs: %s,\n", refs)
 		fmt.Fprintf(&b, "    partition: %s,\n", quote(in.Partition))
 		fmt.Fprintf(&b, "    intent: %s,\n", quote(in.Intent))
+		if in.Account != "" {
+			fmt.Fprintf(&b, "    account: %s,\n", quote(in.Account))
+		}
+		if in.Region != "" {
+			fmt.Fprintf(&b, "    region: %s,\n", quote(in.Region))
+		}
 		b.WriteString("  });\n\n")
 	}
 

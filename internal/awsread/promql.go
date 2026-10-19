@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -72,8 +73,51 @@ func (c *PromQLClient) loadConfig(ctx context.Context, region string) (awssdk.Co
 	return cfg, nil
 }
 
+// CloudWatch QueryMetrics requires the PromQL expression to select a metric by
+// name, either as {"metric"} or {__name__="metric"}. Grafana and Doctor expose
+// the simpler metric{...} form, so normalize it before signing the request.
+var simpleMetricSelector = regexp.MustCompile(`^([A-Za-z_:][A-Za-z0-9_:.]*)(\{(.*)\})?$`)
+var simpleMetricName = regexp.MustCompile(`^[A-Za-z_:][A-Za-z0-9_:.]*$`)
+
+func normalizeCloudWatchPromQL(query string) string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return query
+	}
+	if strings.HasPrefix(query, "{") {
+		inner := strings.TrimPrefix(query, "{")
+		trimmed := strings.TrimSpace(inner)
+		if strings.HasPrefix(trimmed, "__name__") || strings.HasPrefix(trimmed, `"`) || strings.HasPrefix(trimmed, `'`) {
+			return query
+		}
+		if end := strings.IndexAny(inner, ",}"); end > 0 {
+			name := strings.TrimSpace(inner[:end])
+			if simpleMetricName.MatchString(name) {
+				rest := inner[end:]
+				if strings.HasPrefix(rest, "}") {
+					return `{__name__="` + name + `"}`
+				}
+				return `{__name__="` + name + `"` + rest
+			}
+		}
+		return query
+	}
+	match := simpleMetricSelector.FindStringSubmatch(query)
+	if match == nil {
+		return query
+	}
+	labels := strings.TrimSpace(match[3])
+	if labels == "" {
+		return `{"` + match[1] + `"}`
+	}
+	return `{"` + match[1] + `", ` + labels + `}`
+}
+
 // Do signs and executes a form-encoded request against the CloudWatch PromQL API.
 func (c *PromQLClient) Do(ctx context.Context, region, path string, params url.Values) ([]byte, int, error) {
+	if query := params.Get("query"); query != "" {
+		params.Set("query", normalizeCloudWatchPromQL(query))
+	}
 	if region == "" {
 		region = c.defaultRegion
 	}

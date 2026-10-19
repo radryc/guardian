@@ -65,6 +65,12 @@ func main() {
 	if telemetryErr != nil {
 		log.Fatalf("load telemetry config: %v", telemetryErr)
 	}
+	telemetryCfg.ServiceName = "guardian.pusher." + pusherName
+	telemetryCfg.ResourceAttributes = map[string]string{
+		"guardian.pusher":   pusherName,
+		"guardian.cluster":  cluster,
+		"guardian.provider": "docker",
+	}
 	telemetryHandle, telemetryErr := telemetry.Setup(context.Background(), telemetryCfg)
 	if telemetryErr != nil {
 		log.Fatalf("setup telemetry: %v", telemetryErr)
@@ -155,6 +161,7 @@ func main() {
 
 	probeCfg := probes.ConfigFromEnv()
 	probeCfg.Store = store
+	probeCfg.Resolver = secrets.NewStoreResolver(store)
 	probeCfg.Pusher = pusherName
 	probeCfg.Cluster = cluster
 	probeCfg.Provider = "docker"

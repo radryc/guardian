@@ -225,6 +225,95 @@ func (r *AWSReader) QueryMetric(ctx context.Context, q MetricQuery) ([]MetricSer
 	return out, nil
 }
 
+// QueryMetricInsights fetches a metric through CloudWatch Metrics Insights.
+// Metrics Insights can aggregate across dimensions, which is required when the
+// caller only knows the dimension names (ListMetrics does not return values).
+func (r *AWSReader) QueryMetricInsights(ctx context.Context, q MetricQuery) ([]MetricSeries, error) {
+	if strings.TrimSpace(q.MetricName) == "" || strings.TrimSpace(q.Namespace) == "" {
+		return nil, fmt.Errorf("namespace and metric name are required")
+	}
+	stat := strings.ToUpper(strings.TrimSpace(q.Stat))
+	switch stat {
+	case "AVERAGE", "AVG":
+		stat = "AVG"
+	case "MAXIMUM", "MAX":
+		stat = "MAX"
+	case "MINIMUM", "MIN":
+		stat = "MIN"
+	case "SAMPLECOUNT", "COUNT":
+		stat = "COUNT"
+	default:
+		stat = "SUM"
+	}
+	period := int32(q.Period / time.Second)
+	if period <= 0 {
+		period = 300
+	}
+	from := q.From
+	if from.IsZero() {
+		from = time.Now().UTC().Add(-time.Hour)
+	}
+	to := q.To
+	if to.IsZero() {
+		to = time.Now().UTC()
+	}
+
+	names := make([]string, 0, len(q.Dimensions))
+	for name := range q.Dimensions {
+		if strings.TrimSpace(name) != "" {
+			names = append(names, strconv.Quote(name))
+		}
+	}
+	sort.Strings(names)
+	schema := strconv.Quote(q.Namespace)
+	if len(names) > 0 {
+		schema += ", " + strings.Join(names, ", ")
+	}
+	expression := fmt.Sprintf(`SELECT %s(%s) FROM SCHEMA(%s)`, stat, strconv.Quote(q.MetricName), schema)
+
+	out := make([]MetricSeries, 0)
+	for _, region := range r.targetRegions() {
+		cfg, err := r.loadConfig(ctx, region)
+		if err != nil {
+			return nil, err
+		}
+		client := cloudwatch.NewFromConfig(cfg)
+		resp, err := client.GetMetricData(ctx, &cloudwatch.GetMetricDataInput{
+			StartTime: awsroot.Time(from),
+			EndTime:   awsroot.Time(to),
+			ScanBy:    cwtypes.ScanByTimestampDescending,
+			MetricDataQueries: []cwtypes.MetricDataQuery{{
+				Id:         awsroot.String("m0"),
+				Expression: awsroot.String(expression),
+				Period:     awsroot.Int32(period),
+				ReturnData: awsroot.Bool(true),
+			}},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("cloudwatch Metrics Insights GetMetricData (%s): %w", region, err)
+		}
+		for _, result := range resp.MetricDataResults {
+			points := make([]MetricPoint, 0, len(result.Timestamps))
+			for i, ts := range result.Timestamps {
+				if i >= len(result.Values) {
+					break
+				}
+				points = append(points, MetricPoint{Timestamp: ts.UTC(), Value: result.Values[i]})
+			}
+			sort.Slice(points, func(i, j int) bool { return points[i].Timestamp.Before(points[j].Timestamp) })
+			out = append(out, MetricSeries{
+				Namespace:  q.Namespace,
+				MetricName: q.MetricName,
+				Dimensions: q.Dimensions,
+				Region:     region,
+				Account:    r.account,
+				Points:     points,
+			})
+		}
+	}
+	return out, nil
+}
+
 // ListLogGroups returns known CloudWatch log group names.
 func (r *AWSReader) ListLogGroups(ctx context.Context) ([]string, error) {
 	seen := make(map[string]struct{})

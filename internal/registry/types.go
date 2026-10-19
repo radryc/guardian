@@ -126,6 +126,13 @@ type RepoBinding struct {
 	// Path is the logical MonoFS payload dir for this partition. Defaults to
 	// /partitions/<partition>/payloads/aws.
 	Path string `json:"path,omitempty" yaml:"path,omitempty"`
+	// PartitionPath is the repo-relative path that holds this partition's
+	// authored bundle (partition.yaml/config.yaml, intents, payloads). It
+	// defaults to guardian/partitions/<partition>.
+	PartitionPath string `json:"partitionPath,omitempty" yaml:"partitionPath,omitempty"`
+	// SourcePath is the repo-relative path that holds the source/payload used
+	// by this partition (for example a CDK app root). It defaults to Path.
+	SourcePath string `json:"sourcePath,omitempty" yaml:"sourcePath,omitempty"`
 	// Selector is a comma-separated list of globs matched against CloudFormation
 	// stack names. Empty means every stack in the assembly.
 	Selector string `json:"selector,omitempty" yaml:"selector,omitempty"`
@@ -140,6 +147,29 @@ func (b RepoBinding) PayloadDir() string {
 		return path
 	}
 	return "/partitions/" + strings.TrimSpace(b.Partition) + "/payloads/aws"
+}
+
+// PartitionDir returns the repo-relative path that holds the authored
+// partition bundle. Leading slashes are ignored so callers can use it with
+// filepath.Join for checkouts and path.Join for MonoFS sources.
+func (b RepoBinding) PartitionDir() string {
+	if path := strings.Trim(strings.TrimSpace(b.PartitionPath), "/"); path != "" {
+		return path
+	}
+	partition := strings.Trim(strings.TrimSpace(b.Partition), "/")
+	if partition == "" {
+		return ""
+	}
+	return "guardian/partitions/" + partition
+}
+
+// SourceDir returns the repo-relative source/payload directory used by this
+// partition. When SourcePath is unset it falls back to the MonoFS payload dir.
+func (b RepoBinding) SourceDir() string {
+	if path := strings.TrimSpace(b.SourcePath); path != "" {
+		return path
+	}
+	return b.PayloadDir()
 }
 
 // BindingList returns the effective bindings, deriving one from the legacy

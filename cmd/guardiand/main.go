@@ -341,12 +341,13 @@ func main() {
 				clientID = "monofs"
 			}
 			waCfg := coreauthz.WebAuthConfig{
-				Issuer:       strings.TrimSpace(authzOIDCIssuer),
-				ClientID:     clientID,
-				ClientSecret: clientSecret,
-				RedirectURL:  redirectURL,
-				Verifier:     uiVerifier,
-				RequireLogin: strings.EqualFold(strings.TrimSpace(os.Getenv("MONOFS_AUTHZ_ENFORCE_UI")), "true"),
+				Issuer:        strings.TrimSpace(authzOIDCIssuer),
+				ClientID:      clientID,
+				ClientSecret:  clientSecret,
+				RedirectURL:   redirectURL,
+				EndSessionURL: strings.TrimSpace(os.Getenv("MONOFS_OIDC_END_SESSION_URL")),
+				Verifier:      uiVerifier,
+				RequireLogin:  strings.EqualFold(strings.TrimSpace(os.Getenv("MONOFS_AUTHZ_ENFORCE_UI")), "true"),
 				// Machine pollers (MonoFS router, Doctor) authenticate with the
 				// internal token, not an OIDC session. Let the access-policy
 				// handler enforce that instead of the browser login wall.

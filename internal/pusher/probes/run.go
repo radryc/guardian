@@ -69,6 +69,7 @@ func (r *Runner) refresh(ctx context.Context) {
 	}
 	r.mu.Unlock()
 	log.Printf("[Probes] discovered %d probe targets", len(targets))
+	r.writeSnapshots(ctx)
 }
 
 func (r *Runner) runDue(ctx context.Context) {
@@ -132,8 +133,9 @@ func (r *Runner) runDue(ctx context.Context) {
 	}
 	r.mu.Unlock()
 
+	SortResults(results)
 	r.emitTelemetry(ctx, results, previousStatus)
-	r.writeSnapshots(ctx, results)
+	r.writeSnapshots(ctx)
 }
 
 func (r *Runner) statusMap() map[string]string {

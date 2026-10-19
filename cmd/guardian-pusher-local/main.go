@@ -18,6 +18,7 @@ import (
 	"github.com/rydzu/ainfra/guardian/internal/pusher/probes"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
 	runtimepkg "github.com/rydzu/ainfra/guardian/internal/pusher/runtime"
+	"github.com/rydzu/ainfra/guardian/internal/pusher/secrets"
 	fsstore "github.com/rydzu/ainfra/guardian/internal/store/fs"
 	monofsstore "github.com/rydzu/ainfra/guardian/internal/store/monofs"
 	"github.com/rydzu/ainfra/guardian/internal/telemetry"
@@ -59,6 +60,14 @@ func main() {
 	telemetryCfg, telemetryErr := telemetry.LoadConfig("guardian-pusher-local", monofsPrincipalID)
 	if telemetryErr != nil {
 		log.Fatalf("load telemetry config: %v", telemetryErr)
+	}
+	telemetryCfg.ServiceName = "guardian.pusher." + pusherName
+	telemetryCfg.ResourceAttributes = map[string]string{
+		"guardian.pusher":      pusherName,
+		"guardian.cluster":     pusherName,
+		"guardian.provider":    "local",
+		"guardian.shard.index": fmt.Sprintf("%d", shardIndex),
+		"guardian.shard.count": fmt.Sprintf("%d", shardCount),
 	}
 	telemetryHandle, telemetryErr := telemetry.Setup(context.Background(), telemetryCfg)
 	if telemetryErr != nil {
@@ -147,6 +156,7 @@ func main() {
 
 	probeCfg := probes.ConfigFromEnv()
 	probeCfg.Store = store
+	probeCfg.Resolver = secrets.NewStoreResolver(store)
 	probeCfg.Pusher = pusherName
 	probeCfg.Cluster = pusherName
 	probeCfg.Provider = "local"
