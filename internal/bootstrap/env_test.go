@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -34,6 +35,9 @@ func TestComputeRouterEnvAssignsShardBySuffix(t *testing.T) {
 }
 
 func TestRenderRouterWatcherWiring(t *testing.T) {
+	if _, err := exec.LookPath("envsubst"); err != nil {
+		t.Skip("envsubst is not installed")
+	}
 	cfg := DefaultConfig()
 	env, err := ComputeEnv(&cfg)
 	if err != nil {
@@ -66,6 +70,9 @@ func TestRenderRouterWatcherWiring(t *testing.T) {
 }
 
 func TestRenderGuardianRepoImportWiring(t *testing.T) {
+	if _, err := exec.LookPath("envsubst"); err != nil {
+		t.Skip("envsubst is not installed")
+	}
 	cfg := DefaultConfig()
 	env, err := ComputeEnv(&cfg)
 	if err != nil {
