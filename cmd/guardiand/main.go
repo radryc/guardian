@@ -311,6 +311,19 @@ func main() {
 		if err != nil {
 			log.Fatalf("build ui server: %v", err)
 		}
+		if cfg.Guardian.RepoImportEnabled {
+			repoImportInterval := 30 * time.Second
+			if raw := strings.TrimSpace(cfg.Guardian.RepoImportInterval); raw != "" {
+				parsed, parseErr := time.ParseDuration(raw)
+				if parseErr != nil {
+					log.Fatalf("invalid guardian.repoImportInterval %q: %v", raw, parseErr)
+				}
+				if parsed > 0 {
+					repoImportInterval = parsed
+				}
+			}
+			go uiServer.RunRepoImportLoop(ctx, repoImportInterval)
+		}
 		// Attach SSO identity to UI/API requests (authz epic E1, observe mode).
 		var uiVerifier coreauthz.TokenVerifier = coreauthz.NoopVerifier{}
 		if strings.TrimSpace(authzOIDCIssuer) != "" && strings.TrimSpace(authzOIDCAudience) != "" {

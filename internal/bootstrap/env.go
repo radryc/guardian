@@ -144,6 +144,8 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["GUARDIAN_UI_BASE_URL"] = cfg.Guardian.UIBaseURL
 	env["GUARDIAN_FLOW_METRICS_URL"] = cfg.Guardian.FlowMetricsURL
 	env["GUARDIAN_FLOW_METRICS_TIMEOUT"] = cfg.Guardian.FlowMetricsTimeout
+	env["GUARDIAN_REPO_IMPORT_ENABLED"] = envOrDefault("GUARDIAN_REPO_IMPORT_ENABLED", "true")
+	env["GUARDIAN_REPO_IMPORT_INTERVAL"] = envOrDefault("GUARDIAN_REPO_IMPORT_INTERVAL", "30s")
 	env["GUARDIAN_CLIENT_DISCOVERY_TOKEN"] = clientDiscoveryToken
 	env["GUARDIAN_IMAGE_BUILD_REGISTRY"] = cfg.Guardian.ImageBuild.Registry
 	env["GUARDIAN_KANIKO_REGISTRY_MIRROR"] = cfg.Guardian.ImageBuild.KanikoMirror
