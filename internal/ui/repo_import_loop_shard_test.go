@@ -63,4 +63,12 @@ spec:
 			t.Fatalf("shard %d imported %s from another shard", shard, name)
 		}
 	}
+
+	other := 1 - shard
+	srv.syncRepoBundlesShard(ctx, other, shards)
+	for _, name := range repos {
+		if _, err := store.ReadFile(ctx, "/partitions/"+name+"/config.yaml"); err != nil {
+			t.Fatalf("repo %s was not imported by the union of both shards: %v", name, err)
+		}
+	}
 }
