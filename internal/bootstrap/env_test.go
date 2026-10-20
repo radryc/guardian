@@ -1,6 +1,10 @@
 package bootstrap
 
-import "testing"
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestDefaultRouterAutoRefreshSettings(t *testing.T) {
 	cfg := DefaultConfig()
@@ -26,5 +30,61 @@ func TestComputeRouterEnvAssignsShardBySuffix(t *testing.T) {
 	}
 	if second["MONOFS_AUTO_REFRESH_SHARD"] != "1" {
 		t.Fatalf("router-b shard = %q, want 1", second["MONOFS_AUTO_REFRESH_SHARD"])
+	}
+}
+
+func TestRenderRouterWatcherWiring(t *testing.T) {
+	cfg := DefaultConfig()
+	env, err := ComputeEnv(&cfg)
+	if err != nil {
+		t.Fatalf("ComputeEnv: %v", err)
+	}
+	storageDir, _ := TemplateDirs()
+	rendered, err := RenderTemplate(
+		filepath.Join(storageDir, "deploy-router.yaml"),
+		env,
+		ComputeRouterEnv(&cfg, "a", ""),
+	)
+	if err != nil {
+		t.Fatalf("RenderTemplate: %v", err)
+	}
+	wants := []string{
+		"--auto-refresh-shards=2",
+		"--auto-refresh-shard=0",
+		"--auto-refresh-batch-size=32",
+		"--auto-refresh-lease=true",
+		"--auto-refresh-state-dir=/var/lib/monofs/repowatch",
+		"name: POD_NAME",
+		"name: POD_NAMESPACE",
+		"name: repowatch",
+	}
+	for _, want := range wants {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered router manifest is missing %q", want)
+		}
+	}
+}
+
+func TestRenderGuardianRepoImportWiring(t *testing.T) {
+	cfg := DefaultConfig()
+	env, err := ComputeEnv(&cfg)
+	if err != nil {
+		t.Fatalf("ComputeEnv: %v", err)
+	}
+	_, guardianDir := TemplateDirs()
+	rendered, err := RenderTemplate(filepath.Join(guardianDir, "deploy-guardiand.yaml"), env, nil)
+	if err != nil {
+		t.Fatalf("RenderTemplate: %v", err)
+	}
+	wants := []string{
+		"GUARDIAN_REPO_IMPORT_SHARDS",
+		"GUARDIAN_REPO_IMPORT_LEASE",
+		"GUARDIAN_REPO_IMPORT_LEASE_NAME",
+		"name: POD_NAME",
+	}
+	for _, want := range wants {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered guardiand manifest is missing %q", want)
+		}
 	}
 }
