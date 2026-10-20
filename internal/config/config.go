@@ -108,6 +108,12 @@ type GuardianConfig struct {
 	RepoImportEnabled bool `yaml:"repoImportEnabled"`
 	// RepoImportInterval is how often the repo import loop scans the store.
 	RepoImportInterval string `yaml:"repoImportInterval"`
+	// RepoImportShards splits repo imports across workers by repo name.
+	RepoImportShards int `yaml:"repoImportShards"`
+	// RepoImportLease enables Kubernetes Lease leader election per shard.
+	RepoImportLease bool `yaml:"repoImportLease"`
+	// RepoImportLeaseName is the Lease name prefix.
+	RepoImportLeaseName string `yaml:"repoImportLeaseName"`
 }
 
 type ComplianceConfig struct {
@@ -175,6 +181,9 @@ func Default() *Config {
 			AutoDeployOnIngest:   true,
 			RepoImportEnabled:    true,
 			RepoImportInterval:   "30s",
+			RepoImportShards:     2,
+			RepoImportLease:      true,
+			RepoImportLeaseName:  "guardian-repo-import",
 		},
 		Compliance: ComplianceConfig{},
 		Pushers: []PusherConfig{{

@@ -3,26 +3,62 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/radryc/monofs/pkg/repowatch"
 	"github.com/rydzu/ainfra/guardian/internal/registry"
 	"github.com/rydzu/ainfra/guardian/internal/repoconfig"
 	"github.com/rydzu/ainfra/guardian/internal/repoimport"
 )
 
-// RunRepoImportLoop periodically imports repo-authored partition bundles from
-// MonoFS into the canonical partition namespace. It is level-triggered: the
-// importer compares content and only writes changed files, so an unchanged
-// repository does not wake the partition watcher or queue APPLY tasks.
-func (s *Server) RunRepoImportLoop(ctx context.Context, interval time.Duration) {
+// RunRepoImportLoop starts one importer per shard. Each shard acquires a
+// Kubernetes Lease when lease is enabled, so several guardiand replicas can
+// share the work and survive a worker failure.
+func (s *Server) RunRepoImportLoop(ctx context.Context, interval time.Duration, shards int, lease bool, leaseName string) {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
-	log.Printf("guardian repo-import loop started (interval=%s)", interval)
+	if shards <= 0 {
+		shards = 1
+	}
+	if strings.TrimSpace(leaseName) == "" {
+		leaseName = "guardian-repo-import"
+	}
+	log.Printf("guardian repo-import loop starting (interval=%s, shards=%d, lease=%t)", interval, shards, lease)
+	for shard := 0; shard < shards; shard++ {
+		shard := shard
+		go s.runRepoImportShard(ctx, shard, shards, interval, lease, leaseName)
+	}
+}
+
+func (s *Server) runRepoImportShard(ctx context.Context, shard, shards int, interval time.Duration, lease bool, leaseName string) {
+	if lease {
+		cfg := repowatch.DefaultLeaseConfig(fmt.Sprintf("%s-%d", leaseName, shard))
+		if cfg.Enabled() {
+			elector, err := repowatch.NewElector(cfg)
+			if err == nil {
+				log.Printf("guardian repo-import shard %d waiting for lease %s", shard, cfg.Name)
+				_ = elector.Run(ctx, func(leaderCtx context.Context) {
+					log.Printf("guardian repo-import shard %d acquired lease %s", shard, cfg.Name)
+					s.repoImportLoop(leaderCtx, shard, shards, interval)
+				}, nil)
+				return
+			}
+			log.Printf("guardian repo-import shard %d lease unavailable: %v", shard, err)
+		} else {
+			log.Printf("guardian repo-import shard %d lease requested but Kubernetes API is not configured", shard)
+		}
+	}
+	s.repoImportLoop(ctx, shard, shards, interval)
+}
+
+func (s *Server) repoImportLoop(ctx context.Context, shard, shards int, interval time.Duration) {
+	s.syncRepoBundlesShard(ctx, shard, shards)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -30,12 +66,16 @@ func (s *Server) RunRepoImportLoop(ctx context.Context, interval time.Duration) 
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.syncRepoBundles(ctx)
+			s.syncRepoBundlesShard(ctx, shard, shards)
 		}
 	}
 }
 
 func (s *Server) syncRepoBundles(ctx context.Context) {
+	s.syncRepoBundlesShard(ctx, 0, 1)
+}
+
+func (s *Server) syncRepoBundlesShard(ctx context.Context, shard, shards int) {
 	if s == nil || s.store == nil {
 		return
 	}
@@ -51,6 +91,9 @@ func (s *Server) syncRepoBundles(ctx context.Context) {
 	for _, repo := range repos {
 		if ctx.Err() != nil {
 			return
+		}
+		if shards > 1 && repowatch.ShardFor(repo.Name, shards) != shard {
+			continue
 		}
 		root := repoStoreSourceRoot(repo)
 		if root == "" {
@@ -87,8 +130,8 @@ func (s *Server) syncRepoBundles(ctx context.Context) {
 					log.Printf("guardian repo-import: %s: %s", repo.Name, warning)
 				}
 				changed[binding.Partition] = struct{}{}
-				log.Printf("guardian repo-import: %s imported %s (%d changed file(s))",
-					repo.Name, binding.Partition, result.FilesWritten)
+				log.Printf("guardian repo-import: shard %d/%d %s imported %s (%d changed file(s))",
+					shard, shards, repo.Name, binding.Partition, result.FilesWritten)
 			}
 		}
 	}
