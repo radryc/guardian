@@ -68,6 +68,9 @@ func (s *Server) syncRepoBundles(ctx context.Context) {
 			continue
 		}
 		for _, binding := range repo.BindingList() {
+			if !hasPartitionBundle(ctx, source, binding.Partition) {
+				continue
+			}
 			result, err := repoimport.Import(ctx, source, s.store, repoimport.Options{
 				RepoName:  repo.Name,
 				Partition: binding.Partition,
@@ -99,6 +102,19 @@ func (s *Server) syncRepoBundles(ctx context.Context) {
 	}
 	sort.Strings(partitions)
 	s.autoDeployPartitions(ctx, partitions)
+}
+
+func hasPartitionBundle(ctx context.Context, source repoimport.Source, partition string) bool {
+	entries, err := source.ListDir(ctx, repoimport.PartitionsSubdir+"/"+partition)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir && (entry.Name == "partition.yaml" || entry.Name == "config.yaml") {
+			return true
+		}
+	}
+	return false
 }
 
 // repoStoreSourceRoot maps a registry repo source to the MonoFS logical root.
