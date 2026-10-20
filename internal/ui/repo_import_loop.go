@@ -79,10 +79,10 @@ func (s *Server) syncRepoBundles(ctx context.Context) {
 				}
 				continue
 			}
-			for _, warning := range result.Warnings {
-				log.Printf("guardian repo-import: %s: %s", repo.Name, warning)
-			}
 			if result.Changed {
+				for _, warning := range result.Warnings {
+					log.Printf("guardian repo-import: %s: %s", repo.Name, warning)
+				}
 				changed[binding.Partition] = struct{}{}
 				log.Printf("guardian repo-import: %s imported %s (%d changed file(s))",
 					repo.Name, binding.Partition, result.FilesWritten)
