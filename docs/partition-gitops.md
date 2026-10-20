@@ -81,10 +81,12 @@ overlays without a repository push.
 Guardian can import `guardian/partitions/<name>/**` straight from an ingested
 repository (MonoFS repo display paths via the `/.repos/<display-path>` logical
 mapping) with `guardianctl repo import` or the level-triggered import loop. The
-import compares content, writes only changed files, and reuses the same
-guardrails as `repo sync` (partition name match, inline secret rejection,
-`secrets/**` never imported). See
-[`unmanaged-stacks.md`](unmanaged-stacks.md).
+loop runs in `guardiand` (default every 30s, `GUARDIAN_REPO_IMPORT_INTERVAL`),
+compares content, writes only changed files, and reconciles changed partitions
+when `guardian.autoDeployOnIngest` is enabled. Disable it with
+`GUARDIAN_REPO_IMPORT_ENABLED=false`. The import reuses the same guardrails as
+`repo sync` (partition name match, inline secret rejection, `secrets/**` never
+imported). See [`unmanaged-stacks.md`](unmanaged-stacks.md).
 
 ## Rollout
 

@@ -17,6 +17,8 @@ import (
 //	GUARDIAN_OBSERVED_INTERVAL  observed collector interval (empty disables)
 //	GUARDIAN_OBSERVED_TIMEOUT   observed collector request timeout
 //	GUARDIAN_OBSERVED_DETECT_DRIFT  run CloudFormation drift detection each pass
+//	GUARDIAN_REPO_IMPORT_ENABLED    run the repo partition import loop
+//	GUARDIAN_REPO_IMPORT_INTERVAL   repo import loop interval
 //
 // It is how the multi-account demo wires aws-<account> queues and the observed
 // collector into a guardiand that was started from the default config.
@@ -39,6 +41,14 @@ func applyGuardianEnvConfig(cfg *config.Config) {
 		if enabled, err := strconv.ParseBool(value); err == nil {
 			cfg.Guardian.ObservedDetectDrift = enabled
 		}
+	}
+	if value := strings.TrimSpace(os.Getenv("GUARDIAN_REPO_IMPORT_ENABLED")); value != "" {
+		if enabled, err := strconv.ParseBool(value); err == nil {
+			cfg.Guardian.RepoImportEnabled = enabled
+		}
+	}
+	if value := strings.TrimSpace(os.Getenv("GUARDIAN_REPO_IMPORT_INTERVAL")); value != "" {
+		cfg.Guardian.RepoImportInterval = value
 	}
 }
 

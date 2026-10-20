@@ -102,6 +102,12 @@ type GuardianConfig struct {
 	// that repo is ingested (UI or CLI), so a merge deploys without a manual
 	// reconcile. Defaults to true; set false for manual-approval workflows.
 	AutoDeployOnIngest bool `yaml:"autoDeployOnIngest"`
+	// RepoImportEnabled runs a level-triggered loop that imports changed
+	// guardian/partitions/** bundles from repo sources already ingested into
+	// MonoFS. It closes the push -> MonoFS -> Guardian deploy loop.
+	RepoImportEnabled bool `yaml:"repoImportEnabled"`
+	// RepoImportInterval is how often the repo import loop scans the store.
+	RepoImportInterval string `yaml:"repoImportInterval"`
 }
 
 type ComplianceConfig struct {
@@ -167,6 +173,8 @@ func Default() *Config {
 			ObservedTimeout:      "30s",
 			ObservedDetectDrift:  false,
 			AutoDeployOnIngest:   true,
+			RepoImportEnabled:    true,
+			RepoImportInterval:   "30s",
 		},
 		Compliance: ComplianceConfig{},
 		Pushers: []PusherConfig{{
