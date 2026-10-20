@@ -30,7 +30,7 @@ type StorageConfig struct {
 	Images StorageImages `yaml:"images"`
 	PVC    StoragePVC    `yaml:"pvc"`
 	OTel   StorageOTel   `yaml:"openTelemetry"`
-	Router StorageRouter  `yaml:"router"`
+	Router StorageRouter `yaml:"router"`
 
 	External StorageExternal `yaml:"external"`
 	Registry StorageRegistry `yaml:"registry"`
@@ -70,7 +70,13 @@ type StorageOTel struct {
 type StorageRouter struct {
 	AutoRefresh            string `yaml:"autoRefresh"`
 	AutoRefreshInterval    string `yaml:"autoRefreshInterval"`
+	AutoRefreshMaxInterval string `yaml:"autoRefreshMaxInterval"`
 	AutoRefreshConcurrency string `yaml:"autoRefreshConcurrency"`
+	AutoRefreshBatchSize   string `yaml:"autoRefreshBatchSize"`
+	AutoRefreshShards      string `yaml:"autoRefreshShards"`
+	AutoRefreshStateDir    string `yaml:"autoRefreshStateDir"`
+	AutoRefreshLease       string `yaml:"autoRefreshLease"`
+	AutoRefreshLeaseName   string `yaml:"autoRefreshLeaseName"`
 	AutoRefreshOwner       string `yaml:"autoRefreshOwner"`
 }
 
@@ -203,8 +209,14 @@ func DefaultConfig() Config {
 			Router: StorageRouter{
 				AutoRefresh:            "true",
 				AutoRefreshInterval:    "1m",
-				AutoRefreshConcurrency: "2",
-				AutoRefreshOwner:       "router-a",
+				AutoRefreshMaxInterval: "1h",
+				AutoRefreshConcurrency: "4",
+				AutoRefreshBatchSize:   "32",
+				AutoRefreshShards:      "2",
+				AutoRefreshStateDir:    "/var/lib/monofs/repowatch",
+				AutoRefreshLease:       "true",
+				AutoRefreshLeaseName:   "monofs-repowatch",
+				AutoRefreshOwner:       "",
 			},
 			External: StorageExternal{
 				ServiceType:     "LoadBalancer",

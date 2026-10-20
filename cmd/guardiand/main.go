@@ -322,7 +322,7 @@ func main() {
 					repoImportInterval = parsed
 				}
 			}
-			go uiServer.RunRepoImportLoop(ctx, repoImportInterval)
+			go uiServer.RunRepoImportLoop(ctx, repoImportInterval, cfg.Guardian.RepoImportShards, cfg.Guardian.RepoImportLease, cfg.Guardian.RepoImportLeaseName)
 		}
 		// Attach SSO identity to UI/API requests (authz epic E1, observe mode).
 		var uiVerifier coreauthz.TokenVerifier = coreauthz.NoopVerifier{}

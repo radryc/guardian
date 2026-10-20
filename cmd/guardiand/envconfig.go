@@ -19,6 +19,9 @@ import (
 //	GUARDIAN_OBSERVED_DETECT_DRIFT  run CloudFormation drift detection each pass
 //	GUARDIAN_REPO_IMPORT_ENABLED    run the repo partition import loop
 //	GUARDIAN_REPO_IMPORT_INTERVAL   repo import loop interval
+//	GUARDIAN_REPO_IMPORT_SHARDS     number of import shards
+//	GUARDIAN_REPO_IMPORT_LEASE      use Kubernetes Lease leader election
+//	GUARDIAN_REPO_IMPORT_LEASE_NAME Lease name prefix
 //
 // It is how the multi-account demo wires aws-<account> queues and the observed
 // collector into a guardiand that was started from the default config.
@@ -49,6 +52,19 @@ func applyGuardianEnvConfig(cfg *config.Config) {
 	}
 	if value := strings.TrimSpace(os.Getenv("GUARDIAN_REPO_IMPORT_INTERVAL")); value != "" {
 		cfg.Guardian.RepoImportInterval = value
+	}
+	if value := strings.TrimSpace(os.Getenv("GUARDIAN_REPO_IMPORT_SHARDS")); value != "" {
+		if shards, err := strconv.Atoi(value); err == nil && shards > 0 {
+			cfg.Guardian.RepoImportShards = shards
+		}
+	}
+	if value := strings.TrimSpace(os.Getenv("GUARDIAN_REPO_IMPORT_LEASE")); value != "" {
+		if enabled, err := strconv.ParseBool(value); err == nil {
+			cfg.Guardian.RepoImportLease = enabled
+		}
+	}
+	if value := strings.TrimSpace(os.Getenv("GUARDIAN_REPO_IMPORT_LEASE_NAME")); value != "" {
+		cfg.Guardian.RepoImportLeaseName = value
 	}
 }
 

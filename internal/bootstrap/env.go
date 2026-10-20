@@ -146,6 +146,9 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["GUARDIAN_FLOW_METRICS_TIMEOUT"] = cfg.Guardian.FlowMetricsTimeout
 	env["GUARDIAN_REPO_IMPORT_ENABLED"] = envOrDefault("GUARDIAN_REPO_IMPORT_ENABLED", "true")
 	env["GUARDIAN_REPO_IMPORT_INTERVAL"] = envOrDefault("GUARDIAN_REPO_IMPORT_INTERVAL", "30s")
+	env["GUARDIAN_REPO_IMPORT_SHARDS"] = envOrDefault("GUARDIAN_REPO_IMPORT_SHARDS", "2")
+	env["GUARDIAN_REPO_IMPORT_LEASE"] = envOrDefault("GUARDIAN_REPO_IMPORT_LEASE", "true")
+	env["GUARDIAN_REPO_IMPORT_LEASE_NAME"] = envOrDefault("GUARDIAN_REPO_IMPORT_LEASE_NAME", "guardian-repo-import")
 	env["GUARDIAN_CLIENT_DISCOVERY_TOKEN"] = clientDiscoveryToken
 	env["GUARDIAN_IMAGE_BUILD_REGISTRY"] = cfg.Guardian.ImageBuild.Registry
 	env["GUARDIAN_KANIKO_REGISTRY_MIRROR"] = cfg.Guardian.ImageBuild.KanikoMirror
@@ -161,7 +164,13 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["MONOFS_AUTO_PUSH_INTERVAL"] = envOrDefault("MONOFS_AUTO_PUSH_INTERVAL", "60s")
 	env["MONOFS_AUTO_REFRESH"] = envOrDefault("MONOFS_AUTO_REFRESH", valueOrDefault(cfg.Storage.Router.AutoRefresh, "true"))
 	env["MONOFS_AUTO_REFRESH_INTERVAL"] = envOrDefault("MONOFS_AUTO_REFRESH_INTERVAL", valueOrDefault(cfg.Storage.Router.AutoRefreshInterval, "1m"))
-	env["MONOFS_AUTO_REFRESH_CONCURRENCY"] = envOrDefault("MONOFS_AUTO_REFRESH_CONCURRENCY", valueOrDefault(cfg.Storage.Router.AutoRefreshConcurrency, "2"))
+	env["MONOFS_AUTO_REFRESH_MAX_INTERVAL"] = envOrDefault("MONOFS_AUTO_REFRESH_MAX_INTERVAL", valueOrDefault(cfg.Storage.Router.AutoRefreshMaxInterval, "1h"))
+	env["MONOFS_AUTO_REFRESH_CONCURRENCY"] = envOrDefault("MONOFS_AUTO_REFRESH_CONCURRENCY", valueOrDefault(cfg.Storage.Router.AutoRefreshConcurrency, "4"))
+	env["MONOFS_AUTO_REFRESH_BATCH_SIZE"] = envOrDefault("MONOFS_AUTO_REFRESH_BATCH_SIZE", valueOrDefault(cfg.Storage.Router.AutoRefreshBatchSize, "32"))
+	env["MONOFS_AUTO_REFRESH_SHARDS"] = envOrDefault("MONOFS_AUTO_REFRESH_SHARDS", valueOrDefault(cfg.Storage.Router.AutoRefreshShards, "2"))
+	env["MONOFS_AUTO_REFRESH_STATE_DIR"] = envOrDefault("MONOFS_AUTO_REFRESH_STATE_DIR", valueOrDefault(cfg.Storage.Router.AutoRefreshStateDir, "/var/lib/monofs/repowatch"))
+	env["MONOFS_AUTO_REFRESH_LEASE"] = envOrDefault("MONOFS_AUTO_REFRESH_LEASE", valueOrDefault(cfg.Storage.Router.AutoRefreshLease, "true"))
+	env["MONOFS_AUTO_REFRESH_LEASE_NAME"] = envOrDefault("MONOFS_AUTO_REFRESH_LEASE_NAME", valueOrDefault(cfg.Storage.Router.AutoRefreshLeaseName, "monofs-repowatch"))
 	env["MONOFS_AUTO_REFRESH_OWNER"] = envOrDefault("MONOFS_AUTO_REFRESH_OWNER", cfg.Storage.Router.AutoRefreshOwner)
 	env["MONOFS_GUARDIAN_STATE_DIR"] = envOrDefault("MONOFS_GUARDIAN_STATE_DIR", ".monofs-router-state")
 
@@ -231,13 +240,21 @@ func ComputeRouterEnv(cfg *Config, suffix string, externalAddrCSV string) Env {
 		externalAddrCSV = defaultExternalAddrCSV(cfg)
 	}
 	routerNameVal := routerName(suffix)
+	shardIndex := 0
+	for i, candidate := range cfg.Storage.RouterSuffixes {
+		if candidate == suffix {
+			shardIndex = i
+			break
+		}
+	}
 	return Env{
-		"SUFFIX":                suffix,
-		"ROUTER_NAME":           routerNameVal,
-		"ROUTER_PEER_NAME":      routerPeerName(suffix),
-		"MONOFS_CLUSTER_ID":     cfg.Storage.ClusterID,
-		"MONOFS_NODE_ADDRS":     internalNodeAddrCSV(cfg),
-		"MONOFS_EXTERNAL_ADDRS": externalAddrCSV,
+		"SUFFIX":                    suffix,
+		"ROUTER_NAME":               routerNameVal,
+		"ROUTER_PEER_NAME":          routerPeerName(suffix),
+		"MONOFS_CLUSTER_ID":         cfg.Storage.ClusterID,
+		"MONOFS_NODE_ADDRS":         internalNodeAddrCSV(cfg),
+		"MONOFS_EXTERNAL_ADDRS":     externalAddrCSV,
+		"MONOFS_AUTO_REFRESH_SHARD": strconv.Itoa(shardIndex),
 	}
 }
 

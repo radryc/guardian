@@ -688,6 +688,7 @@ func deployStorageTemplates(ctx context.Context, cfg *bootstrap.Config, env boot
 	// Namespace and secrets
 	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "namespace.yaml"), env, nil, dryRun)
 	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "secret.yaml"), env, nil, dryRun)
+	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "rbac-repowatch.yaml"), env, nil, dryRun)
 
 	// ConfigMaps
 	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "configmap-fetcher-s3.yaml"), env, nil, dryRun)
