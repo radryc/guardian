@@ -157,6 +157,10 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["MONOFS_POLICY_CONFIG"] = envOrDefault("MONOFS_POLICY_CONFIG", "")
 	env["MONOFS_AUTO_PUSH"] = envOrDefault("MONOFS_AUTO_PUSH", "false")
 	env["MONOFS_AUTO_PUSH_INTERVAL"] = envOrDefault("MONOFS_AUTO_PUSH_INTERVAL", "60s")
+	env["MONOFS_AUTO_REFRESH"] = envOrDefault("MONOFS_AUTO_REFRESH", valueOrDefault(cfg.Storage.Router.AutoRefresh, "true"))
+	env["MONOFS_AUTO_REFRESH_INTERVAL"] = envOrDefault("MONOFS_AUTO_REFRESH_INTERVAL", valueOrDefault(cfg.Storage.Router.AutoRefreshInterval, "1m"))
+	env["MONOFS_AUTO_REFRESH_CONCURRENCY"] = envOrDefault("MONOFS_AUTO_REFRESH_CONCURRENCY", valueOrDefault(cfg.Storage.Router.AutoRefreshConcurrency, "2"))
+	env["MONOFS_AUTO_REFRESH_OWNER"] = envOrDefault("MONOFS_AUTO_REFRESH_OWNER", cfg.Storage.Router.AutoRefreshOwner)
 	env["MONOFS_GUARDIAN_STATE_DIR"] = envOrDefault("MONOFS_GUARDIAN_STATE_DIR", ".monofs-router-state")
 
 	// --- Partition authz + SSO (OIDC). Off by default; enabled by start.sh --with-dex. ---
@@ -244,6 +248,13 @@ func b64(s string) string {
 func envOrDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func valueOrDefault(value, fallback string) string {
+	if strings.TrimSpace(value) != "" {
+		return value
 	}
 	return fallback
 }
