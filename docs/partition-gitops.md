@@ -84,7 +84,14 @@ mapping) with `guardianctl repo import` or the level-triggered import loop. The
 loop runs in `guardiand` (default every 30s, `GUARDIAN_REPO_IMPORT_INTERVAL`),
 compares content, writes only changed files, and reconciles changed partitions
 when `guardian.autoDeployOnIngest` is enabled. Disable it with
-`GUARDIAN_REPO_IMPORT_ENABLED=false`. The import reuses the same guardrails as
+`GUARDIAN_REPO_IMPORT_ENABLED=false`.
+
+The loop is sharded by repo name (`GUARDIAN_REPO_IMPORT_SHARDS`, default 2) and
+uses one Kubernetes Lease per shard (`GUARDIAN_REPO_IMPORT_LEASE=true`,
+`GUARDIAN_REPO_IMPORT_LEASE_NAME=guardian-repo-import`). Every `guardiand`
+replica competes for each shard, so a dead replica's shard is taken over
+automatically. Set `GUARDIAN_REPO_IMPORT_LEASE=false` outside Kubernetes to run
+every shard in the process. The import reuses the same guardrails as
 `repo sync` (partition name match, inline secret rejection, `secrets/**` never
 imported). See [`unmanaged-stacks.md`](unmanaged-stacks.md).
 
