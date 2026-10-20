@@ -30,6 +30,7 @@ type StorageConfig struct {
 	Images StorageImages `yaml:"images"`
 	PVC    StoragePVC    `yaml:"pvc"`
 	OTel   StorageOTel   `yaml:"openTelemetry"`
+	Router StorageRouter  `yaml:"router"`
 
 	External StorageExternal `yaml:"external"`
 	Registry StorageRegistry `yaml:"registry"`
@@ -64,6 +65,13 @@ type StorageOTel struct {
 	Insecure       string `yaml:"insecure"`
 	ServiceName    string `yaml:"serviceName"`
 	MetricInterval string `yaml:"metricInterval"`
+}
+
+type StorageRouter struct {
+	AutoRefresh            string `yaml:"autoRefresh"`
+	AutoRefreshInterval    string `yaml:"autoRefreshInterval"`
+	AutoRefreshConcurrency string `yaml:"autoRefreshConcurrency"`
+	AutoRefreshOwner       string `yaml:"autoRefreshOwner"`
 }
 
 type StorageExternal struct {
@@ -191,6 +199,12 @@ func DefaultConfig() Config {
 				Insecure:       "true",
 				ServiceName:    "monofs-server",
 				MetricInterval: "30s",
+			},
+			Router: StorageRouter{
+				AutoRefresh:            "true",
+				AutoRefreshInterval:    "1m",
+				AutoRefreshConcurrency: "2",
+				AutoRefreshOwner:       "router-a",
 			},
 			External: StorageExternal{
 				ServiceType:     "LoadBalancer",
