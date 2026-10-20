@@ -90,6 +90,7 @@ type Server struct {
 	clientConfig       ClientConfig
 	clientConfigToken  string
 	autoDeployOnIngest bool
+	repoImportMu       sync.Mutex
 	unmanaged          UnmanagedService
 	access             *access.Service
 	accessPolicyToken  string

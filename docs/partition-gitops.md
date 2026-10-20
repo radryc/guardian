@@ -88,7 +88,8 @@ when `guardian.autoDeployOnIngest` is enabled. Disable it with
 
 The loop is sharded by repo name (`GUARDIAN_REPO_IMPORT_SHARDS`, default 2) and
 uses one Kubernetes Lease per shard (`GUARDIAN_REPO_IMPORT_LEASE=true`,
-`GUARDIAN_REPO_IMPORT_LEASE_NAME=guardian-repo-import`). Every `guardiand`
+`GUARDIAN_REPO_IMPORT_LEASE_NAME=guardian-repo-import`; leases are named
+`guardian-repo-import-0`, `...-1` when shards > 1). Every `guardiand`
 replica competes for each shard, so a dead replica's shard is taken over
 automatically. Set `GUARDIAN_REPO_IMPORT_LEASE=false` outside Kubernetes to run
 every shard in the process. The import reuses the same guardrails as

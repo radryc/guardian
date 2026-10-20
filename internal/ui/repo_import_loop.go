@@ -38,7 +38,14 @@ func (s *Server) RunRepoImportLoop(ctx context.Context, interval time.Duration, 
 
 func (s *Server) runRepoImportShard(ctx context.Context, shard, shards int, interval time.Duration, lease bool, leaseName string) {
 	if lease {
-		cfg := repowatch.DefaultLeaseConfig(fmt.Sprintf("%s-%d", leaseName, shard))
+		name := leaseName
+		if shards > 1 {
+			name = fmt.Sprintf("%s-%d", leaseName, shard)
+		}
+		cfg := repowatch.DefaultLeaseConfig(name)
+		cfg.OnError = func(err error) {
+			log.Printf("guardian repo-import shard %d lease acquisition failed: %v", shard, err)
+		}
 		if cfg.Enabled() {
 			elector, err := repowatch.NewElector(cfg)
 			if err == nil {
@@ -144,7 +151,9 @@ func (s *Server) syncRepoBundlesShard(ctx context.Context, shard, shards int) {
 		partitions = append(partitions, partition)
 	}
 	sort.Strings(partitions)
+	s.repoImportMu.Lock()
 	s.autoDeployPartitions(ctx, partitions)
+	s.repoImportMu.Unlock()
 }
 
 func hasPartitionBundle(ctx context.Context, source repoimport.Source, partition string) bool {
