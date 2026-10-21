@@ -17,6 +17,7 @@ import (
 //	GUARDIAN_OBSERVED_INTERVAL  observed collector interval (empty disables)
 //	GUARDIAN_OBSERVED_TIMEOUT   observed collector request timeout
 //	GUARDIAN_OBSERVED_DETECT_DRIFT  run CloudFormation drift detection each pass
+//	GUARDIAN_ONBOARD_INTERVAL   customer onboarding controller interval (empty disables)
 //	GUARDIAN_REPO_IMPORT_ENABLED    run the repo partition import loop
 //	GUARDIAN_REPO_IMPORT_INTERVAL   repo import loop interval
 //	GUARDIAN_REPO_IMPORT_SHARDS     number of import shards
@@ -44,6 +45,9 @@ func applyGuardianEnvConfig(cfg *config.Config) {
 		if enabled, err := strconv.ParseBool(value); err == nil {
 			cfg.Guardian.ObservedDetectDrift = enabled
 		}
+	}
+	if value := strings.TrimSpace(os.Getenv("GUARDIAN_ONBOARD_INTERVAL")); value != "" {
+		cfg.Guardian.OnboardInterval = value
 	}
 	if value := strings.TrimSpace(os.Getenv("GUARDIAN_REPO_IMPORT_ENABLED")); value != "" {
 		if enabled, err := strconv.ParseBool(value); err == nil {
