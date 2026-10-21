@@ -13,6 +13,8 @@ import (
 // SnapshotOptions configures a single-stack observed snapshot.
 type SnapshotOptions struct {
 	Partition string
+	// Intent defaults to a slug of StackName.
+	Intent    string
 	StackName string
 	Account   string
 	Region    string
@@ -20,6 +22,9 @@ type SnapshotOptions struct {
 	// Template is the live CloudFormation template (JSON or YAML).
 	Template string
 	Interval string
+	// ObserveOnly omits the adopted-origin labels so the UI reports the
+	// partition as observe-only instead of adopted from AWS.
+	ObserveOnly bool
 }
 
 // Snapshot builds an observed partition bundle for one live CloudFormation
@@ -49,20 +54,28 @@ func Snapshot(opts SnapshotOptions) (map[string][]byte, error) {
 	}
 
 	slug := Slug(opts.StackName)
+	intentName := strings.TrimSpace(opts.Intent)
+	if intentName == "" {
+		intentName = slug
+	}
 	payloadDir := "/partitions/" + opts.Partition + "/payloads/aws"
 	files := map[string][]byte{}
 
+	labels := map[string]string(nil)
+	if !opts.ObserveOnly {
+		// Marks the partition as an adopted existing stack so the UI can
+		// distinguish it from observe-only snapshots.
+		labels = map[string]string{
+			"guardian.io/origin":        "adopted",
+			"guardian.io/adopted-stack": opts.StackName,
+		}
+	}
 	partitionManifest := partitiondomain.Partition{
 		APIVersion: "guardian/v1alpha1",
 		Kind:       "Partition",
 		Metadata: partitiondomain.Metadata{
-			Name: opts.Partition,
-			// Marks the partition as an adopted existing stack so the UI can
-			// distinguish it from observe-only snapshots.
-			Labels: map[string]string{
-				"guardian.io/origin":        "adopted",
-				"guardian.io/adopted-stack": opts.StackName,
-			},
+			Name:   opts.Partition,
+			Labels: labels,
 		},
 		Spec: partitiondomain.Spec{
 			DeletionPolicy: "orphan",
@@ -98,8 +111,8 @@ spec:
       name: %s
       payload:
         aws: %s/%s.yaml
-`, slug, opts.Pusher, opts.Account, opts.Region, slug, payloadDir, slug)
-	files["intents/"+slug+".yaml"] = []byte(intent)
+`, intentName, opts.Pusher, opts.Account, opts.Region, intentName, payloadDir, slug)
+	files["intents/"+intentName+".yaml"] = []byte(intent)
 
 	assembly := map[string]any{
 		"version": "36.0.0",

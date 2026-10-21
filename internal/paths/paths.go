@@ -17,6 +17,12 @@ func PartitionsRoot() string { return "/partitions" }
 
 func PartitionRoot(partition string) string { return normalize("/partitions", partition) }
 
+// PartitionPath builds a logical path under a partition from a bundle-relative
+// path such as "intents/app.yaml".
+func PartitionPath(partition, relative string) string {
+	return normalize(PartitionRoot(partition), relative)
+}
+
 func PartitionConfig(partition string) string {
 	return normalize(PartitionRoot(partition), "config.yaml")
 }
@@ -108,6 +114,16 @@ func PusherRecord(name string) string { return normalize(PushersRoot(), name+".j
 func ReposRoot() string { return normalize(RegistryRoot(), "repos") }
 
 func RepoRecord(name string) string { return normalize(ReposRoot(), name+".json") }
+
+// OnboardingRoot holds the last onboarding descriptor pulled from each pusher.
+// It is an audit record; the SSM parameter remains the source of truth.
+func OnboardingRoot() string { return normalize(RegistryRoot(), "onboarding") }
+
+func OnboardingDir(pusher string) string { return normalize(OnboardingRoot(), pusher) }
+
+func OnboardingRecord(pusher, stack string) string {
+	return normalize(OnboardingDir(pusher), stack+".json")
+}
 
 // ProbesRoot holds the latest probe snapshots written by pushers. History
 // lives in telemetry, not in MonoFS.

@@ -29,6 +29,7 @@ import (
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
 	"github.com/rydzu/ainfra/guardian/internal/notify"
 	observedpkg "github.com/rydzu/ainfra/guardian/internal/observed"
+	onboardpkg "github.com/rydzu/ainfra/guardian/internal/onboard"
 	"github.com/rydzu/ainfra/guardian/internal/orchestrator/common"
 	"github.com/rydzu/ainfra/guardian/internal/orchestrator/dispatcher"
 	"github.com/rydzu/ainfra/guardian/internal/orchestrator/reconciler"
@@ -403,6 +404,22 @@ func main() {
 	observedCollector := newObservedCollector(cfg, store, dispatcher)
 	if observedCollector != nil {
 		run("observed-collector", observedCollector.Run)
+	}
+	if value := strings.TrimSpace(cfg.Guardian.OnboardInterval); value != "" {
+		interval, err := time.ParseDuration(value)
+		if err != nil || interval <= 0 {
+			log.Fatalf("invalid onboardInterval %q", value)
+		}
+		_, resolver := newObservedResolver(cfg, store, 30*time.Second)
+		controller := &onboardpkg.Controller{
+			Service: &onboardpkg.Service{
+				Store:    store,
+				Registry: registry.New(store),
+				Resolver: resolver,
+			},
+			Interval: interval,
+		}
+		run("onboard-controller", controller.Run)
 	}
 	alertEvaluator := newAlertingEvaluator(cfg, store, dispatcher)
 	if alertEvaluator != nil {
