@@ -4,6 +4,7 @@
 package probes
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
@@ -37,6 +38,9 @@ type Config struct {
 	OTLPEndpoint      string
 	Store             guardianapi.Store
 	Resolver          secrets.Resolver
+	// ExternalTargets lets a storeless pusher (for example --observed-only)
+	// discover probe targets from onboarding descriptors instead of MonoFS.
+	ExternalTargets func(ctx context.Context) ([]Target, error)
 }
 
 type Target struct {

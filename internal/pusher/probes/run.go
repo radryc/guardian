@@ -28,7 +28,7 @@ func New(cfg Config) *Runner {
 }
 
 func (r *Runner) Run(ctx context.Context) error {
-	if !r.cfg.Enabled || r.cfg.Store == nil || r.cfg.Pusher == "" {
+	if !r.cfg.Enabled || (r.cfg.Store == nil && r.cfg.ExternalTargets == nil) || r.cfg.Pusher == "" {
 		return nil
 	}
 	log.Printf("[Probes] enabled pusher=%s cluster=%s interval=%s timeout=%s max=%d", r.cfg.Pusher, r.cfg.Cluster, r.cfg.Interval, r.cfg.Timeout, r.cfg.MaxTargets)
@@ -136,6 +136,20 @@ func (r *Runner) runDue(ctx context.Context) {
 	SortResults(results)
 	r.emitTelemetry(ctx, results, previousStatus)
 	r.writeSnapshots(ctx)
+}
+
+// Latest returns the most recent result for every known probe target. It is
+// used by the storeless pusher read API so Guardian can pull probe state
+// without MonoFS access from the customer account.
+func (r *Runner) Latest() []Result {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]Result, 0, len(r.previous))
+	for _, result := range r.previous {
+		out = append(out, result)
+	}
+	SortResults(out)
+	return out
 }
 
 func (r *Runner) statusMap() map[string]string {

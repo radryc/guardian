@@ -21,6 +21,10 @@ type StackState struct {
 	LastEventTime        time.Time `json:"lastEventTime,omitempty"`
 	UpdatedAt            time.Time `json:"updatedAt"`
 	Source               string    `json:"source,omitempty"`
+	// Tags and Outputs are the CloudFormation stack metadata used for
+	// onboarding discovery and probe target resolution.
+	Tags    map[string]string `json:"tags,omitempty"`
+	Outputs map[string]string `json:"outputs,omitempty"`
 }
 
 // Event is a normalized CloudFormation observation event.

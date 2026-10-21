@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/rydzu/ainfra/guardian/internal/awsobserve"
+	"github.com/rydzu/ainfra/guardian/internal/onboarding"
+	"github.com/rydzu/ainfra/guardian/internal/pusher/probes"
 )
 
 // Handler serves the AWS read API over HTTP.
@@ -20,10 +22,19 @@ type Handler struct {
 	// PromQL proxies PromQL to CloudWatch's Prometheus-compatible API.
 	PromQL PromQLProxier
 	// Observed serves observed CloudFormation stack state for Guardian.
-	Observed   awsobserve.Provider
+	Observed awsobserve.Provider
+	// Onboarding serves customer stack descriptors read from SSM.
+	Onboarding onboarding.Reader
+	// Probes serves the latest storeless probe results.
+	Probes     ProbeProvider
 	PusherName string
 	Account    string
 	Region     string
+}
+
+// ProbeProvider exposes the latest probe results without requiring a store.
+type ProbeProvider interface {
+	Latest() []probes.Result
 }
 
 // NewHandler builds an HTTP handler for the reader.
@@ -40,6 +51,18 @@ func (h *Handler) WithPromQL(promql PromQLProxier) *Handler {
 // WithObserved attaches the observed CloudFormation state provider.
 func (h *Handler) WithObserved(provider awsobserve.Provider) *Handler {
 	h.Observed = provider
+	return h
+}
+
+// WithOnboarding attaches the SSM-backed onboarding descriptor reader.
+func (h *Handler) WithOnboarding(reader onboarding.Reader) *Handler {
+	h.Onboarding = reader
+	return h
+}
+
+// WithProbes attaches the latest probe result provider.
+func (h *Handler) WithProbes(provider ProbeProvider) *Handler {
+	h.Probes = provider
 	return h
 }
 
@@ -78,6 +101,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleGetTrace(w, r, strings.TrimPrefix(path, "/v1/aws/xray/trace/"))
 	case strings.HasPrefix(path, "/v1/aws/promql/"):
 		h.handlePromQL(w, r, strings.TrimPrefix(path, "/v1/aws/promql"))
+	case path == "/v1/aws/onboarding":
+		h.handleOnboarding(w, r)
+	case path == "/v1/aws/probes":
+		h.handleProbes(w, r)
 	case path == "/v1/aws/observed/stacks":
 		h.handleObservedList(w, r)
 	case strings.HasPrefix(path, "/v1/aws/observed/stacks/"):
@@ -127,13 +154,17 @@ func (h *Handler) handlePromQL(w http.ResponseWriter, r *http.Request, suffix st
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	// CloudWatch does not implement the Prometheus label-values operation, so
-	// serve __name__ values from ListMetrics. Grafana uses this for $metric.
+	// Some CloudWatch regions do not implement the Prometheus label-values
+	// operation, so fall back to ListMetrics only when the native response is
+	// empty. OTLP-ingested metrics are visible through native PromQL label
+	// discovery but may not appear in ListMetrics.
 	if strings.HasPrefix(cwPath, "/api/v1/label/") && strings.HasSuffix(cwPath, "/values") {
 		name := strings.TrimSuffix(strings.TrimPrefix(cwPath, "/api/v1/label/"), "/values")
-		if fallback := h.promqlLabelValuesFallback(r.Context(), name); fallback != nil {
-			payload = fallback
-			status = http.StatusOK
+		if (status != 0 && status != http.StatusOK) || promqlLabelValuesEmpty(payload) {
+			if fallback := h.promqlLabelValuesFallback(r.Context(), name); fallback != nil {
+				payload = fallback
+				status = http.StatusOK
+			}
 		}
 	}
 	// Some accounts return a successful but empty CloudWatch PromQL result for
@@ -358,6 +389,51 @@ func (h *Handler) handleGetTrace(w http.ResponseWriter, r *http.Request, traceID
 		return
 	}
 	writeJSON(w, http.StatusOK, spans)
+}
+
+func (h *Handler) handleOnboarding(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.Onboarding == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"descriptors": []onboarding.Descriptor{}})
+		return
+	}
+	descriptors, err := h.Onboarding.List(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if descriptors == nil {
+		descriptors = []onboarding.Descriptor{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"descriptors": descriptors})
+}
+
+func (h *Handler) handleProbes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.Probes == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"probes": []probes.Result{}})
+		return
+	}
+	partition := queryParam(r, "partition")
+	intent := queryParam(r, "intent")
+	results := h.Probes.Latest()
+	filtered := make([]probes.Result, 0, len(results))
+	for _, result := range results {
+		if partition != "" && result.Partition != partition {
+			continue
+		}
+		if intent != "" && result.Intent != intent {
+			continue
+		}
+		filtered = append(filtered, result)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"probes": filtered})
 }
 
 func (h *Handler) observedReady(w http.ResponseWriter) bool {

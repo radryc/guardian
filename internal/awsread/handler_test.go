@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/rydzu/ainfra/guardian/internal/awsobserve"
+	"github.com/rydzu/ainfra/guardian/internal/onboarding"
+	"github.com/rydzu/ainfra/guardian/internal/pusher/probes"
 )
 
 type fakePromQL struct {
@@ -232,6 +234,72 @@ func (f *fakeObserved) Template(ctx context.Context, account, region, stackName 
 }
 func (f *fakeObserved) DiffSource(ctx context.Context, req awsobserve.SourceDiffRequest) (*awsobserve.SourceDiffResult, error) {
 	return &awsobserve.SourceDiffResult{StackName: req.StackName, Summary: "in sync"}, nil
+}
+
+type fakeOnboarding struct {
+	descriptors []onboarding.Descriptor
+}
+
+func (f *fakeOnboarding) List(context.Context) ([]onboarding.Descriptor, error) {
+	return f.descriptors, nil
+}
+
+type fakeProbes struct {
+	results []probes.Result
+}
+
+func (f *fakeProbes) Latest() []probes.Result { return f.results }
+
+func TestHandlerServesOnboardingDescriptors(t *testing.T) {
+	reader := &fakeOnboarding{descriptors: []onboarding.Descriptor{{
+		Stack: "CustomerAppStack", Partition: "customer-prod-1", Intent: "app",
+	}}}
+	h := NewHandler(&fakeReader{}, "").WithOnboarding(reader)
+	req := httptest.NewRequest(http.MethodGet, "/v1/aws/onboarding", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "customer-prod-1") {
+		t.Fatalf("body missing descriptor: %s", rec.Body.String())
+	}
+}
+
+func TestHandlerServesProbeResults(t *testing.T) {
+	provider := &fakeProbes{results: []probes.Result{
+		{Partition: "customer-prod-1", Intent: "app", Name: "health", Status: "up"},
+		{Partition: "other", Intent: "app", Name: "health", Status: "down"},
+	}}
+	h := NewHandler(&fakeReader{}, "").WithProbes(provider)
+	req := httptest.NewRequest(http.MethodGet, "/v1/aws/probes?partition=customer-prod-1", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "customer-prod-1") || strings.Contains(body, "other") {
+		t.Fatalf("probe filter body = %s", body)
+	}
+}
+
+func TestHandlerPrefersNativeLabelValues(t *testing.T) {
+	native := []byte(`{"status":"success","data":["http.server.request.duration"]}`)
+	promql := &fakePromQL{payload: native}
+	h := NewHandler(&fakeReader{}, "").WithPromQL(promql)
+	req := httptest.NewRequest(http.MethodGet, "/v1/aws/promql/label/__name__/values", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "CPUUtilization") {
+		t.Fatalf("native OTLP label values were replaced: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "http.server.request.duration") {
+		t.Fatalf("native label values missing: %s", rec.Body.String())
+	}
 }
 
 func TestHandlerServesObservedStacks(t *testing.T) {
