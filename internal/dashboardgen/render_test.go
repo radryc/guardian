@@ -29,7 +29,7 @@ func TestRenderIncludesPartitionSignals(t *testing.T) {
 		"guardian_probe_up",
 		`source=\"aws\"`,
 		"@resource.guardian.partition",
-		"@resource.guardian.account",
+		"guardian_partition",
 		"/aws/ecs/customer-app",
 		"CustomerAppStack",
 		"doctor-logs",
