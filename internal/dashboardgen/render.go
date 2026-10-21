@@ -38,9 +38,13 @@ func Render(info Info) ([]byte, error) {
 	if logGroup == "" {
 		logGroup = "/aws/ecs/" + partition
 	}
-	probeSelector := fmt.Sprintf(`guardian_probe_up{"@resource.guardian.partition"="%s"}`, escape(partition))
-	probeLatency := fmt.Sprintf(`guardian_probe_duration_seconds{"@resource.guardian.partition"="%s"}`, escape(partition))
-	appMetric := fmt.Sprintf(`{"http.server.request.duration", "@resource.guardian.partition"="%s"}`, escape(partition))
+	accountFilter := ""
+	if account := strings.TrimSpace(info.Account); account != "" {
+		accountFilter = fmt.Sprintf(`, "@resource.guardian.account"="%s"`, escape(account))
+	}
+	probeSelector := fmt.Sprintf(`guardian_probe_up{source="aws", "@resource.guardian.partition"="%s"%s}`, escape(partition), accountFilter)
+	probeLatency := fmt.Sprintf(`guardian_probe_duration_seconds{source="aws", "@resource.guardian.partition"="%s"%s}`, escape(partition), accountFilter)
+	appMetric := fmt.Sprintf(`{"http.server.request.duration", source="aws", "@resource.guardian.partition"="%s"%s}`, escape(partition), accountFilter)
 	logQuery := fmt.Sprintf(`{source="aws", aws_log_group="%s"}`, escape(logGroup))
 
 	panels := []any{
