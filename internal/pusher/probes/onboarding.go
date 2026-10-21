@@ -28,11 +28,33 @@ func TargetsFromOnboarding(pusher string, descriptors []onboarding.Descriptor) [
 			if strings.TrimSpace(probe.URL) == "" && strings.TrimSpace(probe.Address) == "" && strings.TrimSpace(probe.Path) == "" {
 				continue
 			}
+			url := strings.TrimSpace(probe.URL)
+			address := strings.TrimSpace(probe.Address)
+			// A construct naturally references an ALB DNS name without a
+			// scheme. Treat that as an address so the HTTP probe can build a
+			// valid http:// URL.
+			if url != "" && !strings.Contains(url, "://") {
+				address = url
+				url = ""
+			}
 			probeType := strings.ToLower(strings.TrimSpace(probe.Type))
 			if probeType == "" {
-				probeType = inferProbeType(probe.URL, probe.Port)
-				if strings.TrimSpace(probe.Address) != "" {
-					probeType = inferProbeType(probe.Address, probe.Port)
+				switch {
+				case url != "":
+					probeType = inferProbeType(url, probe.Port)
+				case address != "" && strings.TrimSpace(probe.Path) != "":
+					probeType = "http"
+				default:
+					probeType = inferProbeType(address, probe.Port)
+				}
+			}
+			port := probe.Port
+			if port == 0 {
+				switch probeType {
+				case "http":
+					port = 80
+				case "https":
+					port = 443
 				}
 			}
 			target := Target{
@@ -42,9 +64,9 @@ func TargetsFromOnboarding(pusher string, descriptors []onboarding.Descriptor) [
 				Asset:        asset,
 				Mode:         "explicit",
 				Type:         probeType,
-				URL:          strings.TrimSpace(probe.URL),
-				Address:      strings.TrimSpace(probe.Address),
-				Port:         probe.Port,
+				URL:          url,
+				Address:      address,
+				Port:         port,
 				Path:         strings.TrimSpace(probe.Path),
 				Method:       strings.TrimSpace(probe.Method),
 				Headers:      probe.Headers,
