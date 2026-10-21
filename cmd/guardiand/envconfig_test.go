@@ -24,6 +24,7 @@ func TestApplyGuardianEnvConfigPushers(t *testing.T) {
 	t.Setenv("GUARDIAN_OBSERVED_INTERVAL", "1m")
 	t.Setenv("GUARDIAN_OBSERVED_TIMEOUT", "15s")
 	t.Setenv("GUARDIAN_OBSERVED_DETECT_DRIFT", "true")
+	t.Setenv("GUARDIAN_ONBOARD_INTERVAL", "2m")
 
 	cfg := config.Default()
 	applyGuardianEnvConfig(cfg)
@@ -42,6 +43,9 @@ func TestApplyGuardianEnvConfigPushers(t *testing.T) {
 	}
 	if !cfg.Guardian.ObservedDetectDrift {
 		t.Fatalf("observed detect drift should be enabled")
+	}
+	if cfg.Guardian.OnboardInterval != "2m" {
+		t.Fatalf("onboard interval = %q", cfg.Guardian.OnboardInterval)
 	}
 }
 
