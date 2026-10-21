@@ -116,6 +116,17 @@ Prerequisites:
 - Optional: enable CloudWatch OTel enrichment to get `@aws.tag.*` labels from
   resource tags.
 
+## Multi-account dashboards
+
+The pusher read API is scoped to one AWS account/region. Doctor currently
+federates a single AWS backend (`DOCTOR_AWS_BACKEND_URL`), so a Grafana dashboard
+that uses the shared `source="aws"` route can query only that account. For a
+multi-account demo, the generated dashboards are provisioned and each pusher is
+verified directly (PromQL, Logs Insights and X-Ray). To show several accounts in
+one Grafana pane, either add one AWS/Prometheus datasource per account and select
+it in the dashboard, or centralize CloudWatch/OTLP telemetry into the monitoring
+account.
+
 ## Demo
 
 `demo.sh onboard` (or `demo.sh test --scenario 8`) deploys the customer stack
