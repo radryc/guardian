@@ -407,15 +407,20 @@ func ApplyOtelEnvWithServiceName(env map[string]string, in registry.AssetInput, 
 	identity := CanonicalServiceIdentity(in.PartitionName, in.IntentName, in.Asset.Name)
 	attrs := parseOtelResourceAttrs(env["OTEL_RESOURCE_ATTRIBUTES"])
 
-	serviceName := strings.TrimSpace(env["OTEL_SERVICE_NAME"])
+	// Canonical identity is authoritative. An explicit service name is kept as
+	// service.alias so dashboards and external consumers can still find the
+	// legacy name, but it no longer replaces partition.intent.asset.
+	explicitServiceName := strings.TrimSpace(env["OTEL_SERVICE_NAME"])
+	existingServiceName := strings.TrimSpace(attrs["service.name"])
+	serviceName := identity.Name
 	if serviceName == "" {
-		if existing := strings.TrimSpace(attrs["service.name"]); existing != "" {
-			serviceName = existing
-		} else if override := strings.TrimSpace(serviceNameOverride); override != "" {
-			serviceName = override
-		} else {
-			serviceName = identity.Name
-		}
+		serviceName = explicitServiceName
+	}
+	if serviceName == "" {
+		serviceName = existingServiceName
+	}
+	if serviceName == "" {
+		serviceName = strings.TrimSpace(serviceNameOverride)
 	}
 	if serviceName != "" {
 		env["OTEL_SERVICE_NAME"] = serviceName
@@ -427,6 +432,17 @@ func ApplyOtelEnvWithServiceName(env map[string]string, in registry.AssetInput, 
 			return
 		}
 		attrs[key] = value
+	}
+	if identity.Name != "" {
+		if explicitServiceName != "" && explicitServiceName != identity.Name {
+			setGenerated("service.alias", explicitServiceName)
+		}
+		if existingServiceName != "" && existingServiceName != identity.Name {
+			setGenerated("service.alias", existingServiceName)
+		}
+		if override := strings.TrimSpace(serviceNameOverride); override != "" && override != identity.Name {
+			setGenerated("service.alias", override)
+		}
 	}
 	setGenerated("service.namespace", in.PartitionName)
 	setGenerated("guardian.partition", in.PartitionName)

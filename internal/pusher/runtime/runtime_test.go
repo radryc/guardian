@@ -450,7 +450,7 @@ func TestRuntimeExecuteTaskTraceIncludesDebugJSON(t *testing.T) {
 		t.Fatalf("executeTask() status = %q, want %q", result.Status, taskdomain.ResultSucceeded)
 	}
 
-	span := findEndedSpanByName(t, recorder.Ended(), "guardian.task.execute")
+	span := findEndedSpanByName(t, recorder.Ended(), "guardian.pusher.task.execute")
 	attrs := spanAttributes(span.Attributes())
 	if got := attrs["guardian.task.correlation_id"].AsString(); got != "corr-123" {
 		t.Fatalf("guardian.task.correlation_id = %q, want corr-123", got)

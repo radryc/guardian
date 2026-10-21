@@ -12,7 +12,7 @@ var assetObservationCurrent = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	Subsystem: "asset",
 	Name:      "observation_current",
 	Help:      "Latest asset health/readiness observation; value is always 1.",
-}, []string{"partition", "intent", "asset", "service", "status", "readiness"})
+}, []string{"guardian_partition", "guardian_intent", "guardian_asset", "service", "status", "readiness"})
 
 func recordAssetObservations(result *taskdomain.TaskResult) {
 	if result == nil {

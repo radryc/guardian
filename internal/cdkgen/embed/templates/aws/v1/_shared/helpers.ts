@@ -168,13 +168,9 @@ export function buildEnvironment(
   const fullName = [partition, intent, asset].filter((part) => Boolean(part)).join('.');
   const identity = canonicalServiceIdentity(fullName);
   const attrs = parseOtelResourceAttributes(out.OTEL_RESOURCE_ATTRIBUTES || '');
-  let serviceName = String(out.OTEL_SERVICE_NAME || '').trim();
-  if (!serviceName) {
-    serviceName = String(attrs['service.name'] || '').trim();
-  }
-  if (!serviceName) {
-    serviceName = identity.name;
-  }
+  const explicitServiceName = String(out.OTEL_SERVICE_NAME || '').trim();
+  const existingServiceName = String(attrs['service.name'] || '').trim();
+  const serviceName = identity.name || explicitServiceName || existingServiceName;
   if (serviceName) {
     out.OTEL_SERVICE_NAME = serviceName;
     attrs['service.name'] = serviceName;
@@ -186,6 +182,14 @@ export function buildEnvironment(
     }
     attrs[key] = value;
   };
+  if (identity.name) {
+    if (explicitServiceName && explicitServiceName !== identity.name) {
+      setGenerated('service.alias', explicitServiceName);
+    }
+    if (existingServiceName && existingServiceName !== identity.name) {
+      setGenerated('service.alias', existingServiceName);
+    }
+  }
   setGenerated('service.namespace', partition);
   setGenerated('guardian.partition', partition);
   setGenerated('guardian.intent', intent);

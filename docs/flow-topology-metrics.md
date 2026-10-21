@@ -74,8 +74,8 @@ Guardian consumes these Monofs router metrics:
 - `monofs_router_guardian_flow_delete_bytes_total`
 
 They are labeled by:
-- `partition`
-- `intent`
+- `guardian_partition`
+- `guardian_intent`
 - `path_kind`
 
 Current Flow-State Behavior

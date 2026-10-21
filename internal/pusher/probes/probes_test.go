@@ -82,9 +82,11 @@ func TestProbeHTTPFailure(t *testing.T) {
 
 func TestProbeTelemetryUsesTargetService(t *testing.T) {
 	paths := make([]string, 0)
+	bodies := make(map[string]string)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
 		body, _ := io.ReadAll(r.Body)
+		bodies[r.URL.Path] = string(body)
 		if !strings.Contains(string(body), `"stringValue":"doctor.query.query"`) {
 			t.Errorf("%s does not attribute target service: %s", r.URL.Path, body)
 		}
@@ -116,6 +118,15 @@ func TestProbeTelemetryUsesTargetService(t *testing.T) {
 		if !contains(paths, path) {
 			t.Fatalf("missing %s in %#v", path, paths)
 		}
+	}
+	if !strings.Contains(bodies["/v1/metrics"], `"name":"guardian.probe.up"`) {
+		t.Fatalf("probe metric name is not canonical: %s", bodies["/v1/metrics"])
+	}
+	if strings.Contains(bodies["/v1/metrics"], `"key":"partition"`) {
+		t.Fatalf("probe metric repeats identity as a point label: %s", bodies["/v1/metrics"])
+	}
+	if !strings.Contains(bodies["/v1/traces"], `"name":"guardian.probe.run"`) {
+		t.Fatalf("probe span name is not canonical: %s", bodies["/v1/traces"])
 	}
 }
 

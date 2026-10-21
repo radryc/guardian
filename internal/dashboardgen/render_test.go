@@ -27,6 +27,7 @@ func TestRenderIncludesPartitionSignals(t *testing.T) {
 	serialized := string(raw)
 	for _, want := range []string{
 		"guardian_probe_up",
+		"guardian_probe_name",
 		`source=\"aws\"`,
 		"@resource.guardian.partition",
 		"guardian_partition",

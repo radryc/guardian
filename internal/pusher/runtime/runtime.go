@@ -28,7 +28,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const runtimeScope = "guardian/pusher/runtime"
+const runtimeScope = "guardian.pusher.runtime"
 
 var (
 	runtimeMetricsOnce sync.Once
@@ -522,7 +522,7 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 	attrs := runtimeTaskAttributes(t, r.WorkerID)
 	taskCounter, failCounter, duration := runtimeInstruments()
 	taskCounter.Add(ctx, 1, metricapi.WithAttributes(attrs...))
-	ctx, span := otel.Tracer(runtimeScope).Start(ctx, "guardian.task.execute", trace.WithAttributes(attrs...))
+	ctx, span := otel.Tracer(runtimeScope).Start(ctx, "guardian.pusher.task.execute", trace.WithAttributes(attrs...))
 	span.AddEvent("guardian.task.input", trace.WithAttributes(
 		attribute.String("guardian.task.input_json", runtimeTaskTraceJSON(t, r.WorkerID)),
 	))
@@ -761,9 +761,9 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 func runtimeInstruments() (metricapi.Int64Counter, metricapi.Int64Counter, metricapi.Float64Histogram) {
 	runtimeMetricsOnce.Do(func() {
 		meter := otel.Meter(runtimeScope)
-		runtimeTaskCounter, _ = meter.Int64Counter("guardian.task.executions")
-		runtimeFailCounter, _ = meter.Int64Counter("guardian.task.failures")
-		runtimeDuration, _ = meter.Float64Histogram("guardian.task.duration")
+		runtimeTaskCounter, _ = meter.Int64Counter("guardian.pusher.task.executions")
+		runtimeFailCounter, _ = meter.Int64Counter("guardian.pusher.task.failures")
+		runtimeDuration, _ = meter.Float64Histogram("guardian.pusher.task.duration.seconds", metricapi.WithUnit("s"))
 	})
 	return runtimeTaskCounter, runtimeFailCounter, runtimeDuration
 }

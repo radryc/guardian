@@ -135,8 +135,8 @@ func main() {
 		log.Fatalf("setup telemetry: %v", err)
 	}
 	if telemetryHandle.Enabled() {
-		log.SetOutput(io.MultiWriter(os.Stderr, telemetry.NewStdLogWriter("guardian/stdlog")))
-		telemetry.EmitInfo(context.Background(), "guardian/guardiand", "guardiand telemetry enabled")
+		log.SetOutput(io.MultiWriter(os.Stderr, telemetry.NewStdLogWriter("guardian.stdlog")))
+		telemetry.EmitInfo(context.Background(), "guardian.guardiand", "guardiand telemetry enabled")
 		defer func() {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()

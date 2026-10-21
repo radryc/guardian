@@ -55,11 +55,11 @@ func Render(info Info) ([]byte, error) {
 		escape(source), escape(partition), escape(source), escape(partition),
 	)
 	probeLatency := fmt.Sprintf(
-		`max by (probe) (guardian_probe_duration_seconds{source="%s", guardian_partition="%s"}) or max by (probe) (guardian_probe_duration_seconds{source="%s", "@resource.guardian.partition"="%s"})`,
+		`max by (guardian_probe_name) (guardian_probe_duration_seconds{source="%s", guardian_partition="%s"}) or max by (guardian_probe_name) (guardian_probe_duration_seconds{source="%s", "@resource.guardian.partition"="%s"})`,
 		escape(source), escape(partition), escape(source), escape(partition),
 	)
-	appMetric := fmt.Sprintf(`{"http.server.request.duration", source="%s", "@resource.guardian.partition"="%s"}`, escape(source), escape(partition))
-	logQuery := fmt.Sprintf(`{source="aws", aws_log_group="%s"}`, escape(logGroup))
+	appMetric := fmt.Sprintf(`{"http.server.request.duration", source="%s", guardian_partition="%s"}`, escape(source), escape(partition))
+	logQuery := fmt.Sprintf(`{source="%s", aws_log_group="%s"}`, escape(source), escape(logGroup))
 
 	panels := []any{
 		textPanel(1, "Overview", fmt.Sprintf(

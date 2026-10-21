@@ -9,14 +9,14 @@ var (
 	partitionRuntimeLoadsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "guardian",
 		Subsystem: "runtime",
-		Name:      "loads_total",
+		Name:      "partition_loads_total",
 		Help:      "Total partition runtime loads by source.",
 	}, []string{"source"})
 
 	partitionRuntimeIntentStatesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "guardian",
 		Subsystem: "runtime",
-		Name:      "intent_states_loaded_total",
+		Name:      "partition_intent_states_loaded_total",
 		Help:      "Total intent states materialized from partition runtime loads by source.",
 	}, []string{"source"})
 )

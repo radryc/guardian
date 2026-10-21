@@ -19,10 +19,10 @@ func TestMonofsMetricsFlowEvaluatorBusyOnDelta(t *testing.T) {
 	var writes int64 = 1
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(w, "# TYPE monofs_router_guardian_flow_writes_total counter\n")
-		fmt.Fprintf(w, "monofs_router_guardian_flow_writes_total{partition=\"genomics\",intent=\"workers\",path_kind=\"intent_manifest\"} %d\n", atomic.LoadInt64(&writes))
-		fmt.Fprintf(w, "monofs_router_guardian_flow_write_bytes_total{partition=\"genomics\",intent=\"workers\",path_kind=\"intent_manifest\"} 100\n")
-		fmt.Fprintf(w, "monofs_router_guardian_flow_deletes_total{partition=\"genomics\",intent=\"workers\",path_kind=\"intent_manifest\"} 0\n")
-		fmt.Fprintf(w, "monofs_router_guardian_flow_delete_bytes_total{partition=\"genomics\",intent=\"workers\",path_kind=\"intent_manifest\"} 0\n")
+		fmt.Fprintf(w, "monofs_router_guardian_flow_writes_total{guardian_partition=\"genomics\",guardian_intent=\"workers\",path_kind=\"intent_manifest\"} %d\n", atomic.LoadInt64(&writes))
+		fmt.Fprintf(w, "monofs_router_guardian_flow_write_bytes_total{guardian_partition=\"genomics\",guardian_intent=\"workers\",path_kind=\"intent_manifest\"} 100\n")
+		fmt.Fprintf(w, "monofs_router_guardian_flow_deletes_total{guardian_partition=\"genomics\",guardian_intent=\"workers\",path_kind=\"intent_manifest\"} 0\n")
+		fmt.Fprintf(w, "monofs_router_guardian_flow_delete_bytes_total{guardian_partition=\"genomics\",guardian_intent=\"workers\",path_kind=\"intent_manifest\"} 0\n")
 	}))
 	defer server.Close()
 
@@ -81,7 +81,7 @@ func TestMonofsMetricsFlowEvaluatorFallbackOnEndpointFailure(t *testing.T) {
 func TestParseMonofsFlowMetricLine(t *testing.T) {
 	t.Parallel()
 
-	line := "monofs_router_guardian_flow_deletes_total{partition=\"doctor\",intent=\"none\",path_kind=\"catalog\"} 4"
+	line := "monofs_router_guardian_flow_deletes_total{guardian_partition=\"doctor\",guardian_intent=\"none\",path_kind=\"catalog\"} 4"
 	series, value, ok := parseMonofsFlowMetricLine(line)
 	if !ok {
 		t.Fatalf("expected parse success")

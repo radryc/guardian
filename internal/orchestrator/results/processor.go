@@ -29,7 +29,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const processorScope = "guardian/results"
+const processorScope = "guardian.results"
 
 var (
 	resultMetricsOnce sync.Once
@@ -53,7 +53,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 	if count != nil {
 		count.Add(ctx, 1, metricapi.WithAttributes(attrs...))
 	}
-	ctx, span := otel.Tracer(processorScope).Start(ctx, "guardian.result.process", trace.WithAttributes(attrs...))
+	ctx, span := otel.Tracer(processorScope).Start(ctx, "guardian.results.process", trace.WithAttributes(attrs...))
 	startedAt := time.Now()
 	telemetry.EmitInfo(ctx, processorScope, fmt.Sprintf("processing result %s for %s/%s", result.TaskID, result.Partition, result.Intent))
 	log.Printf("results: processing task=%s op=%s partition=%s intent=%s status=%s pusher=%s", result.TaskID, result.Op, result.Partition, result.Intent, result.Status, result.Pusher)
@@ -766,15 +766,15 @@ func resultInstruments() (metricapi.Int64Counter, metricapi.Int64Counter, metric
 	resultMetricsOnce.Do(func() {
 		meter := otel.Meter(processorScope)
 		var err error
-		resultCounter, err = meter.Int64Counter("guardian.result.executions")
+		resultCounter, err = meter.Int64Counter("guardian.results.executions")
 		if err != nil {
 			telemetry.EmitError(context.Background(), processorScope, fmt.Sprintf("create result counter: %v", err))
 		}
-		resultFailCounter, err = meter.Int64Counter("guardian.result.failures")
+		resultFailCounter, err = meter.Int64Counter("guardian.results.failures")
 		if err != nil {
 			telemetry.EmitError(context.Background(), processorScope, fmt.Sprintf("create result fail counter: %v", err))
 		}
-		resultDuration, err = meter.Float64Histogram("guardian.result.duration")
+		resultDuration, err = meter.Float64Histogram("guardian.results.duration.seconds", metricapi.WithUnit("s"))
 		if err != nil {
 			telemetry.EmitError(context.Background(), processorScope, fmt.Sprintf("create result duration histogram: %v", err))
 		}
