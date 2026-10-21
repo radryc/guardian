@@ -145,6 +145,46 @@ Resources:
 	}
 }
 
+func TestSnapshotUsesCustomIntent(t *testing.T) {
+	files, err := Snapshot(SnapshotOptions{
+		Partition: "customer-prod-1",
+		Intent:    "app",
+		StackName: "CustomerAppStack",
+		Account:   "123456789012",
+		Region:    "eu-west-1",
+		Pusher:    "aws-123456789012",
+		Template:  `{"Resources":{}}`,
+	})
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	intentContent, ok := files["intents/app.yaml"]
+	if !ok {
+		t.Fatalf("custom intent file missing: %v", fileKeys(files))
+	}
+	intent, err := manifest.ParseIntent(intentContent)
+	if err != nil {
+		t.Fatalf("parse intent: %v", err)
+	}
+	if intent.Metadata.Name != "app" {
+		t.Fatalf("intent name = %q", intent.Metadata.Name)
+	}
+	if got := intent.Spec.Assets[0].Name; got != "app" {
+		t.Fatalf("asset name = %q", got)
+	}
+	if got := intent.Spec.Assets[0].Payload["aws"]; got != "/partitions/customer-prod-1/payloads/aws/customer-app-stack.yaml" {
+		t.Fatalf("payload = %q", got)
+	}
+}
+
+func fileKeys(files map[string][]byte) []string {
+	out := make([]string, 0, len(files))
+	for key := range files {
+		out = append(out, key)
+	}
+	return out
+}
+
 func TestSnapshotValidation(t *testing.T) {
 	if _, err := Snapshot(SnapshotOptions{}); err == nil {
 		t.Fatal("expected partition error")

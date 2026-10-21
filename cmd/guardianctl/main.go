@@ -624,6 +624,7 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 	reg.Register("partition", "push", storeCommand(partitionPushCommand(store, printer)))
 	reg.Register("aws", "observed-generate", awsObservedGenerateCommand(printer))
 	reg.Register("aws", "pusher-deploy", awsPusherDeployCommand(printer))
+	reg.Register("aws", "onboard", storeCommand(awsOnboardCommand(store, printer)))
 	reg.Register("aws", "scan", storeCommand(awsScanCommand(store, printer)))
 	reg.Register("aws", "unmanaged", storeCommand(awsUnmanagedCommand(store, workspacePublisherFromStore(store), printer)))
 	reg.Register("aws", "ecr-login", awsEcrLoginCommand())

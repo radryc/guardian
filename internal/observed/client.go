@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/rydzu/ainfra/guardian/internal/awsobserve"
+	"github.com/rydzu/ainfra/guardian/internal/onboarding"
+	"github.com/rydzu/ainfra/guardian/internal/pusher/probes"
 )
 
 const maxResponseBytes = 16 << 20
@@ -119,6 +121,36 @@ func (c *Client) ListStacks(ctx context.Context, account, region string) ([]awso
 		return nil, err
 	}
 	return resp.Stacks, nil
+}
+
+// Onboarding lists the customer stack descriptors published by the pusher.
+func (c *Client) Onboarding(ctx context.Context, account, region string) ([]onboarding.Descriptor, error) {
+	query := url.Values{"region": {region}}
+	if account != "" {
+		query.Set("account", account)
+	}
+	var resp struct {
+		Descriptors []onboarding.Descriptor `json:"descriptors"`
+	}
+	if _, err := c.do(ctx, http.MethodGet, "/v1/aws/onboarding", query, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Descriptors, nil
+}
+
+// Probes returns the latest probe results held by a storeless pusher.
+func (c *Client) Probes(ctx context.Context, partition string) ([]probes.Result, error) {
+	query := url.Values{}
+	if partition != "" {
+		query.Set("partition", partition)
+	}
+	var resp struct {
+		Probes []probes.Result `json:"probes"`
+	}
+	if _, err := c.do(ctx, http.MethodGet, "/v1/aws/probes", query, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Probes, nil
 }
 
 // Template fetches the live CloudFormation template for one stack.

@@ -93,7 +93,10 @@ type GuardianConfig struct {
 	// ObservedInterval controls how often the observed collector polls pusher
 	// observed APIs for report-only AWS intents. Empty disables the collector.
 	ObservedInterval string `yaml:"observedInterval"`
-	ObservedTimeout  string `yaml:"observedTimeout"`
+	// OnboardInterval controls how often the onboarding controller pulls
+	// customer stack descriptors from registered pushers. Empty disables it.
+	OnboardInterval string `yaml:"onboardInterval"`
+	ObservedTimeout string `yaml:"observedTimeout"`
 	// ObservedDetectDrift runs CloudFormation drift detection on each observed
 	// pass (billable API calls, slower). Without it only DescribeStacks state
 	// is collected and out-of-band resource changes are not reported.
@@ -176,6 +179,7 @@ func Default() *Config {
 			FlowMetricsURL:       "",
 			FlowMetricsTimeout:   "2s",
 			ObservedInterval:     "5m",
+			OnboardInterval:      "",
 			ObservedTimeout:      "30s",
 			ObservedDetectDrift:  false,
 			AutoDeployOnIngest:   true,
