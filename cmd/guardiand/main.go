@@ -413,9 +413,10 @@ func main() {
 		_, resolver := newObservedResolver(cfg, store, 30*time.Second)
 		controller := &onboardpkg.Controller{
 			Service: &onboardpkg.Service{
-				Store:    store,
-				Registry: registry.New(store),
-				Resolver: resolver,
+				Store:     store,
+				Registry:  registry.New(store),
+				Resolver:  resolver,
+				Publisher: publisher,
 			},
 			Interval: interval,
 		}
