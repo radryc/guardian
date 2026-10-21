@@ -56,17 +56,30 @@ fi
 
 mkdir -p "$GUARDIAN_AWS_STATE_DIR"
 
+: "${GUARDIAN_OBSERVED_ONLY:=false}"
+: "${GUARDIAN_ONBOARDING_SSM_PREFIX:=}"
+
 set -- \
   --pusher-name "$GUARDIAN_PUSHER_NAME" \
   --account "$GUARDIAN_ACCOUNT" \
-  --monofs-router "$GUARDIAN_MONOFS_ROUTER" \
-  --monofs-token "$GUARDIAN_MONOFS_TOKEN" \
-  --monofs-use-external-addresses="$GUARDIAN_MONOFS_USE_EXTERNAL_ADDRESSES" \
-  --cdk-binary "$GUARDIAN_CDK_BINARY" \
   --aws-state-dir "$GUARDIAN_AWS_STATE_DIR" \
-  --assume-role-name "$GUARDIAN_ASSUME_ROLE_NAME" \
-  --bootstrap-stack-name "$GUARDIAN_BOOTSTRAP_STACK_NAME" \
-  --cfn-execution-role "$GUARDIAN_CFN_EXECUTION_ROLE"
+  --assume-role-name "$GUARDIAN_ASSUME_ROLE_NAME"
+
+if [ "$GUARDIAN_OBSERVED_ONLY" = "true" ]; then
+  set -- "$@" --observed-only
+else
+  set -- "$@" \
+    --monofs-router "$GUARDIAN_MONOFS_ROUTER" \
+    --monofs-token "$GUARDIAN_MONOFS_TOKEN" \
+    --monofs-use-external-addresses="$GUARDIAN_MONOFS_USE_EXTERNAL_ADDRESSES" \
+    --cdk-binary "$GUARDIAN_CDK_BINARY" \
+    --bootstrap-stack-name "$GUARDIAN_BOOTSTRAP_STACK_NAME" \
+    --cfn-execution-role "$GUARDIAN_CFN_EXECUTION_ROLE"
+fi
+
+if [ -n "$GUARDIAN_ONBOARDING_SSM_PREFIX" ]; then
+  set -- "$@" --onboarding-ssm-prefix "$GUARDIAN_ONBOARDING_SSM_PREFIX"
+fi
 
 if [ -n "$GUARDIAN_REGION" ]; then
   set -- "$@" --region "$GUARDIAN_REGION"
