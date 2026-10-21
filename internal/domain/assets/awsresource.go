@@ -17,6 +17,11 @@ var cfnTypePattern = regexp.MustCompile(`^AWS::[A-Za-z0-9]+::[A-Za-z0-9]+$`)
 // properties, for resource types that have no curated Guardian template yet.
 type AWSResourceSpec struct {
 	CfnType string `json:"cfnType" yaml:"cfnType"`
+	// LogicalID is the CloudFormation logical ID when this asset was derived
+	// from a stack template. It is metadata for observed resource assets.
+	LogicalID string `json:"logicalId,omitempty" yaml:"logicalId,omitempty"`
+	// Condition is the CloudFormation condition guarding the resource.
+	Condition string `json:"condition,omitempty" yaml:"condition,omitempty"`
 	// Properties are passed through to the CloudFormation resource.
 	Properties map[string]any `json:"properties,omitempty" yaml:"properties,omitempty"`
 	// Outputs are literal output values exported under assetName.key.

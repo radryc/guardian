@@ -82,6 +82,11 @@ func TestHealthFor(t *testing.T) {
 
 func seedObservedPartition(t *testing.T, ctx context.Context, store guardianapi.Store) {
 	t.Helper()
+	seedObservedPartitionTemplate(t, ctx, store, desiredTemplate)
+}
+
+func seedObservedPartitionTemplate(t *testing.T, ctx context.Context, store guardianapi.Store, template string) {
+	t.Helper()
 	seed := func(logicalPath string, content string) {
 		t.Helper()
 		if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{
@@ -124,7 +129,7 @@ packageManager: none
     }
   }
 }`)
-	seed("/partitions/strata-aws/payloads/aws/cdk.out/AwsPusherStack.template.json", desiredTemplate)
+	seed("/partitions/strata-aws/payloads/aws/cdk.out/AwsPusherStack.template.json", template)
 }
 
 func fakePusherServer(t *testing.T, observedTemplate string, status int) *httptest.Server {
@@ -210,6 +215,14 @@ func TestCollectorInSyncMarksObserved(t *testing.T) {
 	if _, err := store.ReadFile(ctx, paths.ObservedSnapshot("strata-aws", "aws-pusher", "pusher")); err != nil {
 		t.Fatalf("snapshot missing: %v", err)
 	}
+	if len(state.Resources) != 1 {
+		t.Fatalf("resources = %+v, want one", state.Resources)
+	}
+	resource := state.Resources[0]
+	if resource.LogicalID != "Bucket" || resource.CfnType != "AWS::S3::Bucket" ||
+		resource.AssetName != "res-bucket" || resource.Status != statedomain.ResourceInSync {
+		t.Fatalf("resource = %+v", resource)
+	}
 }
 
 func TestCollectorDriftMarksObservedDrifted(t *testing.T) {
@@ -231,8 +244,18 @@ func TestCollectorDriftMarksObservedDrifted(t *testing.T) {
 	if state.Status != statedomain.StatusObservedDrifted {
 		t.Fatalf("status = %q, want ObservedDrifted", state.Status)
 	}
-	if state.Drift == nil || len(state.Drift.ChangedAssets) != 1 || state.Drift.ChangedAssets[0] != "pusher" {
+	if state.Drift == nil || len(state.Drift.ChangedAssets) != 2 {
 		t.Fatalf("drift = %+v", state.Drift)
+	}
+	changed := map[string]bool{}
+	for _, name := range state.Drift.ChangedAssets {
+		changed[name] = true
+	}
+	if !changed["pusher"] || !changed["res-bucket"] {
+		t.Fatalf("changedAssets = %v, want pusher and res-bucket", state.Drift.ChangedAssets)
+	}
+	if len(state.Resources) != 1 || state.Resources[0].Status != statedomain.ResourceChanged {
+		t.Fatalf("resources = %+v", state.Resources)
 	}
 	entries, err := store.ListDir(ctx, paths.QueueDir("aws-123456789012"))
 	if err == nil {
@@ -241,6 +264,55 @@ func TestCollectorDriftMarksObservedDrifted(t *testing.T) {
 				t.Fatalf("observed collector must not queue tasks, found %q", entry.Name)
 			}
 		}
+	}
+}
+
+func TestCollectorBuildsResourceInventoryAndChangedAssets(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	seedObservedPartitionTemplate(t, ctx, store, `{
+	  "Resources": {
+	    "Bucket": {"Type": "AWS::S3::Bucket", "Properties": {"BucketName": "same"}},
+	    "Queue": {"Type": "AWS::SQS::Queue"},
+	    "Table": {"Type": "AWS::DynamoDB::Table", "Properties": {"BillingMode": "PAY_PER_REQUEST"}}
+	  }
+	}`)
+	server := fakePusherServer(t, `{
+	  "Resources": {
+	    "Bucket": {"Type": "AWS::S3::Bucket", "Properties": {"BucketName": "same"}},
+	    "Table": {"Type": "AWS::DynamoDB::Table", "Properties": {"BillingMode": "PROVISIONED"}}
+	  }
+	}`, http.StatusOK)
+	defer server.Close()
+
+	collector := newTestCollector(t, store, server.URL)
+	if err := collector.CollectOnce(ctx); err != nil {
+		t.Fatalf("CollectOnce: %v", err)
+	}
+
+	state, err := common.LoadIntentState(ctx, store, "strata-aws", "aws-pusher")
+	if err != nil {
+		t.Fatalf("LoadIntentState: %v", err)
+	}
+	if len(state.Resources) != 3 {
+		t.Fatalf("resources = %+v, want 3", state.Resources)
+	}
+	statuses := map[string]string{}
+	for _, resource := range state.Resources {
+		statuses[resource.LogicalID] = resource.Status
+	}
+	if statuses["Bucket"] != statedomain.ResourceInSync || statuses["Queue"] != statedomain.ResourceAdded || statuses["Table"] != statedomain.ResourceChanged {
+		t.Fatalf("statuses = %+v", statuses)
+	}
+	changed := map[string]bool{}
+	for _, name := range state.Drift.ChangedAssets {
+		changed[name] = true
+	}
+	if !changed["pusher"] || !changed["res-queue"] || !changed["res-table"] {
+		t.Fatalf("changedAssets = %v", state.Drift.ChangedAssets)
+	}
+	if changed["res-bucket"] {
+		t.Fatalf("in-sync resource marked changed: %v", state.Drift.ChangedAssets)
 	}
 }
 

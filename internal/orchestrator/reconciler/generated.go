@@ -4,12 +4,25 @@ import (
 	"context"
 	"log"
 	"sort"
+	"strings"
 
 	"github.com/rydzu/ainfra/guardian/internal/cdkgen"
 	"github.com/rydzu/ainfra/guardian/internal/compiler/planner"
 	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
 	"github.com/rydzu/ainfra/guardian/internal/paths"
+	"github.com/rydzu/ainfra/guardian/internal/versioning/digest"
 )
+
+func cdkIntentFingerprint(partition, name string, compiledIntent *planner.CompiledIntent) string {
+	if compiledIntent == nil || compiledIntent.Spec == nil {
+		return ""
+	}
+	specHash := compiledIntent.IntentSpecHash
+	if specHash == "" {
+		specHash = digest.MustNormalizedHash(compiledIntent.Spec.Spec)
+	}
+	return partition + "|" + name + "|" + specHash + "|" + strings.Join(compiledIntent.AssetOrder, ",")
+}
 
 // syncGeneratedAWSPayloads compiles every spec.implementation=cdk intent into a
 // TypeScript CDK app and stores it under the partition's generated payload
@@ -46,6 +59,16 @@ func (r *Reconciler) syncGeneratedAWSPayloads(ctx context.Context, partition str
 		if !cdkgen.HasGeneratedAssets(spec.Assets) {
 			continue
 		}
+		memoKey := partition + "/" + name
+		fp := cdkIntentFingerprint(partition, name, compiledIntent)
+		if fp != "" {
+			r.cdkMemoMu.RLock()
+			prevFP := r.cdkPayloadHashes[memoKey]
+			r.cdkMemoMu.RUnlock()
+			if prevFP == fp {
+				continue
+			}
+		}
 		result, err := cdkgen.Generate(cdkgen.Input{
 			Partition: partition,
 			Intent:    name,
@@ -71,6 +94,14 @@ func (r *Reconciler) syncGeneratedAWSPayloads(ctx context.Context, partition str
 			errorsByIntent[name] = err
 			log.Printf("reconciler: partition=%s intent=%s store generated CDK stack failed: %v", partition, name, err)
 			continue
+		}
+		if fp != "" {
+			r.cdkMemoMu.Lock()
+			if r.cdkPayloadHashes == nil {
+				r.cdkPayloadHashes = make(map[string]string)
+			}
+			r.cdkPayloadHashes[memoKey] = fp
+			r.cdkMemoMu.Unlock()
 		}
 		log.Printf("reconciler: partition=%s intent=%s generated CDK stack %s (%d assets, %d files)",
 			partition, name, result.Manifest.StackName, len(result.GeneratedAssets), len(result.Files))

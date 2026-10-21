@@ -5,7 +5,11 @@
 // MonoFS and records the result under /partitions/<p>/.observed/.
 package observed
 
-import "time"
+import (
+	"time"
+
+	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
+)
 
 // StackPayload mirrors the AWS CDKStack asset payload manifest fields the
 // collector needs. It is a read-only subset of the pusher's stackPayload.
@@ -42,6 +46,10 @@ type Snapshot struct {
 	LastEventTime        time.Time `json:"lastEventTime,omitempty"`
 	TemplateHash         string    `json:"templateHash,omitempty"`
 	ChangedResources     []string  `json:"changedResources,omitempty"`
-	Error                string    `json:"error,omitempty"`
-	CapturedAt           time.Time `json:"capturedAt"`
+	// Resources is the desired resource inventory with per-resource status.
+	// It is computed from the desired stack template on every collection so
+	// it can never drift from the authored CDK app.
+	Resources  []statedomain.ResourceObservation `json:"resources,omitempty"`
+	Error      string                            `json:"error,omitempty"`
+	CapturedAt time.Time                         `json:"capturedAt"`
 }

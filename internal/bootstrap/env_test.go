@@ -69,6 +69,88 @@ func TestRenderRouterWatcherWiring(t *testing.T) {
 	}
 }
 
+func TestOTelTraceHTTPEndpoint(t *testing.T) {
+	cases := []struct {
+		name     string
+		endpoint string
+		insecure string
+		want     string
+	}{
+		{
+			name:     "grpc host port",
+			endpoint: "collector.otel.svc:4317",
+			insecure: "true",
+			want:     "http://collector.otel.svc:4318/v1/traces",
+		},
+		{
+			name:     "url with scheme",
+			endpoint: "http://collector.otel.svc:4317",
+			insecure: "false",
+			want:     "http://collector.otel.svc:4318/v1/traces",
+		},
+		{
+			name:     "https when secure",
+			endpoint: "collector.otel.svc:4317",
+			insecure: "false",
+			want:     "https://collector.otel.svc:4318/v1/traces",
+		},
+		{
+			name:     "already a traces endpoint",
+			endpoint: "http://collector.otel.svc:4318/v1/traces",
+			insecure: "true",
+			want:     "http://collector.otel.svc:4318/v1/traces",
+		},
+		{
+			name:     "empty endpoint",
+			endpoint: "",
+			insecure: "true",
+			want:     "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := otelTraceHTTPEndpoint(tc.endpoint, tc.insecure); got != tc.want {
+				t.Fatalf("otelTraceHTTPEndpoint(%q, %q) = %q, want %q", tc.endpoint, tc.insecure, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRenderFetcherOTelWiring(t *testing.T) {
+	if _, err := exec.LookPath("envsubst"); err != nil {
+		t.Skip("envsubst is not installed")
+	}
+	cfg := DefaultConfig()
+	cfg.Storage.OTel.Endpoint = "collector.otel.svc:4317"
+	cfg.Storage.OTel.Insecure = "true"
+	env, err := ComputeEnv(&cfg)
+	if err != nil {
+		t.Fatalf("ComputeEnv: %v", err)
+	}
+	storageDir, _ := TemplateDirs()
+	rendered, err := RenderTemplate(
+		filepath.Join(storageDir, "deploy-fetcher.yaml"),
+		env,
+		Env{"SUFFIX": "a"},
+	)
+	if err != nil {
+		t.Fatalf("RenderTemplate: %v", err)
+	}
+	wants := []string{
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+		"http://collector.otel.svc:4318/v1/traces",
+		"OTEL_METRICS_EXPORTER",
+		"OTEL_LOGS_EXPORTER",
+		"value: monofs-fetcher-a",
+		"guardian.partition=monofs",
+	}
+	for _, want := range wants {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered fetcher manifest is missing %q", want)
+		}
+	}
+}
+
 func TestRenderGuardianRepoImportWiring(t *testing.T) {
 	if _, err := exec.LookPath("envsubst"); err != nil {
 		t.Skip("envsubst is not installed")

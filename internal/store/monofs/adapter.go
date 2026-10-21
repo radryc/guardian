@@ -22,6 +22,11 @@ type pagedMonoFSClient interface {
 	ListDirPage(ctx context.Context, mountPath string, opts guardianapi.DirListOptions) (guardianapi.DirListPage, error)
 }
 
+type statMonoFSClient interface {
+	StatAttr(ctx context.Context, mountPath string) (int64, time.Time, error)
+	LatestVersion(ctx context.Context, token, logicalPath string) (guardianapi.FileVersion, bool, error)
+}
+
 type watcherClient interface {
 	Watch(ctx context.Context, prefixes []string) (<-chan guardianapi.ChangeEvent, error)
 }
@@ -67,6 +72,31 @@ func (a *Adapter) ListDirPage(ctx context.Context, logicalDir string, opts guard
 }
 
 func (a *Adapter) Stat(ctx context.Context, logicalPath string) (guardianapi.FileInfo, error) {
+	if sc, ok := a.client.(statMonoFSClient); ok {
+		mapped, err := mapLogicalToPhysicalChecked(logicalPath)
+		if err != nil {
+			return guardianapi.FileInfo{}, err
+		}
+		size, attrModTime, err := sc.StatAttr(ctx, mapped)
+		if err != nil {
+			return guardianapi.FileInfo{}, err
+		}
+		ver, found, err := sc.LatestVersion(ctx, a.token, logicalPath)
+		if err != nil {
+			return guardianapi.FileInfo{}, err
+		}
+		info := guardianapi.FileInfo{Path: logicalPath, Size: size}
+		if found {
+			info.VersionID = ver.VersionID
+			info.ModTime = ver.CommittedAt
+		} else if !attrModTime.IsZero() {
+			info.ModTime = attrModTime
+		} else {
+			info.ModTime = time.Now().UTC()
+		}
+		return info, nil
+	}
+
 	content, err := a.ReadFile(ctx, logicalPath)
 	if err != nil {
 		return guardianapi.FileInfo{}, err
@@ -83,6 +113,43 @@ func (a *Adapter) Stat(ctx context.Context, logicalPath string) (guardianapi.Fil
 		info.ModTime = time.Now().UTC()
 	}
 	return info, nil
+}
+
+// ReadFileWithInfo reads a file's content and fetches its latest version metadata
+// in a single pass without downloading the file a second time for Stat().
+func (a *Adapter) ReadFileWithInfo(ctx context.Context, logicalPath string) ([]byte, guardianapi.FileInfo, error) {
+	content, err := a.ReadFile(ctx, logicalPath)
+	if err != nil {
+		return nil, guardianapi.FileInfo{}, err
+	}
+	info := guardianapi.FileInfo{
+		Path: logicalPath,
+		Size: int64(len(content)),
+	}
+	if sc, ok := a.client.(statMonoFSClient); ok {
+		ver, found, verErr := sc.LatestVersion(ctx, a.token, logicalPath)
+		if verErr != nil {
+			return nil, guardianapi.FileInfo{}, verErr
+		}
+		if found {
+			info.VersionID = ver.VersionID
+			info.ModTime = ver.CommittedAt
+		} else {
+			info.ModTime = time.Now().UTC()
+		}
+		return content, info, nil
+	}
+	versions, err := a.ListVersions(ctx, logicalPath)
+	if err != nil {
+		return nil, guardianapi.FileInfo{}, err
+	}
+	if len(versions) > 0 {
+		info.VersionID = versions[0].VersionID
+		info.ModTime = versions[0].CommittedAt
+	} else {
+		info.ModTime = time.Now().UTC()
+	}
+	return content, info, nil
 }
 
 func (a *Adapter) Watch(ctx context.Context, prefixes []string) (<-chan guardianapi.ChangeEvent, error) {

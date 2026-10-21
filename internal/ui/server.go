@@ -87,6 +87,7 @@ type Server struct {
 	flowEvaluator      FlowStateEvaluator
 	partitionData      *partitionDataCache
 	rolloutCache       *rolloutCache
+	projectionCache    *uiProjectionCache
 	clientConfig       ClientConfig
 	clientConfigToken  string
 	autoDeployOnIngest bool
@@ -253,6 +254,7 @@ func New(opts Options) (*Server, error) {
 		flowEvaluator:      opts.FlowEvaluator,
 		partitionData:      newPartitionDataCache(dataCacheTTL),
 		rolloutCache:       newRolloutCache(defaultRolloutTTL),
+		projectionCache:    newUIProjectionCache(opts.Store, dataCacheTTL),
 		clientConfig:       opts.ClientConfig,
 		clientConfigToken:  strings.TrimSpace(opts.ClientConfigToken),
 		autoDeployOnIngest: !opts.DisableAutoDeployOnIngest,

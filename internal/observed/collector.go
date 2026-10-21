@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/rydzu/ainfra/guardian/internal/awsobserve"
+	"github.com/rydzu/ainfra/guardian/internal/cdktemplate"
 	"github.com/rydzu/ainfra/guardian/internal/compiler/manifest"
 	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
 	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
@@ -152,7 +153,13 @@ func (c *Collector) collectIntent(ctx context.Context, partition string, intent 
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
-	runCtx, cancel := context.WithTimeout(ctx, timeout*time.Duration(max(1, len(intent.Spec.Assets))))
+	stackAssets := 0
+	for _, asset := range intent.Spec.Assets {
+		if asset.Type == "CDKStack" {
+			stackAssets++
+		}
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout*time.Duration(max(1, stackAssets)))
 	defer cancel()
 
 	results := make([]assetResult, 0, len(intent.Spec.Assets))
@@ -167,6 +174,18 @@ func (c *Collector) collectIntent(ctx context.Context, partition string, intent 
 	}
 
 	changedAssets := make([]string, 0, len(results))
+	changedSet := make(map[string]struct{}, len(results))
+	addChanged := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		if _, exists := changedSet[name]; exists {
+			return
+		}
+		changedSet[name] = struct{}{}
+		changedAssets = append(changedAssets, name)
+	}
 	assetObservations := map[string]*taskdomain.AssetObservation{}
 	var aggregatedHealth *taskdomain.HealthObservation
 	var aggregatedReadiness *taskdomain.ApplyReadiness
@@ -183,10 +202,18 @@ func (c *Collector) collectIntent(ctx context.Context, partition string, intent 
 		aggregatedHealth = mergeHealth(aggregatedHealth, result.health, result.asset)
 		aggregatedReadiness = mergeReadiness(aggregatedReadiness, result.readiness, result.asset)
 		if result.changed {
-			changedAssets = append(changedAssets, result.asset)
+			addChanged(result.asset)
 		}
 		if result.summary != "" {
 			summaries = append(summaries, result.summary)
+		}
+	}
+	mergedResources := mergeResourceObservations(results)
+	if len(errorMessages) == 0 {
+		for _, resource := range mergedResources {
+			if resource.Status != statedomain.ResourceInSync {
+				addChanged(resource.AssetName)
+			}
 		}
 	}
 
@@ -213,6 +240,9 @@ func (c *Collector) collectIntent(ctx context.Context, partition string, intent 
 	state.AssetObservations = assetObservations
 	state.Health = aggregatedHealth
 	state.ApplyReadiness = aggregatedReadiness
+	if len(errorMessages) == 0 {
+		state.Resources = statedomain.CloneResourceObservations(mergedResources)
+	}
 	state.Timestamps.LastDiffAt = time.Now().UTC()
 
 	if len(errorMessages) > 0 {
@@ -318,8 +348,10 @@ func (c *Collector) observeAsset(ctx context.Context, partition string, intent *
 	snapshot.LastEventTime = state.LastEventTime
 
 	var (
-		changed        []string
-		compareSummary string
+		changed          []string
+		compareSummary   string
+		desiredInventory []cdktemplate.Resource
+		liveInventory    []cdktemplate.Resource
 	)
 	switch {
 	case strings.TrimSpace(payload.PrebuiltAssemblyDir) != "":
@@ -339,6 +371,20 @@ func (c *Collector) observeAsset(ctx context.Context, partition string, intent *
 			return result
 		}
 		changed, err = CompareTemplates(desiredTemplate, observedTemplate)
+		if err != nil {
+			snapshot.Error = err.Error()
+			result.err = err
+			result.snapshot = snapshot
+			return result
+		}
+		desiredInventory, err = cdktemplate.Inventory(desiredTemplate)
+		if err != nil {
+			snapshot.Error = err.Error()
+			result.err = err
+			result.snapshot = snapshot
+			return result
+		}
+		liveInventory, err = cdktemplate.Inventory(observedTemplate)
 		if err != nil {
 			snapshot.Error = err.Error()
 			result.err = err
@@ -373,6 +419,7 @@ func (c *Collector) observeAsset(ctx context.Context, partition string, intent *
 		}
 		changed = diff.ChangedResources
 		compareSummary = diff.Summary
+		desiredInventory = diff.Resources
 	default:
 		err := fmt.Errorf("observed asset %s requires prebuiltAssemblyDir or sourceDir", asset.Name)
 		snapshot.Error = err.Error()
@@ -381,6 +428,7 @@ func (c *Collector) observeAsset(ctx context.Context, partition string, intent *
 		return result
 	}
 	snapshot.ChangedResources = changed
+	snapshot.Resources = buildResourceObservations(desiredInventory, liveInventory, changed)
 
 	reasons := make([]string, 0, 2)
 	if len(changed) > 0 {

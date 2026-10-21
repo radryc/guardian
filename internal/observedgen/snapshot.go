@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/rydzu/ainfra/guardian/internal/cdktemplate"
 	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
 	"gopkg.in/yaml.v3"
 )
@@ -93,6 +94,7 @@ prebuiltAssemblyDir: %s/cdk.out
 stackName: %s
 stackID: %s
 packageManager: none
+snapshot: true
 `, payloadDir, opts.StackName, opts.StackName)
 	files["payloads/aws/"+slug+".yaml"] = []byte(payload)
 
@@ -144,54 +146,11 @@ func normalizeTemplate(raw string) ([]byte, error) {
 	if trimmed == "" {
 		return nil, fmt.Errorf("template is empty")
 	}
-	if json.Valid([]byte(trimmed)) {
-		var value any
-		if err := json.Unmarshal([]byte(trimmed), &value); err != nil {
-			return nil, fmt.Errorf("parse template JSON: %w", err)
-		}
-		out, err := json.MarshalIndent(value, "", "  ")
-		if err != nil {
-			return nil, err
-		}
-		return append(out, '\n'), nil
-	}
-	var value any
-	if err := yaml.Unmarshal([]byte(trimmed), &value); err != nil {
-		return nil, fmt.Errorf("parse template YAML: %w", err)
-	}
-	value = normalizeYAMLValue(value)
-	out, err := json.MarshalIndent(value, "", "  ")
+	normalized, err := cdktemplate.NormalizeTemplate(trimmed)
 	if err != nil {
-		return nil, fmt.Errorf("encode template JSON: %w", err)
+		return nil, fmt.Errorf("parse template: %w", err)
 	}
-	return append(out, '\n'), nil
-}
-
-// normalizeYAMLValue converts map[any]any (yaml.v3 with plain Unmarshal) into
-// JSON-compatible maps.
-func normalizeYAMLValue(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(typed))
-		for key, item := range typed {
-			out[key] = normalizeYAMLValue(item)
-		}
-		return out
-	case map[any]any:
-		out := make(map[string]any, len(typed))
-		for key, item := range typed {
-			out[fmt.Sprint(key)] = normalizeYAMLValue(item)
-		}
-		return out
-	case []any:
-		out := make([]any, 0, len(typed))
-		for _, item := range typed {
-			out = append(out, normalizeYAMLValue(item))
-		}
-		return out
-	default:
-		return value
-	}
+	return normalized, nil
 }
 
 // SnapshotPaths returns the sorted file paths of a snapshot (test helper).

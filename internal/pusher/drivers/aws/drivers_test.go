@@ -348,6 +348,17 @@ packageManager: none
 	}
 }
 
+func TestRejectSnapshotApply(t *testing.T) {
+	snapshot := StackRequest{Manifest: stackPayload{StackName: "AdoptedStack", Snapshot: true}}
+	if err := rejectSnapshotApply(snapshot, "apply"); err == nil {
+		t.Fatal("expected snapshot apply to be rejected")
+	}
+	managed := StackRequest{Manifest: stackPayload{StackName: "ManagedStack"}}
+	if err := rejectSnapshotApply(managed, "apply"); err != nil {
+		t.Fatalf("managed stack rejected: %v", err)
+	}
+}
+
 func writeFile(t *testing.T, ctx context.Context, store guardianapi.WriteStore, logicalPath string, content []byte) {
 	t.Helper()
 	if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{

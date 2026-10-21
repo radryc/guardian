@@ -24,10 +24,11 @@ type SourceDiffRequest struct {
 
 // SourceDiffResult is the outcome of a source-upload diff.
 type SourceDiffResult struct {
-	StackName        string     `json:"stackName"`
-	ChangedResources []string   `json:"changedResources"`
-	Summary          string     `json:"summary"`
-	Observed         StackState `json:"observed"`
+	StackName        string                 `json:"stackName"`
+	ChangedResources []string               `json:"changedResources"`
+	Resources        []cdktemplate.Resource `json:"resources,omitempty"`
+	Summary          string                 `json:"summary"`
+	Observed         StackState             `json:"observed"`
 }
 
 // DiffSource synthesizes the uploaded source, compares it with the live stack
@@ -55,6 +56,10 @@ func (s *Service) DiffSource(ctx context.Context, req SourceDiffRequest) (*Sourc
 	if err != nil {
 		return nil, err
 	}
+	resources, err := cdktemplate.Inventory(desired)
+	if err != nil {
+		return nil, fmt.Errorf("inventory synthesized template: %w", err)
+	}
 	observedTemplate, err := s.Template(ctx, req.Account, req.Region, stackName)
 	if err != nil {
 		return nil, err
@@ -71,6 +76,7 @@ func (s *Service) DiffSource(ctx context.Context, req SourceDiffRequest) (*Sourc
 	return &SourceDiffResult{
 		StackName:        stackName,
 		ChangedResources: changed,
+		Resources:        resources,
 		Summary:          summary,
 		Observed:         state,
 	}, nil

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -94,6 +95,17 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["MONOFS_OTEL_INSECURE"] = cfg.Storage.OTel.Insecure
 	env["MONOFS_OTEL_SERVICE_NAME"] = cfg.Storage.OTel.ServiceName
 	env["MONOFS_OTEL_METRIC_INTERVAL"] = cfg.Storage.OTel.MetricInterval
+
+	// MonoFS binaries are built with otelc. otelc's autoexport understands the
+	// standard OTEL_* variables only, so MONOFS_OTEL_* alone leaves it pointing
+	// at the default https://localhost:4318 and every auto-instrumented span is
+	// dropped. Point otelc's trace exporter at the collector's OTLP/HTTP port.
+	// Metrics and logs remain on the native MONOFS_OTEL_* pipeline; disabling
+	// otelc's exporters for them avoids duplicate data and localhost errors.
+	env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = otelTraceHTTPEndpoint(cfg.Storage.OTel.Endpoint, cfg.Storage.OTel.Insecure)
+	env["OTEL_METRICS_EXPORTER"] = "none"
+	env["OTEL_LOGS_EXPORTER"] = "none"
+
 	env["GUARDIAN_OTEL_ENDPOINT"] = cfg.Storage.OTel.Endpoint
 	env["GUARDIAN_OTEL_INSECURE"] = cfg.Storage.OTel.Insecure
 	env["GUARDIAN_OTEL_SERVICE_NAME"] = "guardian"
@@ -807,6 +819,38 @@ func WriteSharedPartitionSecrets(key, token string) error {
 		}
 	}
 	return nil
+}
+
+// otelTraceHTTPEndpoint converts the gRPC OTLP endpoint used by the native
+// MonoFS telemetry (host:4317) into the OTLP/HTTP traces endpoint understood
+// by otelc's autoexport (http://host:4318/v1/traces).
+func otelTraceHTTPEndpoint(endpoint, insecure string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return ""
+	}
+
+	scheme := "https"
+	if strings.EqualFold(strings.TrimSpace(insecure), "true") {
+		scheme = "http"
+	}
+
+	hostPort := endpoint
+	if parsed, err := url.Parse(endpoint); err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
+		scheme = parsed.Scheme
+		hostPort = parsed.Host
+		if strings.HasSuffix(strings.TrimSpace(parsed.Path), "/v1/traces") {
+			return parsed.String()
+		}
+	}
+
+	if host, port, err := net.SplitHostPort(hostPort); err == nil {
+		if port == "4317" {
+			port = "4318"
+		}
+		return fmt.Sprintf("%s://%s/v1/traces", scheme, net.JoinHostPort(host, port))
+	}
+	return fmt.Sprintf("%s://%s:4318/v1/traces", scheme, strings.TrimSuffix(hostPort, "/"))
 }
 
 // WriteMonofsEnv writes an encryption key to ../monofs/.env.

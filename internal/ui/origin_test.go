@@ -83,6 +83,19 @@ func TestIntentOriginGeneratedAndUserCDK(t *testing.T) {
 	}
 }
 
+func TestIntentOriginStandardCDKStack(t *testing.T) {
+	origin := intentOrigin(context.Background(), memory.New(), "p", intentdomain.Intent{
+		Metadata: intentdomain.Metadata{Name: "web"},
+		Spec: intentdomain.IntentSpec{
+			IntentType: intentdomain.TypeStandard,
+			Assets:     []assetdomain.Spec{{Type: "CDKStack", Name: "web"}},
+		},
+	}, nil)
+	if origin.Origin != originUserCDK || origin.Label != "User CDK" {
+		t.Fatalf("cdk stack origin = %+v", origin)
+	}
+}
+
 func TestIntentOriginNative(t *testing.T) {
 	origin := intentOrigin(context.Background(), memory.New(), "p", intentdomain.Intent{
 		Metadata: intentdomain.Metadata{Name: "web"},

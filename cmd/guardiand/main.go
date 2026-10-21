@@ -612,12 +612,15 @@ func pusherNames(configs []config.PusherConfig) []string {
 }
 
 func resultWatchPrefixes(pushers []string) []string {
+	if len(pushers) == 0 {
+		return []string{paths.QueueResultsDir("local")}
+	}
+	if len(pushers) > 64 {
+		return []string{paths.QueueRoot()}
+	}
 	prefixes := make([]string, 0, len(pushers))
 	for _, pusher := range pushers {
 		prefixes = append(prefixes, paths.QueueResultsDir(pusher))
-	}
-	if len(prefixes) == 0 {
-		return []string{paths.QueueResultsDir("local")}
 	}
 	return prefixes
 }
@@ -629,11 +632,13 @@ func resultWatchPrefixes(pushers []string) []string {
 // require walking every partition runtime in the system each tick.
 func processLiveResultFiles(ctx context.Context, store guardianapi.Store, processor *results.Processor, pushers []string, reason string) (int, error) {
 	live := make([]taskdomain.TaskResult, 0, 8)
-	for _, pn := range pushers {
+	var liveMu sync.Mutex
+
+	scanPusherResults := func(pn string) {
 		entries, scanErr := store.ListDir(ctx, paths.QueueResultsDir(pn))
 		if scanErr != nil {
 			log.Printf("result-processor: %s scan %s: %v", reason, pn, scanErr)
-			continue
+			return
 		}
 		for _, entry := range entries {
 			if entry.IsDir || !strings.HasSuffix(entry.Name, ".json") {
@@ -647,7 +652,9 @@ func processLiveResultFiles(ctx context.Context, store guardianapi.Store, proces
 				continue
 			}
 			if liveResultIntent(ctx, store, &result) {
+				liveMu.Lock()
 				live = append(live, result)
+				liveMu.Unlock()
 				continue
 			}
 			// Not tracked by its intent. If the task file is gone this is an
@@ -667,6 +674,37 @@ func processLiveResultFiles(ctx context.Context, store guardianapi.Store, proces
 			}
 		}
 	}
+
+	if len(pushers) <= 4 {
+		for _, pn := range pushers {
+			scanPusherResults(pn)
+		}
+	} else {
+		workers := 32
+		if len(pushers) < workers {
+			workers = len(pushers)
+		}
+		ch := make(chan string, len(pushers))
+		for _, pn := range pushers {
+			ch <- pn
+		}
+		close(ch)
+		var wg sync.WaitGroup
+		wg.Add(workers)
+		for i := 0; i < workers; i++ {
+			go func() {
+				defer wg.Done()
+				for pn := range ch {
+					if ctx.Err() != nil {
+						return
+					}
+					scanPusherResults(pn)
+				}
+			}()
+		}
+		wg.Wait()
+	}
+
 	processResultsParallel(ctx, processor, live, resultProcessorWorkers)
 	log.Printf("result-processor: %s scan complete (%d result(s) processed)", reason, len(live))
 	return len(live), nil

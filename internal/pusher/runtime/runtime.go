@@ -76,12 +76,33 @@ func (r *Runtime) Run(ctx context.Context) error {
 		log.Printf("[Pusher] error on initial queue scan (will retry): %v", err)
 	}
 
+	var watchCh <-chan guardianapi.ChangeEvent
+	if ws, ok := r.Store.(guardianapi.WatchStore); ok && strings.TrimSpace(r.QueuePath) != "" {
+		if ch, err := ws.Watch(ctx, []string{r.QueuePath}); err == nil {
+			watchCh = ch
+		}
+	}
+
 	ticker := time.NewTicker(r.PollInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case ev, ok := <-watchCh:
+			if !ok {
+				watchCh = nil
+				continue
+			}
+			if ev.Type == guardianapi.ChangeDeleted {
+				continue
+			}
+			if err := r.processPending(ctx); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return err
+				}
+				log.Printf("[Pusher] error processing queue on watch event: %v", err)
+			}
 		case <-ticker.C:
 			if err := r.processPending(ctx); err != nil {
 				if errors.Is(err, context.Canceled) {
@@ -98,28 +119,33 @@ func (r *Runtime) ProcessPending(ctx context.Context) error {
 }
 
 func (r *Runtime) tryClaimTask(ctx context.Context, taskID string) (*taskdomain.Task, bool, error) {
+	t, _, _, claimed, err := r.tryClaimTaskWithLease(ctx, taskID)
+	return t, claimed, err
+}
+
+func (r *Runtime) tryClaimTaskWithLease(ctx context.Context, taskID string) (*taskdomain.Task, taskdomain.ClaimFile, string, bool, error) {
 	pusher := strings.TrimPrefix(strings.TrimPrefix(r.QueuePath, paths.QueueRoot()), "/")
 	ready, err := r.taskReadyToClaim(ctx, pusher, taskID)
 	if err != nil {
-		return nil, false, err
+		return nil, taskdomain.ClaimFile{}, "", false, err
 	}
 	if !ready {
-		return nil, false, nil
+		return nil, taskdomain.ClaimFile{}, "", false, nil
 	}
 	taskPath := strings.TrimSuffix(r.QueuePath, "/") + "/" + taskID + ".json"
 	raw, err := r.Store.ReadFile(ctx, taskPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, false, nil
+			return nil, taskdomain.ClaimFile{}, "", false, nil
 		}
-		return nil, false, err
+		return nil, taskdomain.ClaimFile{}, "", false, err
 	}
 	var t taskdomain.Task
 	if err := json.Unmarshal(raw, &t); err != nil {
-		return nil, false, fmt.Errorf("decode task %s: %w", taskID, err)
+		return nil, taskdomain.ClaimFile{}, "", false, fmt.Errorf("decode task %s: %w", taskID, err)
 	}
 	if r.CanHandle != nil && !r.CanHandle(&t) {
-		return nil, false, nil
+		return nil, taskdomain.ClaimFile{}, "", false, nil
 	}
 
 	claim := taskdomain.ClaimFile{
@@ -130,14 +156,14 @@ func (r *Runtime) tryClaimTask(ctx context.Context, taskID string) (*taskdomain.
 	}
 	claimContent, err := json.MarshalIndent(claim, "", "  ")
 	if err != nil {
-		return nil, false, err
+		return nil, taskdomain.ClaimFile{}, "", false, err
 	}
 
 	principalID := strings.TrimSpace(r.PrincipalID)
 	if principalID == "" {
 		principalID = r.WorkerID
 	}
-	_, err = r.Store.UpsertFiles(ctx, guardianapi.MutationBatch{
+	rev, err := r.Store.UpsertFiles(ctx, guardianapi.MutationBatch{
 		Writes: []guardianapi.PathWrite{{
 			LogicalPath:       paths.QueueClaim(pusher, taskID),
 			Content:           claimContent,
@@ -147,11 +173,72 @@ func (r *Runtime) tryClaimTask(ctx context.Context, taskID string) (*taskdomain.
 	})
 	if err != nil {
 		if errors.Is(err, guardianapi.ErrConflict) {
-			return nil, false, nil
+			return nil, taskdomain.ClaimFile{}, "", false, nil
 		}
-		return nil, false, err
+		return nil, taskdomain.ClaimFile{}, "", false, err
 	}
-	return &t, true, nil
+	versionID := ""
+	if len(rev.Files) > 0 {
+		versionID = rev.Files[0].VersionID
+	}
+	return &t, claim, versionID, true, nil
+}
+
+func (r *Runtime) startClaimHeartbeat(ctx context.Context, pusher string, claim taskdomain.ClaimFile, initialVersionID string) func() {
+	if pusher == "" || claim.TaskID == "" || claim.LeaseSeconds <= 0 {
+		return func() {}
+	}
+	interval := time.Duration(claim.LeaseSeconds) * time.Second / 3
+	if interval < time.Second {
+		interval = time.Second
+	}
+	hbCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		versionID := initialVersionID
+		principalID := strings.TrimSpace(r.PrincipalID)
+		if principalID == "" {
+			principalID = r.WorkerID
+		}
+		claimPath := paths.QueueClaim(pusher, claim.TaskID)
+		for {
+			select {
+			case <-hbCtx.Done():
+				return
+			case <-ticker.C:
+				claim.ClaimedAt = time.Now().UTC()
+				content, err := json.MarshalIndent(claim, "", "  ")
+				if err != nil {
+					continue
+				}
+				rev, err := r.Store.UpsertFiles(hbCtx, guardianapi.MutationBatch{
+					Writes: []guardianapi.PathWrite{{
+						LogicalPath:       claimPath,
+						Content:           content,
+						ExpectedVersionID: versionID,
+					}},
+					Context: guardianapi.MutationContext{
+						PrincipalID:   principalID,
+						Reason:        "renew task claim lease",
+						CorrelationID: claim.TaskID,
+					},
+				})
+				if err != nil {
+					return
+				}
+				if len(rev.Files) > 0 && rev.Files[0].VersionID != "" {
+					versionID = rev.Files[0].VersionID
+				}
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 func (r *Runtime) taskReadyToClaim(ctx context.Context, pusher, taskID string) (bool, error) {
@@ -165,13 +252,6 @@ func (r *Runtime) taskReadyToClaim(ctx context.Context, pusher, taskID string) (
 	}
 
 	claimPath := paths.QueueClaim(pusher, taskID)
-	info, err := r.Store.Stat(ctx, claimPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return true, nil
-		}
-		return false, err
-	}
 	raw, err := r.Store.ReadFile(ctx, claimPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -185,6 +265,13 @@ func (r *Runtime) taskReadyToClaim(ctx context.Context, pusher, taskID string) (
 	}
 	if !claimExpired(claim, time.Now().UTC()) {
 		return false, nil
+	}
+	info, err := r.Store.Stat(ctx, claimPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return true, nil
+		}
+		return false, err
 	}
 
 	principalID := strings.TrimSpace(r.PrincipalID)
@@ -314,7 +401,7 @@ func (r *Runtime) runTaskWorkers(ctx context.Context, pusher string, taskIDs []s
 }
 
 func (r *Runtime) processTaskEntry(ctx context.Context, pusher, taskID string, scanAt time.Time) {
-	t, claimed, err := r.tryClaimTask(ctx, taskID)
+	t, claim, claimVersionID, claimed, err := r.tryClaimTaskWithLease(ctx, taskID)
 	if err != nil {
 		log.Printf("[Pusher] Error trying to claim task %s: %v", taskID, err)
 		return
@@ -333,7 +420,9 @@ func (r *Runtime) processTaskEntry(ctx context.Context, pusher, taskID string, s
 	r.forgetClaimRetry(taskID)
 	log.Printf("[Pusher] Successfully claimed task %s! op=%s partition=%s intent=%s assets=%d Executing...",
 		taskID, t.Op, t.Partition, t.Intent, len(t.Assets))
+	stopHeartbeat := r.startClaimHeartbeat(ctx, pusher, claim, claimVersionID)
 	result := r.executeTask(ctx, t)
+	stopHeartbeat()
 	changed := []string{}
 	if result.Drift != nil {
 		changed = result.Drift.ChangedAssets

@@ -23,12 +23,15 @@ func awsObservedGenerateCommand(printer *output.Printer) *command.Command {
 	pusher := flags.String("pusher", "", "target pusher name (default aws-<account>)")
 	out := flags.String("out", "", "output partition bundle directory")
 	payloadDir := flags.String("payload-dir", "", "logical MonoFS payload dir (default /partitions/<partition>/payloads/aws)")
-	return &command.Command{Description: "Generate an observed partition bundle from a CDK cloud assembly", Flags: flags, Run: func(ctx context.Context, args []string) error {
+	mode := flags.String("mode", string(observedgen.ModeObserved), "intent mode: observed (report-only) or managed (standard, Guardian applies)")
+	selector := flags.String("selector", "", "comma-separated CloudFormation stack name globs")
+	return &command.Command{Description: "Generate a CloudFormation partition bundle from a CDK cloud assembly", Flags: flags, Run: func(ctx context.Context, args []string) error {
 		if strings.TrimSpace(*assembly) == "" || strings.TrimSpace(*partition) == "" ||
 			strings.TrimSpace(*account) == "" || strings.TrimSpace(*region) == "" || strings.TrimSpace(*out) == "" {
 			return fmt.Errorf("--assembly, --partition, --account, --region and --out are required")
 		}
 		created, err := observedgen.Generate(observedgen.Options{
+			Mode:        observedgen.Mode(*mode),
 			AssemblyDir: *assembly,
 			OutDir:      *out,
 			Partition:   *partition,
@@ -36,6 +39,7 @@ func awsObservedGenerateCommand(printer *output.Printer) *command.Command {
 			Region:      *region,
 			Pusher:      *pusher,
 			PayloadDir:  *payloadDir,
+			Selector:    *selector,
 		})
 		if err != nil {
 			return err
