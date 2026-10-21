@@ -163,8 +163,13 @@ func (s *Service) Run(ctx context.Context, opts Options) ([]Result, error) {
 					dashboards[descriptor.Partition] = info
 				}
 				info.Stacks = appendUnique(info.Stacks, descriptor.Stack)
-				if descriptor.Telemetry != nil && strings.TrimSpace(descriptor.Telemetry.LogGroup) != "" {
-					info.LogGroup = descriptor.Telemetry.LogGroup
+				if descriptor.Telemetry != nil {
+					if strings.TrimSpace(descriptor.Telemetry.LogGroup) != "" {
+						info.LogGroup = descriptor.Telemetry.LogGroup
+					}
+					if strings.TrimSpace(descriptor.Telemetry.Source) != "" {
+						info.Source = descriptor.Telemetry.Source
+					}
 				}
 			}
 			results = append(results, result)
