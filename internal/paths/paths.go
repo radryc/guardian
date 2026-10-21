@@ -125,6 +125,13 @@ func OnboardingRecord(pusher, stack string) string {
 	return normalize(OnboardingDir(pusher), stack+".json")
 }
 
+// DashboardsRoot holds generated Grafana dashboard JSON per partition.
+func DashboardsRoot() string { return normalize(RegistryRoot(), "dashboards") }
+
+func DashboardRecord(partition string) string {
+	return normalize(DashboardsRoot(), partition+".json")
+}
+
 // ProbesRoot holds the latest probe snapshots written by pushers. History
 // lives in telemetry, not in MonoFS.
 func ProbesRoot() string { return normalize(RegistryRoot(), "probes") }

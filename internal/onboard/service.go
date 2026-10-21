@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rydzu/ainfra/guardian/internal/dashboardgen"
 	"github.com/rydzu/ainfra/guardian/internal/observed"
 	"github.com/rydzu/ainfra/guardian/internal/observedgen"
 	"github.com/rydzu/ainfra/guardian/internal/onboarding"
@@ -93,6 +94,7 @@ func (s *Service) Run(ctx context.Context, opts Options) ([]Result, error) {
 
 	writes := make([]guardianapi.PathWrite, 0)
 	partitions := map[string]struct{}{}
+	dashboards := map[string]*dashboardgen.Info{}
 	configSeen := map[string]bool{}
 	results := make([]Result, 0)
 	errs := make([]error, 0)
@@ -138,6 +140,15 @@ func (s *Service) Run(ctx context.Context, opts Options) ([]Result, error) {
 				}
 				partitions[descriptor.Partition] = struct{}{}
 				partitionsForPusher[descriptor.Partition] = struct{}{}
+				info := dashboards[descriptor.Partition]
+				if info == nil {
+					info = &dashboardgen.Info{Partition: descriptor.Partition, Account: resultAccount(descriptor, pusher), Region: resultRegion(descriptor, pusher)}
+					dashboards[descriptor.Partition] = info
+				}
+				info.Stacks = appendUnique(info.Stacks, descriptor.Stack)
+				if descriptor.Telemetry != nil && strings.TrimSpace(descriptor.Telemetry.LogGroup) != "" {
+					info.LogGroup = descriptor.Telemetry.LogGroup
+				}
 			}
 			results = append(results, result)
 		}
@@ -156,6 +167,18 @@ func (s *Service) Run(ctx context.Context, opts Options) ([]Result, error) {
 				}
 			}
 		}
+	}
+
+	for partition, info := range dashboards {
+		raw, err := dashboardgen.Render(*info)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("dashboard %s: %w", partition, err))
+			continue
+		}
+		writes = append(writes, guardianapi.PathWrite{
+			LogicalPath: paths.DashboardRecord(partition),
+			Content:     append(raw, '\n'),
+		})
 	}
 
 	if len(writes) > 0 {
@@ -284,6 +307,27 @@ func (s *Service) probeSnapshot(
 		LogicalPath: paths.ProbeSnapshot(pusher.Name, partition),
 		Content:     append(raw, '\n'),
 	}}, len(results), nil
+}
+
+func resultAccount(descriptor onboarding.Descriptor, pusher registry.Pusher) string {
+	return firstNonEmpty(descriptor.Account, pusher.Account)
+}
+
+func resultRegion(descriptor onboarding.Descriptor, pusher registry.Pusher) string {
+	return firstNonEmpty(descriptor.Region, pusher.Region)
+}
+
+func appendUnique(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func firstNonEmpty(values ...string) string {

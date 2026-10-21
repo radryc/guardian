@@ -97,6 +97,9 @@ func TestServiceMaterializesObservedPartitionAndProbes(t *testing.T) {
 	if !strings.Contains(readStore(t, store, paths.OnboardingRecord("aws-123456789012", "CustomerAppStack")), "customer-prod-1") {
 		t.Fatalf("onboarding audit record missing")
 	}
+	if !strings.Contains(readStore(t, store, paths.DashboardRecord("customer-prod-1")), "guardian_probe_up") {
+		t.Fatalf("partition dashboard missing")
+	}
 }
 
 func TestServicePreservesExistingPartitionConfig(t *testing.T) {
