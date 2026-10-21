@@ -79,6 +79,9 @@ func (s *Service) Run(ctx context.Context, opts Options) ([]Result, error) {
 	if s.Registry == nil {
 		return nil, fmt.Errorf("onboard: registry is required")
 	}
+	if s.Resolver == nil {
+		return nil, fmt.Errorf("onboard: pusher resolver is required")
+	}
 	pushers, err := s.Registry.ListPushers(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list pushers: %w", err)
