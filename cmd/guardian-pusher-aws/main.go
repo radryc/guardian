@@ -19,6 +19,7 @@ import (
 	"github.com/rydzu/ainfra/guardian/internal/awsread"
 	"github.com/rydzu/ainfra/guardian/internal/awsscan"
 	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
+	"github.com/rydzu/ainfra/guardian/internal/onboarding"
 	"github.com/rydzu/ainfra/guardian/internal/paths"
 	awsdriver "github.com/rydzu/ainfra/guardian/internal/pusher/drivers/aws"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/probes"
@@ -59,6 +60,7 @@ func main() {
 	var eventsQueueURL string
 	var eventsDisabled bool
 	var observedOnly bool
+	var onboardingSSMPrefix string
 	flag.StringVar(&pusherName, "pusher-name", "", "pusher name (default: aws-<account>)")
 	flag.StringVar(&account, "account", "", "target account handled by this worker")
 	flag.StringVar(&region, "region", "", "optional target region filter handled by this worker (empty = all regions in account)")
@@ -84,6 +86,7 @@ func main() {
 	flag.StringVar(&eventsQueueURL, "events-queue-url", os.Getenv("GUARDIAN_AWS_EVENTS_QUEUE_URL"), "SQS queue URL carrying CloudFormation EventBridge events (empty disables)")
 	flag.BoolVar(&eventsDisabled, "events-disabled", false, "disable the CloudFormation EventBridge event consumer")
 	flag.BoolVar(&observedOnly, "observed-only", false, "run only the observed-state API and event consumer (no MonoFS task queue)")
+	flag.StringVar(&onboardingSSMPrefix, "onboarding-ssm-prefix", "", "SSM parameter prefix containing customer onboarding descriptors (empty disables)")
 	flag.Parse()
 
 	if account == "" {
@@ -243,6 +246,25 @@ func main() {
 		WorkerID:     workerID,
 	})
 
+	var onboardingReader onboarding.Reader
+	if prefix := strings.TrimSpace(onboardingSSMPrefix); prefix != "" {
+		if observedService == nil || observedService.Refresher == nil {
+			log.Printf("onboarding SSM reader disabled: observed refresher is not configured")
+		} else if strings.TrimSpace(region) == "" {
+			log.Printf("onboarding SSM reader disabled: --region is required to read %s", prefix)
+		} else if client, err := observedService.Refresher.SSMClient(ctx, region); err != nil {
+			log.Printf("onboarding SSM reader disabled: %v", err)
+		} else {
+			onboardingReader = &onboarding.SSMReader{
+				Client:  client,
+				Prefix:  prefix,
+				Account: account,
+				Region:  region,
+			}
+			log.Printf("onboarding descriptor reader enabled: %s", prefix)
+		}
+	}
+
 	probeCfg := probes.ConfigFromEnv()
 	probeCfg.Store = store
 	probeCfg.Resolver = secrets.NewStoreResolver(store)
@@ -256,8 +278,18 @@ func main() {
 	if probeCfg.OTLPEndpoint == "" {
 		probeCfg.OTLPEndpoint = probes.HTTPEndpoint(telemetryCfg.Endpoint)
 	}
+	if onboardingReader != nil {
+		probeCfg.ExternalTargets = func(ctx context.Context) ([]probes.Target, error) {
+			descriptors, err := onboardingReader.List(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return probes.TargetsFromOnboarding(pusherName, descriptors), nil
+		}
+	}
+	probeRunner := probes.New(probeCfg)
 	go func() {
-		if err := probes.New(probeCfg).Run(ctx); err != nil && err != context.Canceled {
+		if err := probeRunner.Run(ctx); err != nil && err != context.Canceled {
 			log.Printf("probe runner stopped: %v", err)
 		}
 	}()
@@ -310,6 +342,8 @@ func main() {
 			Handler: awsread.NewHandler(reader, awsReadToken).
 				WithPromQL(promQL).
 				WithObserved(observedService).
+				WithOnboarding(onboardingReader).
+				WithProbes(probeRunner).
 				WithIdentity(pusherName, account, region),
 		}
 		goroutines++

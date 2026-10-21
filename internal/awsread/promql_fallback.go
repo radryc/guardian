@@ -238,3 +238,17 @@ func promqlEmpty(payload []byte) bool {
 	}
 	return parsed.Status == "success" && len(parsed.Data.Result) == 0
 }
+
+// promqlLabelValuesEmpty reports whether a Prometheus label-values response
+// has no values. CloudWatch returns {"status":"success","data":[...]} for this
+// endpoint rather than the vector shape handled by promqlEmpty.
+func promqlLabelValuesEmpty(payload []byte) bool {
+	var parsed struct {
+		Status string            `json:"status"`
+		Data   []json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		return false
+	}
+	return parsed.Status == "success" && len(parsed.Data) == 0
+}

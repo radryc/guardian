@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
 	cftypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
@@ -153,6 +154,26 @@ func stackStateFromSDK(account, region string, stack cftypes.Stack) StackState {
 	if stack.DriftInformation != nil {
 		state.DriftStatus = string(stack.DriftInformation.StackDriftStatus)
 	}
+	if len(stack.Tags) > 0 {
+		state.Tags = make(map[string]string, len(stack.Tags))
+		for _, tag := range stack.Tags {
+			key := strings.TrimSpace(awsroot.ToString(tag.Key))
+			if key == "" {
+				continue
+			}
+			state.Tags[key] = awsroot.ToString(tag.Value)
+		}
+	}
+	if len(stack.Outputs) > 0 {
+		state.Outputs = make(map[string]string, len(stack.Outputs))
+		for _, output := range stack.Outputs {
+			key := strings.TrimSpace(awsroot.ToString(output.OutputKey))
+			if key == "" {
+				continue
+			}
+			state.Outputs[key] = awsroot.ToString(output.OutputValue)
+		}
+	}
 	return state
 }
 
@@ -192,6 +213,17 @@ func detectStackDrift(ctx context.Context, client *cloudformation.Client, stackN
 		case <-time.After(driftPollInterval):
 		}
 	}
+}
+
+// SSMClient returns an SSM client configured with the refresher's credentials
+// and optional target-account role. The pusher uses it to read onboarding
+// descriptors from Parameter Store.
+func (r *Refresher) SSMClient(ctx context.Context, region string) (*ssm.Client, error) {
+	cfg, err := r.awsConfig(ctx, region)
+	if err != nil {
+		return nil, err
+	}
+	return ssm.NewFromConfig(cfg), nil
 }
 
 // Template returns the live CloudFormation template body for a stack.

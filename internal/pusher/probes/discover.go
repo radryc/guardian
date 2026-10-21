@@ -79,14 +79,24 @@ func (r *Runner) partitionProbePolicy(defaults partitiondomain.ProbeDefaults) pr
 }
 
 func (r *Runner) discover(ctx context.Context) ([]Target, error) {
+	targets := make([]Target, 0)
+	if r.cfg.ExternalTargets != nil {
+		external, err := r.cfg.ExternalTargets(ctx)
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, external...)
+	}
+	if r.cfg.Store == nil {
+		return r.finalizeTargets(targets), nil
+	}
 	entries, err := r.cfg.Store.ListDir(ctx, paths.PartitionsRoot())
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return r.finalizeTargets(targets), nil
 		}
 		return nil, err
 	}
-	targets := make([]Target, 0)
 	for _, entry := range entries {
 		if !entry.IsDir {
 			continue
@@ -136,6 +146,26 @@ func (r *Runner) discover(ctx context.Context) ([]Target, error) {
 		}
 		targets = append(targets, partitionTargets...)
 	}
+	return r.finalizeTargets(targets), nil
+}
+
+// finalizeTargets deduplicates and applies sharding/limits to targets from all
+// discovery sources. External onboarding targets and store targets can overlap.
+func (r *Runner) finalizeTargets(targets []Target) []Target {
+	seen := make(map[string]struct{}, len(targets))
+	deduped := targets[:0]
+	for _, target := range targets {
+		key := target.ID
+		if key == "" {
+			key = target.Partition + "|" + target.Intent + "|" + target.Asset + "|" + target.Name + "|" + target.Type + "|" + targetValue(target)
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		deduped = append(deduped, target)
+	}
+	targets = deduped
 	sortTargets(targets)
 	if r.cfg.ShardCount > 1 {
 		owned := targets[:0]
@@ -149,7 +179,7 @@ func (r *Runner) discover(ctx context.Context) ([]Target, error) {
 	if r.cfg.MaxTargets > 0 && len(targets) > r.cfg.MaxTargets {
 		targets = targets[:r.cfg.MaxTargets]
 	}
-	return targets, nil
+	return targets
 }
 
 func (r *Runner) ownsShard(id string) bool {
