@@ -84,6 +84,9 @@ type Probe struct {
 type Telemetry struct {
 	Mode     string `json:"mode,omitempty" yaml:"mode,omitempty"`
 	LogGroup string `json:"logGroup,omitempty" yaml:"logGroup,omitempty"`
+	// Source is "aws" for CloudWatch-backed dashboards or "doctor" when the
+	// demo sends probes through the central Prometheus pipeline.
+	Source string `json:"source,omitempty" yaml:"source,omitempty"`
 }
 
 // Reader lists onboarding descriptors from SSM Parameter Store.

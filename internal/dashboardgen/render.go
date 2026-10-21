@@ -24,6 +24,10 @@ type Info struct {
 	Region    string
 	Stacks    []string
 	LogGroup  string
+	// Source is the telemetry source label: "aws" when metrics are queried
+	// through the CloudWatch pusher backend, "doctor" when they are in the
+	// central Prometheus pipeline (the kind demo).
+	Source string
 }
 
 // Render returns an indented Grafana dashboard JSON document.
@@ -38,19 +42,23 @@ func Render(info Info) ([]byte, error) {
 	if logGroup == "" {
 		logGroup = "/aws/ecs/" + partition
 	}
+	source := strings.TrimSpace(info.Source)
+	if source == "" {
+		source = "aws"
+	}
 	// The central Doctor pipeline normalizes OTLP resource attributes to
 	// guardian_partition, while the CloudWatch pusher read API exposes them as
 	// @resource.guardian.partition. The left side wins when it has data, so the
 	// same board works in both topologies.
 	probeSelector := fmt.Sprintf(
-		`max(guardian_probe_up{source="aws", guardian_partition="%s"}) or max(guardian_probe_up{source="aws", "@resource.guardian.partition"="%s"})`,
-		escape(partition), escape(partition),
+		`max(guardian_probe_up{source="%s", guardian_partition="%s"}) or max(guardian_probe_up{source="%s", "@resource.guardian.partition"="%s"})`,
+		escape(source), escape(partition), escape(source), escape(partition),
 	)
 	probeLatency := fmt.Sprintf(
-		`max by (probe) (guardian_probe_duration_seconds{source="aws", guardian_partition="%s"}) or max by (probe) (guardian_probe_duration_seconds{source="aws", "@resource.guardian.partition"="%s"})`,
-		escape(partition), escape(partition),
+		`max by (probe) (guardian_probe_duration_seconds{source="%s", guardian_partition="%s"}) or max by (probe) (guardian_probe_duration_seconds{source="%s", "@resource.guardian.partition"="%s"})`,
+		escape(source), escape(partition), escape(source), escape(partition),
 	)
-	appMetric := fmt.Sprintf(`{"http.server.request.duration", source="aws", "@resource.guardian.partition"="%s"}`, escape(partition))
+	appMetric := fmt.Sprintf(`{"http.server.request.duration", source="%s", "@resource.guardian.partition"="%s"}`, escape(source), escape(partition))
 	logQuery := fmt.Sprintf(`{source="aws", aws_log_group="%s"}`, escape(logGroup))
 
 	panels := []any{
