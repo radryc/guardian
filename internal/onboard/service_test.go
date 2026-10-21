@@ -14,6 +14,7 @@ import (
 	"github.com/rydzu/ainfra/guardian/internal/pusher/probes"
 	"github.com/rydzu/ainfra/guardian/internal/registry"
 	"github.com/rydzu/ainfra/guardian/internal/store/memory"
+	"github.com/rydzu/ainfra/guardian/internal/workspacepub"
 	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
 )
 
@@ -128,6 +129,55 @@ func TestServicePreservesExistingPartitionConfig(t *testing.T) {
 	}
 	if got := readStore(t, store, paths.PartitionConfig("customer-prod-1")); got != string(existing) {
 		t.Fatalf("config was overwritten:\n%s", got)
+	}
+}
+
+type fakePublisher struct {
+	req *workspacepub.PublishRequest
+}
+
+func (f *fakePublisher) Publish(_ context.Context, req workspacepub.PublishRequest) (*workspacepub.PublishResult, error) {
+	f.req = &req
+	return &workspacepub.PublishResult{Repository: workspacepub.RepositoryResult{Status: "published"}}, nil
+}
+
+func TestServicePublishesRepoWhenRequested(t *testing.T) {
+	server := newFakePusher(t, []any{map[string]any{
+		"stack":     "CustomerAppStack",
+		"partition": "customer-prod-1",
+		"intent":    "app",
+		"publish":   map[string]any{"mode": "repo", "repo": "guardian-onboarding"},
+	}}, nil)
+	defer server.Close()
+
+	store := memory.New()
+	seedPusher(t, store, "aws-123456789012", server.URL)
+	reg := registry.New(store)
+	if err := reg.PutRepo(context.Background(), &registry.Repo{
+		Name:   "guardian-onboarding",
+		Source: "https://github.com/example/guardian-onboarding.git",
+		Branch: "main",
+	}); err != nil {
+		t.Fatalf("put repo: %v", err)
+	}
+	publisher := &fakePublisher{}
+	service := &Service{
+		Store:     store,
+		Registry:  reg,
+		Resolver:  observed.StaticResolver{"aws-123456789012": {Name: "aws-123456789012", Client: observed.NewClient(server.URL, "", time.Second)}},
+		Publisher: publisher,
+	}
+	if _, err := service.Run(context.Background(), Options{}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if publisher.req == nil {
+		t.Fatalf("publisher was not called")
+	}
+	if !strings.Contains(publisher.req.Repository.Operations[0].Path, "guardian/partitions/customer-prod-1/") {
+		t.Fatalf("operation path = %q", publisher.req.Repository.Operations[0].Path)
+	}
+	if publisher.req.Repository.RepoURL == "" {
+		t.Fatalf("repo URL was not forwarded")
 	}
 }
 

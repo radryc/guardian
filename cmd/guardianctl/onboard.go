@@ -25,9 +25,10 @@ func awsOnboardCommand(store guardianapi.Store, printer *output.Printer) *comman
 		registryStore := registry.New(store)
 		resolver := &observed.RegistryResolver{Registry: registryStore}
 		service := &onboard.Service{
-			Store:    store,
-			Registry: registryStore,
-			Resolver: resolver,
+			Store:     store,
+			Registry:  registryStore,
+			Resolver:  resolver,
+			Publisher: workspacePublisherFromStore(store)(ctx),
 		}
 		results, runErr := service.Run(ctx, onboard.Options{
 			Pusher:    *pusher,
