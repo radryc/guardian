@@ -67,6 +67,7 @@ func main() {
 	}
 	telemetryCfg.ServiceName = "guardian.pusher." + pusherName
 	telemetryCfg.ResourceAttributes = map[string]string{
+		"service.alias":     pusherName,
 		"guardian.pusher":   pusherName,
 		"guardian.cluster":  cluster,
 		"guardian.provider": "docker",
@@ -76,8 +77,8 @@ func main() {
 		log.Fatalf("setup telemetry: %v", telemetryErr)
 	}
 	if telemetryHandle.Enabled() {
-		log.SetOutput(io.MultiWriter(os.Stderr, telemetry.NewStdLogWriter("guardian/stdlog")))
-		telemetry.EmitInfo(context.Background(), "guardian/pusher/docker", "guardian docker pusher telemetry enabled")
+		log.SetOutput(io.MultiWriter(os.Stderr, telemetry.NewStdLogWriter("guardian.stdlog")))
+		telemetry.EmitInfo(context.Background(), "guardian.pusher.docker", "guardian docker pusher telemetry enabled")
 		defer func() {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()

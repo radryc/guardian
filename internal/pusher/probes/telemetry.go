@@ -60,14 +60,14 @@ func (r *Runner) emitTelemetry(ctx context.Context, results []Result, previous m
 		metrics = append(metrics, map[string]any{
 			"resource": resource,
 			"scopeMetrics": []any{map[string]any{
-				"scope": map[string]any{"name": "guardian.probes"},
+				"scope": map[string]any{"name": "guardian.probe"},
 				"metrics": []any{
-					metricGauge("guardian_probe_up", "1", boolFloat(result.Success), now, attrs),
-					metricGauge("guardian_probe_duration_seconds", "s", float64(result.DurationMs)/1000, now, attrs),
-					metricGauge("guardian_probe_last_success_timestamp_seconds", "s", timestampSeconds(result.LastSuccessAt), now, attrs),
-					metricGauge("guardian_probe_consecutive_failures", "1", float64(result.ConsecutiveFailures), now, attrs),
-					metricGauge("guardian_probe_state_age_seconds", "s", stateAge, now, attrs),
-					metricGauge("guardian_probe_info", "1", 1, now, append(append([]any(nil), attrs...),
+					metricGauge("guardian.probe.up", "1", boolFloat(result.Success), now, attrs),
+					metricGauge("guardian.probe.duration.seconds", "s", float64(result.DurationMs)/1000, now, attrs),
+					metricGauge("guardian.probe.last_success.timestamp.seconds", "s", timestampSeconds(result.LastSuccessAt), now, attrs),
+					metricGauge("guardian.probe.consecutive_failures", "1", float64(result.ConsecutiveFailures), now, attrs),
+					metricGauge("guardian.probe.state_age.seconds", "s", stateAge, now, attrs),
+					metricGauge("guardian.probe.info", "1", 1, now, append(append([]any(nil), attrs...),
 						attrString("guardian.probe.target", metricTarget(result.Target)),
 						attrString("guardian.probe.path", result.Path),
 					)),
@@ -87,7 +87,7 @@ func (r *Runner) emitTelemetry(ctx context.Context, results []Result, previous m
 			logs = append(logs, map[string]any{
 				"resource": resource,
 				"scopeLogs": []any{map[string]any{
-					"scope": map[string]any{"name": "guardian.probes"},
+					"scope": map[string]any{"name": "guardian.probe"},
 					"logRecords": []any{map[string]any{
 						"timeUnixNano":   strconv.FormatInt(now.UnixNano(), 10),
 						"severityNumber": severity,
@@ -100,11 +100,11 @@ func (r *Runner) emitTelemetry(ctx context.Context, results []Result, previous m
 			spans = append(spans, map[string]any{
 				"resource": resource,
 				"scopeSpans": []any{map[string]any{
-					"scope": map[string]any{"name": "guardian.probes"},
+					"scope": map[string]any{"name": "guardian.probe"},
 					"spans": []any{map[string]any{
 						"traceId":           randomHex(16),
 						"spanId":            randomHex(8),
-						"name":              "guardian.probe",
+						"name":              "guardian.probe.run",
 						"kind":              1,
 						"startTimeUnixNano": strconv.FormatInt(now.Add(-time.Duration(result.DurationMs)*time.Millisecond).UnixNano(), 10),
 						"endTimeUnixNano":   strconv.FormatInt(now.UnixNano(), 10),
@@ -190,21 +190,13 @@ func otelResource(result Result, cfg Config) map[string]any {
 }
 
 // metricAttributes is the documented low-cardinality probe metric label set.
+// Asset identity (service, partition, intent, asset, pusher, cluster, provider)
+// comes from the OTLP resource, never from point attributes.
 func metricAttributes(result Result, cfg Config) []any {
-	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
-	if provider == "" {
-		provider = "local"
-	}
 	return []any{
-		attrString("pusher", result.Pusher),
-		attrString("cluster", result.Cluster),
-		attrString("partition", result.Partition),
-		attrString("intent", result.Intent),
-		attrString("asset", result.Asset),
-		attrString("probe", result.Name),
-		attrString("type", result.Type),
-		attrString("mode", result.Mode),
-		attrString("provider", provider),
+		attrString("guardian.probe.name", result.Name),
+		attrString("guardian.probe.type", result.Type),
+		attrString("guardian.probe.mode", result.Mode),
 	}
 }
 

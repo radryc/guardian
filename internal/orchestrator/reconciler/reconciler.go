@@ -36,7 +36,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const reconcilerScope = "guardian/reconciler"
+const reconcilerScope = "guardian.reconciler"
 
 var (
 	reconcileMetricsOnce sync.Once
@@ -247,7 +247,7 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 	if count != nil {
 		count.Add(ctx, 1, metricapi.WithAttributes(attrs...))
 	}
-	ctx, span := otel.Tracer(reconcilerScope).Start(ctx, "guardian.reconcile.partition", trace.WithAttributes(attrs...))
+	ctx, span := otel.Tracer(reconcilerScope).Start(ctx, "guardian.reconciler.partition", trace.WithAttributes(attrs...))
 	startedAt := time.Now()
 	telemetry.EmitInfo(ctx, reconcilerScope, fmt.Sprintf("reconciling partition %s", partitionName))
 	defer func() {
@@ -1085,15 +1085,15 @@ func reconcileInstruments() (metricapi.Int64Counter, metricapi.Int64Counter, met
 	reconcileMetricsOnce.Do(func() {
 		meter := otel.Meter(reconcilerScope)
 		var err error
-		reconcileCounter, err = meter.Int64Counter("guardian.reconcile.partition.executions")
+		reconcileCounter, err = meter.Int64Counter("guardian.reconciler.partition.executions")
 		if err != nil {
 			telemetry.EmitError(context.Background(), reconcilerScope, fmt.Sprintf("create reconcile counter: %v", err))
 		}
-		reconcileFailCounter, err = meter.Int64Counter("guardian.reconcile.partition.failures")
+		reconcileFailCounter, err = meter.Int64Counter("guardian.reconciler.partition.failures")
 		if err != nil {
 			telemetry.EmitError(context.Background(), reconcilerScope, fmt.Sprintf("create reconcile fail counter: %v", err))
 		}
-		reconcileDuration, err = meter.Float64Histogram("guardian.reconcile.partition.duration")
+		reconcileDuration, err = meter.Float64Histogram("guardian.reconciler.partition.duration.seconds", metricapi.WithUnit("s"))
 		if err != nil {
 			telemetry.EmitError(context.Background(), reconcilerScope, fmt.Sprintf("create reconcile duration histogram: %v", err))
 		}

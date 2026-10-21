@@ -67,8 +67,12 @@ func TestApplyObservabilityEnvUsesServiceNameOverride(t *testing.T) {
 		Target: targetdomain.Placement{Cluster: "main"},
 	}
 	env := ApplyObservabilityEnv(nil, in, "kubernetes", "otel-collector.otel.svc.cluster.local:4317")
-	if got := env["OTEL_SERVICE_NAME"]; got != "custom.service" {
+	if got := env["OTEL_SERVICE_NAME"]; got != "doctor.query.query" {
 		t.Fatalf("OTEL_SERVICE_NAME = %q", got)
+	}
+	attrs := parseOtelResourceAttrs(env["OTEL_RESOURCE_ATTRIBUTES"])
+	if got := attrs["service.alias"]; got != "custom.service" {
+		t.Fatalf("service.alias = %q", got)
 	}
 }
 
@@ -88,12 +92,15 @@ func TestApplyOtelEnvPreservesExplicitValues(t *testing.T) {
 		"OTEL_RESOURCE_ATTRIBUTES": "guardian.asset=explicit,service.name=explicit",
 	}, in, "kubernetes")
 
-	if got := env["OTEL_SERVICE_NAME"]; got != "custom-service" {
+	if got := env["OTEL_SERVICE_NAME"]; got != "doctor.query.query" {
 		t.Fatalf("OTEL_SERVICE_NAME = %q", got)
 	}
 	attrs := parseOtelResourceAttrs(env["OTEL_RESOURCE_ATTRIBUTES"])
-	if got := attrs["service.name"]; got != "custom-service" {
+	if got := attrs["service.name"]; got != "doctor.query.query" {
 		t.Fatalf("service.name = %q", got)
+	}
+	if got := attrs["service.alias"]; got != "custom-service" {
+		t.Fatalf("service.alias = %q", got)
 	}
 	if got := attrs["guardian.asset"]; got != "explicit" {
 		t.Fatalf("explicit guardian.asset = %q", got)

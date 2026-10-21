@@ -235,8 +235,8 @@ func parseMonofsFlowMetricLine(line string) (flowMetricSeries, float64, bool) {
 	}
 	series := flowMetricSeries{
 		metric:    metric,
-		partition: fallbackLabel(labels["partition"], "unknown"),
-		intent:    fallbackLabel(labels["intent"], "none"),
+		partition: fallbackLabel(labels["guardian_partition"], "unknown"),
+		intent:    fallbackLabel(labels["guardian_intent"], "none"),
 		pathKind:  fallbackLabel(labels["path_kind"], "other"),
 	}
 	return series, value, true
