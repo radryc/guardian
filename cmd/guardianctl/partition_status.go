@@ -161,6 +161,10 @@ func waitForPartitionStatus(ctx context.Context, store guardianapi.Store, partit
 				}
 			}
 			if allMatch {
+				// Observe-only partitions may stay Ready at the partition
+				// level while every intent carries the meaningful status.
+				// Report the status the caller waited for.
+				status.Status = want
 				return status, nil
 			}
 		}

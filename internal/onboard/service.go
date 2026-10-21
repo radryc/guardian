@@ -22,15 +22,23 @@ import (
 	"github.com/rydzu/ainfra/guardian/internal/paths"
 	"github.com/rydzu/ainfra/guardian/internal/pusher/probes"
 	"github.com/rydzu/ainfra/guardian/internal/registry"
+	"github.com/rydzu/ainfra/guardian/internal/repoconfig"
+	"github.com/rydzu/ainfra/guardian/internal/workspacepub"
 	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
 )
 
 // Service materializes observed partitions from pusher onboarding descriptors.
 type Service struct {
-	Store    guardianapi.Store
-	Registry *registry.Store
-	Resolver observed.EndpointResolver
-	Now      func() time.Time
+	Store     guardianapi.Store
+	Registry  *registry.Store
+	Resolver  observed.EndpointResolver
+	Publisher Publisher
+	Now       func() time.Time
+}
+
+// Publisher commits a generated partition bundle to a Guardian-owned repo.
+type Publisher interface {
+	Publish(ctx context.Context, req workspacepub.PublishRequest) (*workspacepub.PublishResult, error)
 }
 
 // Options filters the onboarding run.
@@ -137,6 +145,12 @@ func (s *Service) Run(ctx context.Context, opts Options) ([]Result, error) {
 						configSeen[descriptor.Partition] = true
 					}
 					writes = append(writes, write)
+				}
+				if descriptor.Publish != nil && strings.EqualFold(strings.TrimSpace(descriptor.Publish.Mode), "repo") {
+					if err := s.publishRepo(ctx, descriptor, descriptorWrites); err != nil {
+						result.Error = err.Error()
+						errs = append(errs, fmt.Errorf("%s/%s: publish repo: %w", pusher.Name, descriptor.Stack, err))
+					}
 				}
 				partitions[descriptor.Partition] = struct{}{}
 				partitionsForPusher[descriptor.Partition] = struct{}{}
@@ -307,6 +321,66 @@ func (s *Service) probeSnapshot(
 		LogicalPath: paths.ProbeSnapshot(pusher.Name, partition),
 		Content:     append(raw, '\n'),
 	}}, len(results), nil
+}
+
+func (s *Service) publishRepo(
+	ctx context.Context,
+	descriptor onboarding.Descriptor,
+	writes []guardianapi.PathWrite,
+) error {
+	if s.Publisher == nil {
+		return fmt.Errorf("repo publish requested but no workspace publisher is configured")
+	}
+	repoName := strings.TrimSpace(descriptor.Publish.Repo)
+	if repoName == "" {
+		return fmt.Errorf("publish.repo is required for mode=repo")
+	}
+	repo, err := s.Registry.GetRepo(ctx, repoName)
+	if err != nil {
+		return fmt.Errorf("read repo %s: %w", repoName, err)
+	}
+	displayPath := repoconfig.DisplayPathFromSource(repo.Source)
+	if displayPath == "" {
+		return fmt.Errorf("repo %s has no usable source URL", repoName)
+	}
+	prefix := paths.PartitionRoot(descriptor.Partition) + "/"
+	operations := make([]workspacepub.Operation, 0, len(writes))
+	for _, write := range writes {
+		if !strings.HasPrefix(write.LogicalPath, prefix) {
+			continue
+		}
+		relative := strings.TrimPrefix(write.LogicalPath, prefix)
+		operations = append(operations, workspacepub.Operation{
+			Kind:    workspacepub.OperationUpsert,
+			Path:    "guardian/partitions/" + descriptor.Partition + "/" + relative,
+			Content: write.Content,
+		})
+	}
+	if len(operations) == 0 {
+		return nil
+	}
+	branch := strings.TrimSpace(descriptor.Publish.Branch)
+	if branch == "" {
+		branch = repo.Branch
+	}
+	_, err = s.Publisher.Publish(ctx, workspacepub.PublishRequest{
+		WorkspaceID:    "guardian-onboard-" + descriptor.Partition,
+		BranchStrategy: workspacepub.StrategyPerRepoBranch,
+		CommitMessage:  fmt.Sprintf("Guardian onboarding: %s (%s)", descriptor.Stack, descriptor.Partition),
+		AuthorName:     "Guardian",
+		AuthorEmail:    "guardian@local",
+		Repository: workspacepub.Repository{
+			StorageID:   repo.Name,
+			DisplayPath: displayPath,
+			RepoURL:     repo.Source,
+			Branch:      branch,
+			Operations:  operations,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func resultAccount(descriptor onboarding.Descriptor, pusher registry.Pusher) string {
