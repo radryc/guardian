@@ -127,6 +127,15 @@ one Grafana pane, either add one AWS/Prometheus datasource per account and selec
 it in the dashboard, or centralize CloudWatch/OTLP telemetry into the monitoring
 account.
 
+## Demo bootstrap note
+
+The demo accounts normally use Guardian's scoped CDK execution policy. The S8
+customer app is deployed outside Guardian and creates its own ECS task roles, so
+the scenario temporarily switches those demo accounts to the CDK default
+(`AdministratorAccess`) execution policy. A real customer uses their own CDK
+bootstrap/execution role; Guardian never needs to grant itself permission to
+mutate the customer stack.
+
 ## Demo
 
 `demo.sh onboard` (or `demo.sh test --scenario 8`) deploys the customer stack
