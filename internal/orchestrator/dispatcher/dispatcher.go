@@ -48,9 +48,17 @@ type Dispatcher struct {
 	releaseMu    sync.RWMutex
 	releaseCache map[string]*releasedomain.PartitionReleaseLog
 
+	eventMu      sync.Mutex
+	eventHistory map[string][]string
+
+	payloadFilesMu    sync.RWMutex
+	generatedPayloads map[string]map[string]bool // dir -> set of logicalPaths
+
 	partitionWriteMu    sync.Mutex
 	partitionWriteLocks map[string]*sync.Mutex
 }
+
+const maxEventsPerPartition = 250
 
 func NewDispatcher(store guardianapi.Store, principalID string) *Dispatcher {
 	return &Dispatcher{
@@ -59,6 +67,8 @@ func NewDispatcher(store guardianapi.Store, principalID string) *Dispatcher {
 		lastWriteHash:       make(map[string]uint64),
 		runtimeCache:        make(map[string]*statedomain.PartitionRuntime),
 		releaseCache:        make(map[string]*releasedomain.PartitionReleaseLog),
+		eventHistory:        make(map[string][]string),
+		generatedPayloads:   make(map[string]map[string]bool),
 		partitionWriteLocks: make(map[string]*sync.Mutex),
 	}
 }
@@ -361,7 +371,58 @@ func (d *Dispatcher) WriteEvent(ctx context.Context, event *historydomain.EventR
 	guardianWritesTotal.WithLabelValues("write_event").Inc()
 	guardianWriteBytesTotal.WithLabelValues("write_event").Add(float64(len(content)))
 	d.publish(logicalPath, content, contentTypeJSON)
+	d.prunePartitionEvents(ctx, event.Partition, event.EventID, event.CorrelationID)
 	return nil
+}
+
+func (d *Dispatcher) prunePartitionEvents(ctx context.Context, partition, newEventID, correlationID string) {
+	if partition == "" || newEventID == "" {
+		return
+	}
+	var toDelete []guardianapi.PathDelete
+	d.eventMu.Lock()
+	if d.eventHistory == nil {
+		d.eventHistory = make(map[string][]string)
+	}
+	ids, initialized := d.eventHistory[partition]
+	if !initialized {
+		entries, err := d.store.ListDir(ctx, paths.StateEventsDir(partition))
+		if err == nil {
+			for _, entry := range entries {
+				if entry.IsDir || !strings.HasSuffix(entry.Name, ".json") {
+					continue
+				}
+				id := strings.TrimSuffix(entry.Name, ".json")
+				if id != "" && id != newEventID {
+					ids = append(ids, id)
+				}
+			}
+			sort.Strings(ids)
+		}
+	}
+	ids = append(ids, newEventID)
+	if len(ids) > maxEventsPerPartition {
+		excess := len(ids) - maxEventsPerPartition
+		evicted := ids[:excess]
+		ids = append([]string(nil), ids[excess:]...)
+		toDelete = make([]guardianapi.PathDelete, 0, len(evicted))
+		for _, id := range evicted {
+			toDelete = append(toDelete, guardianapi.PathDelete{LogicalPath: paths.EventState(partition, id)})
+		}
+	}
+	d.eventHistory[partition] = ids
+	d.eventMu.Unlock()
+
+	if len(toDelete) > 0 {
+		_, _ = d.store.DeletePaths(ctx, guardianapi.DeleteBatch{
+			Deletes: toDelete,
+			Context: guardianapi.MutationContext{
+				PrincipalID:   d.principalID,
+				Reason:        "prune old partition events",
+				CorrelationID: correlationID,
+			},
+		})
+	}
 }
 
 func (d *Dispatcher) ArchiveDeployment(ctx context.Context, rec *historydomain.DeploymentRecord, manifestContent []byte, logs []taskdomain.LogEntry) error {
@@ -671,17 +732,39 @@ func (d *Dispatcher) staleReleaseLogPartitions(seen map[string]struct{}) []strin
 // longer produced are deleted, and unchanged files are left untouched. It uses
 // the dispatcher's configured store principal.
 func (d *Dispatcher) SyncGeneratedPayload(ctx context.Context, dir string, files map[string][]byte, reason string) error {
-	existing, err := listStoreFiles(ctx, d.store, dir)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	var existing []string
+	d.payloadFilesMu.RLock()
+	cachedSet, hasCached := d.generatedPayloads[dir]
+	if hasCached {
+		existing = make([]string, 0, len(cachedSet))
+		for p := range cachedSet {
+			existing = append(existing, p)
+		}
+		sort.Strings(existing)
 	}
+	d.payloadFilesMu.RUnlock()
+
+	if !hasCached {
+		var err error
+		existing, err = listStoreFiles(ctx, d.store, dir)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+
 	present := make(map[string]bool, len(files))
 	writes := make([]guardianapi.PathWrite, 0, len(files))
 	for rel, content := range files {
 		logicalPath := path.Join(dir, rel)
 		present[logicalPath] = true
+		if d.contentUnchanged(logicalPath, content) {
+			guardianSkippedWritesTotal.WithLabelValues("sync_generated_payload").Inc()
+			continue
+		}
 		current, readErr := d.store.ReadFile(ctx, logicalPath)
-		if readErr == nil && string(current) == string(content) {
+		if readErr == nil && bytes.Equal(current, content) {
+			d.recordHash(logicalPath, content)
+			guardianSkippedWritesTotal.WithLabelValues("sync_generated_payload").Inc()
 			continue
 		}
 		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
@@ -702,6 +785,9 @@ func (d *Dispatcher) SyncGeneratedPayload(ctx context.Context, dir string, files
 		}); err != nil {
 			return err
 		}
+		for _, w := range writes {
+			d.recordHash(w.LogicalPath, w.Content)
+		}
 		guardianWritesTotal.WithLabelValues("sync_generated_payload").Add(float64(len(writes)))
 	}
 	if len(deletes) > 0 {
@@ -711,8 +797,19 @@ func (d *Dispatcher) SyncGeneratedPayload(ctx context.Context, dir string, files
 		}); err != nil {
 			return err
 		}
+		d.lastHashMu.Lock()
+		for _, del := range deletes {
+			delete(d.lastWriteHash, del.LogicalPath)
+		}
+		d.lastHashMu.Unlock()
 		guardianDeletesTotal.WithLabelValues("sync_generated_payload").Add(float64(len(deletes)))
 	}
+	d.payloadFilesMu.Lock()
+	if d.generatedPayloads == nil {
+		d.generatedPayloads = make(map[string]map[string]bool)
+	}
+	d.generatedPayloads[dir] = present
+	d.payloadFilesMu.Unlock()
 	return nil
 }
 

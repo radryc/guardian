@@ -241,6 +241,9 @@ func (d *CDKStackDriver) Check(ctx context.Context, in registry.AssetInput) erro
 		return err
 	}
 	defer cleanup()
+	if err := rejectSnapshotApply(req, "check"); err != nil {
+		return err
+	}
 	if err := d.backend.Synthesize(ctx, req); err != nil {
 		return err
 	}
@@ -263,6 +266,9 @@ func (d *CDKStackDriver) Diff(ctx context.Context, in registry.AssetInput) (task
 		return taskdomain.DriftReport{}, err
 	}
 	defer cleanup()
+	if err := rejectSnapshotApply(req, "diff"); err != nil {
+		return taskdomain.DriftReport{}, err
+	}
 	if err := d.backend.Synthesize(ctx, req); err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -295,6 +301,9 @@ func (d *CDKStackDriver) Apply(ctx context.Context, in registry.AssetInput) (reg
 		return registry.AssetResult{}, err
 	}
 	defer cleanup()
+	if err := rejectSnapshotApply(req, "apply"); err != nil {
+		return registry.AssetResult{}, err
+	}
 	if err := d.backend.Synthesize(ctx, req); err != nil {
 		return registry.AssetResult{}, err
 	}
@@ -332,7 +341,17 @@ func (d *CDKStackDriver) Destroy(ctx context.Context, in registry.AssetInput) er
 		return err
 	}
 	defer cleanup()
+	if err := rejectSnapshotApply(req, "destroy"); err != nil {
+		return err
+	}
 	return d.backend.DeleteStack(ctx, req)
+}
+
+func rejectSnapshotApply(req StackRequest, operation string) error {
+	if !req.Manifest.Snapshot {
+		return nil
+	}
+	return fmt.Errorf("cloudformation stack %s uses an observed live snapshot; import the source CDK app before %s", req.Manifest.StackName, operation)
 }
 
 func (d *CDKStackDriver) prepareRequest(ctx context.Context, in registry.AssetInput, withSource bool) (StackRequest, func(), error) {

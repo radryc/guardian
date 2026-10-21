@@ -6,6 +6,7 @@ package observedgen
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -23,8 +24,39 @@ var (
 	acronymSplit  = regexp.MustCompile(`([A-Z]+)([A-Z][a-z])`)
 )
 
+// Mode selects how generated CloudFormation stacks are represented.
+type Mode string
+
+const (
+	// ModeObserved generates report-only observed intents.
+	ModeObserved Mode = "observed"
+	// ModeManaged generates standard intents that Guardian applies as stacks.
+	ModeManaged Mode = "managed"
+)
+
+func normalizeMode(mode Mode) (Mode, error) {
+	switch Mode(strings.ToLower(strings.TrimSpace(string(mode)))) {
+	case "", ModeObserved:
+		return ModeObserved, nil
+	case ModeManaged:
+		return ModeManaged, nil
+	default:
+		return "", fmt.Errorf("unsupported mode %q (use %s or %s)", mode, ModeObserved, ModeManaged)
+	}
+}
+
+func intentTypeForMode(mode Mode) string {
+	if mode == ModeManaged {
+		return "standard"
+	}
+	return "observed"
+}
+
 // Options configures bundle generation.
 type Options struct {
+	// Mode selects observed (report-only) or managed (standard) intents.
+	// Defaults to observed.
+	Mode Mode
 	// AssemblyDir is the local CDK cloud assembly directory (cdk.out).
 	AssemblyDir string
 	// OutDir is the local partition bundle directory to create.
@@ -57,8 +89,33 @@ type assemblyManifest struct {
 }
 
 type assemblyStack struct {
+	ID           string
 	Name         string
 	TemplateFile string
+}
+
+func stackArtifactID(stack assemblyStack) string {
+	if id := strings.TrimSpace(stack.ID); id != "" {
+		return id
+	}
+	return stack.Name
+}
+
+// assignIntentNames gives every stack a unique intent name. CloudFormation
+// stack names are unique, but two names can slug to the same value.
+func assignIntentNames(stacks []assemblyStack) []string {
+	used := make(map[string]int, len(stacks))
+	names := make([]string, len(stacks))
+	for i, stack := range stacks {
+		base := Slug(stack.Name)
+		name := base
+		if count := used[base]; count > 0 {
+			name = fmt.Sprintf("%s-%d", base, count+1)
+		}
+		used[base]++
+		names[i] = name
+	}
+	return names
 }
 
 // Generate writes an observed partition bundle and returns the intent names.
@@ -78,6 +135,10 @@ func Generate(opts Options) ([]string, error) {
 	interval := strings.TrimSpace(opts.Interval)
 	if interval == "" {
 		interval = "1m"
+	}
+	mode, err := normalizeMode(opts.Mode)
+	if err != nil {
+		return nil, err
 	}
 
 	stacks, err := readAssemblyStacks(opts.AssemblyDir)
@@ -113,15 +174,16 @@ func Generate(opts Options) ([]string, error) {
 	}
 
 	created := make([]string, 0, len(stacks))
-	for _, stack := range stacks {
-		intentName := Slug(stack.Name)
+	intentNames := assignIntentNames(stacks)
+	for i, stack := range stacks {
+		intentName := intentNames[i]
 		payloadPath := payloadDir + "/" + intentName + ".yaml"
 		payload := fmt.Sprintf(`sourceType: cdk-ts
 prebuiltAssemblyDir: %s/cdk.out
 stackName: %s
 stackID: %s
 packageManager: none
-`, payloadDir, stack.Name, stack.Name)
+`, payloadDir, stack.Name, stackArtifactID(stack))
 		if err := os.WriteFile(filepath.Join(opts.OutDir, "payloads", "aws", intentName+".yaml"), []byte(payload), 0o644); err != nil {
 			return nil, err
 		}
@@ -130,7 +192,7 @@ kind: Intent
 metadata:
   name: %s
 spec:
-  intentType: observed
+  intentType: %s
   targetPusher: %s
   target:
     account: "%s"
@@ -140,16 +202,46 @@ spec:
       name: %s
       payload:
         aws: %s
-`, intentName, pusher, opts.Account, opts.Region, intentName, payloadPath)
+`, intentName, intentTypeForMode(mode), pusher, opts.Account, opts.Region, intentName, payloadPath)
 		if err := os.WriteFile(filepath.Join(opts.OutDir, "intents", intentName+".yaml"), []byte(intent), 0o644); err != nil {
 			return nil, err
 		}
 		created = append(created, intentName)
 	}
-	if err := copyAssemblyTemplates(opts.AssemblyDir, filepath.Join(opts.OutDir, "payloads", "aws", "cdk.out")); err != nil {
+	if mode == ModeManaged {
+		if err := copyAssemblyFull(opts.AssemblyDir, filepath.Join(opts.OutDir, "payloads", "aws", "cdk.out")); err != nil {
+			return nil, fmt.Errorf("copy cloud assembly: %w", err)
+		}
+	} else if err := copyAssemblyTemplates(opts.AssemblyDir, filepath.Join(opts.OutDir, "payloads", "aws", "cdk.out")); err != nil {
 		return nil, fmt.Errorf("copy assembly templates: %w", err)
 	}
 	return created, nil
+}
+
+// copyAssemblyFull copies the whole cloud assembly, including staged asset
+// payloads, so a standard (managed) intent can run cdk deploy from it.
+func copyAssemblyFull(src, dst string) error {
+	if filepath.Clean(src) == filepath.Clean(dst) {
+		return nil
+	}
+	return filepath.WalkDir(src, func(current string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, current)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		content, err := os.ReadFile(current)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, content, 0o644)
+	})
 }
 
 // filterStacks returns the stacks matching the comma-separated selector globs,
@@ -206,7 +298,7 @@ func readAssemblyStacks(assemblyDir string) ([]assemblyStack, error) {
 		if stackName == "" {
 			continue
 		}
-		stacks = append(stacks, assemblyStack{Name: stackName, TemplateFile: artifact.Properties.TemplateFile})
+		stacks = append(stacks, assemblyStack{ID: id, Name: stackName, TemplateFile: artifact.Properties.TemplateFile})
 	}
 	if len(stacks) == 0 {
 		return nil, fmt.Errorf("assembly %s contains no CloudFormation stacks", assemblyDir)

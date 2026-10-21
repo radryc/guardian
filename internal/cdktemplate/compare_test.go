@@ -34,3 +34,26 @@ func TestHashNormalizesEncodings(t *testing.T) {
 		t.Fatal("YAML and JSON encodings of the same template must hash equally")
 	}
 }
+
+func TestCompareExpandsShortFormIntrinsics(t *testing.T) {
+	const yamlWithRef = `Resources:
+  Bucket:
+    Type: AWS::S3::Bucket
+  Policy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Bucket
+      Arn: !GetAtt Bucket.Arn
+`
+	const jsonWithRef = `{"Resources":{"Bucket":{"Type":"AWS::S3::Bucket"},"Policy":{"Type":"AWS::S3::BucketPolicy","Properties":{"Bucket":{"Ref":"Bucket"},"Arn":{"Fn::GetAtt":["Bucket","Arn"]}}}}}`
+	changed, err := Compare(jsonWithRef, yamlWithRef)
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
+	if len(changed) != 0 {
+		t.Fatalf("short-form intrinsics differ: %v", changed)
+	}
+	if Hash(jsonWithRef) != Hash(yamlWithRef) {
+		t.Fatal("short-form YAML and long-form JSON must hash equally")
+	}
+}

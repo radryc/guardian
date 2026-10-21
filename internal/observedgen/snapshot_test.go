@@ -73,12 +73,16 @@ func TestSnapshotBuildsObservedBundle(t *testing.T) {
 	var payload struct {
 		PrebuiltAssemblyDir string `yaml:"prebuiltAssemblyDir"`
 		StackName           string `yaml:"stackName"`
+		Snapshot            bool   `yaml:"snapshot"`
 	}
 	if err := yaml.Unmarshal(files["payloads/aws/aws-pusher-stack.yaml"], &payload); err != nil {
 		t.Fatalf("parse payload manifest: %v", err)
 	}
 	if payload.StackName != "AwsPusherStack" {
 		t.Fatalf("payload stack name = %q", payload.StackName)
+	}
+	if !payload.Snapshot {
+		t.Fatal("snapshot payload must be marked snapshot: true")
 	}
 	if payload.PrebuiltAssemblyDir != "/partitions/strata-aws/payloads/aws/cdk.out" {
 		t.Fatalf("assembly dir = %q", payload.PrebuiltAssemblyDir)
@@ -120,6 +124,10 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: guardian-queue
+  Policy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref Queue]
 `
 	files, err := Snapshot(SnapshotOptions{
 		Partition: "p",
@@ -140,8 +148,19 @@ Resources:
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if parsed["Resources"] == nil {
+	resources, _ := parsed["Resources"].(map[string]any)
+	if resources == nil {
 		t.Fatalf("normalized template missing resources: %s", raw)
+	}
+	policy, _ := resources["Policy"].(map[string]any)
+	properties, _ := policy["Properties"].(map[string]any)
+	queues, _ := properties["Queues"].([]any)
+	if len(queues) != 1 {
+		t.Fatalf("queues = %#v", properties["Queues"])
+	}
+	ref, _ := queues[0].(map[string]any)
+	if ref["Ref"] != "Queue" {
+		t.Fatalf("short-form !Ref was not expanded: %#v", queues[0])
 	}
 }
 

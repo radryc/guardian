@@ -77,13 +77,37 @@ type IntentState struct {
 	Health              *taskdomain.HealthObservation           `json:"health,omitempty"`
 	ApplyReadiness      *taskdomain.ApplyReadiness              `json:"applyReadiness,omitempty"`
 	AssetObservations   map[string]*taskdomain.AssetObservation `json:"assetObservations,omitempty"`
-	LastTaskID          string                                  `json:"lastTaskID"`
-	LastError           *string                                 `json:"lastError,omitempty"`
-	PartitionMode       string                                  `json:"partitionMode,omitempty"`
-	RollbackTo          string                                  `json:"rollbackTo,omitempty"`
-	RollbackReason      string                                  `json:"rollbackReason,omitempty"`
-	Timestamps          StateTimestamps                         `json:"timestamps"`
+	// Resources is the per-resource inventory of an observed CloudFormation
+	// stack, computed at collection time. It is not part of the intent
+	// manifest: observed intents remain report-only and the stack template is
+	// the source of truth.
+	Resources      []ResourceObservation `json:"resources,omitempty"`
+	LastTaskID     string                `json:"lastTaskID"`
+	LastError      *string               `json:"lastError,omitempty"`
+	PartitionMode  string                `json:"partitionMode,omitempty"`
+	RollbackTo     string                `json:"rollbackTo,omitempty"`
+	RollbackReason string                `json:"rollbackReason,omitempty"`
+	Timestamps     StateTimestamps       `json:"timestamps"`
 }
+
+// ResourceObservation is one logical resource derived from an observed
+// CloudFormation stack template. AssetName is the synthetic Guardian asset
+// name shown in the UI; it is stable for a given logical ID.
+type ResourceObservation struct {
+	LogicalID string   `json:"logicalId"`
+	CfnType   string   `json:"cfnType"`
+	AssetName string   `json:"assetName"`
+	Status    string   `json:"status"`
+	DependsOn []string `json:"dependsOn,omitempty"`
+	Condition string   `json:"condition,omitempty"`
+}
+
+const (
+	ResourceInSync  = "InSync"
+	ResourceChanged = "Changed"
+	ResourceAdded   = "Added"
+	ResourceRemoved = "Removed"
+)
 
 type StateTimestamps struct {
 	LastQueuedAt time.Time `json:"lastQueuedAt"`
@@ -125,8 +149,22 @@ func CloneIntentState(in *IntentState) *IntentState {
 	out.Health = CloneHealthObservation(in.Health)
 	out.ApplyReadiness = CloneApplyReadiness(in.ApplyReadiness)
 	out.AssetObservations = CloneAssetObservationMap(in.AssetObservations)
+	out.Resources = CloneResourceObservations(in.Resources)
 	out.LastError = cloneStringPtr(in.LastError)
 	return &out
+}
+
+// CloneResourceObservations deep-copies the observed resource inventory.
+func CloneResourceObservations(in []ResourceObservation) []ResourceObservation {
+	if in == nil {
+		return nil
+	}
+	out := make([]ResourceObservation, len(in))
+	for i := range in {
+		out[i] = in[i]
+		out[i].DependsOn = append([]string(nil), in[i].DependsOn...)
+	}
+	return out
 }
 
 func ClonePartitionRuntime(in *PartitionRuntime) *PartitionRuntime {

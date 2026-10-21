@@ -17,6 +17,9 @@ import (
 
 // StoreOptions configures a store-native observed bundle ingest.
 type StoreOptions struct {
+	// Mode selects observed (report-only) or managed (standard) intents.
+	// Defaults to observed.
+	Mode Mode
 	// AssemblyDir is the logical MonoFS path of the CDK cloud assembly.
 	AssemblyDir string
 	// Partition is the target Guardian partition name.
@@ -61,6 +64,10 @@ func GenerateToStore(ctx context.Context, store guardianapi.Store, opts StoreOpt
 	if interval == "" {
 		interval = "1m"
 	}
+	mode, err := normalizeMode(opts.Mode)
+	if err != nil {
+		return nil, err
+	}
 
 	manifestContent, err := store.ReadFile(ctx, path.Join(assemblyDir, "manifest.json"))
 	if err != nil {
@@ -97,15 +104,16 @@ func GenerateToStore(ctx context.Context, store guardianapi.Store, opts StoreOpt
 	}
 
 	created := make([]string, 0, len(stacks))
-	for _, stack := range stacks {
-		intentName := Slug(stack.Name)
+	intentNames := assignIntentNames(stacks)
+	for i, stack := range stacks {
+		intentName := intentNames[i]
 		payloadPath := payloadDir + "/" + intentName + ".yaml"
 		payload := fmt.Sprintf(`sourceType: cdk-ts
 prebuiltAssemblyDir: %s/cdk.out
 stackName: %s
 stackID: %s
 packageManager: none
-`, payloadDir, stack.Name, stack.Name)
+`, payloadDir, stack.Name, stackArtifactID(stack))
 		writes = append(writes, guardianapi.PathWrite{
 			LogicalPath: payloadPath,
 			Content:     []byte(payload),
@@ -115,7 +123,7 @@ kind: Intent
 metadata:
   name: %s
 spec:
-  intentType: observed
+  intentType: %s
   targetPusher: %s
   target:
     account: "%s"
@@ -125,12 +133,12 @@ spec:
       name: %s
       payload:
         aws: %s
-`, intentName, pusher, opts.Account, opts.Region, intentName, payloadPath)
+`, intentName, intentTypeForMode(mode), pusher, opts.Account, opts.Region, intentName, payloadPath)
 		writes = append(writes, guardianapi.PathWrite{
 			LogicalPath: paths.IntentManifest(opts.Partition, intentName),
 			Content:     []byte(intent),
 		})
-		if stack.TemplateFile != "" {
+		if stack.TemplateFile != "" && mode != ModeManaged {
 			templateContent, readErr := store.ReadFile(ctx, path.Join(assemblyDir, stack.TemplateFile))
 			if readErr != nil {
 				return nil, fmt.Errorf("read template %s: %w", stack.TemplateFile, readErr)
@@ -142,12 +150,20 @@ spec:
 		}
 		created = append(created, intentName)
 	}
-	writes = append(writes, guardianapi.PathWrite{
-		LogicalPath: path.Join(payloadDir, "cdk.out", "manifest.json"),
-		Content:     manifestContent,
-	})
-	if assetsFiles, err := copyStoreAssemblyExtras(ctx, store, assemblyDir, payloadDir); err == nil {
-		writes = append(writes, assetsFiles...)
+	if mode == ModeManaged {
+		assemblyWrites, err := copyStoreAssembly(ctx, store, assemblyDir, path.Join(payloadDir, "cdk.out"))
+		if err != nil {
+			return nil, fmt.Errorf("copy cloud assembly: %w", err)
+		}
+		writes = append(writes, assemblyWrites...)
+	} else {
+		writes = append(writes, guardianapi.PathWrite{
+			LogicalPath: path.Join(payloadDir, "cdk.out", "manifest.json"),
+			Content:     manifestContent,
+		})
+		if assetsFiles, err := copyStoreAssemblyExtras(ctx, store, assemblyDir, payloadDir); err == nil {
+			writes = append(writes, assetsFiles...)
+		}
 	}
 
 	if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{
@@ -180,13 +196,47 @@ func parseAssemblyStacks(content []byte) ([]assemblyStack, error) {
 		if stackName == "" {
 			continue
 		}
-		stacks = append(stacks, assemblyStack{Name: stackName, TemplateFile: artifact.Properties.TemplateFile})
+		stacks = append(stacks, assemblyStack{ID: id, Name: stackName, TemplateFile: artifact.Properties.TemplateFile})
 	}
 	if len(stacks) == 0 {
 		return nil, fmt.Errorf("assembly contains no CloudFormation stacks")
 	}
 	sort.Slice(stacks, func(i, j int) bool { return stacks[i].Name < stacks[j].Name })
 	return stacks, nil
+}
+
+// copyStoreAssembly recursively copies a cloud assembly from the store,
+// including staged asset files, for standard (managed) intents.
+func copyStoreAssembly(ctx context.Context, store guardianapi.Store, src, dst string) ([]guardianapi.PathWrite, error) {
+	if path.Clean(src) == path.Clean(dst) {
+		return nil, nil
+	}
+	entries, err := store.ListDir(ctx, src)
+	if err != nil {
+		return nil, err
+	}
+	writes := make([]guardianapi.PathWrite, 0, len(entries))
+	for _, entry := range entries {
+		source := path.Join(src, entry.Name)
+		target := path.Join(dst, entry.Name)
+		if entry.IsDir {
+			nested, err := copyStoreAssembly(ctx, store, source, target)
+			if err != nil {
+				return nil, err
+			}
+			writes = append(writes, nested...)
+			continue
+		}
+		content, err := store.ReadFile(ctx, source)
+		if err != nil {
+			return nil, err
+		}
+		writes = append(writes, guardianapi.PathWrite{
+			LogicalPath: target,
+			Content:     content,
+		})
+	}
+	return writes, nil
 }
 
 func copyStoreAssemblyExtras(ctx context.Context, store guardianapi.Store, assemblyDir, payloadDir string) ([]guardianapi.PathWrite, error) {

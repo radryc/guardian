@@ -23,6 +23,10 @@ type stackPayload struct {
 	PackageManager      string            `yaml:"packageManager,omitempty"`
 	Context             map[string]string `yaml:"context,omitempty"`
 	OutputMap           map[string]string `yaml:"outputMap,omitempty"`
+	// Snapshot marks a prebuilt assembly generated from a live CloudFormation
+	// template during unmanaged import. These payloads are observe-only and
+	// must never be applied or destroyed by the standard CDK stack driver.
+	Snapshot bool `json:"snapshot,omitempty" yaml:"snapshot,omitempty"`
 }
 
 func loadStackPayload(ctx context.Context, in registry.AssetInput) (stackPayload, error) {

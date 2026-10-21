@@ -10,7 +10,9 @@ import (
 	"os"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/rydzu/ainfra/guardian/internal/compiler/manifest"
 	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
@@ -22,22 +24,87 @@ import (
 )
 
 type pusherListResponse struct {
-	Pushers []registry.Pusher `json:"pushers"`
+	Pushers    []registry.Pusher            `json:"pushers"`
+	Total      int                          `json:"total,omitempty"`
+	Matched    int                          `json:"matched,omitempty"`
+	NextCursor string                       `json:"nextCursor,omitempty"`
+	HasMore    bool                         `json:"hasMore,omitempty"`
+	Summary    *registry.PusherFleetSummary `json:"summary,omitempty"`
 }
 
 type repoListResponse struct {
 	Repos []registry.Repo `json:"repos"`
 }
 
+func parseUpdatedSinceParam(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	if ms, err := strconv.ParseInt(raw, 10, 64); err == nil && ms > 0 {
+		if ms > 1e12 {
+			return time.UnixMilli(ms).UTC()
+		}
+		return time.Unix(ms, 0).UTC()
+	}
+	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return t.UTC()
+	}
+	return time.Time{}
+}
+
 func (s *Server) handlePushers(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		pushers, err := registry.New(s.store).ListPushers(r.Context())
+		regStore := registry.New(s.store)
+		q := r.URL.Query()
+		if q.Get("summary_only") == "1" || q.Get("summary_only") == "true" {
+			summary, err := regStore.SummarizePushers(r.Context())
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, summary)
+			return
+		}
+
+		limit := 0
+		if rawLimit := strings.TrimSpace(q.Get("limit")); rawLimit != "" {
+			if n, err := strconv.Atoi(rawLimit); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		opts := registry.PusherListOptions{
+			Provider:      q.Get("provider"),
+			Region:        q.Get("region"),
+			Account:       q.Get("account"),
+			Cluster:       q.Get("cluster"),
+			Status:        q.Get("status"),
+			Version:       q.Get("version"),
+			Query:         q.Get("q"),
+			UpdatedSince:  parseUpdatedSinceParam(q.Get("updated_since")),
+			OutliersFirst: q.Get("outliers") == "1" || q.Get("outliers") == "true",
+			Limit:         limit,
+			Cursor:        q.Get("cursor"),
+		}
+		all, err := regStore.ListPushers(r.Context())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, pusherListResponse{Pushers: pushers})
+		page := registry.FilterAndPaginatePushers(all, opts, time.Now().UTC())
+		resp := pusherListResponse{
+			Pushers:    page.Pushers,
+			Total:      page.Total,
+			Matched:    page.Matched,
+			NextCursor: page.NextCursor,
+			HasMore:    page.HasMore,
+		}
+		if q.Get("summary") == "1" || q.Get("summary") == "true" {
+			summary := registry.ComputePusherFleetSummary(all, time.Now().UTC())
+			resp.Summary = &summary
+		}
+		writeJSON(w, http.StatusOK, resp)
 	case http.MethodPost:
 		var pusher registry.Pusher
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&pusher); err != nil {
@@ -56,6 +123,15 @@ func (s *Server) handlePushers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePusherRoute(w http.ResponseWriter, r *http.Request) {
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/pushers/"), "/")
+	if rest == "summary" && r.Method == http.MethodGet {
+		summary, err := registry.New(s.store).SummarizePushers(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, summary)
+		return
+	}
 	name := rest
 	action := ""
 	if idx := strings.Index(rest, "/"); idx >= 0 {

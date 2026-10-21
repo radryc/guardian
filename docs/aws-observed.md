@@ -102,6 +102,38 @@ can diff templates without running Node/CDK. If only `sourceDir` is present,
 Guardian uploads the source tree to the pusher, which synthesizes it and returns
 the diff (see `POST /v1/aws/observed/diff` below).
 
+## Resource-level assets
+
+The intent manifest stays stack-level: one observed intent per CloudFormation
+stack and one `CDKStack` asset. Guardian computes a per-resource inventory on
+every collection from the desired template and stores it on the intent state:
+
+```json
+{
+  "resources": [
+    {"logicalId": "OrdersTable", "cfnType": "AWS::DynamoDB::Table", "assetName": "res-orders-table", "status": "Changed"},
+    {"logicalId": "OrdersQueue", "cfnType": "AWS::SQS::Queue", "assetName": "res-orders-queue", "status": "InSync"}
+  ]
+}
+```
+
+The UI renders each entry as a read-only synthetic `AWSResource` asset. Status
+is `InSync`, `Changed`, `Added` or `Removed`, derived from the template diff
+(`changed:<LogicalID>`, `added:`, `removed:`). The intent manifest is never
+rewritten when the CDK app changes; the template remains the source of truth.
+
+## Observed and managed modes
+
+`guardianctl aws observed-generate` defaults to `--mode observed` (report-only).
+`--mode managed` emits `intentType: standard` intents with the same `CDKStack`
+payload; Guardian applies the stack as one unit, preserving the stack == intent
+model.
+
+Bundles created by unmanaged import use a live-template snapshot and mark the
+payload `snapshot: true`. The AWS pusher refuses CHECK/DIFF/APPLY/DESTROY for a
+snapshot payload, so a snapshot cannot be promoted by flipping `intentType`
+alone. Managed mode requires the user's synthesized CDK app.
+
 ## Deploy a new pusher
 
 `AwsPusherStack` is deployable per account/region. The CDK app lives in

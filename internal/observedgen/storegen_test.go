@@ -96,6 +96,52 @@ func TestGenerateToStore(t *testing.T) {
 	}
 }
 
+func TestGenerateToStoreManagedCopiesStagedAssets(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	assemblyDir := "/partitions/strata-aws/payloads/aws/cdk.out"
+	seedStore(t, ctx, store, assemblyDir+"/manifest.json", `{
+	  "version": "39.0.0",
+	  "artifacts": {
+	    "AppStack": {
+	      "type": "aws:cloudformation:stack",
+	      "properties": {"templateFile": "AppStack.template.json", "stackName": "AppStack"}
+	    }
+	  }
+	}`)
+	seedStore(t, ctx, store, assemblyDir+"/AppStack.template.json", `{"Resources":{"Bucket":{"Type":"AWS::S3::Bucket"}}}`)
+	seedStore(t, ctx, store, assemblyDir+"/asset.abc/bundle.zip", "asset")
+
+	created, err := GenerateToStore(ctx, store, StoreOptions{
+		Mode:        ModeManaged,
+		AssemblyDir: assemblyDir,
+		Partition:   "strata-aws",
+		Account:     "123456789012",
+		Region:      "eu-west-1",
+		Pusher:      "aws-123456789012",
+	})
+	if err != nil {
+		t.Fatalf("GenerateToStore() error = %v", err)
+	}
+	if len(created) != 1 || created[0] != "app-stack" {
+		t.Fatalf("created = %v", created)
+	}
+	intentContent, err := store.ReadFile(ctx, paths.IntentManifest("strata-aws", "app-stack"))
+	if err != nil {
+		t.Fatalf("read intent: %v", err)
+	}
+	parsed, err := manifest.ParseIntent(intentContent)
+	if err != nil {
+		t.Fatalf("parse intent: %v", err)
+	}
+	if parsed.Spec.IntentType != "standard" {
+		t.Fatalf("intentType = %q, want standard", parsed.Spec.IntentType)
+	}
+	if _, err := store.ReadFile(ctx, "/partitions/strata-aws/payloads/aws/cdk.out/asset.abc/bundle.zip"); err != nil {
+		t.Fatalf("staged asset missing from managed bundle: %v", err)
+	}
+}
+
 func TestSlug(t *testing.T) {
 	cases := map[string]string{
 		"AwsPusherStack": "aws-pusher-stack",

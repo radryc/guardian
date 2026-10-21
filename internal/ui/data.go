@@ -175,6 +175,10 @@ type AssetDocument struct {
 	Name    string `json:"name"`
 	Type    string `json:"type"`
 	Version string `json:"version,omitempty"`
+	// Synthetic marks assets derived from observation state (for example the
+	// per-resource inventory of an observed CloudFormation stack) rather than
+	// authored in the intent manifest. Synthetic assets are read-only.
+	Synthetic bool `json:"synthetic,omitempty"`
 	// Origin records how this asset is applied (generated template, fallback
 	// CloudFormation resource, native driver, observed snapshot).
 	Origin           string                        `json:"origin,omitempty"`
@@ -1042,7 +1046,19 @@ func intentOrigin(ctx context.Context, store guardianapi.Store, partition string
 		}
 		return originInfo{Origin: originUserCDK, Label: "User CDK", Detail: "CDK app authored in the repository; Guardian deploys it as-is"}
 	}
+	if hasCDKStackAsset(manifest) {
+		return originInfo{Origin: originUserCDK, Label: "User CDK", Detail: "CDK app authored in the repository; Guardian deploys it as-is"}
+	}
 	return originInfo{Origin: originNative, Label: "Native driver", Detail: "Applied by provider-native drivers (no CloudFormation stack)"}
+}
+
+func hasCDKStackAsset(manifest intentdomain.Intent) bool {
+	for _, asset := range manifest.Spec.Assets {
+		if asset.Type == assetdomain.TypeCDKStack {
+			return true
+		}
+	}
+	return false
 }
 
 func readGeneratedPayloadManifest(ctx context.Context, store guardianapi.Store, partition, intent string) (*cdkgen.PayloadManifest, bool) {
@@ -1192,18 +1208,70 @@ func buildIntentDocument(ctx context.Context, store guardianapi.Store, manifest 
 	for _, asset := range manifest.Spec.Assets {
 		specByName[asset.Name] = asset
 	}
+	orderedAssets := append([]string(nil), assetOrder...)
+	synthetic := map[string]bool{}
 	origin := intentOrigin(ctx, store, partitionName, manifest, partitionLabels)
 	doc.Origin = origin.Origin
 	doc.OriginLabel = origin.Label
 	doc.OriginDetail = origin.Detail
 	payloadManifest, _ := readGeneratedPayloadManifest(ctx, store, partitionName, manifest.Metadata.Name)
 	origins := assetOrigins(manifest, payloadManifest)
-	for _, name := range assetOrder {
+	if isObservedIntent(manifest) && state != nil && len(state.Resources) > 0 {
+		existing := make(map[string]struct{}, len(specByName)+len(orderedAssets))
+		for name := range specByName {
+			existing[name] = struct{}{}
+		}
+		for _, name := range orderedAssets {
+			existing[name] = struct{}{}
+		}
+		logicalAssets := make(map[string]string, len(state.Resources))
+		for _, resource := range state.Resources {
+			if resource.AssetName != "" {
+				logicalAssets[resource.LogicalID] = resource.AssetName
+			}
+		}
+		for _, resource := range state.Resources {
+			name := strings.TrimSpace(resource.AssetName)
+			if name == "" {
+				continue
+			}
+			if _, exists := existing[name]; exists {
+				continue
+			}
+			properties := map[string]any{
+				"cfnType":   resource.CfnType,
+				"logicalId": resource.LogicalID,
+				"existing":  true,
+			}
+			if resource.Condition != "" {
+				properties["condition"] = resource.Condition
+			}
+			dependsOn := make([]string, 0, len(resource.DependsOn))
+			for _, logicalID := range resource.DependsOn {
+				if dependency, ok := logicalAssets[logicalID]; ok {
+					dependsOn = append(dependsOn, dependency)
+				}
+			}
+			specByName[name] = assetdomain.Spec{
+				Type:       assetdomain.TypeAWSResource,
+				Name:       name,
+				DependsOn:  dependsOn,
+				Properties: properties,
+			}
+			orderedAssets = append(orderedAssets, name)
+			existing[name] = struct{}{}
+			synthetic[name] = true
+			origins[name] = assetOrigin{Origin: originObserved, Label: "observed resource"}
+		}
+	}
+	for _, name := range orderedAssets {
 		spec, ok := specByName[name]
 		if !ok {
 			continue
 		}
-		doc.Assets = append(doc.Assets, buildAssetDocument(ctx, partitionName, manifest.Metadata.Name, spec, origins[spec.Name], manifest.Spec.Hints, state, runtime, latest, deps, enableFlowTopology, evaluator))
+		assetDoc := buildAssetDocument(ctx, partitionName, manifest.Metadata.Name, spec, origins[spec.Name], manifest.Spec.Hints, state, runtime, latest, deps, enableFlowTopology, evaluator)
+		assetDoc.Synthetic = synthetic[spec.Name]
+		doc.Assets = append(doc.Assets, assetDoc)
 	}
 	return doc
 }
@@ -2359,6 +2427,21 @@ func assetFacts(spec assetdomain.Spec, outputs map[string]string) (string, []Fac
 		}
 		facts = appendOutputsFact(facts, []string{"imageRef", "source"})
 		return "Container image", facts, true, nil, 1
+	case *assetdefs.AWSResourceSpec:
+		facts := []Fact{}
+		if value.CfnType != "" {
+			facts = append(facts, Fact{Label: "CFN type", Value: value.CfnType})
+		}
+		if value.LogicalID != "" {
+			facts = append(facts, Fact{Label: "Logical ID", Value: value.LogicalID})
+		}
+		if value.Condition != "" {
+			facts = append(facts, Fact{Label: "Condition", Value: value.Condition})
+		}
+		if value.Existing {
+			facts = append(facts, Fact{Label: "Mode", Value: "Observed"})
+		}
+		return "CloudFormation resource", facts, false, nil, 0
 	default:
 		return strings.ToLower(spec.Type) + " asset", nil, false, nil, 0
 	}

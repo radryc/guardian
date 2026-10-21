@@ -311,6 +311,81 @@ func TestBuildIntentDocumentRedactsSecretOutputs(t *testing.T) {
 	}
 }
 
+func TestBuildIntentDocumentAddsObservedResourceAssets(t *testing.T) {
+	t.Parallel()
+
+	manifest := intentdomain.Intent{
+		Metadata: intentdomain.Metadata{Name: "stack"},
+		Spec: intentdomain.IntentSpec{
+			IntentType: intentdomain.TypeObserved,
+			Assets: []assetdomain.Spec{{
+				Type: "CDKStack",
+				Name: "stack",
+			}},
+		},
+	}
+	state := &statedomain.IntentState{
+		IntentType: intentdomain.TypeObserved,
+		Status:     statedomain.StatusObservedDrifted,
+		Drift: &taskdomain.DriftReport{
+			Status:        "Changed",
+			Summary:       "1 resource(s) differ from desired",
+			ChangedAssets: []string{"res-orders-table"},
+		},
+		Resources: []statedomain.ResourceObservation{
+			{
+				LogicalID: "OrdersTable",
+				CfnType:   "AWS::DynamoDB::Table",
+				AssetName: "res-orders-table",
+				Status:    statedomain.ResourceChanged,
+				DependsOn: []string{"OrdersQueue"},
+			},
+			{
+				LogicalID: "OrdersQueue",
+				CfnType:   "AWS::SQS::Queue",
+				AssetName: "res-orders-queue",
+				Status:    statedomain.ResourceInSync,
+			},
+		},
+	}
+
+	doc := buildIntentDocument(context.Background(), nil, manifest, "demo", nil, "ver-1", state, intentTaskRuntime{}, []string{"stack"}, nil, nil, false, nil)
+
+	if len(doc.Assets) != 3 {
+		t.Fatalf("assets = %+v, want 3", doc.Assets)
+	}
+	byName := map[string]AssetDocument{}
+	for _, asset := range doc.Assets {
+		byName[asset.Name] = asset
+	}
+	if got := byName["stack"]; got.Synthetic || got.Health != "healthy" {
+		t.Fatalf("root asset = %+v", got)
+	}
+	table := byName["res-orders-table"]
+	if !table.Synthetic {
+		t.Fatalf("resource asset is not synthetic: %+v", table)
+	}
+	if table.Type != assetdomain.TypeAWSResource || table.OriginLabel != "observed resource" {
+		t.Fatalf("resource asset = %+v", table)
+	}
+	if table.DisplayStatus != "Observed drift" || table.Health != "attention" {
+		t.Fatalf("resource drift = %q/%q", table.DisplayStatus, table.Health)
+	}
+	if len(table.DependsOn) != 1 || table.DependsOn[0] != "res-orders-queue" {
+		t.Fatalf("resource dependsOn = %v", table.DependsOn)
+	}
+	facts := map[string]string{}
+	for _, fact := range table.QuickFacts {
+		facts[fact.Label] = fact.Value
+	}
+	if facts["CFN type"] != "AWS::DynamoDB::Table" || facts["Logical ID"] != "OrdersTable" {
+		t.Fatalf("quick facts = %+v", table.QuickFacts)
+	}
+	if queue := byName["res-orders-queue"]; queue.Health != "healthy" {
+		t.Fatalf("in-sync resource = %+v", queue)
+	}
+}
+
 func TestBuildDeploymentViewRedactsSensitiveValueOutputs(t *testing.T) {
 	t.Parallel()
 

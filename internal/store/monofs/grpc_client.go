@@ -24,7 +24,7 @@ import (
 )
 
 const defaultClientHeartbeatInterval = 30 * time.Second
-const defaultTopologyRefreshInterval = 5 * time.Second
+const defaultTopologyRefreshInterval = 30 * time.Second
 
 // defaultGRPCKeepaliveTime is the interval between HTTP/2 PING frames sent by
 // the gRPC client to keep the underlying connection alive. It must be no
@@ -372,6 +372,65 @@ func (c *GRPCClient) ListVersions(ctx context.Context, token, logicalPath string
 	})
 }
 
+// LatestVersion fetches only the newest version record (PageSize: 1) in a
+// single RPC without paginating through historical versions.
+func (c *GRPCClient) LatestVersion(ctx context.Context, token, logicalPath string) (guardianapi.FileVersion, bool, error) {
+	type latestResult struct {
+		version guardianapi.FileVersion
+		found   bool
+	}
+	res, err := retryRouterCall(c, ctx, func() (latestResult, error) {
+		callCtx, cancel := c.withTimeout(ctx)
+		defer cancel()
+		resp, err := c.router.ListGuardianVersions(callCtx, &pb.ListGuardianVersionsRequest{
+			GuardianToken: token,
+			LogicalPath:   logicalPath,
+			PageSize:      1,
+		})
+		if err != nil {
+			return latestResult{}, mapRPCError(err)
+		}
+		versions := convertFileVersions(resp.GetVersions())
+		if len(versions) == 0 {
+			return latestResult{}, nil
+		}
+		return latestResult{version: versions[0], found: true}, nil
+	})
+	return res.version, res.found, err
+}
+
+// StatAttr queries file size and mtime using the lightweight GetAttr RPC
+// without streaming the file's content bytes over the network.
+func (c *GRPCClient) StatAttr(ctx context.Context, mountPath string) (int64, time.Time, error) {
+	nodes, err := c.healthyNodes(ctx)
+	if err != nil {
+		return 0, time.Time{}, err
+	}
+
+	var lastErr error
+	for _, node := range nodes {
+		callCtx, cancel := c.withTimeout(ctx)
+		resp, err := node.client.GetAttr(callCtx, &pb.GetAttrRequest{Path: mountPath})
+		cancel()
+		if err != nil {
+			lastErr = err
+			c.invalidateNodeOnTransportError(node.id, err)
+			continue
+		}
+		if resp != nil && resp.GetFound() {
+			var modTime time.Time
+			if resp.GetMtime() > 0 {
+				modTime = time.Unix(resp.GetMtime(), 0).UTC()
+			}
+			return int64(resp.GetSize()), modTime, nil
+		}
+	}
+	if lastErr == nil || status.Code(lastErr) == codes.NotFound {
+		return 0, time.Time{}, os.ErrNotExist
+	}
+	return 0, time.Time{}, wrapDNSHint(lastErr)
+}
+
 func (c *GRPCClient) GetVersion(ctx context.Context, token, logicalPath, versionID string) (guardianapi.VersionedFile, error) {
 	return retryRouterCall(c, ctx, func() (guardianapi.VersionedFile, error) {
 		callCtx, cancel := c.withTimeout(ctx)
@@ -431,51 +490,85 @@ func (c *GRPCClient) ListDir(ctx context.Context, mountPath string) ([]guardiana
 		return nil, err
 	}
 
-	entries := map[string]guardianapi.DirEntry{}
-	var (
-		lastErr error
+	type nodeDirResult struct {
+		entries []guardianapi.DirEntry
+		err     error
 		success bool
-	)
-	for _, node := range nodes {
+	}
+
+	readOneNode := func(node nodeTarget) nodeDirResult {
 		callCtx, cancel := c.withTimeout(ctx)
+		defer cancel()
 		stream, err := node.client.ReadDir(callCtx, &pb.ReadDirRequest{Path: mountPath})
 		if err != nil {
-			cancel()
 			c.invalidateNodeOnTransportError(node.id, err)
 			if status.Code(err) != codes.NotFound {
-				lastErr = err
+				return nodeDirResult{err: err}
 			}
-			continue
+			return nodeDirResult{}
 		}
-		success = true
+		var list []guardianapi.DirEntry
 		for {
 			entry, recvErr := stream.Recv()
 			if recvErr == io.EOF {
 				break
 			}
 			if recvErr != nil {
-				lastErr = recvErr
 				c.invalidateNodeOnTransportError(node.id, recvErr)
-				break
+				return nodeDirResult{entries: list, err: recvErr, success: true}
 			}
 			name := entry.GetName()
 			if name == "" {
 				continue
 			}
-			current := guardianapi.DirEntry{
+			list = append(list, guardianapi.DirEntry{
 				Name:  name,
 				IsDir: entry.GetMode()&0o040000 != 0,
-			}
-			existing, ok := entries[name]
+			})
+		}
+		return nodeDirResult{entries: list, success: true}
+	}
+
+	results := make([]nodeDirResult, len(nodes))
+	if len(nodes) <= 1 {
+		for i, node := range nodes {
+			results[i] = readOneNode(node)
+		}
+	} else {
+		var wg sync.WaitGroup
+		wg.Add(len(nodes))
+		for i, node := range nodes {
+			i, node := i, node
+			go func() {
+				defer wg.Done()
+				results[i] = readOneNode(node)
+			}()
+		}
+		wg.Wait()
+	}
+
+	entries := map[string]guardianapi.DirEntry{}
+	var (
+		lastErr error
+		success bool
+	)
+	for _, res := range results {
+		if res.err != nil {
+			lastErr = res.err
+		}
+		if res.success {
+			success = true
+		}
+		for _, current := range res.entries {
+			existing, ok := entries[current.Name]
 			if ok && existing.IsDir {
 				continue
 			}
 			if current.IsDir && ok {
 				current.Size = existing.Size
 			}
-			entries[name] = current
+			entries[current.Name] = current
 		}
-		cancel()
 	}
 
 	if len(entries) == 0 {

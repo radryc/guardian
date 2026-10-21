@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/rydzu/ainfra/guardian/internal/store/memory"
 )
@@ -174,5 +175,48 @@ func TestRepoRequiresRegisteredPusher(t *testing.T) {
 	loaded, _ = store.GetRepo(ctx, "strata")
 	if loaded.LastSyncCommit != "abc123" || loaded.LastSyncedAt.IsZero() {
 		t.Fatalf("sync not recorded: %+v", loaded)
+	}
+}
+
+func TestPusherFleetSummaryAndPagination(t *testing.T) {
+	ctx := context.Background()
+	store := New(memory.New())
+	now := time.Now().UTC()
+
+	pushers := []*Pusher{
+		{Name: "aws-eu-1", Provider: "aws", Region: "eu-west-1", Account: "111", Status: "active", Version: "v1.2.0", ObservedAPIURL: "http://aws-eu-1:19090", LastHeartbeat: now},
+		{Name: "aws-eu-2", Provider: "aws", Region: "eu-west-1", Account: "111", Status: "error", Version: "v1.1.0", ObservedAPIURL: "http://aws-eu-2:19090", LastHeartbeat: now.Add(-10 * time.Minute)},
+		{Name: "aws-us-1", Provider: "aws", Region: "us-east-1", Account: "222", Status: "active", Version: "v1.2.0", ObservedAPIURL: "http://aws-us-1:19090", LastHeartbeat: now.Add(-30 * time.Second)},
+	}
+	for _, p := range pushers {
+		if err := store.PutPusher(ctx, p); err != nil {
+			t.Fatalf("PutPusher(%s): %v", p.Name, err)
+		}
+	}
+
+	summary, err := store.SummarizePushers(ctx)
+	if err != nil {
+		t.Fatalf("SummarizePushers() error = %v", err)
+	}
+	if summary.Total != 3 || summary.ByRegion["eu-west-1"] != 2 || summary.ByStatus["error"] != 1 {
+		t.Fatalf("unexpected summary: %+v", summary)
+	}
+
+	// Outlier-first sort places error/stale pushers first.
+	page, err := store.ListPushersPage(ctx, PusherListOptions{OutliersFirst: true, Limit: 2})
+	if err != nil {
+		t.Fatalf("ListPushersPage() error = %v", err)
+	}
+	if len(page.Pushers) != 2 || page.Pushers[0].Name != "aws-eu-2" || page.NextCursor != "2" {
+		t.Fatalf("unexpected outlier page: %+v", page)
+	}
+
+	// Region filter
+	euPage, err := store.ListPushersPage(ctx, PusherListOptions{Region: "eu-west-1", Limit: 10})
+	if err != nil {
+		t.Fatalf("ListPushersPage(eu-west-1) error = %v", err)
+	}
+	if euPage.Matched != 2 || len(euPage.Pushers) != 2 {
+		t.Fatalf("unexpected eu-west-1 page: %+v", euPage)
 	}
 }

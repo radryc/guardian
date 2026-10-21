@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"os"
 	"runtime"
@@ -63,6 +64,35 @@ type Reconciler struct {
 	pool                  *priorityPool
 	scheduler             quartz.Scheduler
 	scheduledFingerprints map[string]string // partition → "intervalStr|jitterPct"
+	shardIndex            int
+	shardCount            int
+
+	cdkMemoMu        sync.RWMutex
+	cdkPayloadHashes map[string]string // "partition/intent" → fingerprint
+}
+
+// SetShardConfig configures deterministic consistent-hash partition sharding
+// across active-active guardiand replicas. When shardCount <= 1, this replica
+// owns all partitions.
+func (r *Reconciler) SetShardConfig(shardIndex, shardCount int) {
+	r.runMu.Lock()
+	r.shardIndex = shardIndex
+	r.shardCount = shardCount
+	r.runMu.Unlock()
+}
+
+// OwnsPartition reports whether this Reconciler replica owns partitionName
+// under the configured shard ring.
+func (r *Reconciler) OwnsPartition(partitionName string) bool {
+	r.runMu.Lock()
+	idx, count := r.shardIndex, r.shardCount
+	r.runMu.Unlock()
+	if count <= 1 {
+		return true
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(partitionName))
+	return int(h.Sum32()%uint32(count)) == idx
 }
 
 // SetAuthorizer installs a control-plane authorization hook that gates
@@ -98,6 +128,7 @@ func NewReconcilerWithOptions(store guardianapi.Store, dispatcher *dispatcher.Di
 		staleTaskAfter:        staleTaskAfter,
 		parallelism:           defaultParallelism(),
 		scheduledFingerprints: make(map[string]string),
+		cdkPayloadHashes:      make(map[string]string),
 	}
 }
 
@@ -191,6 +222,25 @@ func (r *Reconciler) ForceApplyPartition(ctx context.Context, partitionName stri
 	return r.reconcilePartition(ctx, partitionName, force, true)
 }
 
+type readFileWithInfoStore interface {
+	ReadFileWithInfo(ctx context.Context, logicalPath string) ([]byte, guardianapi.FileInfo, error)
+}
+
+func readFileWithStat(ctx context.Context, store guardianapi.Store, logicalPath string) ([]byte, guardianapi.FileInfo, error) {
+	if rwi, ok := store.(readFileWithInfoStore); ok {
+		return rwi.ReadFileWithInfo(ctx, logicalPath)
+	}
+	content, err := store.ReadFile(ctx, logicalPath)
+	if err != nil {
+		return nil, guardianapi.FileInfo{}, err
+	}
+	info, err := store.Stat(ctx, logicalPath)
+	if err != nil {
+		return nil, guardianapi.FileInfo{}, err
+	}
+	return content, info, nil
+}
+
 func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName string, force bool, forceApply bool) error {
 	attrs := []attribute.KeyValue{attribute.String("guardian.partition", partitionName)}
 	count, failures, duration := reconcileInstruments()
@@ -217,11 +267,7 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 	}
 
 	configPath := paths.PartitionConfig(partitionName)
-	configContent, err := r.store.ReadFile(ctx, configPath)
-	if err != nil {
-		return fail(err)
-	}
-	configInfo, err := r.store.Stat(ctx, configPath)
+	configContent, configInfo, err := readFileWithStat(ctx, r.store, configPath)
 	if err != nil {
 		return fail(err)
 	}
@@ -258,11 +304,7 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 		}
 		name := entry.Name[:len(entry.Name)-5]
 		logicalPath := paths.IntentManifest(partitionName, name)
-		content, err := r.store.ReadFile(ctx, logicalPath)
-		if err != nil {
-			return fail(err)
-		}
-		info, err := r.store.Stat(ctx, logicalPath)
+		content, info, err := readFileWithStat(ctx, r.store, logicalPath)
 		if err != nil {
 			return fail(err)
 		}
@@ -813,6 +855,9 @@ func (r *Reconciler) partitionNames(ctx context.Context) ([]string, error) {
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		if !entry.IsDir {
+			continue
+		}
+		if !r.OwnsPartition(entry.Name) {
 			continue
 		}
 		if _, err := r.store.Stat(ctx, paths.PartitionConfig(entry.Name)); err != nil {

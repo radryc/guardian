@@ -3,12 +3,9 @@
 package cdktemplate
 
 import (
-	"fmt"
-
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"gopkg.in/yaml.v3"
 	"sort"
 	"strings"
 )
@@ -51,6 +48,21 @@ func Compare(desiredJSON, observedJSON string) ([]string, error) {
 	return out, nil
 }
 
+// NormalizeTemplate accepts a CloudFormation template as JSON or YAML and
+// returns indented JSON. Short-form YAML intrinsics are expanded so the result
+// compares byte-for-byte with a JSON template.
+func NormalizeTemplate(raw string) ([]byte, error) {
+	template, err := parseTemplate(raw)
+	if err != nil {
+		return nil, err
+	}
+	out, err := json.MarshalIndent(template, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(out, '\n'), nil
+}
+
 func parseTemplate(raw string) (map[string]any, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -61,11 +73,9 @@ func parseTemplate(raw string) (map[string]any, error) {
 		return template, nil
 	}
 	// CloudFormation returns YAML templates verbatim for stacks deployed from
-	// YAML sources, so accept both encodings.
-	if err := yaml.Unmarshal([]byte(raw), &template); err != nil {
-		return nil, fmt.Errorf("template is neither JSON nor YAML: %w", err)
-	}
-	return template, nil
+	// YAML sources, so accept both encodings. Short-form intrinsic tags are
+	// expanded into their long form by parseYAMLTemplate.
+	return parseYAMLTemplate(raw)
 }
 
 func resourcesOf(template map[string]any) map[string]map[string]any {
