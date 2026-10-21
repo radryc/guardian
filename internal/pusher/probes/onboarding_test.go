@@ -46,6 +46,25 @@ func TestTargetsFromOnboarding(t *testing.T) {
 	}
 }
 
+func TestTargetsFromOnboardingNormalizesHostOnlyURL(t *testing.T) {
+	targets := TargetsFromOnboarding("aws-123", []onboarding.Descriptor{{
+		Stack:     "S",
+		Partition: "p",
+		Intent:    "i",
+		Probes: []onboarding.Probe{{
+			Name: "alb",
+			URL:  "alb-123.eu-west-1.elb.amazonaws.com",
+			Path: "/",
+		}},
+	}})
+	if len(targets) != 1 {
+		t.Fatalf("targets = %d", len(targets))
+	}
+	if targets[0].URL != "" || targets[0].Address == "" || targets[0].Port != 80 {
+		t.Fatalf("normalized target = %+v", targets[0])
+	}
+}
+
 func TestTargetsFromOnboardingSkipsIncomplete(t *testing.T) {
 	targets := TargetsFromOnboarding("aws-123", []onboarding.Descriptor{{
 		Stack:     "S",
