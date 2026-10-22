@@ -34,6 +34,43 @@ func TestCanonicalServiceIdentityTruncatesDeterministically(t *testing.T) {
 	}
 }
 
+func TestApplyLBOtelEnvUsesGuardiandCollector(t *testing.T) {
+	t.Setenv("GUARDIAN_OTEL_ENDPOINT", "collector.otel.svc.cluster.local:4317")
+	t.Setenv("GUARDIAN_OTEL_INSECURE", "true")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+
+	env := ApplyLBOtelEnv(nil, "ingest-edge")
+	if got := env["LB_OTEL_ENDPOINT"]; got != "collector.otel.svc.cluster.local:4317" {
+		t.Fatalf("LB_OTEL_ENDPOINT = %q", got)
+	}
+	if got := env["LB_OTEL_SERVICE_NAME"]; got != "ingest-edge" {
+		t.Fatalf("LB_OTEL_SERVICE_NAME = %q", got)
+	}
+	if got := env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]; got != "http://collector.otel.svc.cluster.local:4318/v1/traces" {
+		t.Fatalf("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = %q", got)
+	}
+	if env["OTEL_METRICS_EXPORTER"] != "none" || env["OTEL_LOGS_EXPORTER"] != "none" {
+		t.Fatalf("auto-exporters not disabled: %#v", env)
+	}
+}
+
+func TestApplyLBOtelEnvPreservesExplicitValues(t *testing.T) {
+	t.Setenv("GUARDIAN_OTEL_ENDPOINT", "collector.otel.svc.cluster.local:4317")
+	t.Setenv("GUARDIAN_OTEL_INSECURE", "true")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+
+	env := ApplyLBOtelEnv(map[string]string{
+		"OTEL_METRICS_EXPORTER":              "otlp",
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://custom:4318/v1/traces",
+	}, "lb-edge")
+	if env["OTEL_METRICS_EXPORTER"] != "otlp" {
+		t.Fatalf("explicit metrics exporter overwritten: %#v", env)
+	}
+	if env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] != "http://custom:4318/v1/traces" {
+		t.Fatalf("explicit traces endpoint overwritten: %#v", env)
+	}
+}
+
 func TestApplyObservabilityEnvRequiresTargetingAsset(t *testing.T) {
 	in := registry.AssetInput{
 		PartitionName: "doctor",
