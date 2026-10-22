@@ -799,8 +799,18 @@ func LoadOrGenerateEncryptionKey() (string, error) {
 	return key, nil
 }
 
+// sharedSecretsDir returns <strata>/stratatools/partitions/shared/secrets.
+// findRoot may already point at the stratatools directory (for example when
+// guardianctl runs from guardian/ in the strata monorepo), so only append
+// "stratatools" when the root does not already contain partitions/shared.
+// Otherwise the writer and "release run --partition shared" disagree and the
+// published shared secret stays stale.
 func sharedSecretsDir() string {
-	return filepath.Join(findRoot(), "stratatools", "partitions", "shared", "secrets")
+	root := findRoot()
+	if _, err := os.Stat(filepath.Join(root, "partitions", "shared")); err == nil {
+		return filepath.Join(root, "partitions", "shared", "secrets")
+	}
+	return filepath.Join(root, "stratatools", "partitions", "shared", "secrets")
 }
 
 func WriteSharedPartitionSecrets(key, token string) error {
