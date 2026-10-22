@@ -3,6 +3,9 @@ package driverutil
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/url"
+	"os"
 	"sort"
 	"strings"
 
@@ -483,6 +486,52 @@ func ApplyOtelEnvWithServiceName(env map[string]string, in registry.AssetInput, 
 	}
 
 	env["OTEL_RESOURCE_ATTRIBUTES"] = formatOtelResourceAttrs(attrs)
+	return env
+}
+
+// ApplyLBOtelEnv gives load-balancer workloads the standard OTEL_* variables
+// used by the otelc auto-export path. Without these, otelc falls back to
+// https://localhost:4318 and logs export failures inside the pod.
+// Explicitly configured values win.
+func ApplyLBOtelEnv(env map[string]string, serviceName string) map[string]string {
+	if env == nil {
+		env = map[string]string{}
+	}
+	set := func(key, value string) {
+		if strings.TrimSpace(value) == "" || strings.TrimSpace(env[key]) != "" {
+			return
+		}
+		env[key] = value
+	}
+	endpoint := strings.TrimSpace(os.Getenv("GUARDIAN_OTEL_ENDPOINT"))
+	traceEndpoint := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"))
+	if traceEndpoint == "" && endpoint != "" {
+		scheme := "https"
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("GUARDIAN_OTEL_INSECURE")), "true") {
+			scheme = "http"
+		}
+		hostPort := endpoint
+		if parsed, err := url.Parse(endpoint); err == nil && parsed.Host != "" {
+			hostPort = parsed.Host
+			if parsed.Scheme == "http" || parsed.Scheme == "https" {
+				scheme = parsed.Scheme
+			}
+		}
+		if host, port, err := net.SplitHostPort(hostPort); err == nil {
+			if port == "4317" {
+				port = "4318"
+			}
+			traceEndpoint = fmt.Sprintf("%s://%s/v1/traces", scheme, net.JoinHostPort(host, port))
+		} else {
+			traceEndpoint = fmt.Sprintf("%s://%s:4318/v1/traces", scheme, strings.TrimSuffix(hostPort, "/"))
+		}
+	}
+	set("LB_OTEL_ENDPOINT", endpoint)
+	set("LB_OTEL_METRIC_INTERVAL", "15s")
+	set("LB_OTEL_SERVICE_NAME", serviceName)
+	set("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", traceEndpoint)
+	set("OTEL_METRICS_EXPORTER", "none")
+	set("OTEL_LOGS_EXPORTER", "none")
 	return env
 }
 
