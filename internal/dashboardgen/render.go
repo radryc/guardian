@@ -8,6 +8,7 @@ package dashboardgen
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -58,22 +59,39 @@ func Render(info Info) ([]byte, error) {
 		`max by (guardian_probe_name) (guardian_probe_duration_seconds{source="%s", guardian_partition="%s"}) or max by (guardian_probe_name) (guardian_probe_duration_seconds{source="%s", "@resource.guardian.partition"="%s"})`,
 		escape(source), escape(partition), escape(source), escape(partition),
 	)
-	appMetric := fmt.Sprintf(`{"http.server.request.duration", source="%s", guardian_partition="%s"}`, escape(source), escape(partition))
-	logQuery := fmt.Sprintf(`{source="%s", aws_log_group="%s"}`, escape(source), escape(logGroup))
+	awsSelector := fmt.Sprintf(`"@aws.tag.guardian.io/partition"=~"%s"`, escape(partition))
+	appMetric := fmt.Sprintf(`sum(Invocations{source="%s",%s})`, escape(source), awsSelector)
+	metricExplorer := fmt.Sprintf(`sum($awsMetric{source="%s",%s})`, escape(source), awsSelector)
+	invocationsByFunction := fmt.Sprintf(`sum by (FunctionName) (Invocations{source="%s",%s})`, escape(source), awsSelector)
+	// CloudWatch records returned by the pusher carry the account id in the log
+	// group label ("780603797542:guardian/.../app"). Match with a prefix regex
+	// so the same panel works with and without the account prefix.
+	logGroupPattern := ".*" + regexp.QuoteMeta(logGroup)
+	awsLogVolume := fmt.Sprintf(`sum(count_over_time({source="%s", aws_log_group=~"%s"}[$__rate_interval]))`, escape(source), escape(logGroupPattern))
+	logQuery := fmt.Sprintf(`{source="%s", aws_log_group=~"%s"}`, escape(source), escape(logGroupPattern))
+	traceSearch := fmt.Sprintf(`{ source = "%s" && resource.service.name =~ "%s.*" }`, escape(source), escape(partition))
 
 	panels := []any{
 		textPanel(1, "Overview", fmt.Sprintf(
-			"### %s\n\n**Account:** %s  \n**Region:** %s  \n**Stacks:** %s\n\n**OTLP metric example:** `%s`",
-			partition, emptyDash(info.Account), emptyDash(info.Region), strings.Join(info.Stacks, ", "), appMetric,
+			"### %s\n\n**Account:** %s  \n**Region:** %s  \n**Stacks:** %s\n\n**AWS metric example:** `%s`\n\n**AWS trace filter:** `%s`",
+			partition, emptyDash(info.Account), emptyDash(info.Region), strings.Join(info.Stacks, ", "), appMetric, traceSearch,
 		), 0, 0),
 		statPanel(2, "Probes Up", probeSelector, 0, 4),
 		timeseriesPanel(3, "Probe Latency", probeLatency, 4, 4),
-		logsPanel(4, "Logs", logQuery, 0, 12),
-		tracesPanel(5, 24),
+		statPanel(7, "Lambda Invocations", fmt.Sprintf(`sum(Invocations{source="%s",%s}) or vector(0)`, escape(source), awsSelector), 0, 12),
+		statPanel(8, "Lambda Errors", fmt.Sprintf(`sum(Errors{source="%s",%s}) or vector(0)`, escape(source), awsSelector), 6, 12),
+		statPanel(9, "Lambda Throttles", fmt.Sprintf(`sum(Throttles{source="%s",%s}) or vector(0)`, escape(source), awsSelector), 12, 12),
+		statPanel(10, "ECS CPU %", fmt.Sprintf(`avg(CPUUtilization{source="%s"}) or vector(0)`, escape(source)), 18, 12),
+		timeseriesPanel(11, "CloudWatch metric: $awsMetric", metricExplorer, 0, 20),
+		timeseriesPanel(12, "Invocations by Function", invocationsByFunction, 0, 28),
+		timeseriesPanelWithUnit(13, "CloudWatch Log Volume", awsLogVolume, 12, 28, "short"),
+		logsPanel(4, "Logs", logQuery, 0, 36),
+		tracesPanel(5, "Trace Drill-down", "$traceId", 48),
+		tracesPanel(14, "X-Ray Traces", traceSearch, 64),
 		textPanel(6, "Queries", fmt.Sprintf(
-			"### Query cheatsheet\n\n**App OTLP metrics**\n```promql\n%s\n```\n\n**Probes**\n```promql\n%s\n```\n\n**Logs**\n```logql\n%s\n```",
-			appMetric, probeSelector, logQuery,
-		), 0, 40),
+			"### Query cheatsheet\n\n**AWS metric**\n```promql\n%s\n```\n\n**Probes**\n```promql\n%s\n```\n\n**Logs**\n```logql\n%s\n```\n\n**Traces**\n```traceql\n%s\n```",
+			appMetric, probeSelector, logQuery, traceSearch,
+		), 0, 80),
 	}
 	dashboard := map[string]any{
 		"uid":           uid,
@@ -86,6 +104,10 @@ func Render(info Info) ([]byte, error) {
 		"time":          map[string]any{"from": "now-1h", "to": "now"},
 		"editable":      true,
 		"templating": map[string]any{"list": []any{
+			map[string]any{
+				"name": "awsMetric", "label": "CloudWatch metric", "type": "textbox",
+				"query": "Invocations", "current": map[string]any{"text": "Invocations", "value": "Invocations"}, "hide": 0,
+			},
 			map[string]any{
 				"name": "traceId", "label": "Trace ID", "type": "textbox",
 				"query": "", "current": map[string]any{"text": "", "value": ""}, "hide": 0,
@@ -116,11 +138,19 @@ func statPanel(id int, title, expr string, x, y int) map[string]any {
 }
 
 func timeseriesPanel(id int, title, expr string, x, y int) map[string]any {
+	return timeseriesPanelAt(id, title, expr, x, y, 18, "s")
+}
+
+func timeseriesPanelWithUnit(id int, title, expr string, x, y int, unit string) map[string]any {
+	return timeseriesPanelAt(id, title, expr, x, y, 12, unit)
+}
+
+func timeseriesPanelAt(id int, title, expr string, x, y, w int, unit string) map[string]any {
 	return map[string]any{
 		"id": id, "type": "timeseries", "title": title,
 		"datasource":  map[string]any{"type": "prometheus", "uid": prometheusDatasource},
-		"gridPos":     map[string]any{"h": 8, "w": 18, "x": x, "y": y},
-		"fieldConfig": map[string]any{"defaults": map[string]any{"unit": "s", "custom": map[string]any{"drawStyle": "line", "fillOpacity": 12, "lineInterpolation": "smooth", "showPoints": "never"}}, "overrides": []any{}},
+		"gridPos":     map[string]any{"h": 8, "w": w, "x": x, "y": y},
+		"fieldConfig": map[string]any{"defaults": map[string]any{"unit": unit, "custom": map[string]any{"drawStyle": "line", "fillOpacity": 12, "lineInterpolation": "smooth", "showPoints": "never"}}, "overrides": []any{}},
 		"options":     map[string]any{"legend": map[string]any{"displayMode": "table", "placement": "bottom", "calcs": []string{"lastNotNull", "max"}}, "tooltip": map[string]any{"mode": "multi", "sort": "desc"}},
 		"targets":     []any{promTarget(expr)},
 	}
@@ -136,13 +166,13 @@ func logsPanel(id int, title, expr string, x, y int) map[string]any {
 	}
 }
 
-func tracesPanel(id int, y int) map[string]any {
+func tracesPanel(id int, title, query string, y int) map[string]any {
 	return map[string]any{
-		"id": id, "type": "traces", "title": "Trace",
+		"id": id, "type": "traces", "title": title,
 		"datasource": map[string]any{"type": "tempo", "uid": tempoDatasource},
 		"gridPos":    map[string]any{"h": 16, "w": 24, "x": 0, "y": y},
 		"options":    map[string]any{},
-		"targets":    []any{map[string]any{"refId": "A", "queryType": "traceql", "query": "$traceId"}},
+		"targets":    []any{map[string]any{"refId": "A", "queryType": "traceql", "query": query}},
 	}
 }
 
