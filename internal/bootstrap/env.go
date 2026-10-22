@@ -95,6 +95,10 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["MONOFS_OTEL_INSECURE"] = cfg.Storage.OTel.Insecure
 	env["MONOFS_OTEL_SERVICE_NAME"] = cfg.Storage.OTel.ServiceName
 	env["MONOFS_OTEL_METRIC_INTERVAL"] = cfg.Storage.OTel.MetricInterval
+	// The LB binaries are built with otelc too. Give their bootstrap
+	// deployments the same standard OTEL_* variables so auto-export points at
+	// the collector instead of https://localhost:4318.
+	env["LB_OTEL_HTTP_ENDPOINT"] = otelTraceHTTPEndpoint(cfg.Storage.OTel.Endpoint, cfg.Storage.OTel.Insecure)
 
 	// MonoFS binaries are built with otelc. otelc's autoexport understands the
 	// standard OTEL_* variables only, so MONOFS_OTEL_* alone leaves it pointing
