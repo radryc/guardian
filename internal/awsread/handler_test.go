@@ -356,3 +356,25 @@ func TestHandlerObservedDisabled(t *testing.T) {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}
 }
+
+func TestHandlerMetaReturnsServiceNames(t *testing.T) {
+	reader := &fakeReader{services: []string{"api", "worker"}}
+	h := NewHandler(reader, "")
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/aws/meta", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		XrayServices []string `json:"xrayServices"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.XrayServices) != 2 || body.XrayServices[0] != "api" || body.XrayServices[1] != "worker" {
+		t.Fatalf("xrayServices = %#v, want [api worker]", body.XrayServices)
+	}
+}
