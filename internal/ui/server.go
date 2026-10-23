@@ -290,6 +290,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/access/policy", s.handleAccessPolicy)
 	mux.HandleFunc("/api/access/explain", s.handleAccessExplain)
 	mux.HandleFunc("/api/m2m/overview", s.handleM2MOverview)
+	mux.HandleFunc("/api/m2m/federation/partitions", s.handleM2MFederationPartitions)
 	mux.HandleFunc("/api/m2m/partitions", s.handleM2MPartitions)
 	mux.HandleFunc("/api/m2m/partitions/", s.handleM2MPartitionRoute)
 	mux.HandleFunc("/api/m2m/pushers", s.handleM2MPushers)
