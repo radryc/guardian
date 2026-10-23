@@ -292,6 +292,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/m2m/overview", s.handleM2MOverview)
 	mux.HandleFunc("/api/m2m/partitions", s.handleM2MPartitions)
 	mux.HandleFunc("/api/m2m/partitions/", s.handleM2MPartitionRoute)
+	mux.HandleFunc("/api/m2m/pushers", s.handleM2MPushers)
+	mux.HandleFunc("/api/m2m/pushers/", s.handleM2MPusherRoute)
 	mux.HandleFunc("/api/overview", s.handleOverview)
 	mux.HandleFunc("/api/catalog", s.handleCatalog)
 	mux.HandleFunc("/api/partitions", s.handlePartitions)
