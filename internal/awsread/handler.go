@@ -230,6 +230,12 @@ func (h *Handler) handleMeta(w http.ResponseWriter, r *http.Request) {
 	}
 	logGroups, _ := h.Reader.ListLogGroups(r.Context())
 	services, _ := h.Reader.ListServices(r.Context())
+	serviceNames := make([]string, 0, len(services))
+	for _, service := range services {
+		if service.Name != "" {
+			serviceNames = append(serviceNames, service.Name)
+		}
+	}
 	observedStacks := 0
 	if h.Observed != nil {
 		observedStacks = len(h.Observed.List(h.Account, h.Region))
@@ -241,7 +247,7 @@ func (h *Handler) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"metricNamespaces": mapKeys(namespaceSet),
 		"metricNames":      mapKeys(metricSet),
 		"logGroups":        logGroups,
-		"xrayServices":     services,
+		"xrayServices":     serviceNames,
 		"observedStacks":   observedStacks,
 	})
 }
