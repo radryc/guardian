@@ -234,18 +234,24 @@ func main() {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	runtimepkg.StartRegistration(ctx, store, runtimepkg.PusherInfo{
-		Name:         pusherName,
-		Provider:     "aws",
-		Account:      account,
-		Region:       region,
-		ShardIndex:   shardIndex,
-		ShardCount:   shardCount,
-		Capabilities: []string{"metrics", "logs", "traces", "probes", "observed", "cloudwatch"},
-		OTLPEndpoint: telemetryCfg.Endpoint,
-		CollectorURL: probes.HTTPEndpoint(telemetryCfg.Endpoint),
-		WorkerID:     workerID,
-	})
+	if !observedOnly {
+		// Observed-only pushers intentionally run without a Guardian store;
+		// their registration stays managed by guardianctl. Only task-queue
+		// pushers publish liveness heartbeats into the store they own.
+		runtimepkg.StartRegistration(ctx, store, runtimepkg.PusherInfo{
+			Name:           pusherName,
+			Provider:       "aws",
+			Account:        account,
+			Region:         region,
+			ShardIndex:     shardIndex,
+			ShardCount:     shardCount,
+			Capabilities:   []string{"metrics", "logs", "traces", "probes", "observed", "cloudwatch"},
+			OTLPEndpoint:   telemetryCfg.Endpoint,
+			CollectorURL:   probes.HTTPEndpoint(telemetryCfg.Endpoint),
+			WorkerID:       workerID,
+			ObservedAPIURL: envOr("GUARDIAN_OBSERVED_API_URL", ""),
+		})
+	}
 
 	var onboardingReader onboarding.Reader
 	if prefix := strings.TrimSpace(onboardingSSMPrefix); prefix != "" {

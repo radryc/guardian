@@ -2,8 +2,10 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"hash/fnv"
 	"log"
+	"os"
 	"time"
 
 	"github.com/rydzu/ainfra/guardian/internal/buildinfo"
@@ -13,19 +15,21 @@ import (
 
 // PusherInfo is the metadata a pusher publishes into the platform registry.
 type PusherInfo struct {
-	Name         string
-	Provider     string
-	Version      string
-	Cluster      string
-	KubeContext  string
-	Account      string
-	Region       string
-	ShardIndex   int
-	ShardCount   int
-	Capabilities []string
-	OTLPEndpoint string
-	CollectorURL string
-	WorkerID     string
+	Name           string
+	Provider       string
+	Version        string
+	Cluster        string
+	KubeContext    string
+	Account        string
+	Region         string
+	ShardIndex     int
+	ShardCount     int
+	Capabilities   []string
+	OTLPEndpoint   string
+	CollectorURL   string
+	WorkerID       string
+	ObservedAPIURL string
+	Description    string
 }
 
 func registrationHeartbeatInterval(name string) time.Duration {
@@ -53,6 +57,16 @@ func StartRegistration(ctx context.Context, store guardianapi.Store, info Pusher
 	var createdAt time.Time
 	regStore := platformregistry.New(store)
 	write := func() {
+		existing, existingErr := regStore.GetPusher(ctx, info.Name)
+		if existingErr != nil && !errors.Is(existingErr, os.ErrNotExist) {
+			log.Printf("[Registry] read pusher registration failed: %v", existingErr)
+			return
+		}
+		if existing == nil && info.ObservedAPIURL == "" {
+			// The pusher normally starts before guardianctl registers it. Do
+			// not spam heartbeat errors while waiting for registration.
+			return
+		}
 		record := &platformregistry.Pusher{
 			Name:          info.Name,
 			Provider:      info.Provider,
@@ -72,6 +86,32 @@ func StartRegistration(ctx context.Context, store guardianapi.Store, info Pusher
 			Labels: map[string]string{
 				"workerID": info.WorkerID,
 			},
+			ObservedAPIURL: info.ObservedAPIURL,
+			Description:    info.Description,
+		}
+		if existing != nil {
+			if record.ObservedAPIURL == "" {
+				record.ObservedAPIURL = existing.ObservedAPIURL
+			}
+			if record.Token == "" {
+				record.Token = existing.Token
+			}
+			if record.TokenEnv == "" {
+				record.TokenEnv = existing.TokenEnv
+			}
+			if record.Description == "" {
+				record.Description = existing.Description
+			}
+			if record.CreatedAt.IsZero() {
+				record.CreatedAt = existing.CreatedAt
+			}
+			if existing.Labels != nil {
+				record.Labels = make(map[string]string, len(existing.Labels)+1)
+				for key, value := range existing.Labels {
+					record.Labels[key] = value
+				}
+				record.Labels["workerID"] = info.WorkerID
+			}
 		}
 		if err := regStore.PutPusher(ctx, record); err != nil {
 			log.Printf("[Registry] pusher heartbeat failed: %v", err)
