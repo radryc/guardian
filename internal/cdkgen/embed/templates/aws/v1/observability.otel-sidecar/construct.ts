@@ -48,6 +48,8 @@ export function observabilityOtelSidecar(stack: cdk.Stack, name: string, call: A
     });
     target.container.addEnvironment('OTEL_EXPORTER_OTLP_ENDPOINT', 'http://localhost:4317');
     target.container.addEnvironment('OTEL_EXPORTER_OTLP_PROTOCOL', 'grpc');
+    target.container.addEnvironment('OTEL_PROPAGATORS', 'tracecontext,baggage,xray');
+    target.container.addEnvironment('OTEL_TRACES_SAMPLER', 'parentbased_always_on');
     target.taskDefinition.taskRole.addToPrincipalPolicy(new iam.PolicyStatement({
       actions: [
         'cloudwatch:PutMetricData',
@@ -148,6 +150,8 @@ function observabilityGateway(stack: cdk.Stack, name: string, call: AssetCall, t
   for (const target of targets) {
     target.container.addEnvironment('OTEL_EXPORTER_OTLP_ENDPOINT', `http://${dnsName}:4317`);
     target.container.addEnvironment('OTEL_EXPORTER_OTLP_PROTOCOL', 'grpc');
+    target.container.addEnvironment('OTEL_PROPAGATORS', 'tracecontext,baggage,xray');
+    target.container.addEnvironment('OTEL_TRACES_SAMPLER', 'parentbased_always_on');
   }
   exportOutput(stack, name, 'endpoint', `http://${dnsName}:4317`);
   exportOutput(stack, name, 'namespace', generated.namespace);

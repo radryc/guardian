@@ -147,6 +147,14 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 			}
 			env["OTEL_EXPORTER_OTLP_PROTOCOL"] = protocol
 		}
+		// Keep W3C and X-Ray context alive across k8s/AWS boundaries. Explicit
+		// workload values win; these are only defaults.
+		if strings.TrimSpace(env["OTEL_PROPAGATORS"]) == "" {
+			env["OTEL_PROPAGATORS"] = "tracecontext,baggage,xray"
+		}
+		if strings.TrimSpace(env["OTEL_TRACES_SAMPLER"]) == "" {
+			env["OTEL_TRACES_SAMPLER"] = "parentbased_always_on"
+		}
 	}
 
 	secrets := resolveComputeSecrets(in, spec)

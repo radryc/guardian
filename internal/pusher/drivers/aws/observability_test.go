@@ -84,6 +84,12 @@ func TestComputeAppliesOtelSidecar(t *testing.T) {
 	if got := backend.lastService.Container.Env["OTEL_RESOURCE_ATTRIBUTES"]; !strings.Contains(got, "guardian.partition=demo") {
 		t.Fatalf("main container resource attrs = %q", got)
 	}
+	if got := backend.lastService.Container.Env["OTEL_PROPAGATORS"]; got != "tracecontext,baggage,xray" {
+		t.Fatalf("main container propagators = %q", got)
+	}
+	if got := backend.lastService.Container.Env["OTEL_TRACES_SAMPLER"]; got != "parentbased_always_on" {
+		t.Fatalf("main container sampler = %q", got)
+	}
 
 	report, err := driver.Diff(context.Background(), in)
 	if err != nil {
