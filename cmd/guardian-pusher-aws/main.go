@@ -15,6 +15,11 @@ import (
 	"syscall"
 	"time"
 
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
+
 	"github.com/rydzu/ainfra/guardian/internal/awsobserve"
 	"github.com/rydzu/ainfra/guardian/internal/awsread"
 	"github.com/rydzu/ainfra/guardian/internal/awsscan"
@@ -337,10 +342,35 @@ func main() {
 	}
 
 	if !awsReadDisabled && strings.TrimSpace(awsReadAddr) != "" {
+		// The read API must query the target account, not the management
+		// account that hosts the fleet task. Assume the per-account role once
+		// and use those credentials for CloudWatch and X-Ray.
+		var readCredentials awssdk.CredentialsProvider
+		if strings.TrimSpace(assumeRoleName) != "" && strings.TrimSpace(account) != "" {
+			stsRegion := region
+			if stsRegion == "" {
+				stsRegion = "us-east-1"
+			}
+			stsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(stsRegion))
+			if err != nil {
+				log.Fatalf("load AWS config for read API: %v", err)
+			}
+			provider := stscreds.NewAssumeRoleProvider(
+				sts.NewFromConfig(stsCfg),
+				fmt.Sprintf("arn:aws:iam::%s:role/%s", account, assumeRoleName),
+				func(o *stscreds.AssumeRoleOptions) {
+					if strings.TrimSpace(assumeRoleExternalID) != "" {
+						o.ExternalID = awssdk.String(assumeRoleExternalID)
+					}
+				},
+			)
+			readCredentials = awssdk.NewCredentialsCache(provider)
+		}
 		readerConfig := awsread.Config{
 			Account:       account,
 			DefaultRegion: region,
 			Regions:       splitRegions(region),
+			Credentials:   readCredentials,
 		}
 		reader := awsread.NewAWSReader(readerConfig)
 		promQL := awsread.NewPromQLClient(readerConfig)

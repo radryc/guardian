@@ -32,6 +32,9 @@ type Config struct {
 	DefaultRegion string
 	Regions       []string
 	Account       string
+	// Credentials optionally overrides the ambient task role. The fleet
+	// pusher uses this to read CloudWatch/X-Ray in its target account.
+	Credentials awsroot.CredentialsProvider
 }
 
 // AWSReader implements Reader against the AWS SDK.
@@ -40,6 +43,7 @@ type AWSReader struct {
 	defaultRegion string
 	regions       []string
 	profile       string
+	credentials   awsroot.CredentialsProvider
 
 	mu   sync.Mutex
 	cfgs map[string]awsroot.Config
@@ -62,6 +66,7 @@ func NewAWSReader(cfg Config) *AWSReader {
 		defaultRegion: defaultRegion,
 		regions:       regions,
 		profile:       strings.TrimSpace(cfg.Profile),
+		credentials:   cfg.Credentials,
 		cfgs:          make(map[string]awsroot.Config),
 	}
 }
@@ -78,6 +83,9 @@ func (r *AWSReader) loadConfig(ctx context.Context, region string) (awsroot.Conf
 	opts := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(region)}
 	if r.profile != "" {
 		opts = append(opts, awsconfig.WithSharedConfigProfile(r.profile))
+	}
+	if r.credentials != nil {
+		opts = append(opts, awsconfig.WithCredentialsProvider(r.credentials))
 	}
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
@@ -676,11 +684,23 @@ func parseXRayDocument(document, parentService, parentID string) []Span {
 	}
 
 	attributes := make(map[string]string)
+	applyGuardianXRayAttribute := func(key string, value any) {
+		switch key {
+		case "guardian.partition":
+			attributes["guardian_partition"] = stringifyXRayValue(value)
+		case "guardian.intent":
+			attributes["guardian_intent"] = stringifyXRayValue(value)
+		case "guardian.asset":
+			attributes["guardian_asset"] = stringifyXRayValue(value)
+		}
+	}
 	for key, value := range doc.Metadata {
 		attributes["metadata."+key] = stringifyXRayValue(value)
+		applyGuardianXRayAttribute(key, value)
 	}
 	for key, value := range doc.Annotations {
 		attributes["annotation."+key] = stringifyXRayValue(value)
+		applyGuardianXRayAttribute(key, value)
 	}
 	if doc.Namespace != "" {
 		attributes["aws.namespace"] = doc.Namespace

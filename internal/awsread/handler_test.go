@@ -186,6 +186,7 @@ func TestParseXRayDocument(t *testing.T) {
 		"name": "guardian-api",
 		"start_time": 1700000000.0,
 		"end_time": 1700000000.5,
+		"annotations": {"guardian.partition": "checkout", "guardian.intent": "api"},
 		"subsegments": [
 			{"id": "sub-1", "name": "SELECT", "type": "subsegment", "start_time": 1700000000.1, "end_time": 1700000000.2, "namespace": "aws"},
 			{"id": "sub-2", "name": "call", "type": "subsegment", "start_time": 1700000000.2, "end_time": 1700000000.3, "error": true, "parent_id": "seg-1"}
@@ -197,6 +198,12 @@ func TestParseXRayDocument(t *testing.T) {
 	}
 	if spans[0].Service != "guardian-api" || spans[0].TraceID != "1-abc" {
 		t.Fatalf("root span = %#v", spans[0])
+	}
+	if got := spans[0].Attributes["guardian_partition"]; got != "checkout" {
+		t.Fatalf("guardian partition = %q, want checkout", got)
+	}
+	if got := spans[0].Attributes["guardian_intent"]; got != "api" {
+		t.Fatalf("guardian intent = %q, want api", got)
 	}
 	if spans[1].Service != "aws" || spans[1].ParentSpanID != "seg-1" {
 		t.Fatalf("aws subsegment = %#v", spans[1])

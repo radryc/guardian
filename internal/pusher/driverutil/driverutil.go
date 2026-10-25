@@ -558,6 +558,14 @@ func ApplyObservabilityEnv(env map[string]string, in registry.AssetInput, provid
 		}
 		env["OTEL_EXPORTER_OTLP_PROTOCOL"] = protocol
 	}
+	// Keep the cross-boundary propagation contract identical for k8s, Docker,
+	// and AWS workloads. Explicit workload values win.
+	if strings.TrimSpace(env["OTEL_PROPAGATORS"]) == "" {
+		env["OTEL_PROPAGATORS"] = "tracecontext,baggage,xray"
+	}
+	if strings.TrimSpace(env["OTEL_TRACES_SAMPLER"]) == "" {
+		env["OTEL_TRACES_SAMPLER"] = "parentbased_always_on"
+	}
 	return env
 }
 

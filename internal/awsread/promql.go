@@ -29,6 +29,7 @@ type PromQLProxier interface {
 type PromQLClient struct {
 	defaultRegion string
 	profile       string
+	credentials   awssdk.CredentialsProvider
 	httpClient    *http.Client
 	signer        *v4.Signer
 
@@ -45,6 +46,7 @@ func NewPromQLClient(cfg Config) *PromQLClient {
 	return &PromQLClient{
 		defaultRegion: defaultRegion,
 		profile:       strings.TrimSpace(cfg.Profile),
+		credentials:   cfg.Credentials,
 		httpClient:    &http.Client{Timeout: 40 * time.Second},
 		signer:        v4.NewSigner(),
 		cfgs:          make(map[string]awssdk.Config),
@@ -63,6 +65,9 @@ func (c *PromQLClient) loadConfig(ctx context.Context, region string) (awssdk.Co
 	opts := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(region)}
 	if c.profile != "" {
 		opts = append(opts, awsconfig.WithSharedConfigProfile(c.profile))
+	}
+	if c.credentials != nil {
+		opts = append(opts, awsconfig.WithCredentialsProvider(c.credentials))
 	}
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
