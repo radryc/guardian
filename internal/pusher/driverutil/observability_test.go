@@ -111,6 +111,12 @@ func TestApplyObservabilityEnvUsesServiceNameOverride(t *testing.T) {
 	if got := attrs["service.alias"]; got != "custom.service" {
 		t.Fatalf("service.alias = %q", got)
 	}
+	if got := env["OTEL_PROPAGATORS"]; got != "tracecontext,baggage,xray" {
+		t.Fatalf("OTEL_PROPAGATORS = %q", got)
+	}
+	if got := env["OTEL_TRACES_SAMPLER"]; got != "parentbased_always_on" {
+		t.Fatalf("OTEL_TRACES_SAMPLER = %q", got)
+	}
 }
 
 func TestApplyOtelEnvPreservesExplicitValues(t *testing.T) {
