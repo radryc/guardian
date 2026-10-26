@@ -1749,3 +1749,75 @@ func (s *countingStore) recordRead() {
 	s.reads++
 	s.mu.Unlock()
 }
+
+func TestDeriveAssetPresentationInheritsObservedStackHealth(t *testing.T) {
+	t.Parallel()
+
+	state := &statedomain.IntentState{
+		Status: statedomain.StatusObserved,
+		Health: &taskdomain.HealthObservation{
+			Status:  taskdomain.HealthDegraded,
+			Summary: "stack status DELETE_IN_PROGRESS",
+		},
+		Resources: []statedomain.ResourceObservation{
+			{LogicalID: "Cluster", AssetName: "res-cluster"},
+		},
+		Timestamps: statedomain.StateTimestamps{LastDiffAt: time.Now().UTC()},
+	}
+	status, displayStatus, health, summary := deriveAssetPresentation(state, "res-cluster", intentTaskRuntime{})
+	if status != string(statedomain.StatusObserved) {
+		t.Fatalf("status = %q, want %q", status, statedomain.StatusObserved)
+	}
+	if displayStatus != "Attention" || health != "attention" {
+		t.Fatalf("presentation = (%q, %q), want (Attention, attention)", displayStatus, health)
+	}
+	if !strings.Contains(summary, "DELETE_IN_PROGRESS") {
+		t.Fatalf("summary = %q, want stack status", summary)
+	}
+}
+
+func TestDeriveAssetPresentationMarksStaleObservedResource(t *testing.T) {
+	t.Parallel()
+
+	state := &statedomain.IntentState{
+		Status: statedomain.StatusObserved,
+		Health: &taskdomain.HealthObservation{
+			Status:  taskdomain.HealthHealthy,
+			Summary: "stack CREATE_COMPLETE",
+		},
+		Resources: []statedomain.ResourceObservation{
+			{LogicalID: "Cluster", AssetName: "res-cluster"},
+		},
+		Timestamps: statedomain.StateTimestamps{LastDiffAt: time.Now().UTC().Add(-10 * time.Minute)},
+	}
+	_, displayStatus, health, summary := deriveAssetPresentation(state, "res-cluster", intentTaskRuntime{})
+	if displayStatus != "Stale" || health != "attention" {
+		t.Fatalf("presentation = (%q, %q), want (Stale, attention)", displayStatus, health)
+	}
+	if !strings.Contains(summary, "No fresh observed snapshot") {
+		t.Fatalf("summary = %q, want stale snapshot", summary)
+	}
+}
+
+func TestDeriveIntentPresentationMarksStaleObservedSnapshot(t *testing.T) {
+	t.Parallel()
+
+	state := &statedomain.IntentState{
+		Status: statedomain.StatusObserved,
+		Health: &taskdomain.HealthObservation{
+			Status:  taskdomain.HealthHealthy,
+			Summary: "stack CREATE_COMPLETE",
+		},
+		Resources: []statedomain.ResourceObservation{
+			{LogicalID: "Cluster", AssetName: "res-cluster"},
+		},
+		Timestamps: statedomain.StateTimestamps{LastDiffAt: time.Now().UTC().Add(-10 * time.Minute)},
+	}
+	_, displayStatus, health, summary := deriveIntentPresentation(state, intentTaskRuntime{})
+	if displayStatus != "Stale" || health != "attention" {
+		t.Fatalf("presentation = (%q, %q), want (Stale, attention)", displayStatus, health)
+	}
+	if !strings.Contains(summary, "No fresh observed snapshot") {
+		t.Fatalf("summary = %q, want stale snapshot", summary)
+	}
+}
