@@ -376,6 +376,11 @@ type intentTaskRuntime struct {
 
 const defaultStaleTaskAfter = 5 * time.Minute
 
+// observedSnapshotStaleAfter is the age after which a per-resource card should
+// stop claiming healthy/observed. The observed collector refreshes every few
+// seconds; five minutes of silence means the pusher or collector is gone.
+const observedSnapshotStaleAfter = 5 * time.Minute
+
 type CatalogResponse struct {
 	Pushers    []string                    `json:"pushers"`
 	AssetTypes []assetdefs.CatalogTemplate `json:"assetTypes"`
@@ -2169,38 +2174,102 @@ func deriveIntentPresentation(state *statedomain.IntentState, runtime intentTask
 }
 
 func observedIntentHealthPresentation(state *statedomain.IntentState) (string, string, string, bool) {
-	if state == nil || state.Health == nil {
+	if state == nil {
 		return "", "", "", false
 	}
-	summary := valueOrDefault(strings.TrimSpace(state.Health.Summary), "Live target health is unknown")
-	switch state.Health.Status {
-	case taskdomain.HealthUnhealthy:
-		return "Unhealthy", "failing", summary, true
-	case taskdomain.HealthDegraded:
-		return "Attention", "attention", summary, true
-	default:
-		return "", "", "", false
-	}
-}
-
-func observedAssetHealthPresentation(state *statedomain.IntentState, assetName string) (string, string, string, bool) {
-	observation := stateAssetObservation(state, assetName)
-	if observation == nil {
-		return "", "", "", false
-	}
-	if observation.Health != nil {
-		summary := valueOrDefault(strings.TrimSpace(observation.Health.Summary), "Live target health is unknown")
-		switch observation.Health.Status {
+	if state.Health != nil {
+		summary := valueOrDefault(strings.TrimSpace(state.Health.Summary), "Live target health is unknown")
+		switch state.Health.Status {
 		case taskdomain.HealthUnhealthy:
 			return "Unhealthy", "failing", summary, true
 		case taskdomain.HealthDegraded:
 			return "Attention", "attention", summary, true
 		}
 	}
-	if observation.ApplyReadiness != nil && observation.ApplyReadiness.Status == taskdomain.ApplyReadinessBlocked {
-		return "Blocked", "attention", valueOrDefault(strings.TrimSpace(observation.ApplyReadiness.Summary), "Asset dependencies are not ready"), true
+	if len(state.Resources) > 0 {
+		if age, stale := observedSnapshotAge(state); stale {
+			summary := fmt.Sprintf("No fresh observed snapshot for %s", humanizeDuration(age))
+			if parent := strings.TrimSpace(state.Health.Summary); parent != "" {
+				summary += "; " + parent
+			}
+			return "Stale", "attention", summary, true
+		}
 	}
 	return "", "", "", false
+}
+
+func observedAssetHealthPresentation(state *statedomain.IntentState, assetName string) (string, string, string, bool) {
+	observation := stateAssetObservation(state, assetName)
+	if observation != nil {
+		if observation.Health != nil {
+			summary := valueOrDefault(strings.TrimSpace(observation.Health.Summary), "Live target health is unknown")
+			switch observation.Health.Status {
+			case taskdomain.HealthUnhealthy:
+				return "Unhealthy", "failing", summary, true
+			case taskdomain.HealthDegraded:
+				return "Attention", "attention", summary, true
+			}
+		}
+		if observation.ApplyReadiness != nil && observation.ApplyReadiness.Status == taskdomain.ApplyReadinessBlocked {
+			return "Blocked", "attention", valueOrDefault(strings.TrimSpace(observation.ApplyReadiness.Summary), "Asset dependencies are not ready"), true
+		}
+	}
+	// Synthetic observed resources do not have their own AssetObservation. They
+	// must inherit the stack health, otherwise a stack in DELETE_IN_PROGRESS or
+	// DELETE_FAILED still renders every resource as healthy/observed.
+	if !isObservedResourceAsset(state, assetName) {
+		return "", "", "", false
+	}
+	if state.Health != nil {
+		summary := valueOrDefault(strings.TrimSpace(state.Health.Summary), "Parent stack health is unknown")
+		switch state.Health.Status {
+		case taskdomain.HealthUnhealthy:
+			return "Unhealthy", "failing", summary + " (inherited from parent stack)", true
+		case taskdomain.HealthDegraded:
+			return "Attention", "attention", summary + " (inherited from parent stack)", true
+		}
+	}
+	if age, stale := observedSnapshotAge(state); stale {
+		summary := fmt.Sprintf("No fresh observed snapshot for %s", humanizeDuration(age))
+		if parent := strings.TrimSpace(state.Health.Summary); parent != "" {
+			summary += "; " + parent
+		}
+		return "Stale", "attention", summary, true
+	}
+	return "", "", "", false
+}
+
+func isObservedResourceAsset(state *statedomain.IntentState, assetName string) bool {
+	if state == nil || assetName == "" {
+		return false
+	}
+	for _, resource := range state.Resources {
+		if strings.EqualFold(resource.AssetName, assetName) {
+			return true
+		}
+	}
+	return false
+}
+
+func observedSnapshotAge(state *statedomain.IntentState) (time.Duration, bool) {
+	if state == nil || state.Timestamps.LastDiffAt.IsZero() {
+		return 0, false
+	}
+	age := time.Since(state.Timestamps.LastDiffAt)
+	return age, age > observedSnapshotStaleAfter
+}
+
+func humanizeDuration(value time.Duration) string {
+	if value < time.Minute {
+		return fmt.Sprintf("%ds", int(value.Seconds()))
+	}
+	if value < time.Hour {
+		return fmt.Sprintf("%dm", int(value.Minutes()))
+	}
+	if value < 24*time.Hour {
+		return fmt.Sprintf("%dh", int(value.Hours()))
+	}
+	return fmt.Sprintf("%dd", int(value.Hours()/24))
 }
 
 func observedFailureSummary(state *statedomain.IntentState) string {
