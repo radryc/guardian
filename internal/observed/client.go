@@ -169,6 +169,23 @@ func (c *Client) Template(ctx context.Context, account, region, stackName string
 	return resp.Template, nil
 }
 
+// StackResources fetches the live logical-to-physical CloudFormation resource
+// mapping for one stack.
+func (c *Client) StackResources(ctx context.Context, account, region, stackName string) ([]awsobserve.StackResource, error) {
+	query := url.Values{"region": {region}}
+	if account != "" {
+		query.Set("account", account)
+	}
+	var resp struct {
+		StackName string                     `json:"stackName"`
+		Resources []awsobserve.StackResource `json:"resources"`
+	}
+	if _, err := c.do(ctx, http.MethodGet, "/v1/aws/observed/stacks/"+url.PathEscape(stackName)+"/resources", query, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Resources, nil
+}
+
 // Refresh forces a live DescribeStacks (and optional drift detection) on the
 // pusher for the given stacks, returning the refreshed state.
 func (c *Client) Refresh(ctx context.Context, account, region string, stacks []string, detectDrift bool) ([]awsobserve.StackState, error) {

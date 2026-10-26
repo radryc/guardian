@@ -239,6 +239,15 @@ func (f *fakeObserved) Refresh(ctx context.Context, account, region string, stac
 func (f *fakeObserved) Template(ctx context.Context, account, region, stackName string) (string, error) {
 	return `{"Resources":{}}`, nil
 }
+func (f *fakeObserved) StackResources(ctx context.Context, account, region, stackName string) ([]awsobserve.StackResource, error) {
+	return []awsobserve.StackResource{{
+		LogicalID:    "Bucket",
+		PhysicalID:   "demo-bucket",
+		ResourceType: "AWS::S3::Bucket",
+		Status:       "CREATE_COMPLETE",
+		DriftStatus:  "IN_SYNC",
+	}}, nil
+}
 func (f *fakeObserved) DiffSource(ctx context.Context, req awsobserve.SourceDiffRequest) (*awsobserve.SourceDiffResult, error) {
 	return &awsobserve.SourceDiffResult{StackName: req.StackName, Summary: "in sync"}, nil
 }
@@ -383,5 +392,24 @@ func TestHandlerMetaReturnsServiceNames(t *testing.T) {
 	}
 	if len(body.XrayServices) != 2 || body.XrayServices[0] != "api" || body.XrayServices[1] != "worker" {
 		t.Fatalf("xrayServices = %#v, want [api worker]", body.XrayServices)
+	}
+}
+
+func TestObservedStackResources(t *testing.T) {
+	handler := NewHandler(nil, "").WithObserved(&fakeObserved{})
+	req := httptest.NewRequest(http.MethodGet, "/v1/aws/observed/stacks/AwsPusherStack/resources?region=eu-west-1", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Resources []awsobserve.StackResource `json:"resources"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Resources) != 1 || body.Resources[0].PhysicalID != "demo-bucket" {
+		t.Fatalf("resources = %+v", body.Resources)
 	}
 }

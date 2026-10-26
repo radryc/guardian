@@ -35,6 +35,19 @@ type StackState struct {
 	Outputs map[string]string `json:"outputs,omitempty"`
 }
 
+// StackResource is one live CloudFormation resource from ListStackResources.
+// It joins the template's logical IDs to the physical AWS resources used by
+// service-level topology enrichment.
+type StackResource struct {
+	LogicalID    string    `json:"logicalId"`
+	PhysicalID   string    `json:"physicalId,omitempty"`
+	ResourceType string    `json:"resourceType"`
+	Status       string    `json:"status,omitempty"`
+	StatusReason string    `json:"statusReason,omitempty"`
+	DriftStatus  string    `json:"driftStatus,omitempty"`
+	UpdatedAt    time.Time `json:"updatedAt,omitempty"`
+}
+
 // Event is a normalized CloudFormation observation event.
 type Event struct {
 	ID                   string    `json:"id"`

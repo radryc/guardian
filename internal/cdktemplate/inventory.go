@@ -9,10 +9,12 @@ import (
 // the identity/dependency subset Guardian needs to build the observed resource
 // inventory; properties stay in the template and are never copied into state.
 type Resource struct {
-	LogicalID string   `json:"logicalId" yaml:"logicalId"`
-	Type      string   `json:"type" yaml:"type"`
-	Condition string   `json:"condition,omitempty" yaml:"condition,omitempty"`
-	DependsOn []string `json:"dependsOn,omitempty" yaml:"dependsOn,omitempty"`
+	LogicalID string     `json:"logicalId" yaml:"logicalId"`
+	Type      string     `json:"type" yaml:"type"`
+	Condition string     `json:"condition,omitempty" yaml:"condition,omitempty"`
+	DependsOn []string   `json:"dependsOn,omitempty" yaml:"dependsOn,omitempty"`
+	Parent    string     `json:"parent,omitempty" yaml:"parent,omitempty"`
+	Relations []Relation `json:"relations,omitempty" yaml:"relations,omitempty"`
 }
 
 // Inventory returns every resource in a CloudFormation template (JSON or YAML)
@@ -31,6 +33,8 @@ func Inventory(raw string) ([]Resource, error) {
 	sort.Strings(ids)
 
 	out := make([]Resource, 0, len(ids))
+	parents := make(map[string]string)
+	relations := make(map[string][]Relation)
 	for _, id := range ids {
 		resource := resources[id]
 		refs := map[string]struct{}{}
@@ -52,6 +56,11 @@ func Inventory(raw string) ([]Resource, error) {
 			Condition: stringValue(resource["Condition"]),
 			DependsOn: deps,
 		})
+		applyTemplateRelations(id, resource, resources, parents, relations)
+	}
+	for i := range out {
+		out[i].Parent = parents[out[i].LogicalID]
+		out[i].Relations = dedupeRelations(relations[out[i].LogicalID], resources)
 	}
 	return out, nil
 }

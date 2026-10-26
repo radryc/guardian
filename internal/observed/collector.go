@@ -347,6 +347,15 @@ func (c *Collector) observeAsset(ctx context.Context, partition string, intent *
 	snapshot.LastEventID = state.LastEventID
 	snapshot.LastEventTime = state.LastEventTime
 
+	// Live resource identity is not part of the template. Fetch it so the UI
+	// can show physical ARNs/names and so later service-level enrichment can
+	// use the real ECS/ELB/Lambda identifiers. Failure is non-fatal: the
+	// template inventory is still useful on its own.
+	liveStackResources, resourcesErr := endpoint.Client.StackResources(ctx, account, region, stackName)
+	if resourcesErr != nil {
+		log.Printf("[observed] %s/%s: live stack resources: %v", partition, intent.Metadata.Name, resourcesErr)
+	}
+
 	var (
 		changed          []string
 		compareSummary   string
@@ -428,7 +437,7 @@ func (c *Collector) observeAsset(ctx context.Context, partition string, intent *
 		return result
 	}
 	snapshot.ChangedResources = changed
-	snapshot.Resources = buildResourceObservations(desiredInventory, liveInventory, changed)
+	snapshot.Resources = buildResourceObservations(desiredInventory, liveInventory, changed, liveStackResources)
 
 	resourceSummary := summarizeResourceDrift(snapshot.Resources, state.DriftedResources)
 	reasons := make([]string, 0, 3)
