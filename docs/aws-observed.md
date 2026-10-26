@@ -462,6 +462,31 @@ Snapshots are written under
 `/partitions/<p>/.observed/<intent>/<asset>.json`, with a bounded event log in
 `/partitions/<p>/.observed/<intent>/events/` (200 events per intent).
 
+## Topology enrichment
+
+The pusher exposes the live CloudFormation resource mapping at:
+
+```text
+GET /v1/aws/observed/stacks/{stack}/resources?account=&region=
+```
+
+Each resource carries `logicalId`, `physicalId`, `resourceType`, `status`,
+`statusReason`, `driftStatus`, and `updatedAt`. Guardian joins that mapping with
+the template to attach:
+
+- physical ARNs/names to the synthetic resource nodes
+- containment (`ECS::Cluster` → `Service`, `LoadBalancer` → `Listener`)
+- typed edges for `routesTo`, `triggers`, `uses`, `logsTo`, and `network`
+- application/observability/infrastructure tiers for the topology filter
+
+The topology UI shows application resources and observability by default. IAM,
+VPC, subnet, route, security-group, and SSM resources are hidden until
+**Infrastructure** is enabled.
+
+This pass does not yet enumerate running ECS tasks or target health. Those are
+the next enrichment step and require `ecs:ListTasks`/`DescribeTasks` and
+`elasticloadbalancing:DescribeTargetHealth`.
+
 ## Required permissions
 
 The pusher task role needs, on top of `ReadOnlyAccess`:
