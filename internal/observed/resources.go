@@ -166,11 +166,23 @@ func mergeResourceObservations(results []assetResult) []statedomain.ResourceObse
 	out := make([]statedomain.ResourceObservation, 0)
 	for _, result := range results {
 		prefix := result.asset + "-"
+		logicalAssets := make(map[string]string, len(result.snapshot.Resources))
+		for _, resource := range result.snapshot.Resources {
+			logicalAssets[resource.LogicalID] = truncateAssetName(prefix + resource.AssetName)
+		}
 		for _, resource := range result.snapshot.Resources {
 			copied := resource
 			copied.DependsOn = append([]string(nil), resource.DependsOn...)
 			copied.Relations = append([]statedomain.ResourceRelation(nil), resource.Relations...)
-			copied.AssetName = truncateAssetName(prefix + resource.AssetName)
+			copied.AssetName = logicalAssets[resource.LogicalID]
+			if parent := logicalAssets[resource.Parent]; parent != "" {
+				copied.Parent = parent
+			} else {
+				copied.Parent = ""
+			}
+			for i := range copied.Relations {
+				copied.Relations[i].Target = logicalAssets[copied.Relations[i].Target]
+			}
 			out = append(out, copied)
 		}
 	}
