@@ -1507,6 +1507,20 @@ func formatCountSummary(count int, noun, singularVerb, pluralVerb, phrase string
 	return fmt.Sprintf("%d %ss %s %s.", count, noun, pluralVerb, phrase)
 }
 
+func topologyTier(cfnType string) string {
+	switch {
+	case strings.HasPrefix(cfnType, "AWS::EC2::"),
+		strings.HasPrefix(cfnType, "AWS::IAM::"),
+		strings.HasPrefix(cfnType, "AWS::SSM::"),
+		strings.HasPrefix(cfnType, "AWS::CloudFormation::"):
+		return "infrastructure"
+	case strings.HasPrefix(cfnType, "AWS::Logs::"):
+		return "observability"
+	default:
+		return "application"
+	}
+}
+
 func buildTopology(partition partitiondomain.Partition, intents []IntentDocument) TopologyData {
 	partitionNodeID := "partition:" + partition.Metadata.Name
 	intentLevels := computeIntentLevels(intents)
@@ -1595,6 +1609,9 @@ func buildTopology(partition partitiondomain.Partition, intents []IntentDocument
 				if value, ok := asset.Properties[key].(string); ok && strings.TrimSpace(value) != "" {
 					assetMeta[key] = value
 				}
+			}
+			if cfnType := assetMeta["cfnType"]; cfnType != "" {
+				assetMeta["tier"] = topologyTier(cfnType)
 			}
 			if asset.FlowSummary != "" {
 				assetMeta["flowSummary"] = asset.FlowSummary

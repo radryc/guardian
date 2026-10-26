@@ -7,6 +7,7 @@ export interface TopologyOptions {
   savedPositions: Record<string, { x: number; y: number }>;
   selectedNodeId: string;
   filters: Record<string, boolean>;
+  showInfrastructure: boolean;
   onSelectNode: (nodeId: string, positions: Record<string, { x: number; y: number }>) => void;
   onDragNode:   (nodeId: string, positions: Record<string, { x: number; y: number }>) => void;
 }
@@ -268,16 +269,26 @@ function updateEdgePaths(
 
 // ── Main render ───────────────────────────────────────
 export function renderTopology(opts: TopologyOptions): void {
-  const { canvas, topology, zoom, savedPositions, selectedNodeId, filters, onSelectNode, onDragNode } = opts;
+  const { canvas, topology, zoom, savedPositions, selectedNodeId, filters, showInfrastructure, onSelectNode, onDragNode } = opts;
 
   if (!topology?.nodes?.length) {
     canvas.innerHTML = `<p class="empty-state" style="padding:24px">Select a partition to visualize its topology.</p>`;
     return;
   }
 
-  const nodes: any[]  = topology.nodes;
+  let nodes: any[]  = topology.nodes;
+  let edges: any[]  = topology.edges ?? [];
+  if (!showInfrastructure) {
+    const visible = new Set(
+      nodes
+        .filter((node) => node.kind !== "asset" || node.meta?.tier !== "infrastructure")
+        .map((node) => node.id)
+    );
+    nodes = nodes.filter((node) => visible.has(node.id));
+    edges = edges.filter((edge) => visible.has(edge.from) && visible.has(edge.to));
+  }
+  edges = edges.filter((edge: any) => (filters as any)[edge.kind] !== false);
   const nodeMap       = new Map<string, any>(nodes.map((n) => [n.id, n]));
-  const edges: any[]  = (topology.edges ?? []).filter((e: any) => (filters as any)[e.kind] !== false);
   const { positions, groups } = computePositions(nodes, savedPositions);
   const selectedNode  = nodeMap.get(selectedNodeId) ?? nodes.find((n) => n.kind === "intent") ?? nodes[0];
 
