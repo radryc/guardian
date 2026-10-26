@@ -18,7 +18,13 @@ import (
 const (
 	pusherBulkReadWorkers  = 32
 	pusherCacheFallbackTTL = 10 * time.Second
-	staleHeartbeatWindow   = 90 * time.Second
+	// A healthy watch stream keeps the index current. The max age is a safety
+	// net for a missed or silently dead watch: small fleets refresh quickly,
+	// while very large fleets avoid a full 50k-record read too often.
+	pusherCacheSmallFleetThreshold = 1000
+	pusherCacheSmallFleetMaxAge    = 30 * time.Second
+	pusherCacheLargeFleetMaxAge    = 15 * time.Minute
+	staleHeartbeatWindow           = 90 * time.Second
 )
 
 // PusherListOptions configures server-side filtering, delta sync, and cursor
@@ -132,8 +138,18 @@ func (idx *pusherIndexCache) snapshotIfFresh(now time.Time) ([]Pusher, bool) {
 	if idx.hydratedAt.IsZero() {
 		return nil, false
 	}
-	if !idx.watching && now.Sub(idx.hydratedAt) > pusherCacheFallbackTTL {
-		return nil, false
+	if !idx.watching {
+		if now.Sub(idx.hydratedAt) > pusherCacheFallbackTTL {
+			return nil, false
+		}
+	} else {
+		maxAge := pusherCacheLargeFleetMaxAge
+		if len(idx.byName) < pusherCacheSmallFleetThreshold {
+			maxAge = pusherCacheSmallFleetMaxAge
+		}
+		if now.Sub(idx.hydratedAt) > maxAge {
+			return nil, false
+		}
 	}
 	out := make([]Pusher, 0, len(idx.byName))
 	for _, p := range idx.byName {

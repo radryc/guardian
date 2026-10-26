@@ -220,3 +220,19 @@ func TestPusherFleetSummaryAndPagination(t *testing.T) {
 		t.Fatalf("unexpected eu-west-1 page: %+v", euPage)
 	}
 }
+
+func TestPusherCacheExpiresWhileWatching(t *testing.T) {
+	now := time.Now().UTC()
+	idx := &pusherIndexCache{
+		byName:     map[string]Pusher{"aws-1": {Name: "aws-1"}},
+		hydratedAt: now.Add(-pusherCacheSmallFleetMaxAge - time.Second),
+		watching:   true,
+	}
+	if _, ok := idx.snapshotIfFresh(now); ok {
+		t.Fatal("expected stale watched cache to refresh")
+	}
+	idx.hydratedAt = now.Add(-pusherCacheSmallFleetMaxAge / 2)
+	if _, ok := idx.snapshotIfFresh(now); !ok {
+		t.Fatal("expected fresh watched cache to be reused")
+	}
+}

@@ -36,7 +36,9 @@ type RegistryResolver struct {
 	fetchedAt time.Time
 }
 
-// Resolve implements EndpointResolver.
+// Resolve returns the observed API for a pusher. A cache miss falls back to a
+// direct read of that pusher record: the store-wide index can lag behind
+// MonoFS when a watch event is missed, and a single record read is cheap.
 func (r *RegistryResolver) Resolve(pusher string) (Endpoint, bool) {
 	if r == nil {
 		return Endpoint{}, false
@@ -46,9 +48,31 @@ func (r *RegistryResolver) Resolve(pusher string) (Endpoint, bool) {
 	}
 	r.refresh()
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	endpoint, ok := r.cached[pusher]
-	return endpoint, ok
+	r.mu.Unlock()
+	if ok {
+		return endpoint, true
+	}
+	if r.Registry == nil {
+		return Endpoint{}, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	record, err := r.Registry.GetPusher(ctx, pusher)
+	if err != nil || record == nil || strings.TrimSpace(record.ObservedAPIURL) == "" {
+		return Endpoint{}, false
+	}
+	endpoint = Endpoint{
+		Name:   record.Name,
+		Client: NewClient(record.ObservedAPIURL, record.TokenValue(), 30*time.Second),
+	}
+	r.mu.Lock()
+	if r.cached == nil {
+		r.cached = make(map[string]Endpoint)
+	}
+	r.cached[pusher] = endpoint
+	r.mu.Unlock()
+	return endpoint, true
 }
 
 func (r *RegistryResolver) refresh() {
