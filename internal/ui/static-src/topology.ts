@@ -189,7 +189,9 @@ function computePositions(
     const groupHeight = childY - groupY - 24 + 14;
     groups.push({
       id: node.id,
-      label: node.label,
+      label: node.meta?.cfnType
+        ? String(node.meta.cfnType).replace(/^AWS::/, "").replace(/::/g, " ")
+        : node.label,
       x: groupX,
       y: groupY,
       width: groupWidth,
