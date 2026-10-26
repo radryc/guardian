@@ -430,7 +430,7 @@ func (c *Collector) observeAsset(ctx context.Context, partition string, intent *
 	snapshot.ChangedResources = changed
 	snapshot.Resources = buildResourceObservations(desiredInventory, liveInventory, changed)
 
-	reasons := make([]string, 0, 2)
+	reasons := make([]string, 0, 3)
 	if len(changed) > 0 {
 		if compareSummary != "" {
 			reasons = append(reasons, compareSummary)
@@ -440,6 +440,9 @@ func (c *Collector) observeAsset(ctx context.Context, partition string, intent *
 	}
 	if strings.EqualFold(state.DriftStatus, "DRIFTED") {
 		reasons = append(reasons, fmt.Sprintf("CloudFormation drift on %d resource(s)", state.DriftedResourceCount))
+	}
+	if resources := summarizeResourceDrift(snapshot.Resources, state.DriftedResources); resources != "" {
+		reasons = append(reasons, "changed resources: "+resources)
 	}
 	if strings.HasSuffix(strings.ToUpper(state.StackStatus), "_FAILED") {
 		reasons = append(reasons, "stack status "+state.StackStatus)
@@ -461,6 +464,50 @@ func (c *Collector) observeAsset(ctx context.Context, partition string, intent *
 	c.persistSnapshot(ctx, partition, intent.Metadata.Name, asset.Name, snapshot)
 	c.persistEvents(ctx, partition, intent.Metadata.Name, endpoint, account, region, stackName)
 	return result
+}
+
+// summarizeResourceDrift merges the template-diff inventory and CloudFormation
+// resource-drift details into one bounded, human-readable list.
+func summarizeResourceDrift(resources []statedomain.ResourceObservation, drifted []awsobserve.DriftedResource) string {
+	const maxNames = 12
+	seen := map[string]struct{}{}
+	names := make([]string, 0, len(resources)+len(drifted))
+	add := func(logicalID, cfnType, status string) {
+		logicalID = strings.TrimSpace(logicalID)
+		if logicalID == "" {
+			return
+		}
+		if _, ok := seen[logicalID]; ok {
+			return
+		}
+		seen[logicalID] = struct{}{}
+		label := logicalID
+		if cfnType = strings.TrimSpace(cfnType); cfnType != "" {
+			label += " (" + cfnType
+			if status = strings.TrimSpace(status); status != "" {
+				label += ", " + status
+			}
+			label += ")"
+		} else if status = strings.TrimSpace(status); status != "" {
+			label += " (" + status + ")"
+		}
+		names = append(names, label)
+	}
+	for _, resource := range resources {
+		if resource.Status == "" || resource.Status == statedomain.ResourceInSync {
+			continue
+		}
+		add(resource.LogicalID, resource.CfnType, resource.Status)
+	}
+	for _, resource := range drifted {
+		add(resource.LogicalID, resource.ResourceType, resource.Status)
+	}
+	sort.Strings(names)
+	if len(names) > maxNames {
+		extra := len(names) - maxNames
+		names = append(names[:maxNames], fmt.Sprintf("+%d more", extra))
+	}
+	return strings.Join(names, ", ")
 }
 
 func (c *Collector) loadStackPayload(ctx context.Context, asset intentdomain.AssetSpec) (StackPayload, error) {
