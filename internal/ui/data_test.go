@@ -167,3 +167,65 @@ func TestSummarizePartitionMarksLocked(t *testing.T) {
 		t.Fatal("summary.Locked = false, want true when any intent is locked")
 	}
 }
+
+func TestBuildTopologyUsesObservedContainmentAndRelations(t *testing.T) {
+	partition := newPartition("demo")
+	intent := IntentDocument{
+		Name:   "app",
+		Status: "Observed",
+		Assets: []AssetDocument{
+			{
+				Name:      "res-cluster",
+				Type:      "AWSResource",
+				Synthetic: true,
+				Properties: map[string]any{
+					"cfnType": "AWS::ECS::Cluster",
+				},
+			},
+			{
+				Name:        "res-service",
+				Type:        "AWSResource",
+				Synthetic:   true,
+				ParentAsset: "res-cluster",
+				Relations: []AssetRelation{
+					{Kind: "uses", Target: "res-taskdef"},
+				},
+			},
+			{
+				Name:      "res-taskdef",
+				Type:      "AWSResource",
+				Synthetic: true,
+				Properties: map[string]any{
+					"cfnType": "AWS::ECS::TaskDefinition",
+				},
+			},
+		},
+	}
+	topology := buildTopology(partition, []IntentDocument{intent})
+
+	nodes := map[string]TopologyNode{}
+	for _, node := range topology.Nodes {
+		nodes[node.ID] = node
+	}
+	service, ok := nodes["asset:app:res-service"]
+	if !ok {
+		t.Fatalf("service node missing: %+v", topology.Nodes)
+	}
+	if service.ParentID != "asset:app:res-cluster" {
+		t.Fatalf("service parent = %q, want cluster asset", service.ParentID)
+	}
+	if service.Meta["cfnType"] != "" {
+		t.Fatalf("unexpected cfnType without properties: %+v", service.Meta)
+	}
+
+	foundRelation := false
+	for _, edge := range topology.Edges {
+		if edge.From == "asset:app:res-service" && edge.To == "asset:app:res-taskdef" && edge.Kind == "uses" {
+			foundRelation = true
+			break
+		}
+	}
+	if !foundRelation {
+		t.Fatalf("service -> taskdef uses edge missing: %+v", topology.Edges)
+	}
+}

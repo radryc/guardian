@@ -3,6 +3,7 @@ package awsobserve
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -264,6 +265,52 @@ func (r *Refresher) Template(ctx context.Context, region, stackName string) (str
 		return "", fmt.Errorf("get template %s: %w", stackName, err)
 	}
 	return awsroot.ToString(out.TemplateBody), nil
+}
+
+// StackResources returns the live logical-to-physical resource mapping for a
+// stack. ListStackResources is used instead of DescribeStackResources because
+// it is paginated for large stacks; the fields are the same.
+func (r *Refresher) StackResources(ctx context.Context, region, stackName string) ([]StackResource, error) {
+	cfg, err := r.awsConfig(ctx, region)
+	if err != nil {
+		return nil, err
+	}
+	client := cloudformation.NewFromConfig(cfg)
+	var nextToken *string
+	resources := make([]StackResource, 0, 64)
+	for {
+		out, err := client.ListStackResources(ctx, &cloudformation.ListStackResourcesInput{
+			StackName: awsroot.String(stackName),
+			NextToken: nextToken,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("list stack resources %s: %w", stackName, err)
+		}
+		for _, summary := range out.StackResourceSummaries {
+			resource := StackResource{
+				LogicalID:    awsroot.ToString(summary.LogicalResourceId),
+				PhysicalID:   awsroot.ToString(summary.PhysicalResourceId),
+				ResourceType: awsroot.ToString(summary.ResourceType),
+				Status:       string(summary.ResourceStatus),
+				StatusReason: awsroot.ToString(summary.ResourceStatusReason),
+			}
+			if summary.LastUpdatedTimestamp != nil {
+				resource.UpdatedAt = *summary.LastUpdatedTimestamp
+			}
+			if summary.DriftInformation != nil {
+				resource.DriftStatus = string(summary.DriftInformation.StackResourceDriftStatus)
+			}
+			if resource.LogicalID != "" {
+				resources = append(resources, resource)
+			}
+		}
+		if out.NextToken == nil || awsroot.ToString(out.NextToken) == "" {
+			break
+		}
+		nextToken = out.NextToken
+	}
+	sort.Slice(resources, func(i, j int) bool { return resources[i].LogicalID < resources[j].LogicalID })
+	return resources, nil
 }
 
 func stableStackStatus(status string) bool {

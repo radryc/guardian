@@ -2110,6 +2110,11 @@ function renderTopologyPanel(): void {
     filters: {
       contains: (document.getElementById("showContainEdges") as HTMLInputElement)?.checked ?? true,
       join: (document.getElementById("showJoinEdges") as HTMLInputElement)?.checked ?? true,
+      routesTo: (document.getElementById("showSemanticEdges") as HTMLInputElement)?.checked ?? true,
+      triggers: (document.getElementById("showSemanticEdges") as HTMLInputElement)?.checked ?? true,
+      uses: (document.getElementById("showUsesEdges") as HTMLInputElement)?.checked ?? false,
+      logsTo: (document.getElementById("showUsesEdges") as HTMLInputElement)?.checked ?? false,
+      network: (document.getElementById("showUsesEdges") as HTMLInputElement)?.checked ?? false,
       dependsOn: (document.getElementById("showAssetEdges") as HTMLInputElement)?.checked ?? true,
       outputRef: (document.getElementById("showOutputEdges") as HTMLInputElement)?.checked ?? true,
     },
@@ -2145,6 +2150,11 @@ function renderTopologyDetailsPanel(): void {
   const filters = {
     contains: (document.getElementById("showContainEdges") as HTMLInputElement)?.checked ?? true,
     join: (document.getElementById("showJoinEdges") as HTMLInputElement)?.checked ?? true,
+    routesTo: (document.getElementById("showSemanticEdges") as HTMLInputElement)?.checked ?? true,
+    triggers: (document.getElementById("showSemanticEdges") as HTMLInputElement)?.checked ?? true,
+    uses: (document.getElementById("showUsesEdges") as HTMLInputElement)?.checked ?? false,
+    logsTo: (document.getElementById("showUsesEdges") as HTMLInputElement)?.checked ?? false,
+    network: (document.getElementById("showUsesEdges") as HTMLInputElement)?.checked ?? false,
     dependsOn: (document.getElementById("showAssetEdges") as HTMLInputElement)?.checked ?? true,
     outputRef: (document.getElementById("showOutputEdges") as HTMLInputElement)?.checked ?? true,
   };

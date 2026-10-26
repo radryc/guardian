@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/rydzu/ainfra/guardian/internal/awsobserve"
 	"github.com/rydzu/ainfra/guardian/internal/cdktemplate"
 	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
 	"github.com/rydzu/ainfra/guardian/internal/observedgen"
@@ -15,8 +16,37 @@ const maxResourceAssetName = 64
 // buildResourceObservations turns desired/live template inventories plus the
 // changed-resource keys from the template comparison into the per-resource
 // observation list shown as synthetic assets in the UI.
-func buildResourceObservations(desired, live []cdktemplate.Resource, changed []string) []statedomain.ResourceObservation {
+func buildResourceObservations(desired, live []cdktemplate.Resource, changed []string, liveResources []awsobserve.StackResource) []statedomain.ResourceObservation {
 	statuses := parseChangedResources(changed)
+	liveByID := make(map[string]awsobserve.StackResource, len(liveResources))
+	for _, resource := range liveResources {
+		if id := strings.TrimSpace(resource.LogicalID); id != "" {
+			liveByID[id] = resource
+		}
+	}
+	applyLive := func(observation *statedomain.ResourceObservation) {
+		live, ok := liveByID[observation.LogicalID]
+		if !ok {
+			return
+		}
+		observation.PhysicalID = live.PhysicalID
+		observation.LiveStatus = live.Status
+		observation.LiveStatusReason = live.StatusReason
+		observation.DriftStatus = live.DriftStatus
+		observation.LiveUpdatedAt = live.UpdatedAt
+	}
+	copyTemplateEdges := func(observation *statedomain.ResourceObservation, resource cdktemplate.Resource) {
+		observation.DependsOn = append([]string(nil), resource.DependsOn...)
+		observation.Parent = resource.Parent
+		observation.Relations = make([]statedomain.ResourceRelation, 0, len(resource.Relations))
+		for _, relation := range resource.Relations {
+			observation.Relations = append(observation.Relations, statedomain.ResourceRelation{
+				Kind:   relation.Kind,
+				Target: relation.Target,
+				Label:  relation.Label,
+			})
+		}
+	}
 
 	out := make([]statedomain.ResourceObservation, 0, len(desired)+len(live))
 	seen := make(map[string]struct{}, len(desired))
@@ -31,13 +61,15 @@ func buildResourceObservations(desired, live []cdktemplate.Resource, changed []s
 		if !ok || status == statedomain.ResourceRemoved {
 			status = statedomain.ResourceInSync
 		}
-		out = append(out, statedomain.ResourceObservation{
+		observation := statedomain.ResourceObservation{
 			LogicalID: resource.LogicalID,
 			CfnType:   resource.Type,
 			Status:    status,
-			DependsOn: append([]string(nil), resource.DependsOn...),
 			Condition: resource.Condition,
-		})
+		}
+		copyTemplateEdges(&observation, resource)
+		applyLive(&observation)
+		out = append(out, observation)
 		seen[resource.LogicalID] = struct{}{}
 	}
 
@@ -54,13 +86,15 @@ func buildResourceObservations(desired, live []cdktemplate.Resource, changed []s
 		if status, ok := statuses[resource.LogicalID]; !ok || status != statedomain.ResourceRemoved {
 			continue
 		}
-		out = append(out, statedomain.ResourceObservation{
+		observation := statedomain.ResourceObservation{
 			LogicalID: resource.LogicalID,
 			CfnType:   resource.Type,
 			Status:    statedomain.ResourceRemoved,
-			DependsOn: append([]string(nil), resource.DependsOn...),
 			Condition: resource.Condition,
-		})
+		}
+		copyTemplateEdges(&observation, resource)
+		applyLive(&observation)
+		out = append(out, observation)
 	}
 
 	sort.Slice(out, func(i, j int) bool {
@@ -135,6 +169,7 @@ func mergeResourceObservations(results []assetResult) []statedomain.ResourceObse
 		for _, resource := range result.snapshot.Resources {
 			copied := resource
 			copied.DependsOn = append([]string(nil), resource.DependsOn...)
+			copied.Relations = append([]statedomain.ResourceRelation(nil), resource.Relations...)
 			copied.AssetName = truncateAssetName(prefix + resource.AssetName)
 			out = append(out, copied)
 		}

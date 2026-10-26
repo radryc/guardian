@@ -2,7 +2,9 @@ package observed
 
 import (
 	"testing"
+	"time"
 
+	"github.com/rydzu/ainfra/guardian/internal/awsobserve"
 	"github.com/rydzu/ainfra/guardian/internal/cdktemplate"
 	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
 )
@@ -10,7 +12,13 @@ import (
 func TestBuildResourceObservationsMarksStatuses(t *testing.T) {
 	desired := []cdktemplate.Resource{
 		{LogicalID: "Bucket", Type: "AWS::S3::Bucket"},
-		{LogicalID: "OrdersTable", Type: "AWS::DynamoDB::Table", DependsOn: []string{"Bucket"}},
+		{
+			LogicalID: "OrdersTable",
+			Type:      "AWS::DynamoDB::Table",
+			DependsOn: []string{"Bucket"},
+			Parent:    "Bucket",
+			Relations: []cdktemplate.Relation{{Kind: "uses", Target: "Bucket", Label: "table"}},
+		},
 	}
 	live := []cdktemplate.Resource{
 		{LogicalID: "Bucket", Type: "AWS::S3::Bucket"},
@@ -19,7 +27,14 @@ func TestBuildResourceObservationsMarksStatuses(t *testing.T) {
 	resources := buildResourceObservations(desired, live, []string{
 		"changed:OrdersTable",
 		"removed:OldQueue",
-	})
+	}, []awsobserve.StackResource{{
+		LogicalID:    "OrdersTable",
+		PhysicalID:   "demo-table",
+		ResourceType: "AWS::DynamoDB::Table",
+		Status:       "CREATE_COMPLETE",
+		DriftStatus:  "IN_SYNC",
+		UpdatedAt:    time.Unix(1700000000, 0).UTC(),
+	}})
 
 	if len(resources) != 3 {
 		t.Fatalf("resources = %+v, want 3", resources)
@@ -38,8 +53,15 @@ func TestBuildResourceObservationsMarksStatuses(t *testing.T) {
 	if got := byID["OrdersTable"]; got.Status != statedomain.ResourceChanged || got.AssetName != "res-orders-table" {
 		t.Fatalf("table = %+v", got)
 	}
-	if got := byID["OrdersTable"].DependsOn; len(got) != 1 || got[0] != "Bucket" {
-		t.Fatalf("table dependsOn = %v", got)
+	table := byID["OrdersTable"]
+	if len(table.DependsOn) != 1 || table.DependsOn[0] != "Bucket" {
+		t.Fatalf("table dependsOn = %v", table.DependsOn)
+	}
+	if table.PhysicalID != "demo-table" || table.LiveStatus != "CREATE_COMPLETE" || table.DriftStatus != "IN_SYNC" {
+		t.Fatalf("table live fields = %+v", table)
+	}
+	if table.Parent != "Bucket" || len(table.Relations) != 1 || table.Relations[0].Target != "Bucket" {
+		t.Fatalf("table graph fields = %+v", table)
 	}
 }
 
@@ -48,6 +70,7 @@ func TestBuildResourceObservationsAddsNewResources(t *testing.T) {
 		[]cdktemplate.Resource{{LogicalID: "NewQueue", Type: "AWS::SQS::Queue"}},
 		nil,
 		[]string{"added:NewQueue"},
+		nil,
 	)
 	if len(resources) != 1 || resources[0].Status != statedomain.ResourceAdded {
 		t.Fatalf("resources = %+v", resources)

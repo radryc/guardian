@@ -100,6 +100,26 @@ type ResourceObservation struct {
 	Status    string   `json:"status"`
 	DependsOn []string `json:"dependsOn,omitempty"`
 	Condition string   `json:"condition,omitempty"`
+
+	// Live CloudFormation identity and status from ListStackResources.
+	PhysicalID       string    `json:"physicalId,omitempty"`
+	LiveStatus       string    `json:"liveStatus,omitempty"`
+	LiveStatusReason string    `json:"liveStatusReason,omitempty"`
+	DriftStatus      string    `json:"driftStatus,omitempty"`
+	LiveUpdatedAt    time.Time `json:"liveUpdatedAt,omitempty"`
+
+	// Parent is the logical ID of the containing resource for display nesting.
+	Parent string `json:"parent,omitempty"`
+	// Relations are typed semantic edges derived from the template.
+	Relations []ResourceRelation `json:"relations,omitempty"`
+}
+
+// ResourceRelation is a non-containment edge between two observed CloudFormation
+// resources. Target is a logical resource ID.
+type ResourceRelation struct {
+	Kind   string `json:"kind"`
+	Target string `json:"target"`
+	Label  string `json:"label,omitempty"`
 }
 
 const (
@@ -163,6 +183,7 @@ func CloneResourceObservations(in []ResourceObservation) []ResourceObservation {
 	for i := range in {
 		out[i] = in[i]
 		out[i].DependsOn = append([]string(nil), in[i].DependsOn...)
+		out[i].Relations = append([]ResourceRelation(nil), in[i].Relations...)
 	}
 	return out
 }

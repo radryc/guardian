@@ -30,7 +30,6 @@
       dev
     </span>
     <span id="syncIndicator" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold text-[#9BB0CF] bg-[#151B2B] border border-white/[0.09] cursor-pointer select-none" title="Click to change refresh rate">Loading…</span>
-    <span id="currentUser" class="inline-flex items-center px-2.5 py-1 ml-2 rounded-full text-[11px] font-semibold text-[#9BB0CF] bg-[#151B2B] border border-white/[0.09] hidden" title="Signed in"></span>
     <a href="/auth/logout" class="inline-flex items-center px-2.5 py-1 ml-2 rounded-full text-[11px] font-semibold text-[#9BB0CF] bg-[#151B2B] border border-white/[0.09] hover:text-[#E5ECF4] no-underline" title="Sign out">Sign out</a>
     <!-- Refresh rate popover -->
     <div id="refreshPopover" class="refresh-popover hidden absolute top-full right-4 mt-1.5 w-52 rounded-lg border border-white/[0.09] bg-[#151B2B] shadow-lg p-3 z-50">
@@ -224,6 +223,8 @@
               <div class="flex items-center gap-3 text-[12px] text-[#9BB0CF]">
                 <label class="flex items-center gap-1.5 cursor-pointer"><input id="showContainEdges" type="checkbox" checked class="accent-[#00ADE4]" />Containment</label>
                 <label class="flex items-center gap-1.5 cursor-pointer"><input id="showJoinEdges" type="checkbox" checked class="accent-[#00ADE4]" />Joins</label>
+                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showSemanticEdges" type="checkbox" checked class="accent-[#00ADE4]" />Routes / triggers</label>
+                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showUsesEdges" type="checkbox" class="accent-[#00ADE4]" />Uses / network</label>
                 <label class="flex items-center gap-1.5 cursor-pointer"><input id="showAssetEdges" type="checkbox" checked class="accent-[#00ADE4]" />Dependencies</label>
                 <label class="flex items-center gap-1.5 cursor-pointer"><input id="showOutputEdges" type="checkbox" checked class="accent-[#00ADE4]" />Output refs</label>
               </div>
@@ -591,21 +592,5 @@
   </div>
 
   <div id="toastContainer" class="fixed bottom-5 right-5 z-[200] flex flex-col gap-2 pointer-events-none"></div>
-  <script>
-    (function () {
-      fetch('/api/me', { headers: { Accept: 'application/json' }, credentials: 'same-origin' })
-        .then(function (res) { return res.ok ? res.json() : null; })
-        .then(function (user) {
-          if (!user) return;
-          var el = document.getElementById('currentUser');
-          if (!el) return;
-          var label = user.display || user.email || user.subject || user.client_id || '';
-          if (!label) return;
-          el.textContent = 'Signed in as ' + label;
-          el.classList.remove('hidden');
-        })
-        .catch(function () {});
-    })();
-  </script>
 </body>
 </html>

@@ -491,6 +491,20 @@ func (h *Handler) handleObservedStack(w http.ResponseWriter, r *http.Request, su
 		writeJSON(w, http.StatusOK, map[string]any{"stackName": stackName, "template": template})
 		return
 	}
+	if strings.HasSuffix(suffix, "/resources") {
+		stackName := strings.TrimSuffix(suffix, "/resources")
+		if stackName == "" {
+			writeError(w, http.StatusBadRequest, "stack name is required")
+			return
+		}
+		resources, err := h.Observed.StackResources(r.Context(), account, region, stackName)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"stackName": stackName, "resources": resources})
+		return
+	}
 	state, ok := h.Observed.Get(account, region, suffix)
 	if !ok {
 		writeError(w, http.StatusNotFound, "stack not observed")

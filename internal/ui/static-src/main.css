@@ -1226,9 +1226,29 @@ body.diagnostics-open { overflow: hidden; }
   stroke-dasharray: none;
 }
 .topology-edge.join { stroke: #6938EF; stroke-dasharray: 6 3; }
+.topology-edge.routesTo { stroke: #D55E00; stroke-dasharray: 5 3; }
+.topology-edge.triggers { stroke: #CC79A7; stroke-dasharray: 3 3; }
+.topology-edge.uses { stroke: #009E73; stroke-dasharray: 2 4; opacity: 0.75; }
+.topology-edge.logsTo { stroke: #56B4E9; stroke-dasharray: 2 4; opacity: 0.6; }
+.topology-edge.network { stroke: #8B949E; stroke-dasharray: 2 4; opacity: 0.5; }
 .topology-edge.dependsOn { stroke: #00C369; stroke-dasharray: 4 3; }
 .topology-edge.outputRef { stroke: #FCB519; stroke-dasharray: 3 3; opacity: 0.7; }
 .topology-edge-label { fill: rgba(155,176,207,0.6); font-size: 10px; font-family: ui-monospace, monospace; }
+
+.topology-group-box {
+  fill: rgba(0,173,228,0.035);
+  stroke: rgba(0,173,228,0.22);
+  stroke-width: 1;
+  stroke-dasharray: 5 4;
+}
+.topology-group-label {
+  fill: rgba(155,176,207,0.72);
+  font-size: 10px;
+  font-weight: 700;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
 
 .topology-node-card { fill: #151B2B; stroke: rgba(255,255,255,0.09); stroke-width: 1; }
 .topology-node.selected .topology-node-card { stroke: #00ADE4; stroke-width: 2; }
@@ -1245,6 +1265,11 @@ body.diagnostics-open { overflow: hidden; }
 .topology-legend-swatch { width: 10px; height: 10px; border-radius: 2px; background: var(--legend-color); flex-shrink: 0; }
 .topology-edge-swatch { display: inline-block; width: 20px; height: 2px; background: rgba(255,255,255,0.12); border-radius: 1px; }
 .topology-edge-swatch.join { background: #6938EF; }
+.topology-edge-swatch.routesTo { background: #D55E00; }
+.topology-edge-swatch.triggers { background: #CC79A7; }
+.topology-edge-swatch.uses { background: #009E73; opacity: 0.75; }
+.topology-edge-swatch.logsTo { background: #56B4E9; opacity: 0.6; }
+.topology-edge-swatch.network { background: #8B949E; opacity: 0.5; }
 .topology-edge-swatch.dependsOn { background: #00C369; }
 .topology-edge-swatch.outputRef { background: #FCB519; opacity: 0.7; }
 

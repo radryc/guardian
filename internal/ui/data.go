@@ -185,6 +185,8 @@ type AssetDocument struct {
 	OriginLabel      string                        `json:"originLabel,omitempty"`
 	Template         string                        `json:"template,omitempty"`
 	DependsOn        []string                      `json:"dependsOn"`
+	ParentAsset      string                        `json:"parentAsset,omitempty"`
+	Relations        []AssetRelation               `json:"relations,omitempty"`
 	FlowMetricGroups []string                      `json:"flowMetricGroups,omitempty"`
 	FlowState        string                        `json:"flowState,omitempty"`
 	FlowSummary      string                        `json:"flowSummary,omitempty"`
@@ -212,6 +214,14 @@ type AssetDocument struct {
 type Fact struct {
 	Label string `json:"label"`
 	Value string `json:"value"`
+}
+
+// AssetRelation is a typed edge from one rendered asset to another. Target is
+// an asset name within the same intent.
+type AssetRelation struct {
+	Kind   string `json:"kind"`
+	Target string `json:"target"`
+	Label  string `json:"label,omitempty"`
 }
 
 type DeploymentSummary struct {
@@ -1216,6 +1226,8 @@ func buildIntentDocument(ctx context.Context, store guardianapi.Store, manifest 
 	doc.OriginDetail = origin.Detail
 	payloadManifest, _ := readGeneratedPayloadManifest(ctx, store, partitionName, manifest.Metadata.Name)
 	origins := assetOrigins(manifest, payloadManifest)
+	logicalAssets := map[string]string{}
+	observedResources := map[string]statedomain.ResourceObservation{}
 	if isObservedIntent(manifest) && state != nil && len(state.Resources) > 0 {
 		existing := make(map[string]struct{}, len(specByName)+len(orderedAssets))
 		for name := range specByName {
@@ -1224,7 +1236,7 @@ func buildIntentDocument(ctx context.Context, store guardianapi.Store, manifest 
 		for _, name := range orderedAssets {
 			existing[name] = struct{}{}
 		}
-		logicalAssets := make(map[string]string, len(state.Resources))
+		logicalAssets = make(map[string]string, len(state.Resources))
 		for _, resource := range state.Resources {
 			if resource.AssetName != "" {
 				logicalAssets[resource.LogicalID] = resource.AssetName
@@ -1246,6 +1258,15 @@ func buildIntentDocument(ctx context.Context, store guardianapi.Store, manifest 
 			if resource.Condition != "" {
 				properties["condition"] = resource.Condition
 			}
+			if resource.PhysicalID != "" {
+				properties["physicalId"] = resource.PhysicalID
+			}
+			if resource.LiveStatus != "" {
+				properties["liveStatus"] = resource.LiveStatus
+			}
+			if resource.DriftStatus != "" {
+				properties["driftStatus"] = resource.DriftStatus
+			}
 			dependsOn := make([]string, 0, len(resource.DependsOn))
 			for _, logicalID := range resource.DependsOn {
 				if dependency, ok := logicalAssets[logicalID]; ok {
@@ -1262,6 +1283,7 @@ func buildIntentDocument(ctx context.Context, store guardianapi.Store, manifest 
 			existing[name] = struct{}{}
 			synthetic[name] = true
 			origins[name] = assetOrigin{Origin: originObserved, Label: "observed resource"}
+			observedResources[name] = resource
 		}
 	}
 	for _, name := range orderedAssets {
@@ -1271,6 +1293,22 @@ func buildIntentDocument(ctx context.Context, store guardianapi.Store, manifest 
 		}
 		assetDoc := buildAssetDocument(ctx, partitionName, manifest.Metadata.Name, spec, origins[spec.Name], manifest.Spec.Hints, state, runtime, latest, deps, enableFlowTopology, evaluator)
 		assetDoc.Synthetic = synthetic[spec.Name]
+		if resource, ok := observedResources[spec.Name]; ok {
+			if parent := strings.TrimSpace(logicalAssets[resource.Parent]); parent != "" {
+				assetDoc.ParentAsset = parent
+			}
+			for _, relation := range resource.Relations {
+				target := strings.TrimSpace(logicalAssets[relation.Target])
+				if target == "" {
+					continue
+				}
+				assetDoc.Relations = append(assetDoc.Relations, AssetRelation{
+					Kind:   relation.Kind,
+					Target: target,
+					Label:  relation.Label,
+				})
+			}
+		}
 		doc.Assets = append(doc.Assets, assetDoc)
 	}
 	return doc
@@ -1514,10 +1552,49 @@ func buildTopology(partition partitiondomain.Partition, intents []IntentDocument
 			})
 		}
 		assetLevels := computeAssetLevels(intent.Assets)
+		assetNames := make(map[string]struct{}, len(intent.Assets))
+		parentByName := make(map[string]string, len(intent.Assets))
+		for _, asset := range intent.Assets {
+			assetNames[asset.Name] = struct{}{}
+			parentByName[asset.Name] = asset.ParentAsset
+		}
+		assetDepth := make(map[string]int, len(intent.Assets))
+		var depthOf func(string, map[string]bool) int
+		depthOf = func(name string, visiting map[string]bool) int {
+			if depth, ok := assetDepth[name]; ok {
+				return depth
+			}
+			parent := parentByName[name]
+			if parent == "" || visiting[parent] {
+				return 0
+			}
+			if _, ok := assetNames[parent]; !ok {
+				return 0
+			}
+			visiting[name] = true
+			depth := depthOf(parent, visiting) + 1
+			delete(visiting, name)
+			assetDepth[name] = depth
+			return depth
+		}
+		for _, asset := range intent.Assets {
+			depthOf(asset.Name, map[string]bool{})
+		}
 		for _, asset := range intent.Assets {
 			assetNodeID := "asset:" + intent.Name + ":" + asset.Name
+			parentNodeID := intentNodeID
+			if parent := strings.TrimSpace(asset.ParentAsset); parent != "" && parent != asset.Name {
+				if _, ok := assetNames[parent]; ok {
+					parentNodeID = "asset:" + intent.Name + ":" + parent
+				}
+			}
 			assetMeta := map[string]string{
 				"type": asset.Type,
+			}
+			for _, key := range []string{"cfnType", "logicalId", "physicalId", "liveStatus", "driftStatus"} {
+				if value, ok := asset.Properties[key].(string); ok && strings.TrimSpace(value) != "" {
+					assetMeta[key] = value
+				}
 			}
 			if asset.FlowSummary != "" {
 				assetMeta["flowSummary"] = asset.FlowSummary
@@ -1529,7 +1606,7 @@ func buildTopology(partition partitiondomain.Partition, intents []IntentDocument
 				ID:               assetNodeID,
 				Label:            asset.Name,
 				Kind:             "asset",
-				ParentID:         intentNodeID,
+				ParentID:         parentNodeID,
 				Intent:           intent.Name,
 				Asset:            asset.Name,
 				AssetType:        asset.Type,
@@ -1540,16 +1617,32 @@ func buildTopology(partition partitiondomain.Partition, intents []IntentDocument
 				FlowSource:       asset.FlowSource,
 				FlowUpdatedAt:    asset.FlowUpdatedAt,
 				FlowMetricGroups: append([]string(nil), asset.FlowMetricGroups...),
-				Level:            intentLevels[intent.Name] + assetLevels[asset.Name] + 2,
+				Level:            intentLevels[intent.Name] + assetLevels[asset.Name] + assetDepth[asset.Name] + 2,
 				Description:      asset.Summary,
 				Meta:             assetMeta,
 			})
-			edges = append(edges, TopologyEdge{From: intentNodeID, To: assetNodeID, Kind: "contains"})
-			for _, dep := range asset.DependsOn {
+			edges = append(edges, TopologyEdge{From: parentNodeID, To: assetNodeID, Kind: "contains"})
+			// Observed synthetic assets already carry semantic relations from
+			// the template. Their raw DependsOn set includes deployment-order
+			// and IAM/VPC noise, so keep it only for authored assets.
+			if !asset.Synthetic {
+				for _, dep := range asset.DependsOn {
+					edges = append(edges, TopologyEdge{
+						From: "asset:" + intent.Name + ":" + dep,
+						To:   assetNodeID,
+						Kind: "dependsOn",
+					})
+				}
+			}
+			for _, relation := range asset.Relations {
+				if _, ok := assetNames[relation.Target]; !ok {
+					continue
+				}
 				edges = append(edges, TopologyEdge{
-					From: "asset:" + intent.Name + ":" + dep,
-					To:   assetNodeID,
-					Kind: "dependsOn",
+					From:  assetNodeID,
+					To:    "asset:" + intent.Name + ":" + relation.Target,
+					Kind:  relation.Kind,
+					Label: relation.Label,
 				})
 			}
 			for _, ref := range uniqueRefs(asset.Properties) {

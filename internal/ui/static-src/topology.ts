@@ -6,12 +6,7 @@ export interface TopologyOptions {
   zoom: number;
   savedPositions: Record<string, { x: number; y: number }>;
   selectedNodeId: string;
-  filters: {
-    contains: boolean;
-    join: boolean;
-    dependsOn: boolean;
-    outputRef: boolean;
-  };
+  filters: Record<string, boolean>;
   onSelectNode: (nodeId: string, positions: Record<string, { x: number; y: number }>) => void;
   onDragNode:   (nodeId: string, positions: Record<string, { x: number; y: number }>) => void;
 }
@@ -46,9 +41,26 @@ function nw(node: any): number {
 function nh(node: any): number {
   return node.kind === "partition" ? 76 : 72;
 }
+function resourceFamily(node: any): string {
+  const cfn = String(node.meta?.cfnType ?? "");
+  if (cfn.startsWith("AWS::ECS::")) return "ecs";
+  if (cfn.startsWith("AWS::ElasticLoadBalancingV2::")) return "elb";
+  if (cfn.startsWith("AWS::Lambda::")) return "lambda";
+  if (cfn.startsWith("AWS::SQS::") || cfn.startsWith("AWS::SNS::") || cfn.startsWith("AWS::Events::")) return "messaging";
+  if (cfn.startsWith("AWS::DynamoDB::") || cfn.startsWith("AWS::S3::")) return "storage";
+  if (cfn.startsWith("AWS::Logs::")) return "logs";
+  if (cfn.startsWith("AWS::EC2::") || cfn.startsWith("AWS::IAM::")) return "infra";
+  return "";
+}
 function nAccent(node: any): string {
   if (node.kind === "partition") return NODE_COLORS.partition;
   if (node.kind === "intent")   return NODE_COLORS.intent;
+  const family = resourceFamily(node);
+  if (family === "ecs" || family === "lambda") return NODE_COLORS.runtime;
+  if (family === "elb" || family === "messaging") return NODE_COLORS.traffic;
+  if (family === "storage") return NODE_COLORS.storage;
+  if (family === "logs") return NODE_COLORS.config;
+  if (family === "infra") return NODE_COLORS.muted;
   const m: Record<string, string> = {
     Compute: NODE_COLORS.runtime,  Volume: NODE_COLORS.storage,
     Config:  NODE_COLORS.config,   ObjectStore: NODE_COLORS.storage,
@@ -60,6 +72,14 @@ function nAccent(node: any): string {
 function nIcon(node: any): string {
   if (node.kind === "partition") return "◫";
   if (node.kind === "intent")   return "⊞";
+  const family = resourceFamily(node);
+  if (family === "ecs") return "▣";
+  if (family === "elb") return "⇄";
+  if (family === "lambda") return "λ";
+  if (family === "messaging") return "✉";
+  if (family === "storage") return "⛁";
+  if (family === "logs") return "≡";
+  if (family === "infra") return "⬡";
   const m: Record<string, string> = {
     Compute: "⧖", Volume: "⊠", Config: "≡", ObjectStore: "⬜",
     Database: "⫿", SQLDatabase: "⫿", LoadBalancer: "⊷", Observability: "◎",
@@ -71,6 +91,12 @@ function nSubtitle(node: any): string {
     return `${node.meta?.reconciliation ?? "manual"} reconcile · ${node.meta?.deletionPolicy ?? "orphan"} delete`;
   if (node.kind === "intent")
     return node.meta?.target ?? node.displayStatus ?? "Intent";
+  const cfn = String(node.meta?.cfnType ?? "");
+  if (cfn) {
+    const short = cfn.replace(/^AWS::/, "").replace(/::/g, " / ");
+    const physical = String(node.meta?.physicalId ?? "");
+    return physical ? `${short} · ${truncate(physical, 38)}` : short;
+  }
   return `${node.assetType ?? "Asset"} · ${node.displayStatus ?? "Asset"}`;
 }
 function nStatusFill(node: any): string {
@@ -78,10 +104,19 @@ function nStatusFill(node: any): string {
 }
 
 // ── Hierarchical layout (port of app.ts computeTopologyPositions) ──
+interface TopologyGroup {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 function computePositions(
   nodes: any[],
   savedPositions: Record<string, { x: number; y: number }>
-): Record<string, { x: number; y: number }> {
+): { positions: Record<string, { x: number; y: number }>; groups: TopologyGroup[] } {
   const partition = nodes.find((n) => n.kind === "partition");
   const intents   = nodes
     .filter((n) => n.kind === "intent")
@@ -95,6 +130,14 @@ function computePositions(
     );
 
   const positions: Record<string, { x: number; y: number }> = {};
+  const groups: TopologyGroup[] = [];
+  const assetByID = new Map<string, any>(assets.map((asset) => [asset.id, asset]));
+  const childrenByParent = new Map<string, any[]>();
+  for (const asset of assets) {
+    const parent = asset.parentID || "";
+    if (!childrenByParent.has(parent)) childrenByParent.set(parent, []);
+    childrenByParent.get(parent)!.push(asset);
+  }
 
   // Group intents by DAG level
   const intentsByLevel = new Map<number, any[]>();
@@ -123,35 +166,67 @@ function computePositions(
     positions[partition.id] = { x: 40, y: Math.round((minY + maxY) / 2) };
   }
 
-  // Assets to the right of their parent intent
+  // Recursively place an asset and its contained assets. Children sit inside a
+  // group box to the right of their parent, so ECS Service/Task and similar
+  // containment is visible rather than flattened.
+  function layoutSubtree(node: any, x: number, y: number): { right: number; bottom: number } {
+    positions[node.id] = { x, y };
+    const children = childrenByParent.get(node.id) ?? [];
+    if (children.length === 0) {
+      return { right: x + nw(node), bottom: y + nh(node) };
+    }
+    let childY = y;
+    let right = x + nw(node);
+    for (const child of children) {
+      const sub = layoutSubtree(child, x + 280, childY);
+      right = Math.max(right, sub.right);
+      childY = sub.bottom + 24;
+    }
+    const groupX = x - 14;
+    const groupY = y - 30;
+    const groupWidth = right - groupX + 14;
+    const groupHeight = childY - groupY - 24 + 14;
+    groups.push({
+      id: node.id,
+      label: node.label,
+      x: groupX,
+      y: groupY,
+      width: groupWidth,
+      height: groupHeight,
+    });
+    return { right: right + 14, bottom: childY - 24 + 14 };
+  }
+
   intents.forEach((intent) => {
     const parentPos = positions[intent.id];
     if (!parentPos) return;
-    const assetGroups = new Map<number, any[]>();
-    assets
-      .filter((a) => a.parentID === intent.id)
-      .forEach((asset) => {
-        const relLevel = Math.max(0, Number(asset.level ?? 0) - Number(intent.level ?? 0) - 2);
-        if (!assetGroups.has(relLevel)) assetGroups.set(relLevel, []);
-        assetGroups.get(relLevel)!.push(asset);
-      });
-    [...assetGroups.keys()].sort((a, b) => a - b).forEach((relLevel) => {
-      const grp  = assetGroups.get(relLevel)!;
-      const grpH = Math.max(0, (grp.length - 1) * 96);
-      grp.forEach((asset, idx) => {
-        positions[asset.id] = {
-          x: parentPos.x + 280 + relLevel * 250,
-          y: parentPos.y - grpH / 2 + idx * 96 + relLevel * 8,
-        };
-      });
-    });
+    const topLevel = (childrenByParent.get(intent.id) ?? [])
+      .filter((asset) => !assetByID.has(asset.parentID) || asset.parentID === intent.id);
+    let y = parentPos.y;
+    for (const asset of topLevel) {
+      const sub = layoutSubtree(asset, parentPos.x + 300, y);
+      y = sub.bottom + 30;
+    }
   });
 
-  // Shift up so no node is above y=40
-  const minY = Math.min(...Object.values(positions).map((p) => p.y), 40);
+  // Orphans: assets whose parent is missing still need a position.
+  let orphanY = 70;
+  for (const asset of assets) {
+    if (positions[asset.id]) continue;
+    const sub = layoutSubtree(asset, 900, orphanY);
+    orphanY = sub.bottom + 30;
+  }
+
+  // Shift up so no node or group is above y=40
+  const minY = Math.min(
+    ...Object.values(positions).map((p) => p.y),
+    ...groups.map((group) => group.y),
+    40
+  );
   if (minY < 40) {
     const shift = 40 - minY;
     Object.values(positions).forEach((p) => { p.y += shift; });
+    groups.forEach((group) => { group.y += shift; });
   }
 
   // Apply user-dragged overrides
@@ -159,7 +234,7 @@ function computePositions(
     if (positions[id]) positions[id] = { x: pos.x, y: pos.y };
   });
 
-  return positions;
+  return { positions, groups };
 }
 
 // ── Cubic bezier between card nodes ──────────────────
@@ -203,7 +278,7 @@ export function renderTopology(opts: TopologyOptions): void {
   const nodes: any[]  = topology.nodes;
   const nodeMap       = new Map<string, any>(nodes.map((n) => [n.id, n]));
   const edges: any[]  = (topology.edges ?? []).filter((e: any) => (filters as any)[e.kind] !== false);
-  const positions     = computePositions(nodes, savedPositions);
+  const { positions, groups } = computePositions(nodes, savedPositions);
   const selectedNode  = nodeMap.get(selectedNodeId) ?? nodes.find((n) => n.kind === "intent") ?? nodes[0];
 
   const maxX  = Math.max(...Object.values(positions).map((p) => p.x + 260), 400);
@@ -215,6 +290,19 @@ export function renderTopology(opts: TopologyOptions): void {
     `<svg class="topology-svg" viewBox="0 0 ${width} ${height}" width="${Math.round(width * zoom)}" height="${Math.round(height * zoom)}" xmlns="http://www.w3.org/2000/svg">`,
     `<defs><filter id="ts"><feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="rgba(0,0,0,0.28)"/></filter></defs>`,
   ];
+
+  // Containment groups first, largest to smallest so nested groups sit on top.
+  groups
+    .slice()
+    .sort((a, b) => b.width * b.height - a.width * a.height)
+    .forEach((group) => {
+      parts.push(`
+        <g class="topology-group">
+          <rect class="topology-group-box" x="${group.x}" y="${group.y}" width="${group.width}" height="${group.height}" rx="16" />
+          <text class="topology-group-label" x="${group.x + 12}" y="${group.y + 18}">${escapeHtml(group.label)}</text>
+        </g>
+      `);
+    });
 
   // Edges first (underneath nodes)
   edges.forEach((edge) => {
@@ -337,6 +425,11 @@ export function renderTopologyLegend(container: HTMLElement): void {
       ${[
         { cls: "contains",  label: "Containment" },
         { cls: "join",      label: "Intent join"  },
+        { cls: "routesTo",  label: "Route"        },
+        { cls: "triggers",  label: "Trigger"      },
+        { cls: "uses",      label: "Uses"         },
+        { cls: "logsTo",    label: "Logs"         },
+        { cls: "network",   label: "Network"      },
         { cls: "dependsOn", label: "Asset dep."   },
         { cls: "outputRef", label: "Output ref"   },
       ].map((item) => `
