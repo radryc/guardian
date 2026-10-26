@@ -66,6 +66,16 @@ func (s *Server) buildPartitionAssignments(ctx context.Context, partition string
 	for _, pusher := range pushers {
 		pusherByName[pusher.Name] = pusher
 	}
+	// Queue pushers (for example k8s-main and docker-main) are configured in
+	// GUARDIAN_PUSHERS rather than the AWS read/registry store. Treat them as
+	// registered so native control-plane partitions do not show a false
+	// "target pusher is not registered" warning.
+	configuredPushers := make(map[string]struct{}, len(s.pushers))
+	for _, name := range s.pushers {
+		if name = strings.TrimSpace(name); name != "" {
+			configuredPushers[name] = struct{}{}
+		}
+	}
 
 	intentsByPusher := map[string][]string{}
 	intentsByName := map[string]IntentDocument{}
@@ -151,17 +161,18 @@ func (s *Server) buildPartitionAssignments(ctx context.Context, partition string
 
 	for pusherName, intentNames := range intentsByPusher {
 		sort.Strings(intentNames)
-		pusher, ok := pusherByName[pusherName]
+		pusher, registered := pusherByName[pusherName]
+		_, configured := configuredPushers[pusherName]
 		item := PartitionPusherAssignment{
 			Name:       pusherName,
-			Registered: ok,
+			Registered: registered || configured,
 			Intents:    intentNames,
 		}
-		if ok {
+		if registered {
 			item.Account = pusher.Account
 			item.Region = pusher.Region
 			item.ObservedAPIURL = pusher.ObservedAPIURL
-		} else {
+		} else if !configured {
 			out.Warnings = append(out.Warnings, "target pusher "+pusherName+" is not registered")
 		}
 		// Check each intent's explicit account/region against the pusher.
@@ -172,10 +183,10 @@ func (s *Server) buildPartitionAssignments(ctx context.Context, partition string
 			}
 			account := strings.TrimSpace(intent.Manifest.Spec.Target.Account)
 			region := strings.TrimSpace(intent.Manifest.Spec.Target.Region)
-			if ok && account != "" && pusher.Account != "" && account != pusher.Account {
+			if registered && account != "" && pusher.Account != "" && account != pusher.Account {
 				out.Warnings = append(out.Warnings, "intent "+intentName+" targets account "+account+", pusher "+pusherName+" is "+pusher.Account)
 			}
-			if ok && region != "" && pusher.Region != "" && region != pusher.Region {
+			if registered && region != "" && pusher.Region != "" && region != pusher.Region {
 				out.Warnings = append(out.Warnings, "intent "+intentName+" targets region "+region+", pusher "+pusherName+" is "+pusher.Region)
 			}
 		}

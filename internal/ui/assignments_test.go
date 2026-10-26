@@ -61,6 +61,25 @@ func TestBuildPartitionAssignments(t *testing.T) {
 	}
 }
 
+func TestBuildPartitionAssignmentsTreatsConfiguredQueuePusherAsRegistered(t *testing.T) {
+	store := memory.New()
+	srv := &Server{store: store, pushers: []string{"k8s-main", "docker-main"}}
+	intents := []IntentDocument{{
+		Name: "images",
+		Manifest: intent.Intent{
+			Metadata: intent.Metadata{Name: "images"},
+			Spec:     intent.IntentSpec{TargetPusher: "k8s-main"},
+		},
+	}}
+	got := srv.buildPartitionAssignments(context.Background(), "opentelemetry", intents)
+	if len(got.Warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", got.Warnings)
+	}
+	if len(got.Pushers) != 1 || got.Pushers[0].Name != "k8s-main" || !got.Pushers[0].Registered {
+		t.Fatalf("pushers = %+v, want registered k8s-main", got.Pushers)
+	}
+}
+
 func TestBuildPartitionAssignmentsFallsBackToNative(t *testing.T) {
 	store := memory.New()
 	if err := registry.New(store).PutPusher(context.Background(), &registry.Pusher{
