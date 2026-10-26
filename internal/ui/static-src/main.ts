@@ -2118,6 +2118,7 @@ function renderTopologyPanel(): void {
       dependsOn: (document.getElementById("showAssetEdges") as HTMLInputElement)?.checked ?? true,
       outputRef: (document.getElementById("showOutputEdges") as HTMLInputElement)?.checked ?? true,
     },
+    showInfrastructure: (document.getElementById("showInfrastructure") as HTMLInputElement)?.checked ?? false,
     onSelectNode: (nodeId: string, positions: Record<string, { x: number; y: number }>) => {
       state.topology.selectedNodeId = nodeId;
       state.topology.nodePositions = positions;
