@@ -64,3 +64,27 @@ func TestRegistryResolverStaticTakesPrecedence(t *testing.T) {
 		t.Fatalf("Resolve() = %+v, ok=%v", endpoint, ok)
 	}
 }
+
+func TestRegistryResolverFallsBackToDirectReadOnCacheMiss(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	registryStore := registry.New(store)
+	if err := registryStore.PutPusher(ctx, &registry.Pusher{
+		Name:           "aws-new",
+		ObservedAPIURL: "http://guardian-awsread:19090",
+		Token:          "tok",
+	}); err != nil {
+		t.Fatalf("put pusher: %v", err)
+	}
+
+	resolver := &RegistryResolver{
+		Registry:  registryStore,
+		TTL:       time.Hour,
+		cached:    map[string]Endpoint{},
+		fetchedAt: time.Now().UTC(),
+	}
+	endpoint, ok := resolver.Resolve("aws-new")
+	if !ok || endpoint.Client == nil || endpoint.Name != "aws-new" {
+		t.Fatalf("resolve = %+v ok=%t, want direct-read endpoint", endpoint, ok)
+	}
+}
