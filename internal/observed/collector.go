@@ -430,6 +430,7 @@ func (c *Collector) observeAsset(ctx context.Context, partition string, intent *
 	snapshot.ChangedResources = changed
 	snapshot.Resources = buildResourceObservations(desiredInventory, liveInventory, changed)
 
+	resourceSummary := summarizeResourceDrift(snapshot.Resources, state.DriftedResources)
 	reasons := make([]string, 0, 3)
 	if len(changed) > 0 {
 		if compareSummary != "" {
@@ -441,8 +442,8 @@ func (c *Collector) observeAsset(ctx context.Context, partition string, intent *
 	if strings.EqualFold(state.DriftStatus, "DRIFTED") {
 		reasons = append(reasons, fmt.Sprintf("CloudFormation drift on %d resource(s)", state.DriftedResourceCount))
 	}
-	if resources := summarizeResourceDrift(snapshot.Resources, state.DriftedResources); resources != "" {
-		reasons = append(reasons, "changed resources: "+resources)
+	if resourceSummary != "" {
+		reasons = append(reasons, "changed resources: "+resourceSummary)
 	}
 	if strings.HasSuffix(strings.ToUpper(state.StackStatus), "_FAILED") {
 		reasons = append(reasons, "stack status "+state.StackStatus)
@@ -456,6 +457,13 @@ func (c *Collector) observeAsset(ctx context.Context, partition string, intent *
 	}
 
 	health, readiness := HealthFor(state.StackStatus, state.DriftStatus, state.DriftedResourceCount)
+	if health != nil && resourceSummary != "" {
+		health.Summary = strings.TrimSpace(health.Summary)
+		if health.Summary != "" {
+			health.Summary += "; "
+		}
+		health.Summary += "changed resources: " + resourceSummary
+	}
 	result.health = health
 	result.readiness = readiness
 	result.observation = &taskdomain.AssetObservation{Health: health, ApplyReadiness: readiness}
