@@ -6,21 +6,29 @@ package awsobserve
 
 import "time"
 
+// DriftedResource is one CloudFormation resource reported as drifted.
+type DriftedResource struct {
+	LogicalID    string `json:"logicalId"`
+	ResourceType string `json:"resourceType,omitempty"`
+	Status       string `json:"status,omitempty"`
+}
+
 // StackState is the latest observed state for one CloudFormation stack.
 type StackState struct {
-	Account              string    `json:"account"`
-	Region               string    `json:"region"`
-	StackID              string    `json:"stackId"`
-	StackName            string    `json:"stackName"`
-	StackStatus          string    `json:"stackStatus,omitempty"`
-	StatusReason         string    `json:"statusReason,omitempty"`
-	DriftStatus          string    `json:"driftStatus,omitempty"`
-	DriftedResourceCount int       `json:"driftedResourceCount,omitempty"`
-	LastEventType        string    `json:"lastEventType,omitempty"`
-	LastEventID          string    `json:"lastEventId,omitempty"`
-	LastEventTime        time.Time `json:"lastEventTime,omitempty"`
-	UpdatedAt            time.Time `json:"updatedAt"`
-	Source               string    `json:"source,omitempty"`
+	Account              string            `json:"account"`
+	Region               string            `json:"region"`
+	StackID              string            `json:"stackId"`
+	StackName            string            `json:"stackName"`
+	StackStatus          string            `json:"stackStatus,omitempty"`
+	StatusReason         string            `json:"statusReason,omitempty"`
+	DriftStatus          string            `json:"driftStatus,omitempty"`
+	DriftedResourceCount int               `json:"driftedResourceCount,omitempty"`
+	DriftedResources     []DriftedResource `json:"driftedResources,omitempty"`
+	LastEventType        string            `json:"lastEventType,omitempty"`
+	LastEventID          string            `json:"lastEventId,omitempty"`
+	LastEventTime        time.Time         `json:"lastEventTime,omitempty"`
+	UpdatedAt            time.Time         `json:"updatedAt"`
+	Source               string            `json:"source,omitempty"`
 	// Tags and Outputs are the CloudFormation stack metadata used for
 	// onboarding discovery and probe target resolution.
 	Tags    map[string]string `json:"tags,omitempty"`

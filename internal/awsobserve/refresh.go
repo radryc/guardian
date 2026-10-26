@@ -91,7 +91,7 @@ func (r *Refresher) Refresh(ctx context.Context, region string, stackNames []str
 			if !stableStackStatus(states[i].StackStatus) {
 				continue
 			}
-			driftStatus, drifted, err := detectStackDrift(ctx, client, states[i].StackName)
+			driftStatus, drifted, driftResources, err := detectStackDrift(ctx, client, states[i].StackName)
 			if err != nil {
 				// Drift detection is best effort: keep the DescribeStacks state.
 				continue
@@ -100,6 +100,7 @@ func (r *Refresher) Refresh(ctx context.Context, region string, stackNames []str
 				states[i].DriftStatus = driftStatus
 			}
 			states[i].DriftedResourceCount = drifted
+			states[i].DriftedResources = driftResources
 		}
 	}
 	return states, nil
@@ -177,14 +178,14 @@ func stackStateFromSDK(account, region string, stack cftypes.Stack) StackState {
 	return state
 }
 
-func detectStackDrift(ctx context.Context, client *cloudformation.Client, stackName string) (string, int, error) {
+func detectStackDrift(ctx context.Context, client *cloudformation.Client, stackName string) (string, int, []DriftedResource, error) {
 	out, err := client.DetectStackDrift(ctx, &cloudformation.DetectStackDriftInput{StackName: awsroot.String(stackName)})
 	if err != nil {
-		return "", 0, err
+		return "", 0, nil, err
 	}
 	detectionID := awsroot.ToString(out.StackDriftDetectionId)
 	if detectionID == "" {
-		return "", 0, fmt.Errorf("empty drift detection id for %s", stackName)
+		return "", 0, nil, fmt.Errorf("empty drift detection id for %s", stackName)
 	}
 	deadline := time.Now().Add(driftMaxWait)
 	for {
@@ -192,7 +193,7 @@ func detectStackDrift(ctx context.Context, client *cloudformation.Client, stackN
 			StackDriftDetectionId: awsroot.String(detectionID),
 		})
 		if err != nil {
-			return "", 0, err
+			return "", 0, nil, err
 		}
 		switch status.DetectionStatus {
 		case cftypes.StackDriftDetectionStatusDetectionComplete:
@@ -200,19 +201,44 @@ func detectStackDrift(ctx context.Context, client *cloudformation.Client, stackN
 			if status.DriftedStackResourceCount != nil {
 				drifted = int(*status.DriftedStackResourceCount)
 			}
-			return string(status.StackDriftStatus), drifted, nil
+			return string(status.StackDriftStatus), drifted, driftedResources(ctx, client, stackName), nil
 		case cftypes.StackDriftDetectionStatusDetectionFailed:
-			return "", 0, fmt.Errorf("drift detection failed for %s: %s", stackName, awsroot.ToString(status.DetectionStatusReason))
+			return "", 0, nil, fmt.Errorf("drift detection failed for %s: %s", stackName, awsroot.ToString(status.DetectionStatusReason))
 		}
 		if time.Now().After(deadline) {
-			return "", 0, fmt.Errorf("drift detection timed out for %s", stackName)
+			return "", 0, nil, fmt.Errorf("drift detection timed out for %s", stackName)
 		}
 		select {
 		case <-ctx.Done():
-			return "", 0, ctx.Err()
+			return "", 0, nil, ctx.Err()
 		case <-time.After(driftPollInterval):
 		}
 	}
+}
+
+// driftedResources lists the CloudFormation resources that differ from the
+// expected template. It is best effort: the stack-level drift count remains
+// authoritative if the resource detail call fails.
+func driftedResources(ctx context.Context, client *cloudformation.Client, stackName string) []DriftedResource {
+	out, err := client.DescribeStackResourceDrifts(ctx, &cloudformation.DescribeStackResourceDriftsInput{
+		StackName: awsroot.String(stackName),
+	})
+	if err != nil {
+		return nil
+	}
+	resources := make([]DriftedResource, 0, len(out.StackResourceDrifts))
+	for _, resource := range out.StackResourceDrifts {
+		status := strings.ToUpper(string(resource.StackResourceDriftStatus))
+		if status == "IN_SYNC" || status == "NOT_CHECKED" {
+			continue
+		}
+		resources = append(resources, DriftedResource{
+			LogicalID:    awsroot.ToString(resource.LogicalResourceId),
+			ResourceType: awsroot.ToString(resource.ResourceType),
+			Status:       status,
+		})
+	}
+	return resources
 }
 
 // SSMClient returns an SSM client configured with the refresher's credentials
