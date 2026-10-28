@@ -16,6 +16,8 @@ concurrency:
 jobs:
   tests:
     runs-on: ubuntu-latest
+    env:
+      MONOFS_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     steps:
       - uses: actions/checkout@v7
         with:
