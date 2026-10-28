@@ -1,0 +1,41 @@
+name: Tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: guardian
+      - uses: actions/checkout@v7
+        with:
+          repository: radryc/kvs
+          path: kvs
+      - uses: actions/checkout@v7
+        with:
+          repository: radryc/monofs
+          path: monofs
+      - uses: actions/checkout@v7
+        with:
+          repository: radryc/cfg
+          path: cfg
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: guardian/go.mod
+          cache-dependency-path: guardian/go.sum
+      - name: Run tests
+        working-directory: guardian
+        run: go test ./...
