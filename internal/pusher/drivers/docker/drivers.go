@@ -215,21 +215,17 @@ func (d *ConfigDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	payload, err := loadConfigPayload(ctx, in)
+	files, err := driverutil.ResolveConfigFiles(ctx, in, []string{"docker"}, spec)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
 	name := configName(in, in.Asset.Name)
-	hash := hashWithPayload(driverutil.AssetHash(in), payload)
-	files := driverutil.ConfigFiles(spec)
-	if len(payload.Files) > 0 {
-		files = cloneStringMap(payload.Files)
-	}
+	hash := hashWithPayload(driverutil.AssetHash(in), files.HashStruct())
 	current, ok, err := d.backend.GetConfig(name)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	if !ok || current.Hash != hash || !equalStringMaps(current.Files, files) {
+	if !ok || current.Hash != hash || current.Binary != files.Binary || !equalStringMaps(current.Files, files.Files) {
 		return changedDrift(in.Asset.Name, "docker config differs"), nil
 	}
 	return inSyncDrift(in.Asset.Name, "docker config is in sync"), nil
@@ -243,21 +239,18 @@ func (d *ConfigDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
-	payload, err := loadConfigPayload(ctx, in)
+	files, err := driverutil.ResolveConfigFiles(ctx, in, []string{"docker"}, spec)
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
-	hash := hashWithPayload(driverutil.AssetHash(in), payload)
+	hash := hashWithPayload(driverutil.AssetHash(in), files.HashStruct())
 	name := configName(in, in.Asset.Name)
-	files := driverutil.ConfigFiles(spec)
-	if len(payload.Files) > 0 {
-		files = cloneStringMap(payload.Files)
-	}
 	if err := d.backend.UpsertConfig(Config{
 		Name:   name,
 		Hash:   hash,
 		Labels: driverutil.Labels("docker", in, hash),
-		Files:  files,
+		Files:  cloneStringMap(files.Files),
+		Binary: files.Binary,
 	}); err != nil {
 		return registry.AssetResult{}, err
 	}
@@ -543,7 +536,7 @@ func (d *ComputeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskd
 		// port changes, mount changes, capability changes etc. that a pure
 		// guardian.hash label comparison would miss when containers are
 		// recreated or modified outside Guardian.
-		desired, err := buildComputeContainer(in, spec, name, idx, hash, network, env, payload)
+		desired, err := buildComputeContainer(ctx, in, spec, name, idx, hash, network, env, payload)
 		if err != nil {
 			return taskdomain.DriftReport{}, err
 		}
@@ -597,7 +590,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	desired := computeContainerNames(in, spec)
 	var primary Container
 	for idx, name := range desired {
-		container, err := buildComputeContainer(in, spec, name, idx, hash, network, env, payload)
+		container, err := buildComputeContainer(ctx, in, spec, name, idx, hash, network, env, payload)
 		if err != nil {
 			return registry.AssetResult{}, err
 		}
@@ -1483,7 +1476,7 @@ func observabilityHash(in registry.AssetInput) string {
 	return driverutil.CompositeHash(in)
 }
 
-func buildComputeContainer(in registry.AssetInput, spec *assetdefs.ComputeSpec, name string, idx int, hash, network string, env map[string]string, payload containerPayload) (Container, error) {
+func buildComputeContainer(ctx context.Context, in registry.AssetInput, spec *assetdefs.ComputeSpec, name string, idx int, hash, network string, env map[string]string, payload containerPayload) (Container, error) {
 	container := Container{
 		Name:         name,
 		Kind:         "Compute",
@@ -1528,8 +1521,25 @@ func buildComputeContainer(in registry.AssetInput, spec *assetdefs.ComputeSpec, 
 			TargetPath: mount.Path,
 			ReadOnly:   mount.ReadOnly,
 		}
-		if fileName, _, ok := driverutil.SingleConfigFile(configSpec); ok {
-			configMount.SourcePath = fileName
+		if file := strings.TrimSpace(mount.File); file != "" {
+			files, err := driverutil.ResolveConfigFiles(ctx, in, []string{"docker"}, configSpec)
+			if err != nil {
+				return Container{}, err
+			}
+			if _, ok := files.Files[file]; !ok {
+				return Container{}, fmt.Errorf("configMounts file %q not found in Config asset %q", file, mount.Config)
+			}
+			configMount.SourcePath = file
+		} else {
+			files, err := driverutil.ResolveConfigFiles(ctx, in, []string{"docker"}, configSpec)
+			if err != nil {
+				return Container{}, err
+			}
+			if fileName, ok := driverutil.SingleConfigFileName(files.Files); ok {
+				configMount.SourcePath = fileName
+			} else if fileName, _, ok := driverutil.SingleConfigFile(configSpec); ok {
+				configMount.SourcePath = fileName
+			}
 		}
 		container.ConfigMounts = append(container.ConfigMounts, configMount)
 	}

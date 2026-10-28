@@ -416,15 +416,11 @@ func otelCollectorConfig(in registry.AssetInput, spec *assetdefs.ObservabilitySp
 // collector config file. Multi-file configs are unsupported for the sidecar
 // because AOT_CONFIG_CONTENT takes exactly one document.
 func observabilityConfigContent(in registry.AssetInput, ref string) (string, bool) {
-	_, typed, err := driverutil.DecodeNamedAsset(in, ref)
-	if err != nil {
+	files, _, err := driverutil.ResolveNamedConfigFiles(context.Background(), in, ref, []string{"aws"})
+	if err != nil || files.Binary {
 		return "", false
 	}
-	spec, ok := typed.(*assetdefs.ConfigSpec)
-	if !ok {
-		return "", false
-	}
-	_, content, ok := driverutil.SingleConfigFile(spec)
+	_, content, ok := driverutil.ConfigFileContent(files.Files)
 	return content, ok
 }
 

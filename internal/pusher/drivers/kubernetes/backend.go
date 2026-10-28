@@ -12,11 +12,12 @@ type Backend struct {
 }
 
 type ConfigMap struct {
-	Namespace string
-	Name      string
-	Hash      string
-	Labels    map[string]string
-	Data      map[string]string
+	Namespace  string
+	Name       string
+	Hash       string
+	Labels     map[string]string
+	Data       map[string]string
+	BinaryData map[string]string
 }
 
 type PersistentVolumeClaim struct {
@@ -261,11 +262,12 @@ func key(namespace, name string) string {
 
 func cloneConfigMap(in ConfigMap) ConfigMap {
 	return ConfigMap{
-		Namespace: in.Namespace,
-		Name:      in.Name,
-		Hash:      in.Hash,
-		Labels:    cloneStringMap(in.Labels),
-		Data:      cloneStringMap(in.Data),
+		Namespace:  in.Namespace,
+		Name:       in.Name,
+		Hash:       in.Hash,
+		Labels:     cloneStringMap(in.Labels),
+		Data:       cloneStringMap(in.Data),
+		BinaryData: cloneStringMap(in.BinaryData),
 	}
 }
 

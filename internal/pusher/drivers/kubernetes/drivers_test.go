@@ -779,6 +779,130 @@ func TestKubernetesComputeCheckAllowsRolloutOverCrashLoop(t *testing.T) {
 	}
 }
 
+func TestConfigRawPayloadMountsWithoutInlineStub(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	backend := NewBackend()
+	reg := registry.New()
+	writeFile(t, ctx, store, "/partitions/demo/payloads/prometheus.yml", []byte("global:\n  scrape_interval: 15s\n"))
+	Register(reg, backend, secrets.NewStoreResolver(store))
+	runtime := &runtimepkg.Runtime{
+		QueuePath: paths.QueueDir("k8s"),
+		WorkerID:  "k8s-worker",
+		Store:     store,
+		Registry:  reg,
+		CanHandle: func(t *taskdomain.Task) bool { return t.Target.Cluster == "main" },
+	}
+
+	task := taskdomain.Task{
+		APIVersion:   "guardian/v1alpha1",
+		Kind:         "Task",
+		TaskID:       "k8s-raw-config",
+		Partition:    "demo",
+		Intent:       "stack",
+		Op:           taskdomain.OpApply,
+		TargetPusher: "k8s",
+		Target:       targetdomain.Placement{Cluster: "main", Namespace: "platform"},
+		Assets: []taskdomain.AbstractAsset{
+			{
+				Type:    "Config",
+				Name:    "prometheus-config",
+				Payload: map[string]string{"file": "/partitions/demo/payloads/prometheus.yml"},
+				Properties: map[string]any{
+					"format": "yaml",
+				},
+			},
+			{
+				Type:      "Compute",
+				Name:      "prom",
+				DependsOn: []string{"prometheus-config"},
+				Properties: map[string]any{
+					"image": "prom/prometheus:v3",
+					"configMounts": []any{
+						map[string]any{"config": "prometheus-config", "path": "/etc/prometheus/prometheus.yml", "readOnly": true},
+					},
+				},
+			},
+		},
+	}
+	content, err := json.Marshal(task)
+	if err != nil {
+		t.Fatalf("marshal task: %v", err)
+	}
+	if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{
+		Writes:  []guardianapi.PathWrite{{LogicalPath: paths.QueueTask("k8s", task.TaskID), Content: content}},
+		Context: guardianapi.MutationContext{PrincipalID: "guardiand"},
+	}); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	if err := runtime.ProcessPending(ctx); err != nil {
+		t.Fatalf("process task: %v", err)
+	}
+
+	in := registry.AssetInput{
+		PartitionName: "demo",
+		IntentName:    "stack",
+		Target:        targetdomain.Placement{Cluster: "main", Namespace: "platform"},
+	}
+	cm, ok, err := backend.GetConfigMap("platform", configMapName(in, "prometheus-config"))
+	if err != nil || !ok {
+		t.Fatalf("get configmap: ok=%v err=%v", ok, err)
+	}
+	if got, want := cm.Data["prometheus.yml"], "global:\n  scrape_interval: 15s\n"; got != want {
+		t.Fatalf("configmap content = %q, want %q", got, want)
+	}
+	deployment, ok, err := backend.GetDeployment("platform", "k8s-compute-main-platform-demo-stack-prom")
+	if err != nil || !ok {
+		t.Fatalf("get deployment: ok=%v err=%v", ok, err)
+	}
+	var subPath string
+	for _, mount := range deployment.Container.VolumeMounts {
+		if mount.MountPath == "/etc/prometheus/prometheus.yml" {
+			subPath = mount.SubPath
+		}
+	}
+	if subPath != "prometheus.yml" {
+		t.Fatalf("config mount subPath = %q, want %q", subPath, "prometheus.yml")
+	}
+}
+
+func TestConfigBinaryPayloadUsesBinaryData(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	backend := NewBackend()
+	reg := registry.New()
+	raw := []byte{0x00, 0x01, 0xfe, 0xff}
+	writeFile(t, ctx, store, "/partitions/demo/payloads/blob.bin", raw)
+	Register(reg, backend, secrets.NewStoreResolver(store))
+
+	input := registry.AssetInput{
+		PartitionName: "demo",
+		IntentName:    "stack",
+		Target:        targetdomain.Placement{Cluster: "main", Namespace: "platform"},
+		Asset: taskdomain.AbstractAsset{
+			Type:       "Config",
+			Name:       "blob",
+			Payload:    map[string]string{"file": "/partitions/demo/payloads/blob.bin"},
+			Properties: map[string]any{"format": "binary"},
+		},
+		Store: store,
+	}
+	driver := &ConfigDriver{baseDriver{backend: backend}}
+	if _, err := driver.Apply(ctx, input); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	cm, ok, err := backend.GetConfigMap("platform", configMapName(input, "blob"))
+	if err != nil || !ok {
+		t.Fatalf("get configmap: ok=%v err=%v", ok, err)
+	}
+	if len(cm.Data) != 0 {
+		t.Fatalf("data = %#v, want empty", cm.Data)
+	}
+	if got := cm.BinaryData["blob.bin"]; got != string(raw) {
+		t.Fatalf("binaryData = %v, want %v", []byte(got), raw)
+	}
+}
+
 func writeFile(t *testing.T, ctx context.Context, store *memory.Store, path string, content []byte) {
 	t.Helper()
 	if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{

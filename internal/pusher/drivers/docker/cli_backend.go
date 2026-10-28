@@ -1,6 +1,7 @@
 package dockerdriver
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +31,7 @@ type dockerConfigState struct {
 	Hash   string            `json:"hash"`
 	Labels map[string]string `json:"labels,omitempty"`
 	Files  map[string]string `json:"files,omitempty"`
+	Binary bool              `json:"binary,omitempty"`
 }
 
 func NewCLIBackend(dockerBinary, stateDir string) (*CLIBackend, error) {
@@ -227,7 +229,8 @@ func (b *CLIBackend) UpsertConfig(config Config) error {
 		Name:   config.Name,
 		Hash:   config.Hash,
 		Labels: cloneStringMap(config.Labels),
-		Files:  cloneStringMap(config.Files),
+		Files:  encodeDockerStateFiles(config.Files, config.Binary),
+		Binary: config.Binary,
 	}
 	return writeJSON(filepath.Join(dir, "metadata.json"), state)
 }
@@ -245,11 +248,16 @@ func (b *CLIBackend) GetConfig(name string) (Config, bool, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return Config{}, false, fmt.Errorf("decode docker config state %q: %w", statePath, err)
 	}
+	files, err := decodeDockerStateFiles(state.Files, state.Binary)
+	if err != nil {
+		return Config{}, false, fmt.Errorf("decode docker config state files %q: %w", statePath, err)
+	}
 	return Config{
 		Name:   state.Name,
 		Hash:   state.Hash,
 		Labels: cloneStringMap(state.Labels),
-		Files:  cloneStringMap(state.Files),
+		Files:  files,
+		Binary: state.Binary,
 	}, true, nil
 }
 
@@ -559,6 +567,32 @@ func (b *CLIBackend) configDir(name string) string {
 
 func (b *CLIBackend) inlineDir(name string) string {
 	return filepath.Join(b.stateDir, "inline", name)
+}
+
+func encodeDockerStateFiles(files map[string]string, binary bool) map[string]string {
+	if !binary {
+		return cloneStringMap(files)
+	}
+	out := make(map[string]string, len(files))
+	for name, content := range files {
+		out[name] = base64.StdEncoding.EncodeToString([]byte(content))
+	}
+	return out
+}
+
+func decodeDockerStateFiles(files map[string]string, binary bool) (map[string]string, error) {
+	if !binary {
+		return cloneStringMap(files), nil
+	}
+	out := make(map[string]string, len(files))
+	for name, content := range files {
+		decoded, err := base64.StdEncoding.DecodeString(content)
+		if err != nil {
+			return nil, fmt.Errorf("file %q: %w", name, err)
+		}
+		out[name] = string(decoded)
+	}
+	return out, nil
 }
 
 func writeStateFiles(root string, files map[string]string) error {

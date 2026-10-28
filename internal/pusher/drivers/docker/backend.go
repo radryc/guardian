@@ -35,6 +35,7 @@ type Config struct {
 	Hash   string
 	Labels map[string]string
 	Files  map[string]string
+	Binary bool
 }
 
 type PortBinding struct {
@@ -239,7 +240,7 @@ func cloneVolume(in Volume) Volume {
 }
 
 func cloneConfig(in Config) Config {
-	return Config{Name: in.Name, Hash: in.Hash, Labels: cloneStringMap(in.Labels), Files: cloneStringMap(in.Files)}
+	return Config{Name: in.Name, Hash: in.Hash, Labels: cloneStringMap(in.Labels), Files: cloneStringMap(in.Files), Binary: in.Binary}
 }
 
 func cloneExtraNetworks(in []ExtraNetwork) []ExtraNetwork {

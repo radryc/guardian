@@ -2,6 +2,7 @@ package awsdriver
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -356,6 +357,75 @@ func TestRejectSnapshotApply(t *testing.T) {
 	managed := StackRequest{Manifest: stackPayload{StackName: "ManagedStack"}}
 	if err := rejectSnapshotApply(managed, "apply"); err != nil {
 		t.Fatalf("managed stack rejected: %v", err)
+	}
+}
+
+type recordingParameterBackend struct {
+	BackendAPI
+	parameter Parameter
+}
+
+func (b *recordingParameterBackend) UpsertParameter(ctx context.Context, param Parameter) error {
+	b.parameter = param
+	return nil
+}
+
+func TestConfigRawPayloadAppliesToSSMParameter(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	writeFile(t, ctx, store, "/partitions/demo/payloads/app.yaml", []byte("port: 8080\n"))
+	backend := &recordingParameterBackend{BackendAPI: NewBackend()}
+
+	input := registry.AssetInput{
+		PartitionName: "demo",
+		IntentName:    "stack",
+		Target:        targetdomain.Placement{Account: "123456789012", Region: "eu-west-1"},
+		Asset: taskdomain.AbstractAsset{
+			Type:       "Config",
+			Name:       "app-config",
+			Payload:    map[string]string{"file": "/partitions/demo/payloads/app.yaml"},
+			Properties: map[string]any{"format": "yaml"},
+		},
+		Store: store,
+	}
+	driver := &ConfigDriver{baseDriver: baseDriver{backend: backend, resolver: secrets.NewStoreResolver(store)}}
+	if _, err := driver.Apply(ctx, input); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if got, want := backend.parameter.Value, "port: 8080\n"; got != want {
+		t.Fatalf("SSM value = %q, want %q", got, want)
+	}
+	if backend.parameter.Type != "String" {
+		t.Fatalf("SSM type = %q, want String", backend.parameter.Type)
+	}
+}
+
+func TestConfigBinaryPayloadAppliesBase64ToSSMParameter(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	raw := []byte{0x00, 0x01, 0xfe, 0xff}
+	writeFile(t, ctx, store, "/partitions/demo/payloads/blob.bin", raw)
+	backend := &recordingParameterBackend{BackendAPI: NewBackend()}
+
+	input := registry.AssetInput{
+		PartitionName: "demo",
+		IntentName:    "stack",
+		Target:        targetdomain.Placement{Account: "123456789012", Region: "eu-west-1"},
+		Asset: taskdomain.AbstractAsset{
+			Type:       "Config",
+			Name:       "blob",
+			Payload:    map[string]string{"file": "/partitions/demo/payloads/blob.bin"},
+			Properties: map[string]any{"format": "binary"},
+		},
+		Store: store,
+	}
+	driver := &ConfigDriver{baseDriver: baseDriver{backend: backend, resolver: secrets.NewStoreResolver(store)}}
+	if _, err := driver.Apply(ctx, input); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	want := base64.StdEncoding.EncodeToString(raw)
+	if got := backend.parameter.Value; got != want {
+		t.Fatalf("SSM value = %q, want %q", got, want)
 	}
 }
 

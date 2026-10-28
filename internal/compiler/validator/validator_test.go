@@ -316,6 +316,106 @@ func TestValidateIntentAllowsConfigWithPayloadOnly(t *testing.T) {
 	}
 }
 
+func TestValidateIntentAllowsConfigWithUniversalFilePayload(t *testing.T) {
+	intent := &intentdomain.Intent{
+		Metadata: intentdomain.Metadata{Name: "app"},
+		Spec: intentdomain.IntentSpec{
+			IntentType:   "standard",
+			TargetPusher: "local",
+			Target:       targetdomain.Placement{Cluster: "local"},
+			Assets: []intentdomain.AssetSpec{{
+				Type:    "Config",
+				Name:    "payload-config",
+				Payload: map[string]string{"file": "/partitions/app/payloads/prometheus.yml"},
+				Properties: map[string]any{
+					"format": "yaml",
+				},
+			}},
+		},
+	}
+	if err := ValidateIntent(intent, []string{"app"}, []string{"local"}); err != nil {
+		t.Fatalf("ValidateIntent() error = %v", err)
+	}
+}
+
+func TestValidateIntentRejectsMixedConfigPayloadKeys(t *testing.T) {
+	intent := &intentdomain.Intent{
+		Metadata: intentdomain.Metadata{Name: "app"},
+		Spec: intentdomain.IntentSpec{
+			IntentType:   "standard",
+			TargetPusher: "local",
+			Target:       targetdomain.Placement{Cluster: "local"},
+			Assets: []intentdomain.AssetSpec{{
+				Type: "Config",
+				Name: "payload-config",
+				Payload: map[string]string{
+					"file":  "/partitions/app/payloads/app.yaml",
+					"files": "/partitions/app/payloads/files.yaml",
+				},
+				Properties: map[string]any{"format": "yaml"},
+			}},
+		},
+	}
+	if err := ValidateIntent(intent, []string{"app"}, []string{"local"}); err == nil {
+		t.Fatal("ValidateIntent() error = nil, want mixed payload key error")
+	}
+}
+
+func TestValidateIntentConfigBinaryRequiresBase64(t *testing.T) {
+	valid := &intentdomain.Intent{
+		Metadata: intentdomain.Metadata{Name: "app"},
+		Spec: intentdomain.IntentSpec{
+			IntentType:   "standard",
+			TargetPusher: "local",
+			Target:       targetdomain.Placement{Cluster: "local"},
+			Assets: []intentdomain.AssetSpec{{
+				Type: "Config",
+				Name: "blob",
+				Properties: map[string]any{
+					"format": "binary",
+					"data":   map[string]any{"blob.bin": "AAEC//8="},
+				},
+			}},
+		},
+	}
+	if err := ValidateIntent(valid, []string{"app"}, []string{"local"}); err != nil {
+		t.Fatalf("ValidateIntent() valid binary error = %v", err)
+	}
+
+	invalid := *valid
+	invalid.Spec = valid.Spec
+	invalid.Spec.Assets = []intentdomain.AssetSpec{{
+		Type: "Config",
+		Name: "blob",
+		Properties: map[string]any{
+			"format": "binary",
+			"data":   map[string]any{"blob.bin": "not-base64"},
+		},
+	}}
+	if err := ValidateIntent(&invalid, []string{"app"}, []string{"local"}); err == nil {
+		t.Fatal("ValidateIntent() error = nil, want invalid base64 error")
+	}
+}
+
+func TestValidateIntentRejectsUnsupportedConfigFormat(t *testing.T) {
+	intent := &intentdomain.Intent{
+		Metadata: intentdomain.Metadata{Name: "app"},
+		Spec: intentdomain.IntentSpec{
+			IntentType:   "standard",
+			TargetPusher: "local",
+			Target:       targetdomain.Placement{Cluster: "local"},
+			Assets: []intentdomain.AssetSpec{{
+				Type:       "Config",
+				Name:       "app-config",
+				Properties: map[string]any{"format": "xml", "content": "<x/>"},
+			}},
+		},
+	}
+	if err := ValidateIntent(intent, []string{"app"}, []string{"local"}); err == nil {
+		t.Fatal("ValidateIntent() error = nil, want unsupported format error")
+	}
+}
+
 func TestValidateIntentRejectsRelativePayloadPath(t *testing.T) {
 	intent := &intentdomain.Intent{
 		Metadata: intentdomain.Metadata{Name: "app"},
