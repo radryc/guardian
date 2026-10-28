@@ -1,0 +1,45 @@
+name: Tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    env:
+      MONOFS_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: guardian
+      - uses: actions/checkout@v7
+        with:
+          repository: radryc/kvs
+          path: kvs
+      - uses: actions/checkout@v7
+        with:
+          repository: radryc/monofs
+          path: monofs
+      - uses: actions/checkout@v7
+        with:
+          repository: radryc/cfg
+          path: cfg
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: guardian/go.mod
+          cache-dependency-path: guardian/go.sum
+      # internal/bootstrap tests render templates from the private stratatools
+      # repo (ST_ROOT), so they cannot run against a plain public checkout.
+      - name: Run tests
+        working-directory: guardian
+        run: go test $(go list ./... | grep -v '/internal/bootstrap$')
