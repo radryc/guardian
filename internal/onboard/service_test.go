@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/observed"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/pusher/probes"
-	"github.com/rydzu/ainfra/guardian/internal/registry"
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
-	"github.com/rydzu/ainfra/guardian/internal/workspacepub"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/observed"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/pusher/probes"
+	"github.com/radryc/guardian/internal/registry"
+	"github.com/radryc/guardian/internal/store/memory"
+	"github.com/radryc/guardian/internal/workspacepub"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 func newFakePusher(t *testing.T, descriptors []any, probes []probes.Result) *httptest.Server {

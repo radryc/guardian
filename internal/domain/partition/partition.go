@@ -1,6 +1,6 @@
 package partition
 
-import targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
+import targetdomain "github.com/radryc/guardian/internal/domain/target"
 
 type Partition struct {
 	APIVersion string   `yaml:"apiVersion" json:"apiVersion"`

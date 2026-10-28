@@ -14,7 +14,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/registry"
+	"github.com/radryc/guardian/internal/registry"
 	"gopkg.in/yaml.v3"
 )
 

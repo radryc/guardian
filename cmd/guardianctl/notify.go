@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/cli/command"
-	"github.com/rydzu/ainfra/guardian/internal/cli/output"
-	"github.com/rydzu/ainfra/guardian/internal/notify"
+	"github.com/radryc/guardian/internal/cli/command"
+	"github.com/radryc/guardian/internal/cli/output"
+	"github.com/radryc/guardian/internal/notify"
 )
 
 // notifyTestCommand sends a test alert to a webhook channel.

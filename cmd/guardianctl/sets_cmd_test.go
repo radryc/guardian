@@ -5,12 +5,12 @@ import (
 	"io"
 	"testing"
 
-	"github.com/rydzu/ainfra/guardian/internal/cli/command"
-	"github.com/rydzu/ainfra/guardian/internal/cli/output"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	setstore "github.com/rydzu/ainfra/guardian/internal/sets"
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/cli/command"
+	"github.com/radryc/guardian/internal/cli/output"
+	"github.com/radryc/guardian/internal/paths"
+	setstore "github.com/radryc/guardian/internal/sets"
+	"github.com/radryc/guardian/internal/store/memory"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 func TestSetsEnsureIsIdempotent(t *testing.T) {

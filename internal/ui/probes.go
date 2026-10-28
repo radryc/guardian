@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/pusher/probes"
+	"github.com/radryc/guardian/internal/pusher/probes"
 )
 
 func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {

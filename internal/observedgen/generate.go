@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strings"
 
-	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
+	partitiondomain "github.com/radryc/guardian/internal/domain/partition"
 	"gopkg.in/yaml.v3"
 )
 

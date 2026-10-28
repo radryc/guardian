@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/versioning/digest"
+	"github.com/radryc/guardian/internal/versioning/digest"
 )
 
 func PartitionRevision(configVersionID string, intentVersions map[string]string) string {

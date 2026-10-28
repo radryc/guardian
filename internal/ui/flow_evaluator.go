@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
-	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
+	statedomain "github.com/radryc/guardian/internal/domain/state"
+	taskdomain "github.com/radryc/guardian/internal/domain/task"
 )
 
 type FlowStateEvaluator interface {

@@ -14,13 +14,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/compiler/manifest"
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
-	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
-	"github.com/rydzu/ainfra/guardian/internal/observedgen"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/registry"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/compiler/manifest"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
+	intentdomain "github.com/radryc/guardian/internal/domain/intent"
+	"github.com/radryc/guardian/internal/observedgen"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/registry"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 type pusherListResponse struct {

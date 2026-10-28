@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/cli/command"
+	"github.com/radryc/guardian/internal/cli/command"
 )
 
 var dockerExecCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {

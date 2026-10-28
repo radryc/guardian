@@ -19,14 +19,14 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/awsobserve"
-	"github.com/rydzu/ainfra/guardian/internal/cdkgen"
-	"github.com/rydzu/ainfra/guardian/internal/compiler/manifest"
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
-	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/registry"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/awsobserve"
+	"github.com/radryc/guardian/internal/cdkgen"
+	"github.com/radryc/guardian/internal/compiler/manifest"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
+	intentdomain "github.com/radryc/guardian/internal/domain/intent"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/registry"
+	"github.com/radryc/guardian/pkg/guardianapi"
 	"gopkg.in/yaml.v3"
 )
 

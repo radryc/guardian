@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/observability"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/pusher/probes"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/observability"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/pusher/probes"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 type uiProjectionCache struct {

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
 )
 
 type ValidationContext struct {

@@ -5,10 +5,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/awsobserve"
-	"github.com/rydzu/ainfra/guardian/internal/cdktemplate"
-	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
-	"github.com/rydzu/ainfra/guardian/internal/observedgen"
+	"github.com/radryc/guardian/internal/awsobserve"
+	"github.com/radryc/guardian/internal/cdktemplate"
+	statedomain "github.com/radryc/guardian/internal/domain/state"
+	"github.com/radryc/guardian/internal/observedgen"
 )
 
 const maxResourceAssetName = 64

@@ -6,9 +6,9 @@ import (
 	"os"
 	"sort"
 
-	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	statedomain "github.com/radryc/guardian/internal/domain/state"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 // LoadPartitionRuntime builds the partition runtime by reading the partition

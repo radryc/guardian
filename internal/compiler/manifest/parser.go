@@ -3,8 +3,8 @@ package manifest
 import (
 	"fmt"
 
-	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
-	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
+	intentdomain "github.com/radryc/guardian/internal/domain/intent"
+	partitiondomain "github.com/radryc/guardian/internal/domain/partition"
 	"gopkg.in/yaml.v3"
 )
 

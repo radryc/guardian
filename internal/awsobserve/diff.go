@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/cdktemplate"
-	awsdriver "github.com/rydzu/ainfra/guardian/internal/pusher/drivers/aws"
+	"github.com/radryc/guardian/internal/cdktemplate"
+	awsdriver "github.com/radryc/guardian/internal/pusher/drivers/aws"
 )
 
 // SourceDiffRequest asks the pusher to synthesize an in-memory CDK source tree

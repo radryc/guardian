@@ -6,7 +6,7 @@ package observability
 import (
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/versioning/digest"
+	"github.com/radryc/guardian/internal/versioning/digest"
 )
 
 // MaxServiceNameLength is the backend-safe cap for the generated service.name.

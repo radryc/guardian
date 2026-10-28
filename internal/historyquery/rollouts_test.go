@@ -5,13 +5,13 @@ import (
 	"testing"
 	"time"
 
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
-	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
-	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
-	"github.com/rydzu/ainfra/guardian/internal/versioning/revisions"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
+	historydomain "github.com/radryc/guardian/internal/domain/history"
+	intentdomain "github.com/radryc/guardian/internal/domain/intent"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/store/memory"
+	"github.com/radryc/guardian/internal/versioning/revisions"
+	"github.com/radryc/guardian/pkg/guardianapi"
 	"gopkg.in/yaml.v3"
 )
 

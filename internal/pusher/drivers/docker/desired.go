@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"strings"
 
-	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
-	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
-	"github.com/rydzu/ainfra/guardian/internal/pusher/driverutil"
+	assetdefs "github.com/radryc/guardian/internal/domain/assets"
+	targetdomain "github.com/radryc/guardian/internal/domain/target"
+	"github.com/radryc/guardian/internal/pusher/driverutil"
 )
 
 // DesiredContainerForDiff builds a Container struct from a ComputeSpec for use

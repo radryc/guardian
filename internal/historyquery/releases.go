@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"os"
 
-	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
-	releasedomain "github.com/rydzu/ainfra/guardian/internal/domain/release"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	historydomain "github.com/radryc/guardian/internal/domain/history"
+	releasedomain "github.com/radryc/guardian/internal/domain/release"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 // LoadPartitionReleaseLog reads the authoritative per-partition release log.

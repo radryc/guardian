@@ -5,10 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rydzu/ainfra/guardian/internal/awsgen"
-	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
-	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
-	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
+	"github.com/radryc/guardian/internal/awsgen"
+	intentdomain "github.com/radryc/guardian/internal/domain/intent"
+	partitiondomain "github.com/radryc/guardian/internal/domain/partition"
+	targetdomain "github.com/radryc/guardian/internal/domain/target"
 )
 
 func TestWriteDraftBundle(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	kubernetesdriver "github.com/rydzu/ainfra/guardian/internal/pusher/drivers/kubernetes"
+	kubernetesdriver "github.com/radryc/guardian/internal/pusher/drivers/kubernetes"
 )
 
 const testKubeconfig = `apiVersion: v1

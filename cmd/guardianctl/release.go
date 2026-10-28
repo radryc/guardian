@@ -7,9 +7,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/rydzu/ainfra/guardian/internal/bootstrap"
-	"github.com/rydzu/ainfra/guardian/internal/cli/command"
-	"github.com/rydzu/ainfra/guardian/internal/cli/output"
+	"github.com/radryc/guardian/internal/bootstrap"
+	"github.com/radryc/guardian/internal/cli/command"
+	"github.com/radryc/guardian/internal/cli/output"
 )
 
 func releaseCommand(printer *output.Printer) *command.Command {

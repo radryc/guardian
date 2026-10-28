@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	coreauthz "github.com/radryc/monofs/pkg/authz"
-	"github.com/rydzu/ainfra/guardian/internal/registry"
+	"github.com/radryc/guardian/internal/registry"
 )
 
 // handleM2MPushers exposes the pusher registry to trusted machine callers

@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/cdktemplate"
-	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
+	"github.com/radryc/guardian/internal/cdktemplate"
+	partitiondomain "github.com/radryc/guardian/internal/domain/partition"
 	"gopkg.in/yaml.v3"
 )
 

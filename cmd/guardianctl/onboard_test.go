@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rydzu/ainfra/guardian/internal/cli/format"
-	"github.com/rydzu/ainfra/guardian/internal/cli/output"
-	"github.com/rydzu/ainfra/guardian/internal/registry"
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
+	"github.com/radryc/guardian/internal/cli/format"
+	"github.com/radryc/guardian/internal/cli/output"
+	"github.com/radryc/guardian/internal/registry"
+	"github.com/radryc/guardian/internal/store/memory"
 )
 
 func TestAWSOnboardCommand(t *testing.T) {

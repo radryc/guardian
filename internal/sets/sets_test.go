@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
+	"github.com/radryc/guardian/internal/store/memory"
 )
 
 func TestCreateNestedSetsAndMembership(t *testing.T) {

@@ -8,9 +8,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/buildinfo"
-	platformregistry "github.com/rydzu/ainfra/guardian/internal/registry"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/buildinfo"
+	platformregistry "github.com/radryc/guardian/internal/registry"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 // PusherInfo is the metadata a pusher publishes into the platform registry.

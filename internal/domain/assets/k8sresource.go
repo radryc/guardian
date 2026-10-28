@@ -3,7 +3,7 @@ package assets
 import (
 	"fmt"
 
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
 )
 
 // K8sResourceSpec describes a raw Kubernetes manifest applied verbatim. The

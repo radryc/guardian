@@ -8,15 +8,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/compiler/dag"
-	"github.com/rydzu/ainfra/guardian/internal/compiler/manifest"
-	"github.com/rydzu/ainfra/guardian/internal/compiler/resolver"
-	"github.com/rydzu/ainfra/guardian/internal/compiler/validator"
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
-	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
-	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
-	"github.com/rydzu/ainfra/guardian/internal/versioning/digest"
-	"github.com/rydzu/ainfra/guardian/internal/versioning/revisions"
+	"github.com/radryc/guardian/internal/compiler/dag"
+	"github.com/radryc/guardian/internal/compiler/manifest"
+	"github.com/radryc/guardian/internal/compiler/resolver"
+	"github.com/radryc/guardian/internal/compiler/validator"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
+	intentdomain "github.com/radryc/guardian/internal/domain/intent"
+	partitiondomain "github.com/radryc/guardian/internal/domain/partition"
+	"github.com/radryc/guardian/internal/versioning/digest"
+	"github.com/radryc/guardian/internal/versioning/revisions"
 )
 
 type CompiledPartition struct {

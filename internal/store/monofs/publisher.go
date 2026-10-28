@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	pb "github.com/radryc/monofs/api/proto"
-	"github.com/rydzu/ainfra/guardian/internal/workspacepub"
+	"github.com/radryc/guardian/internal/workspacepub"
 	"google.golang.org/grpc"
 )
 

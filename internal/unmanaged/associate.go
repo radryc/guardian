@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/observedgen"
-	"github.com/rydzu/ainfra/guardian/internal/registry"
-	"github.com/rydzu/ainfra/guardian/internal/workspacepub"
+	"github.com/radryc/guardian/internal/observedgen"
+	"github.com/radryc/guardian/internal/registry"
+	"github.com/radryc/guardian/internal/workspacepub"
 )
 
 // AssociateOptions describes a repo association for one stack.

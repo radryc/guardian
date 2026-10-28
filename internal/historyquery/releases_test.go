@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	releasedomain "github.com/rydzu/ainfra/guardian/internal/domain/release"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	releasedomain "github.com/radryc/guardian/internal/domain/release"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/store/memory"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 func seedReleaseLog(t *testing.T, ctx context.Context, store *memory.Store, partition string, log *releasedomain.PartitionReleaseLog) {

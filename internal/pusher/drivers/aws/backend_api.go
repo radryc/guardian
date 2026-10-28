@@ -3,7 +3,7 @@ package awsdriver
 import (
 	"context"
 
-	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
+	targetdomain "github.com/radryc/guardian/internal/domain/target"
 )
 
 type BackendAPI interface {

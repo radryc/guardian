@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/awsobserve"
-	"github.com/rydzu/ainfra/guardian/internal/onboarding"
-	"github.com/rydzu/ainfra/guardian/internal/pusher/probes"
+	"github.com/radryc/guardian/internal/awsobserve"
+	"github.com/radryc/guardian/internal/onboarding"
+	"github.com/radryc/guardian/internal/pusher/probes"
 )
 
 type fakePromQL struct {

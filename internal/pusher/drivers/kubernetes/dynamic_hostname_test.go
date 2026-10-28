@@ -3,7 +3,7 @@ package kubernetesdriver
 import (
 	"testing"
 
-	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
+	assetdefs "github.com/radryc/guardian/internal/domain/assets"
 )
 
 func TestToServicePortsIgnoresHostPortWhenDynamicHostnameIsSet(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/versioning/revisions"
+	"github.com/radryc/guardian/internal/versioning/revisions"
 )
 
 func TestCompileDeterministic(t *testing.T) {

@@ -48,7 +48,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the full architecture.
 
   ```text
   replace github.com/radryc/monofs => ../monofs
-  replace github.com/rydzu/ainfra/kvs => ../kvs
+  replace github.com/radryc/kvs => ../kvs
   ```
 
 - Node 20+ to build the UI (`make ui-build`).

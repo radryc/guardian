@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rydzu/ainfra/guardian/internal/compiler/manifest"
+	"github.com/radryc/guardian/internal/compiler/manifest"
 )
 
 func writeAssembly(t *testing.T) string {

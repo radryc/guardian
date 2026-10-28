@@ -8,15 +8,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/cdkgen"
-	"github.com/rydzu/ainfra/guardian/internal/compiler/planner"
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
-	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
-	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
-	"github.com/rydzu/ainfra/guardian/internal/orchestrator/dispatcher"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/cdkgen"
+	"github.com/radryc/guardian/internal/compiler/planner"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
+	intentdomain "github.com/radryc/guardian/internal/domain/intent"
+	targetdomain "github.com/radryc/guardian/internal/domain/target"
+	"github.com/radryc/guardian/internal/orchestrator/dispatcher"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/store/memory"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 func compiledCDKIntent(assets []assetdomain.Spec) *planner.CompiledPartition {

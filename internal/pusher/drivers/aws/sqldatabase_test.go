@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
-	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
-	"github.com/rydzu/ainfra/guardian/internal/pusher/driverutil"
-	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
+	targetdomain "github.com/radryc/guardian/internal/domain/target"
+	taskdomain "github.com/radryc/guardian/internal/domain/task"
+	"github.com/radryc/guardian/internal/pusher/driverutil"
+	"github.com/radryc/guardian/internal/pusher/registry"
 )
 
 func TestAuroraSQLDatabaseApplyDiffDestroy(t *testing.T) {

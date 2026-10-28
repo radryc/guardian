@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
 )
 
 // cfnTypePattern matches CloudFormation resource type names, for example

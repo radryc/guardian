@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/domain/intent"
-	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
-	"github.com/rydzu/ainfra/guardian/internal/registry"
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
+	"github.com/radryc/guardian/internal/domain/intent"
+	targetdomain "github.com/radryc/guardian/internal/domain/target"
+	"github.com/radryc/guardian/internal/registry"
+	"github.com/radryc/guardian/internal/store/memory"
 )
 
 func TestBuildPartitionAssignments(t *testing.T) {

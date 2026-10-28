@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/versioning/digest"
-	"github.com/rydzu/ainfra/guardian/internal/versioning/revisions"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/versioning/digest"
+	"github.com/radryc/guardian/internal/versioning/revisions"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 type Store struct {

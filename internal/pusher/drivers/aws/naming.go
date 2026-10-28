@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
-	"github.com/rydzu/ainfra/guardian/internal/pusher/driverutil"
-	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
+	targetdomain "github.com/radryc/guardian/internal/domain/target"
+	"github.com/radryc/guardian/internal/pusher/driverutil"
+	"github.com/radryc/guardian/internal/pusher/registry"
 )
 
 func awsResourceName(prefix string, target targetdomain.Placement, partition, intent, asset string) string {

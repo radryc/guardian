@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	fsstore "github.com/rydzu/ainfra/guardian/internal/store/fs"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	fsstore "github.com/radryc/guardian/internal/store/fs"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 func TestScanRunnerAgainstFileStore(t *testing.T) {

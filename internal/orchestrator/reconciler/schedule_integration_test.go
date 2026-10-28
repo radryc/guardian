@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/orchestrator/dispatcher"
-	"github.com/rydzu/ainfra/guardian/internal/orchestrator/reconciler"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
+	"github.com/radryc/guardian/internal/orchestrator/dispatcher"
+	"github.com/radryc/guardian/internal/orchestrator/reconciler"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/store/memory"
 )
 
 // TestRunInvalidInterval verifies that Run() fails fast when the interval

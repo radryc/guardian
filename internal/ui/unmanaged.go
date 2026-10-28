@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/unmanaged"
+	"github.com/radryc/guardian/internal/unmanaged"
 )
 
 // UnmanagedService detects stacks without a repository and prepares repo

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/bootstrap"
-	"github.com/rydzu/ainfra/guardian/internal/cli/command"
+	"github.com/radryc/guardian/internal/bootstrap"
+	"github.com/radryc/guardian/internal/cli/command"
 	"gopkg.in/yaml.v3"
 )
 

@@ -8,12 +8,12 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/cli/command"
-	"github.com/rydzu/ainfra/guardian/internal/cli/output"
-	manifestpkg "github.com/rydzu/ainfra/guardian/internal/compiler/manifest"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/registry"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/cli/command"
+	"github.com/radryc/guardian/internal/cli/output"
+	manifestpkg "github.com/radryc/guardian/internal/compiler/manifest"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/registry"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 type partitionAssignmentRepo struct {

@@ -6,11 +6,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/observed"
-	"github.com/rydzu/ainfra/guardian/internal/registry"
-	"github.com/rydzu/ainfra/guardian/internal/repoconfig"
-	"github.com/rydzu/ainfra/guardian/internal/workspacepub"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/observed"
+	"github.com/radryc/guardian/internal/registry"
+	"github.com/radryc/guardian/internal/repoconfig"
+	"github.com/radryc/guardian/internal/workspacepub"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 // Publisher publishes the association bundle through MonoFS (review branch +

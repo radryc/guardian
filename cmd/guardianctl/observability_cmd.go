@@ -4,10 +4,10 @@ import (
 	"context"
 	"flag"
 
-	"github.com/rydzu/ainfra/guardian/internal/cli/command"
-	"github.com/rydzu/ainfra/guardian/internal/cli/output"
-	"github.com/rydzu/ainfra/guardian/internal/observability"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/cli/command"
+	"github.com/radryc/guardian/internal/cli/output"
+	"github.com/radryc/guardian/internal/observability"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 func observabilityIdentitiesCommand(store guardianapi.Store, printer *output.Printer) *command.Command {

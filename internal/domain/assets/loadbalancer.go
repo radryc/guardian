@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
 )
 
 // ListenerSpec describes a single inbound listener on a LoadBalancer asset.

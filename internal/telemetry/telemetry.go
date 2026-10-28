@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/buildinfo"
+	"github.com/radryc/guardian/internal/buildinfo"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"

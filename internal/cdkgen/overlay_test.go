@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 type fakeOverlayStore struct {

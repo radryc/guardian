@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
+	taskdomain "github.com/radryc/guardian/internal/domain/task"
 )
 
 type PartitionStatusMetrics struct {

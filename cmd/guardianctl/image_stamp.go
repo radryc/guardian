@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/rydzu/ainfra/guardian/internal/cli/command"
+	"github.com/radryc/guardian/internal/cli/command"
 	"gopkg.in/yaml.v3"
 )
 

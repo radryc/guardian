@@ -10,8 +10,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	setstore "github.com/rydzu/ainfra/guardian/internal/sets"
+	"github.com/radryc/guardian/internal/paths"
+	setstore "github.com/radryc/guardian/internal/sets"
 )
 
 type SetsResponse struct {

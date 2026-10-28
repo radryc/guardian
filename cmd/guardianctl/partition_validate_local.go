@@ -13,9 +13,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/cli/command"
-	cliformat "github.com/rydzu/ainfra/guardian/internal/cli/format"
-	"github.com/rydzu/ainfra/guardian/internal/cli/output"
+	"github.com/radryc/guardian/internal/cli/command"
+	cliformat "github.com/radryc/guardian/internal/cli/format"
+	"github.com/radryc/guardian/internal/cli/output"
 	"gopkg.in/yaml.v3"
 )
 

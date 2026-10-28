@@ -9,12 +9,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rydzu/ainfra/guardian/internal/awsobserve"
-	"github.com/rydzu/ainfra/guardian/internal/observed"
-	"github.com/rydzu/ainfra/guardian/internal/registry"
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
-	"github.com/rydzu/ainfra/guardian/internal/workspacepub"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/awsobserve"
+	"github.com/radryc/guardian/internal/observed"
+	"github.com/radryc/guardian/internal/registry"
+	"github.com/radryc/guardian/internal/store/memory"
+	"github.com/radryc/guardian/internal/workspacepub"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 type fakeLister struct {

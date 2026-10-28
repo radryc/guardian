@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 
-	"github.com/rydzu/ainfra/guardian/internal/unmanaged"
-	"github.com/rydzu/ainfra/guardian/internal/workspacepub"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/unmanaged"
+	"github.com/radryc/guardian/internal/workspacepub"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 // workspacePublisherFromStore returns a lazy MonoFS workspace publisher when
