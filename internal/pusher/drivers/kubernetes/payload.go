@@ -16,10 +16,6 @@ type volumePayload struct {
 	Ephemeral    *bool  `yaml:"ephemeral,omitempty"`
 }
 
-type configPayload struct {
-	Data map[string]string `yaml:"data,omitempty"`
-}
-
 type workloadPayload struct {
 	Image              string            `yaml:"image,omitempty"`
 	Command            []string          `yaml:"command,omitempty"`
@@ -41,12 +37,6 @@ type workloadPayload struct {
 
 func loadVolumePayload(ctx context.Context, in registry.AssetInput) (volumePayload, error) {
 	var payload volumePayload
-	_, err := driverutil.LoadPayload(ctx, in, []string{"k8s", "kubernetes"}, &payload)
-	return payload, err
-}
-
-func loadConfigPayload(ctx context.Context, in registry.AssetInput) (configPayload, error) {
-	var payload configPayload
 	_, err := driverutil.LoadPayload(ctx, in, []string{"k8s", "kubernetes"}, &payload)
 	return payload, err
 }

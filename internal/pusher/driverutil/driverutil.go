@@ -340,6 +340,8 @@ func extensionForFormat(format string) string {
 		return ".cfg"
 	case "text", "txt":
 		return ".txt"
+	case "binary", "bin":
+		return ".bin"
 	default:
 		return ".txt"
 	}

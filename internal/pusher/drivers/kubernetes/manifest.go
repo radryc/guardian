@@ -1,6 +1,7 @@
 package kubernetesdriver
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
 )
@@ -11,7 +12,7 @@ import (
 // objects so both backends produce identical desired state.
 
 func configMapManifest(cm ConfigMap) map[string]any {
-	return map[string]any{
+	out := map[string]any{
 		"apiVersion": "v1",
 		"kind":       "ConfigMap",
 		"metadata": map[string]any{
@@ -22,8 +23,18 @@ func configMapManifest(cm ConfigMap) map[string]any {
 				fullHashAnnotation: cm.Hash,
 			},
 		},
-		"data": cloneStringMap(cm.Data),
 	}
+	if len(cm.Data) > 0 {
+		out["data"] = cloneStringMap(cm.Data)
+	}
+	if len(cm.BinaryData) > 0 {
+		encoded := make(map[string]string, len(cm.BinaryData))
+		for name, content := range cm.BinaryData {
+			encoded[name] = base64.StdEncoding.EncodeToString([]byte(content))
+		}
+		out["binaryData"] = encoded
+	}
+	return out
 }
 
 func claimManifest(claim PersistentVolumeClaim) map[string]any {

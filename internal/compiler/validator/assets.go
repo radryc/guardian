@@ -11,6 +11,19 @@ import (
 	intentdomain "github.com/radryc/guardian/internal/domain/intent"
 )
 
+func validateConfigPayloadKeys(payload map[string]string) error {
+	used := 0
+	for _, key := range []string{"file", "raw", "files"} {
+		if strings.TrimSpace(payload[key]) != "" {
+			used++
+		}
+	}
+	if used > 1 {
+		return fmt.Errorf("payload must use at most one of file, raw, or files")
+	}
+	return nil
+}
+
 func validateIntentAssets(assets []intentdomain.AssetSpec, intentHints []assetdomain.Hint) error {
 	assetNames := map[string]struct{}{}
 	assetTypes := map[string]string{}
@@ -84,6 +97,9 @@ func validateIntentAssets(assets []intentdomain.AssetSpec, intentHints []assetdo
 			}
 			if cfg.Content == "" && len(cfg.Data) == 0 && len(asset.Payload) == 0 {
 				return fmt.Errorf("asset %q (%s): requires either property content, property data, or payload", asset.Name, asset.Type)
+			}
+			if err := validateConfigPayloadKeys(asset.Payload); err != nil {
+				return fmt.Errorf("asset %q (%s): %w", asset.Name, asset.Type, err)
 			}
 		}
 		if err := assetdefs.ValidateAssetHints(asset.Hints); err != nil {
