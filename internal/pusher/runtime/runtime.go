@@ -781,11 +781,11 @@ func runtimeTaskAttributes(t *taskdomain.Task, workerID string) []attribute.KeyV
 	}
 
 	attrs := []attribute.KeyValue{
-		attribute.String("guardian.partition", t.Partition),
-		attribute.String("guardian.intent", t.Intent),
+		attribute.String("guardian.target.partition", t.Partition),
+		attribute.String("guardian.target.intent", t.Intent),
 		attribute.String("guardian.operation", string(t.Op)),
 		attribute.String("guardian.task.id", t.TaskID),
-		attribute.Int("guardian.asset.count", len(t.Assets)),
+		attribute.Int("guardian.target.asset.count", len(t.Assets)),
 	}
 	if strings.TrimSpace(workerID) != "" {
 		attrs = append(attrs, attribute.String("guardian.worker.id", workerID))
@@ -794,19 +794,19 @@ func runtimeTaskAttributes(t *taskdomain.Task, workerID string) []attribute.KeyV
 		attrs = append(attrs, attribute.String("guardian.task.correlation_id", t.CorrelationID))
 	}
 	if t.PartitionRevision != "" {
-		attrs = append(attrs, attribute.String("guardian.partition.revision", t.PartitionRevision))
+		attrs = append(attrs, attribute.String("guardian.target.partition.revision", t.PartitionRevision))
 	}
 	if t.IntentVersionID != "" {
-		attrs = append(attrs, attribute.String("guardian.intent.version_id", t.IntentVersionID))
+		attrs = append(attrs, attribute.String("guardian.target.intent.version_id", t.IntentVersionID))
 	}
 	if t.IntentSpecHash != "" {
-		attrs = append(attrs, attribute.String("guardian.intent.spec_hash", t.IntentSpecHash))
+		attrs = append(attrs, attribute.String("guardian.target.intent.spec_hash", t.IntentSpecHash))
 	}
 	if t.TargetPusher != "" {
-		attrs = append(attrs, attribute.String("guardian.pusher", t.TargetPusher))
+		attrs = append(attrs, attribute.String("guardian.target.pusher", t.TargetPusher))
 	}
 	if t.Target.Cluster != "" {
-		attrs = append(attrs, attribute.String("guardian.cluster", t.Target.Cluster))
+		attrs = append(attrs, attribute.String("guardian.target.cluster", t.Target.Cluster))
 	}
 	if t.Target.Namespace != "" {
 		attrs = append(attrs, attribute.String("guardian.target.namespace", t.Target.Namespace))
@@ -818,10 +818,10 @@ func runtimeTaskAttributes(t *taskdomain.Task, workerID string) []attribute.KeyV
 		attrs = append(attrs, attribute.String("guardian.target.account", t.Target.Account))
 	}
 	if len(assetNames) > 0 {
-		attrs = append(attrs, attribute.StringSlice("guardian.asset.names", uniqueSortedStrings(assetNames)))
+		attrs = append(attrs, attribute.StringSlice("guardian.target.asset.names", uniqueSortedStrings(assetNames)))
 	}
 	if len(assetTypes) > 0 {
-		attrs = append(attrs, attribute.StringSlice("guardian.asset.types", uniqueSortedStrings(assetTypes)))
+		attrs = append(attrs, attribute.StringSlice("guardian.target.asset.types", uniqueSortedStrings(assetTypes)))
 	}
 	return attrs
 }

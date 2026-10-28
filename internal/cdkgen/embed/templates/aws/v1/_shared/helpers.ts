@@ -194,9 +194,10 @@ export function buildEnvironment(
   setGenerated('guardian.partition', partition);
   setGenerated('guardian.intent', intent);
   setGenerated('guardian.asset', asset);
+  setGenerated('guardian.identity.kind', 'managed');
   setGenerated('guardian.provider', 'aws');
   for (const key of Object.keys(out).sort()) {
-    if (/_OTEL_SERVICE_NAME$/i.test(key) && String(out[key] || '').trim()) {
+    if (key !== 'OTEL_SERVICE_NAME' && /_OTEL_SERVICE_NAME$/i.test(key) && String(out[key] || '').trim()) {
       setGenerated('service.alias', String(out[key]).trim());
       break;
     }

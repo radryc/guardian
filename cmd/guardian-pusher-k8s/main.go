@@ -80,12 +80,14 @@ func main() {
 	}
 	telemetryCfg.ServiceName = "guardian.pusher." + pusherName
 	telemetryCfg.ResourceAttributes = map[string]string{
-		"service.alias":        pusherName,
-		"guardian.pusher":      pusherName,
-		"guardian.cluster":     cluster,
-		"guardian.provider":    "kubernetes",
-		"guardian.shard.index": fmt.Sprintf("%d", shardIndex),
-		"guardian.shard.count": fmt.Sprintf("%d", shardCount),
+		"service.alias":          pusherName,
+		"guardian.asset.type":    "Compute",
+		"guardian.identity.kind": "platform",
+		"guardian.pusher":        pusherName,
+		"guardian.cluster":       cluster,
+		"guardian.provider":      "kubernetes",
+		"guardian.shard.index":   fmt.Sprintf("%d", shardIndex),
+		"guardian.shard.count":   fmt.Sprintf("%d", shardCount),
 	}
 	telemetryHandle, telemetryErr := telemetry.Setup(context.Background(), telemetryCfg)
 	if telemetryErr != nil {

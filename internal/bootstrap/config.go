@@ -203,7 +203,7 @@ func DefaultConfig() Config {
 			OTel: StorageOTel{
 				Endpoint:       "",
 				Insecure:       "true",
-				ServiceName:    "monofs-server",
+				ServiceName:    "monofs.monofs-storage.monofs-server",
 				MetricInterval: "30s",
 			},
 			Router: StorageRouter{

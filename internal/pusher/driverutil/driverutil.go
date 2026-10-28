@@ -127,13 +127,14 @@ func ResourceName(prefix string, target targetdomain.Placement, partition, inten
 
 func Labels(provider string, in registry.AssetInput, hash string) map[string]string {
 	labels := map[string]string{
-		"guardian.managed":   "true",
-		"guardian.provider":  provider,
-		"guardian.partition": in.PartitionName,
-		"guardian.intent":    in.IntentName,
-		"guardian.asset":     in.Asset.Name,
-		"guardian.type":      in.Asset.Type,
-		"guardian.hash":      limitLabelValue(hash),
+		"guardian.managed":       "true",
+		"guardian.provider":      provider,
+		"guardian.partition":     in.PartitionName,
+		"guardian.intent":        in.IntentName,
+		"guardian.asset":         in.Asset.Name,
+		"guardian.asset.type":    in.Asset.Type,
+		"guardian.identity.kind": "managed",
+		"guardian.hash":          limitLabelValue(hash),
 	}
 	// Empty values are invalid AWS tag values; omit them instead of sending
 	// `guardian.cluster=` (CloudFormation rejects empty tag values).
@@ -451,6 +452,8 @@ func ApplyOtelEnvWithServiceName(env map[string]string, in registry.AssetInput, 
 	setGenerated("guardian.partition", in.PartitionName)
 	setGenerated("guardian.intent", in.IntentName)
 	setGenerated("guardian.asset", in.Asset.Name)
+	setGenerated("guardian.asset.type", string(in.Asset.Type))
+	setGenerated("guardian.identity.kind", "managed")
 	setGenerated("guardian.pusher", in.PusherName)
 	setGenerated("guardian.provider", provider)
 	if strings.EqualFold(provider, "kubernetes") || strings.EqualFold(provider, "docker") {
@@ -458,6 +461,9 @@ func ApplyOtelEnvWithServiceName(env map[string]string, in registry.AssetInput, 
 	}
 	aliasKeys := make([]string, 0, len(env))
 	for key := range env {
+		if strings.EqualFold(key, "OTEL_SERVICE_NAME") {
+			continue
+		}
 		if strings.HasSuffix(strings.ToUpper(key), "_OTEL_SERVICE_NAME") {
 			aliasKeys = append(aliasKeys, key)
 		}
@@ -492,8 +498,11 @@ func ApplyOtelEnvWithServiceName(env map[string]string, in registry.AssetInput, 
 // ApplyLBOtelEnv gives load-balancer workloads the standard OTEL_* variables
 // used by the otelc auto-export path. Without these, otelc falls back to
 // https://localhost:4318 and logs export failures inside the pod.
-// Explicitly configured values win.
-func ApplyLBOtelEnv(env map[string]string, serviceName string) map[string]string {
+// The load balancer uses the same canonical identity contract as every other
+// managed Compute asset; LB_OTEL_SERVICE_NAME is kept as the compatibility
+// knob read by the lb telemetry package.
+// Explicitly configured endpoint values win; identity does not.
+func ApplyLBOtelEnv(env map[string]string, in registry.AssetInput) map[string]string {
 	if env == nil {
 		env = map[string]string{}
 	}
@@ -503,6 +512,38 @@ func ApplyLBOtelEnv(env map[string]string, serviceName string) map[string]string
 		}
 		env[key] = value
 	}
+	identity := CanonicalServiceIdentity(in.PartitionName, in.IntentName, in.Asset.Name)
+	explicitOTELServiceName := strings.TrimSpace(env["OTEL_SERVICE_NAME"])
+	explicitLBServiceName := strings.TrimSpace(env["LB_OTEL_SERVICE_NAME"])
+	attrs := parseOtelResourceAttrs(env["OTEL_RESOURCE_ATTRIBUTES"])
+	if identity.Name != "" {
+		env["OTEL_SERVICE_NAME"] = identity.Name
+		attrs["service.name"] = identity.Name
+		env["LB_OTEL_SERVICE_NAME"] = identity.Name
+	}
+	setGenerated := func(key, value string) {
+		if _, exists := attrs[key]; exists || strings.TrimSpace(value) == "" {
+			return
+		}
+		attrs[key] = value
+	}
+	setGenerated("service.namespace", in.PartitionName)
+	setGenerated("guardian.partition", in.PartitionName)
+	setGenerated("guardian.intent", in.IntentName)
+	setGenerated("guardian.asset", in.Asset.Name)
+	setGenerated("guardian.asset.type", string(in.Asset.Type))
+	setGenerated("guardian.identity.kind", "managed")
+	setGenerated("guardian.pusher", in.PusherName)
+	setGenerated("guardian.provider", "kubernetes")
+	setGenerated("guardian.cluster", strings.TrimSpace(in.Target.Cluster))
+	setGenerated("k8s.cluster.name", strings.TrimSpace(in.Target.Cluster))
+	if explicitOTELServiceName != "" && explicitOTELServiceName != identity.Name {
+		setGenerated("service.alias", explicitOTELServiceName)
+	}
+	if explicitLBServiceName != "" && explicitLBServiceName != identity.Name {
+		setGenerated("service.alias", explicitLBServiceName)
+	}
+	env["OTEL_RESOURCE_ATTRIBUTES"] = formatOtelResourceAttrs(attrs)
 	endpoint := strings.TrimSpace(os.Getenv("GUARDIAN_OTEL_ENDPOINT"))
 	traceEndpoint := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"))
 	if traceEndpoint == "" && endpoint != "" {
@@ -528,7 +569,6 @@ func ApplyLBOtelEnv(env map[string]string, serviceName string) map[string]string
 	}
 	set("LB_OTEL_ENDPOINT", endpoint)
 	set("LB_OTEL_METRIC_INTERVAL", "15s")
-	set("LB_OTEL_SERVICE_NAME", serviceName)
 	set("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", traceEndpoint)
 	set("OTEL_METRICS_EXPORTER", "none")
 	set("OTEL_LOGS_EXPORTER", "none")
@@ -540,10 +580,13 @@ func ApplyLBOtelEnv(env map[string]string, serviceName string) map[string]string
 // the targeting Observability asset specifies one.
 func ApplyObservabilityEnv(env map[string]string, in registry.AssetInput, provider, defaultEndpoint string) map[string]string {
 	settings := ObservabilityForAsset(in)
+	// Identity is independent of whether an Observability asset exists. Every
+	// managed workload gets a canonical service.name; the Observability asset
+	// only controls the endpoint and protocol.
+	env = ApplyOtelEnvWithServiceName(env, in, provider, settings.ServiceName)
 	if !settings.Enabled {
 		return env
 	}
-	env = ApplyOtelEnvWithServiceName(env, in, provider, settings.ServiceName)
 	endpoint := strings.TrimSpace(settings.Endpoint)
 	if endpoint == "" {
 		endpoint = strings.TrimSpace(defaultEndpoint)

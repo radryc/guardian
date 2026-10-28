@@ -673,7 +673,7 @@ func (d *LoadBalancerDriver) Apply(ctx context.Context, in registry.AssetInput) 
 		Container:         container,
 	}
 	applyWorkloadPayload(&deployment, payload)
-	deployment.Container.Env = driverutil.ApplyLBOtelEnv(deployment.Container.Env, in.Asset.Name)
+	deployment.Container.Env = driverutil.ApplyLBOtelEnv(deployment.Container.Env, in)
 	markDeploymentReady(&deployment)
 	if err := d.backend.UpsertDeployment(deployment); err != nil {
 		return registry.AssetResult{}, err

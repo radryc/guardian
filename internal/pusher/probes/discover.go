@@ -307,6 +307,7 @@ func (r *Runner) explicitProbe(ctx context.Context, intent *intentView, state *s
 		Partition:    intent.Partition,
 		Intent:       intent.Name,
 		Asset:        assetName,
+		AssetType:    assetTypeFor(intent, assetName),
 		Mode:         "explicit",
 		Type:         probeType,
 		URL:          spec.URL,
@@ -359,6 +360,7 @@ func (r *Runner) autoprobeTargets(intent *intentView, asset, output, value strin
 		Partition: intent.Partition,
 		Intent:    intent.Name,
 		Asset:     asset,
+		AssetType: assetTypeFor(intent, asset),
 		Mode:      "auto",
 		Type:      probeType,
 		Paths:     append([]string(nil), policy.HTTPPaths...),
@@ -396,6 +398,18 @@ func (r *Runner) autoprobeTargets(intent *intentView, asset, output, value strin
 	}
 	base.ID = ProbeID(r.cfg.Pusher, intent.Partition, intent.Name, asset, base.Name, base.Type, targetValue(base))
 	return []Target{base}
+}
+
+func assetTypeFor(intent *intentView, asset string) string {
+	if intent == nil {
+		return ""
+	}
+	for _, candidate := range intent.Spec.Assets {
+		if candidate.Name == asset {
+			return string(candidate.Type)
+		}
+	}
+	return ""
 }
 
 func resolveProbeAddress(spec *assetdefs.ProbeSpec, outputs map[string]string, asset string) string {

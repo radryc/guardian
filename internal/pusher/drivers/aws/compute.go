@@ -112,12 +112,14 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
-	// Observability is opt-in per compute asset. Explicit workload env is
-	// preserved either way; Guardian only fills identity/endpoint values when a
-	// targeting Observability asset exists.
+	// Identity is always injected for managed compute. An Observability asset
+	// only controls the endpoint/protocol, not whether the workload is
+	// identifiable.
 	settings := driverutil.ObservabilityForAsset(in)
-	if settings.Enabled && !driverutil.AutoInstrumentDisabled(spec.Labels) {
+	if !driverutil.AutoInstrumentDisabled(spec.Labels) {
 		env = driverutil.ApplyOtelEnvWithServiceName(env, in, "aws", settings.ServiceName)
+	}
+	if settings.Enabled && !driverutil.AutoInstrumentDisabled(spec.Labels) {
 		mode := strings.ToLower(strings.TrimSpace(settings.Mode))
 		if mode == "" {
 			mode = "sidecar"

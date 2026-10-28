@@ -18,6 +18,9 @@ type IdentityRecord struct {
 	Partition string `json:"partition"`
 	Intent    string `json:"intent"`
 	Asset     string `json:"asset"`
+	AssetType string `json:"asset_type,omitempty"`
+	Kind      string `json:"kind"`
+	Runtime   bool   `json:"runtime"`
 	Pusher    string `json:"pusher,omitempty"`
 	Cluster   string `json:"cluster,omitempty"`
 	Truncated bool   `json:"truncated"`
@@ -78,12 +81,21 @@ func Identities(ctx context.Context, store guardianapi.ReadStore) ([]IdentityRec
 				if identity.FullName == "" {
 					continue
 				}
+				assetType := string(asset.Type)
+				runtime := assetType == "Compute" || assetType == "LoadBalancer"
+				kind := "asset"
+				if runtime {
+					kind = "runtime"
+				}
 				records = append(records, IdentityRecord{
 					Service:   identity.Name,
 					FullName:  identity.FullName,
 					Partition: partition,
 					Intent:    intentName,
 					Asset:     asset.Name,
+					AssetType: assetType,
+					Kind:      kind,
+					Runtime:   runtime,
 					Pusher:    pusher,
 					Cluster:   cluster,
 					Truncated: identity.Truncated,

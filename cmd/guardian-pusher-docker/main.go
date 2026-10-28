@@ -67,10 +67,12 @@ func main() {
 	}
 	telemetryCfg.ServiceName = "guardian.pusher." + pusherName
 	telemetryCfg.ResourceAttributes = map[string]string{
-		"service.alias":     pusherName,
-		"guardian.pusher":   pusherName,
-		"guardian.cluster":  cluster,
-		"guardian.provider": "docker",
+		"service.alias":          pusherName,
+		"guardian.asset.type":    "Compute",
+		"guardian.identity.kind": "platform",
+		"guardian.pusher":        pusherName,
+		"guardian.cluster":       cluster,
+		"guardian.provider":      "docker",
 	}
 	telemetryHandle, telemetryErr := telemetry.Setup(context.Background(), telemetryCfg)
 	if telemetryErr != nil {

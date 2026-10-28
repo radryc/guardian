@@ -29,11 +29,14 @@ func TestRecordAssetObservationsReplacesHistoricStatus(t *testing.T) {
 			},
 		},
 	}
-	recordAssetObservations(result)
+	task := &taskdomain.Task{
+		Assets: []taskdomain.AbstractAsset{{Type: "Compute", Name: "query"}},
+	}
+	recordAssetObservations(result, task)
 	result.AssetObservations["query"].Health.Status = taskdomain.HealthHealthy
-	recordAssetObservations(result)
+	recordAssetObservations(result, task)
 
-	statuses := observationStatuses(t, "doctor", "query", "query")
+	statuses := observationStatuses(t, "doctor", "query", "query", "Compute")
 	if got := statuses["Healthy"]; got != 1 {
 		t.Fatalf("Healthy series = %d, want 1 (all statuses: %#v)", got, statuses)
 	}
@@ -42,7 +45,7 @@ func TestRecordAssetObservationsReplacesHistoricStatus(t *testing.T) {
 	}
 }
 
-func observationStatuses(t *testing.T, partition, intent, asset string) map[string]int {
+func observationStatuses(t *testing.T, partition, intent, asset, assetType string) map[string]int {
 	t.Helper()
 	metricFamilies, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
@@ -58,7 +61,10 @@ func observationStatuses(t *testing.T, partition, intent, asset string) map[stri
 			for _, label := range metric.GetLabel() {
 				labels[label.GetName()] = label.GetValue()
 			}
-			if labels["guardian_partition"] != partition || labels["guardian_intent"] != intent || labels["guardian_asset"] != asset {
+			if labels["guardian_target_partition"] != partition ||
+				labels["guardian_target_intent"] != intent ||
+				labels["guardian_target_asset"] != asset ||
+				labels["guardian_asset_type"] != assetType {
 				continue
 			}
 			statuses[labels["status"]]++

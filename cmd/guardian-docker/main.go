@@ -204,7 +204,7 @@ func buildAssetGroups(snapshot *dockerdriver.GuardianSnapshot, partitionFilter s
 		if partitionFilter != "" && p != partitionFilter {
 			continue
 		}
-		assetType := c.Labels["guardian.type"]
+		assetType := c.Labels["guardian.asset.type"]
 		if assetType == "" {
 			assetType = "Compute"
 		}

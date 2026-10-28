@@ -185,7 +185,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		state.Health = statedomain.CloneHealthObservation(result.Health)
 		state.ApplyReadiness = statedomain.CloneApplyReadiness(result.ApplyReadiness)
 		state.AssetObservations = statedomain.CloneAssetObservationMap(result.AssetObservations)
-		recordAssetObservations(result)
+		recordAssetObservations(result, taskFile)
 		state.LastError = nil
 		driftSettled := result.Drift == nil || result.Drift.Status == "InSync" || len(result.Drift.ChangedAssets) == 0
 		if state.IntentType == intentdomain.TypeObserved {
@@ -339,7 +339,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		state.Health = statedomain.CloneHealthObservation(result.Health)
 		state.ApplyReadiness = statedomain.CloneApplyReadiness(result.ApplyReadiness)
 		state.AssetObservations = statedomain.CloneAssetObservationMap(result.AssetObservations)
-		recordAssetObservations(result)
+		recordAssetObservations(result, taskFile)
 		state.Outputs = copyStringMap(result.Outputs)
 		if !applyResultSettled(result) {
 			state.LastError = nil
@@ -787,14 +787,14 @@ func resultAttributes(result *taskdomain.TaskResult) []attribute.KeyValue {
 		return nil
 	}
 	attrs := []attribute.KeyValue{
-		attribute.String("guardian.partition", result.Partition),
-		attribute.String("guardian.intent", result.Intent),
+		attribute.String("guardian.target.partition", result.Partition),
+		attribute.String("guardian.target.intent", result.Intent),
 		attribute.String("guardian.operation", string(result.Op)),
 		attribute.String("guardian.task.id", result.TaskID),
 		attribute.String("guardian.status", string(result.Status)),
 	}
 	if result.Pusher != "" {
-		attrs = append(attrs, attribute.String("guardian.pusher", result.Pusher))
+		attrs = append(attrs, attribute.String("guardian.target.pusher", result.Pusher))
 	}
 	return attrs
 }
