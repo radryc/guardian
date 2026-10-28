@@ -461,8 +461,8 @@ func TestRuntimeExecuteTaskTraceIncludesDebugJSON(t *testing.T) {
 	if got := attrs["guardian.result.status"].AsString(); got != string(taskdomain.ResultSucceeded) {
 		t.Fatalf("guardian.result.status = %q, want %q", got, taskdomain.ResultSucceeded)
 	}
-	if got := attrs["guardian.asset.count"].AsInt64(); got != 1 {
-		t.Fatalf("guardian.asset.count = %d, want 1", got)
+	if got := attrs["guardian.target.asset.count"].AsInt64(); got != 1 {
+		t.Fatalf("guardian.target.asset.count = %d, want 1", got)
 	}
 
 	inputJSON := findEventAttr(t, span.Events(), "guardian.task.input", "guardian.task.input_json")

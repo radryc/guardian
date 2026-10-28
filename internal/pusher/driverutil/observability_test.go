@@ -34,17 +34,30 @@ func TestCanonicalServiceIdentityTruncatesDeterministically(t *testing.T) {
 	}
 }
 
-func TestApplyLBOtelEnvUsesGuardiandCollector(t *testing.T) {
+func lbAssetInput(name string) registry.AssetInput {
+	return registry.AssetInput{
+		PartitionName: "doctor",
+		IntentName:    "ingest",
+		PusherName:    "k8s-main",
+		Asset:         taskdomain.AbstractAsset{Type: "LoadBalancer", Name: name},
+		Target:        targetdomain.Placement{Cluster: "main"},
+	}
+}
+
+func TestApplyLBOtelEnvUsesCanonicalIdentity(t *testing.T) {
 	t.Setenv("GUARDIAN_OTEL_ENDPOINT", "collector.otel.svc.cluster.local:4317")
 	t.Setenv("GUARDIAN_OTEL_INSECURE", "true")
 	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
 
-	env := ApplyLBOtelEnv(nil, "ingest-edge")
+	env := ApplyLBOtelEnv(nil, lbAssetInput("ingest-edge"))
 	if got := env["LB_OTEL_ENDPOINT"]; got != "collector.otel.svc.cluster.local:4317" {
 		t.Fatalf("LB_OTEL_ENDPOINT = %q", got)
 	}
-	if got := env["LB_OTEL_SERVICE_NAME"]; got != "ingest-edge" {
+	if got := env["LB_OTEL_SERVICE_NAME"]; got != "doctor.ingest.ingest-edge" {
 		t.Fatalf("LB_OTEL_SERVICE_NAME = %q", got)
+	}
+	if got := env["OTEL_SERVICE_NAME"]; got != "doctor.ingest.ingest-edge" {
+		t.Fatalf("OTEL_SERVICE_NAME = %q", got)
 	}
 	if got := env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]; got != "http://collector.otel.svc.cluster.local:4318/v1/traces" {
 		t.Fatalf("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = %q", got)
@@ -62,7 +75,7 @@ func TestApplyLBOtelEnvPreservesExplicitValues(t *testing.T) {
 	env := ApplyLBOtelEnv(map[string]string{
 		"OTEL_METRICS_EXPORTER":              "otlp",
 		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://custom:4318/v1/traces",
-	}, "lb-edge")
+	}, lbAssetInput("lb-edge"))
 	if env["OTEL_METRICS_EXPORTER"] != "otlp" {
 		t.Fatalf("explicit metrics exporter overwritten: %#v", env)
 	}
@@ -71,7 +84,7 @@ func TestApplyLBOtelEnvPreservesExplicitValues(t *testing.T) {
 	}
 }
 
-func TestApplyObservabilityEnvRequiresTargetingAsset(t *testing.T) {
+func TestApplyObservabilityEnvInjectsIdentityWithoutTargetingAsset(t *testing.T) {
 	in := registry.AssetInput{
 		PartitionName: "doctor",
 		IntentName:    "query",
@@ -80,8 +93,18 @@ func TestApplyObservabilityEnvRequiresTargetingAsset(t *testing.T) {
 		Target:        targetdomain.Placement{Cluster: "main"},
 	}
 	env := ApplyObservabilityEnv(map[string]string{"EXISTING": "1"}, in, "kubernetes", "otel-collector.otel.svc.cluster.local:4317")
-	if _, ok := env["OTEL_SERVICE_NAME"]; ok {
-		t.Fatalf("observability env injected without a targeting asset: %#v", env)
+	if got := env["OTEL_SERVICE_NAME"]; got != "doctor.query.query" {
+		t.Fatalf("OTEL_SERVICE_NAME = %q, want doctor.query.query", got)
+	}
+	attrs := parseOtelResourceAttrs(env["OTEL_RESOURCE_ATTRIBUTES"])
+	if attrs["guardian.asset.type"] != "Compute" {
+		t.Fatalf("guardian.asset.type = %q, want Compute", attrs["guardian.asset.type"])
+	}
+	if attrs["guardian.identity.kind"] != "managed" {
+		t.Fatalf("guardian.identity.kind = %q, want managed", attrs["guardian.identity.kind"])
+	}
+	if _, ok := env["OTEL_EXPORTER_OTLP_ENDPOINT"]; ok {
+		t.Fatalf("endpoint injected without a targeting asset: %#v", env)
 	}
 	if env["EXISTING"] != "1" {
 		t.Fatalf("explicit env was not preserved: %#v", env)

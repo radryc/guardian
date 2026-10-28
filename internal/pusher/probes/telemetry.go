@@ -155,14 +155,22 @@ func otelResource(result Result, cfg Config) map[string]any {
 	if provider == "" {
 		provider = "local"
 	}
+	identityKind := "managed"
+	if result.AssetType == "" {
+		identityKind = "external"
+	}
 	attrs := []any{
 		attrString("service.name", result.Service),
 		attrString("service.namespace", result.Partition),
 		attrString("guardian.partition", result.Partition),
 		attrString("guardian.intent", result.Intent),
 		attrString("guardian.asset", result.Asset),
+		attrString("guardian.identity.kind", identityKind),
 		attrString("guardian.pusher", result.Pusher),
 		attrString("guardian.provider", provider),
+	}
+	if result.AssetType != "" {
+		attrs = append(attrs, attrString("guardian.asset.type", result.AssetType))
 	}
 	if result.Cluster != "" {
 		attrs = append(attrs, attrString("guardian.cluster", result.Cluster))

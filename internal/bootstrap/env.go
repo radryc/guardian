@@ -112,7 +112,7 @@ func ComputeEnv(cfg *Config) (Env, error) {
 
 	env["GUARDIAN_OTEL_ENDPOINT"] = cfg.Storage.OTel.Endpoint
 	env["GUARDIAN_OTEL_INSECURE"] = cfg.Storage.OTel.Insecure
-	env["GUARDIAN_OTEL_SERVICE_NAME"] = "guardian"
+	env["GUARDIAN_OTEL_SERVICE_NAME"] = "guardian-configs.guardian.guardiand"
 	env["GUARDIAN_OTEL_METRIC_INTERVAL"] = cfg.Storage.OTel.MetricInterval
 
 	// --- Cluster ---

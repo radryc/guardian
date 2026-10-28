@@ -17,7 +17,7 @@ set -eu
 : "${GUARDIAN_PUSHERS:=local:/.queues/local,docker-main:/.queues/docker-main,k8s-main:/.queues/k8s-main}"
 : "${GUARDIAN_OTEL_ENDPOINT:=localhost:14317}"
 : "${GUARDIAN_OTEL_INSECURE:=true}"
-: "${GUARDIAN_OTEL_SERVICE_NAME:=guardian}"
+: "${GUARDIAN_OTEL_SERVICE_NAME:=guardian-configs.guardian.guardiand}"
 : "${GUARDIAN_OTEL_METRIC_INTERVAL:=15s}"
 
 config_path="/tmp/guardian-config.yaml"

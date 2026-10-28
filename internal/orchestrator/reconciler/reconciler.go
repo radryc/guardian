@@ -242,7 +242,7 @@ func readFileWithStat(ctx context.Context, store guardianapi.Store, logicalPath 
 }
 
 func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName string, force bool, forceApply bool) error {
-	attrs := []attribute.KeyValue{attribute.String("guardian.partition", partitionName)}
+	attrs := []attribute.KeyValue{attribute.String("guardian.target.partition", partitionName)}
 	count, failures, duration := reconcileInstruments()
 	if count != nil {
 		count.Add(ctx, 1, metricapi.WithAttributes(attrs...))

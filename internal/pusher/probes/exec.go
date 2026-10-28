@@ -23,6 +23,7 @@ func (r *Runner) execute(ctx context.Context, target Target) Result {
 		Partition: target.Partition,
 		Intent:    target.Intent,
 		Asset:     target.Asset,
+		AssetType: target.AssetType,
 		Name:      target.Name,
 		Type:      target.Type,
 		Mode:      target.Mode,

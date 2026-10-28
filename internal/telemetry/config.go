@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	defaultServiceName    = "guardian"
+	defaultServiceName    = "guardian-configs.guardian.guardiand"
 	defaultMetricInterval = 15 * time.Second
 )
 

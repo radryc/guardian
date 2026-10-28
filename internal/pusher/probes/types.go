@@ -51,6 +51,7 @@ type Target struct {
 	Partition    string
 	Intent       string
 	Asset        string
+	AssetType    string
 	Mode         string
 	Type         string
 	URL          string
@@ -79,6 +80,7 @@ type Result struct {
 	Partition           string            `json:"partition"`
 	Intent              string            `json:"intent"`
 	Asset               string            `json:"asset"`
+	AssetType           string            `json:"assetType,omitempty"`
 	Name                string            `json:"name"`
 	Type                string            `json:"type"`
 	Mode                string            `json:"mode"`

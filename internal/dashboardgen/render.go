@@ -69,7 +69,7 @@ func Render(info Info) ([]byte, error) {
 	logGroupPattern := ".*" + regexp.QuoteMeta(logGroup)
 	awsLogVolume := fmt.Sprintf(`sum(count_over_time({source="%s", aws_log_group=~"%s"}[$__rate_interval]))`, escape(source), escape(logGroupPattern))
 	logQuery := fmt.Sprintf(`{source="%s", aws_log_group=~"%s"}`, escape(source), escape(logGroupPattern))
-	traceSearch := fmt.Sprintf(`{ source = "%s" && resource.service.name =~ "%s.*" }`, escape(source), escape(partition))
+	traceSearch := fmt.Sprintf(`{ source = "%s" && resource.guardian.partition = "%s" }`, escape(source), escape(partition))
 
 	panels := []any{
 		textPanel(1, "Overview", fmt.Sprintf(
