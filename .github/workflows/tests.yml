@@ -38,6 +38,8 @@ jobs:
         with:
           go-version-file: guardian/go.mod
           cache-dependency-path: guardian/go.sum
+      # internal/bootstrap tests render templates from the private stratatools
+      # repo (ST_ROOT), so they cannot run against a plain public checkout.
       - name: Run tests
         working-directory: guardian
-        run: go test ./...
+        run: go test $(go list ./... | grep -v '/internal/bootstrap$')
