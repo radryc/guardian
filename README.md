@@ -43,7 +43,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the full architecture.
 
 ## Prerequisites
 
-- Go 1.26.4 (see `go.mod`).
+- Go 1.26.10 (see `go.mod`).
 - Sibling checkouts because of replace directives:
 
   ```text
