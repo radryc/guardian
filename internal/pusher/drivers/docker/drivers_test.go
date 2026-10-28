@@ -736,6 +736,37 @@ func TestDockerLoadBalancerDiffDetectsStoppedContainer(t *testing.T) {
 	}
 }
 
+func TestConfigRawPayloadAppliesToDockerConfig(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	backend := NewBackend()
+	writeFile(t, ctx, store, "/partitions/demo/payloads/app.yaml", []byte("port: 8080\n"))
+
+	input := registry.AssetInput{
+		PartitionName: "demo",
+		IntentName:    "stack",
+		Target:        targetdomain.Placement{Cluster: "main"},
+		Asset: taskdomain.AbstractAsset{
+			Type:       "Config",
+			Name:       "app-config",
+			Payload:    map[string]string{"file": "/partitions/demo/payloads/app.yaml"},
+			Properties: map[string]any{"format": "yaml"},
+		},
+		Store: store,
+	}
+	driver := &ConfigDriver{baseDriver{backend: backend, resolver: secrets.NewStoreResolver(store)}}
+	if _, err := driver.Apply(ctx, input); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	config, ok, err := backend.GetConfig(configName(input, "app-config"))
+	if err != nil || !ok {
+		t.Fatalf("get config: ok=%v err=%v", ok, err)
+	}
+	if got, want := config.Files["app.yaml"], "port: 8080\n"; got != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+}
+
 func writeFile(t *testing.T, ctx context.Context, store *memory.Store, path string, content []byte) {
 	t.Helper()
 	if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{

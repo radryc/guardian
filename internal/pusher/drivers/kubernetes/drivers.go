@@ -175,21 +175,18 @@ func (d *ConfigDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	payload, err := loadConfigPayload(ctx, in)
+	files, err := driverutil.ResolveConfigFiles(ctx, in, []string{"k8s", "kubernetes"}, spec)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	hash := hashWithPayload(driverutil.AssetHash(in), payload)
+	hash := hashWithPayload(driverutil.AssetHash(in), files.HashStruct())
 	name := configMapName(in, in.Asset.Name)
-	data := driverutil.ConfigFiles(spec)
-	if len(payload.Data) > 0 {
-		data = cloneStringMap(payload.Data)
-	}
+	data, binaryData := splitConfigFileSet(files)
 	cm, ok, err := d.backend.GetConfigMap(namespace(in), name)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	if !ok || cm.Hash != hash || !equalStringMaps(cm.Data, data) {
+	if !ok || cm.Hash != hash || !equalStringMaps(cm.Data, data) || !equalStringMaps(cm.BinaryData, binaryData) {
 		return changedDrift(in.Asset.Name, "kubernetes config differs"), nil
 	}
 	return inSyncDrift(in.Asset.Name, "kubernetes config is in sync"), nil
@@ -203,22 +200,20 @@ func (d *ConfigDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
-	payload, err := loadConfigPayload(ctx, in)
+	files, err := driverutil.ResolveConfigFiles(ctx, in, []string{"k8s", "kubernetes"}, spec)
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
-	hash := hashWithPayload(driverutil.AssetHash(in), payload)
+	hash := hashWithPayload(driverutil.AssetHash(in), files.HashStruct())
 	name := configMapName(in, in.Asset.Name)
-	data := driverutil.ConfigFiles(spec)
-	if len(payload.Data) > 0 {
-		data = cloneStringMap(payload.Data)
-	}
+	data, binaryData := splitConfigFileSet(files)
 	if err := d.backend.UpsertConfigMap(ConfigMap{
-		Namespace: namespace(in),
-		Name:      name,
-		Hash:      hash,
-		Labels:    driverutil.Labels("kubernetes", in, hash),
-		Data:      data,
+		Namespace:  namespace(in),
+		Name:       name,
+		Hash:       hash,
+		Labels:     driverutil.Labels("kubernetes", in, hash),
+		Data:       data,
+		BinaryData: binaryData,
 	}); err != nil {
 		return registry.AssetResult{}, err
 	}
@@ -230,6 +225,13 @@ func (d *ConfigDriver) Destroy(ctx context.Context, in registry.AssetInput) erro
 		return err
 	}
 	return d.backend.DeleteConfigMap(namespace(in), configMapName(in, in.Asset.Name))
+}
+
+func splitConfigFileSet(files driverutil.ConfigFileSet) (map[string]string, map[string]string) {
+	if files.Binary {
+		return nil, cloneStringMap(files.Files)
+	}
+	return cloneStringMap(files.Files), nil
 }
 
 func (d *SecretDriver) Check(ctx context.Context, in registry.AssetInput) error {
@@ -965,11 +967,15 @@ func (d *ObservabilityDriver) Apply(ctx context.Context, in registry.AssetInput)
 		InlineFiles:  observabilityInlineFiles(spec),
 	}
 	if spec.Config != "" {
+		subPath, err := singleConfigFileName(ctx, in, spec.Config, []string{"k8s", "kubernetes"})
+		if err != nil {
+			return registry.AssetResult{}, err
+		}
 		container.VolumeMounts = append(container.VolumeMounts, VolumeMount{
 			SourceKind: "ConfigMap",
 			SourceName: configMapName(in, spec.Config),
 			MountPath:  "/etc/otelcol/config.yaml",
-			SubPath:    firstConfigPath(in, spec.Config),
+			SubPath:    subPath,
 			ReadOnly:   true,
 		})
 	} else if len(container.InlineFiles) > 0 {
@@ -1588,7 +1594,11 @@ func buildComputeContainer(ctx context.Context, in registry.AssetInput, resolver
 			MountPath:  mount.Path,
 			ReadOnly:   mount.ReadOnly,
 		}
-		if fileName := firstConfigPath(in, mount.Config); fileName != "" && configMountUsesSubPath(mount.Path, fileName) {
+		fileName, explicit, err := configMountFile(ctx, in, mount)
+		if err != nil {
+			return Container{}, err
+		}
+		if fileName != "" && (explicit || configMountUsesSubPath(mount.Path, fileName)) {
 			cm.SubPath = fileName
 		}
 		container.VolumeMounts = append(container.VolumeMounts, cm)
@@ -1829,16 +1839,42 @@ func observabilityInlineFiles(spec *assetdefs.ObservabilitySpec) map[string]stri
 	}
 }
 
-func firstConfigPath(in registry.AssetInput, assetName string) string {
-	_, typed, err := driverutil.DecodeNamedAsset(in, assetName)
+func configMountFile(ctx context.Context, in registry.AssetInput, mount assetdefs.ConfigMountSpec) (string, bool, error) {
+	if file := strings.TrimSpace(mount.File); file != "" {
+		files, _, err := driverutil.ResolveNamedConfigFiles(ctx, in, mount.Config, []string{"k8s", "kubernetes"})
+		if err != nil {
+			return "", false, err
+		}
+		if _, ok := files.Files[file]; !ok {
+			return "", false, fmt.Errorf("configMounts file %q not found in Config asset %q", file, mount.Config)
+		}
+		return file, true, nil
+	}
+	files, spec, err := driverutil.ResolveNamedConfigFiles(ctx, in, mount.Config, []string{"k8s", "kubernetes"})
 	if err != nil {
-		return ""
+		return "", false, err
 	}
-	file, _, ok := driverutil.SingleConfigFile(typed.(*assetdefs.ConfigSpec))
-	if !ok {
-		return ""
+	if fileName, ok := driverutil.SingleConfigFileName(files.Files); ok && configMountUsesSubPath(mount.Path, fileName) {
+		return fileName, false, nil
 	}
-	return file
+	if fileName, _, ok := driverutil.SingleConfigFile(spec); ok && configMountUsesSubPath(mount.Path, fileName) {
+		return fileName, false, nil
+	}
+	return "", false, nil
+}
+
+func singleConfigFileName(ctx context.Context, in registry.AssetInput, assetName string, providerKeys []string) (string, error) {
+	files, spec, err := driverutil.ResolveNamedConfigFiles(ctx, in, assetName, providerKeys)
+	if err != nil {
+		return "", err
+	}
+	if fileName, ok := driverutil.SingleConfigFileName(files.Files); ok {
+		return fileName, nil
+	}
+	if fileName, _, ok := driverutil.SingleConfigFile(spec); ok {
+		return fileName, nil
+	}
+	return "", nil
 }
 
 func configMountUsesSubPath(mountPath, fileName string) bool {

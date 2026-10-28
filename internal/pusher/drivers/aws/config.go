@@ -2,13 +2,16 @@ package awsdriver
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"sort"
 	"strings"
 
 	assetdefs "github.com/radryc/guardian/internal/domain/assets"
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
 	"github.com/radryc/guardian/internal/pusher/driverutil"
 	"github.com/radryc/guardian/internal/pusher/registry"
+	"github.com/radryc/guardian/internal/versioning/digest"
 )
 
 type ConfigDriver struct{ baseDriver }
@@ -43,9 +46,12 @@ func (d *ConfigDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-
-	hash := driverutil.CompositeHash(in)
-	data := driverutil.ConfigFiles(spec)
+	files, err := driverutil.ResolveConfigFiles(ctx, in, []string{"aws"}, spec)
+	if err != nil {
+		return taskdomain.DriftReport{}, err
+	}
+	hash := configContentHash(in, files)
+	data := configFileValue(files)
 
 	name := configParameterName(spec, in)
 	param, ok, err := d.backend.GetParameter(ctx, name)
@@ -61,7 +67,7 @@ func (d *ConfigDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 	if param.Hash != "" && param.Hash != hash {
 		return changedDrift(in.Asset.Name, "SSM parameter differs"), nil
 	}
-	if param.Value != contentAsString(data) {
+	if param.Value != data {
 		return changedDrift(in.Asset.Name, "SSM parameter differs"), nil
 	}
 	return inSyncDrift(in.Asset.Name, "SSM parameter is in sync"), nil
@@ -75,17 +81,19 @@ func (d *ConfigDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
+	files, err := driverutil.ResolveConfigFiles(ctx, in, []string{"aws"}, spec)
+	if err != nil {
+		return registry.AssetResult{}, err
+	}
 
-	hash := driverutil.CompositeHash(in)
-	data := driverutil.ConfigFiles(spec)
-	value := contentAsString(data)
+	hash := configContentHash(in, files)
+	value := configFileValue(files)
 	paramType := "String"
-	isSensitive := containsSensitiveKeys(data)
-
-	name := configParameterName(spec, in)
-	if isSensitive {
+	if !files.Binary && containsSensitiveKeys(files.Files) {
 		paramType = "SecureString"
 	}
+
+	name := configParameterName(spec, in)
 
 	tags := awsTags(in, hash)
 	if err := d.backend.UpsertParameter(ctx, Parameter{
@@ -124,15 +132,40 @@ func decodeConfig(in registry.AssetInput) (*assetdefs.ConfigSpec, error) {
 	return spec, nil
 }
 
+func configContentHash(in registry.AssetInput, files driverutil.ConfigFileSet) string {
+	return digest.MustNormalizedHash(struct {
+		Base   string
+		Files  map[string]string
+		Binary bool
+	}{
+		Base:   driverutil.AssetHash(in),
+		Files:  files.HashContent(),
+		Binary: files.Binary,
+	})
+}
+
+func configFileValue(files driverutil.ConfigFileSet) string {
+	value := contentAsString(files.Files)
+	if files.Binary {
+		return base64.StdEncoding.EncodeToString([]byte(value))
+	}
+	return value
+}
+
 func contentAsString(data map[string]string) string {
 	if len(data) == 1 {
 		for _, v := range data {
 			return v
 		}
 	}
+	names := make([]string, 0, len(data))
+	for name := range data {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	result := ""
-	for k, v := range data {
-		result += k + ":\n" + v + "\n---\n"
+	for _, name := range names {
+		result += name + ":\n" + data[name] + "\n---\n"
 	}
 	return result
 }

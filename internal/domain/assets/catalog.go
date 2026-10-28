@@ -78,6 +78,7 @@ var catalogTemplates = map[string]CatalogTemplate{
 			CatalogHint{Path: "volumeMounts[].readOnly", Title: "Read-only volume", Description: "Mount the referenced volume as read-only."},
 			CatalogHint{Path: "configMounts[].config", Title: "Mounted config", Description: "Referenced Config asset name."},
 			CatalogHint{Path: "configMounts[].path", Title: "Config mount path", Description: "Absolute destination path for rendered config files."},
+			CatalogHint{Path: "configMounts[].file", Title: "Config file", Description: "Optional single filename from the Config asset to mount with subPath."},
 			CatalogHint{Path: "configMounts[].readOnly", Title: "Read-only config", Description: "Mount rendered config files as read-only."},
 			CatalogHint{Path: "hostBindMounts[].source", Title: "Host source path", Description: "Absolute host path on the pusher node."},
 			CatalogHint{Path: "hostBindMounts[].target", Title: "Host bind target", Description: "Destination path inside the workload."},
@@ -582,7 +583,7 @@ func volumeCatalogFields() []CatalogField {
 
 func configCatalogFields() []CatalogField {
 	return []CatalogField{
-		{Path: "format", Title: "Format", Control: "select", Options: []string{"text", "json", "yaml"}, Description: "Serialization format for generated config files."},
+		{Path: "format", Title: "Format", Control: "select", Options: []string{"text", "yaml", "json", "binary"}, Description: "Serialization format for generated config files. Binary properties are base64-encoded."},
 		{Path: "content", Title: "Inline content", Control: "textarea", Description: "Single inline config blob rendered as one file."},
 		{Path: "data", Title: "Data files JSON", Control: "json", Description: "Multiple named file contents keyed by filename."},
 	}
