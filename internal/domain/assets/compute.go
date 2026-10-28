@@ -26,6 +26,7 @@ type VolumeMountSpec struct {
 type ConfigMountSpec struct {
 	Config   string `json:"config" yaml:"config"`
 	Path     string `json:"path" yaml:"path"`
+	File     string `json:"file,omitempty" yaml:"file,omitempty"`
 	ReadOnly bool   `json:"readOnly,omitempty" yaml:"readOnly,omitempty"`
 }
 
@@ -161,6 +162,11 @@ func (computeDefinition) Validate(spec any, ctx ValidationContext) error {
 		}
 		if err := requireAbsolutePath(mount.Path, fmt.Sprintf("configMounts[%d].path", idx)); err != nil {
 			return err
+		}
+		if file := strings.TrimSpace(mount.File); file != "" {
+			if file != mount.File || strings.ContainsAny(file, `/\`) || file == "." || file == ".." {
+				return fmt.Errorf("configMounts[%d].file must be a base filename", idx)
+			}
 		}
 	}
 	for idx, mount := range typed.HostBindMounts {

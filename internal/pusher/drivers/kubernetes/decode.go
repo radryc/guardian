@@ -1,6 +1,7 @@
 package kubernetesdriver
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 )
@@ -15,7 +16,8 @@ func decodeConfigMap(namespace string, raw []byte) (ConfigMap, error) {
 			Labels      map[string]string `json:"labels"`
 			Annotations map[string]string `json:"annotations"`
 		} `json:"metadata"`
-		Data map[string]string `json:"data"`
+		Data       map[string]string `json:"data"`
+		BinaryData map[string]string `json:"binaryData"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return ConfigMap{}, fmt.Errorf("decode configmap: %w", err)
@@ -24,12 +26,21 @@ func decodeConfigMap(namespace string, raw []byte) (ConfigMap, error) {
 	if hash == "" {
 		hash = payload.Metadata.Labels["guardian.hash"]
 	}
+	binaryData := make(map[string]string, len(payload.BinaryData))
+	for name, encoded := range payload.BinaryData {
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return ConfigMap{}, fmt.Errorf("decode configmap binaryData[%s]: %w", name, err)
+		}
+		binaryData[name] = string(decoded)
+	}
 	return ConfigMap{
-		Namespace: namespace,
-		Name:      payload.Metadata.Name,
-		Hash:      hash,
-		Labels:    cloneStringMap(payload.Metadata.Labels),
-		Data:      cloneStringMap(payload.Data),
+		Namespace:  namespace,
+		Name:       payload.Metadata.Name,
+		Hash:       hash,
+		Labels:     cloneStringMap(payload.Metadata.Labels),
+		Data:       cloneStringMap(payload.Data),
+		BinaryData: binaryData,
 	}, nil
 }
 

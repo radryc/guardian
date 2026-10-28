@@ -14,10 +14,6 @@ type volumePayload struct {
 	Ephemeral  *bool  `yaml:"ephemeral,omitempty"`
 }
 
-type configPayload struct {
-	Files map[string]string `yaml:"files,omitempty"`
-}
-
 type containerPayload struct {
 	Image          string            `yaml:"image,omitempty"`
 	Aliases        []string          `yaml:"aliases,omitempty"`
@@ -35,12 +31,6 @@ type containerPayload struct {
 
 func loadVolumePayload(ctx context.Context, in registry.AssetInput) (volumePayload, error) {
 	var payload volumePayload
-	_, err := driverutil.LoadPayload(ctx, in, []string{"docker"}, &payload)
-	return payload, err
-}
-
-func loadConfigPayload(ctx context.Context, in registry.AssetInput) (configPayload, error) {
-	var payload configPayload
 	_, err := driverutil.LoadPayload(ctx, in, []string{"docker"}, &payload)
 	return payload, err
 }
