@@ -6,8 +6,8 @@ import (
 	"os"
 	"testing"
 
-	platformregistry "github.com/rydzu/ainfra/guardian/internal/registry"
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
+	platformregistry "github.com/radryc/guardian/internal/registry"
+	"github.com/radryc/guardian/internal/store/memory"
 )
 
 func TestStartRegistrationPreservesRegistrationURLAndToken(t *testing.T) {

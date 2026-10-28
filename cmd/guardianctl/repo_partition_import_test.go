@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/registry"
-	"github.com/rydzu/ainfra/guardian/internal/repoimport"
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/registry"
+	"github.com/radryc/guardian/internal/repoimport"
+	"github.com/radryc/guardian/internal/store/memory"
 )
 
 func writeRepoPartitionFixture(t *testing.T, sourceDir, intentYAML string) {

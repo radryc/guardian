@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/cdkgen"
-	"github.com/rydzu/ainfra/guardian/internal/cli/command"
-	"github.com/rydzu/ainfra/guardian/internal/cli/output"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/cdkgen"
+	"github.com/radryc/guardian/internal/cli/command"
+	"github.com/radryc/guardian/internal/cli/output"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 // templateListCommand lists the effective template catalog (embedded baseline

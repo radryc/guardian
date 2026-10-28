@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
-	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	targetdomain "github.com/radryc/guardian/internal/domain/target"
+	taskdomain "github.com/radryc/guardian/internal/domain/task"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/pusher/registry"
+	"github.com/radryc/guardian/internal/store/memory"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 // concurrencyProbeDriver records the maximum number of Apply calls that were

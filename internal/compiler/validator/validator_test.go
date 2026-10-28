@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
-	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
-	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
-	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
+	intentdomain "github.com/radryc/guardian/internal/domain/intent"
+	partitiondomain "github.com/radryc/guardian/internal/domain/partition"
+	targetdomain "github.com/radryc/guardian/internal/domain/target"
 )
 
 func TestValidateIntentFlowMetricGroups(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/config"
+	"github.com/radryc/guardian/internal/config"
 )
 
 // applyGuardianEnvConfig applies environment overrides that are not part of

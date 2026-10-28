@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
 )
 
 func TestDecodeReturnsTypedSpecs(t *testing.T) {

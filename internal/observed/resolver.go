@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/registry"
+	"github.com/radryc/guardian/internal/registry"
 )
 
 // EndpointResolver maps a pusher name to its observed read API.

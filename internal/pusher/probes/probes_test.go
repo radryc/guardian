@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
-	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
-	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
+	intentdomain "github.com/radryc/guardian/internal/domain/intent"
+	statedomain "github.com/radryc/guardian/internal/domain/state"
 )
 
 func TestProbeHTTP(t *testing.T) {

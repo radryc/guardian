@@ -6,8 +6,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
-	"github.com/rydzu/ainfra/guardian/internal/observability"
+	taskdomain "github.com/radryc/guardian/internal/domain/task"
+	"github.com/radryc/guardian/internal/observability"
 )
 
 var assetObservationCurrent = promauto.NewGaugeVec(prometheus.GaugeOpts{

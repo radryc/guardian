@@ -3,7 +3,7 @@ package historyquery
 import (
 	"time"
 
-	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
+	intentdomain "github.com/radryc/guardian/internal/domain/intent"
 )
 
 type IntentSnapshot struct {

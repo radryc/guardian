@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/awsgen"
-	"github.com/rydzu/ainfra/guardian/internal/awsscan"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/awsgen"
+	"github.com/radryc/guardian/internal/awsscan"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 type CreateScanRequest struct {

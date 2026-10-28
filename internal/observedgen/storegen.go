@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	partitiondomain "github.com/radryc/guardian/internal/domain/partition"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/pkg/guardianapi"
 	"gopkg.in/yaml.v3"
 )
 

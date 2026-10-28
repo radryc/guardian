@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	memorystore "github.com/rydzu/ainfra/guardian/internal/store/memory"
+	"github.com/radryc/guardian/internal/paths"
+	memorystore "github.com/radryc/guardian/internal/store/memory"
 )
 
 func TestWriteSnapshotsMergesLatestState(t *testing.T) {

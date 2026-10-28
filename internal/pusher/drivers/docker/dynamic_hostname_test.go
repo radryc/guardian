@@ -3,8 +3,8 @@ package dockerdriver
 import (
 	"testing"
 
-	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
-	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
+	assetdefs "github.com/radryc/guardian/internal/domain/assets"
+	targetdomain "github.com/radryc/guardian/internal/domain/target"
 )
 
 func TestToComputePortsIgnoresHostPortWhenDynamicHostnameIsSet(t *testing.T) {

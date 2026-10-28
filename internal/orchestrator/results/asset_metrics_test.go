@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
-	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
+	taskdomain "github.com/radryc/guardian/internal/domain/task"
 )
 
 func TestRecordAssetObservationsReplacesHistoricStatus(t *testing.T) {

@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/awssetup"
-	"github.com/rydzu/ainfra/guardian/internal/cli/command"
+	"github.com/radryc/guardian/internal/awssetup"
+	"github.com/radryc/guardian/internal/cli/command"
 )
 
 func awsCommands() []bootstrapReg {

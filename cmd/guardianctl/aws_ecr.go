@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/cli/command"
+	"github.com/radryc/guardian/internal/cli/command"
 )
 
 // awsEcrLoginCommand logs Docker in to a target account's ECR registry, which

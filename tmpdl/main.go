@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	monofsstore "github.com/rydzu/ainfra/guardian/internal/store/monofs"
+	monofsstore "github.com/radryc/guardian/internal/store/monofs"
 )
 
 func main() {

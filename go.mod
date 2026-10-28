@@ -1,4 +1,4 @@
-module github.com/rydzu/ainfra/guardian
+module github.com/radryc/guardian
 
 go 1.26.4
 
@@ -119,6 +119,6 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace github.com/rydzu/ainfra/kvs => ../kvs
+replace github.com/radryc/kvs => ../kvs
 
 replace github.com/radryc/monofs => ../monofs

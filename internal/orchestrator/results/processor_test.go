@@ -13,16 +13,16 @@ import (
 	"testing"
 	"time"
 
-	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
-	releasedomain "github.com/rydzu/ainfra/guardian/internal/domain/release"
-	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
-	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
-	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
-	"github.com/rydzu/ainfra/guardian/internal/orchestrator/common"
-	"github.com/rydzu/ainfra/guardian/internal/orchestrator/dispatcher"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	historydomain "github.com/radryc/guardian/internal/domain/history"
+	releasedomain "github.com/radryc/guardian/internal/domain/release"
+	statedomain "github.com/radryc/guardian/internal/domain/state"
+	targetdomain "github.com/radryc/guardian/internal/domain/target"
+	taskdomain "github.com/radryc/guardian/internal/domain/task"
+	"github.com/radryc/guardian/internal/orchestrator/common"
+	"github.com/radryc/guardian/internal/orchestrator/dispatcher"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/store/memory"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 func TestProcessorApplySuccessArchivesDeployment(t *testing.T) {

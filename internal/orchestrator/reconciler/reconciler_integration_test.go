@@ -9,16 +9,16 @@ import (
 	"testing"
 	"time"
 
-	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
-	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
-	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
-	"github.com/rydzu/ainfra/guardian/internal/orchestrator/common"
-	"github.com/rydzu/ainfra/guardian/internal/orchestrator/dispatcher"
-	"github.com/rydzu/ainfra/guardian/internal/orchestrator/reconciler"
-	"github.com/rydzu/ainfra/guardian/internal/orchestrator/results"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	statedomain "github.com/radryc/guardian/internal/domain/state"
+	targetdomain "github.com/radryc/guardian/internal/domain/target"
+	taskdomain "github.com/radryc/guardian/internal/domain/task"
+	"github.com/radryc/guardian/internal/orchestrator/common"
+	"github.com/radryc/guardian/internal/orchestrator/dispatcher"
+	"github.com/radryc/guardian/internal/orchestrator/reconciler"
+	"github.com/radryc/guardian/internal/orchestrator/results"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/store/memory"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 func TestEndToEndReconcileFlow(t *testing.T) {

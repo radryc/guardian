@@ -9,10 +9,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/awsscan"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	monofsstore "github.com/rydzu/ainfra/guardian/internal/store/monofs"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/awsscan"
+	"github.com/radryc/guardian/internal/paths"
+	monofsstore "github.com/radryc/guardian/internal/store/monofs"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 func main() {

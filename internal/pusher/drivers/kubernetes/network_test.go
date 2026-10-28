@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
-	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
-	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
+	targetdomain "github.com/radryc/guardian/internal/domain/target"
+	taskdomain "github.com/radryc/guardian/internal/domain/task"
+	"github.com/radryc/guardian/internal/pusher/registry"
 )
 
 func TestKubernetesNetworkDriverApplyDiffDestroy(t *testing.T) {

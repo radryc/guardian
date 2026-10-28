@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
+	historydomain "github.com/radryc/guardian/internal/domain/history"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/store/memory"
 )
 
 func TestPushPartitionBundleWritesPushEvent(t *testing.T) {

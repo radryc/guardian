@@ -8,14 +8,14 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/awsscan"
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
-	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
-	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
-	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
-	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/awsscan"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
+	assetdefs "github.com/radryc/guardian/internal/domain/assets"
+	intentdomain "github.com/radryc/guardian/internal/domain/intent"
+	partitiondomain "github.com/radryc/guardian/internal/domain/partition"
+	targetdomain "github.com/radryc/guardian/internal/domain/target"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/pkg/guardianapi"
 	"gopkg.in/yaml.v3"
 )
 

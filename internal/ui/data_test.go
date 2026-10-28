@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
-	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
-	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
+	historydomain "github.com/radryc/guardian/internal/domain/history"
+	partitiondomain "github.com/radryc/guardian/internal/domain/partition"
+	taskdomain "github.com/radryc/guardian/internal/domain/task"
 )
 
 func TestClassifyEvent(t *testing.T) {

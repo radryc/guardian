@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 func TestStoreCRUDAndWatch(t *testing.T) {

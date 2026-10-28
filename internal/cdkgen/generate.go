@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
 )
 
 // LibraryVersion is embedded into generated package metadata so payloads can

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/cdktemplate"
-	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
+	"github.com/radryc/guardian/internal/cdktemplate"
+	taskdomain "github.com/radryc/guardian/internal/domain/task"
 )
 
 // CompareTemplates diffs the desired CloudFormation template against the live

@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rydzu/ainfra/guardian/internal/bootstrap"
-	"github.com/rydzu/ainfra/guardian/internal/cli/command"
-	cliformat "github.com/rydzu/ainfra/guardian/internal/cli/format"
-	"github.com/rydzu/ainfra/guardian/internal/cli/output"
+	"github.com/radryc/guardian/internal/bootstrap"
+	"github.com/radryc/guardian/internal/cli/command"
+	cliformat "github.com/radryc/guardian/internal/cli/format"
+	"github.com/radryc/guardian/internal/cli/output"
 )
 
 func TestBootstrapDefaultConfig(t *testing.T) {

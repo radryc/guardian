@@ -5,10 +5,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/compiler/dag"
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
-	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
-	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
+	"github.com/radryc/guardian/internal/compiler/dag"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
+	assetdefs "github.com/radryc/guardian/internal/domain/assets"
+	intentdomain "github.com/radryc/guardian/internal/domain/intent"
 )
 
 func validateIntentAssets(assets []intentdomain.AssetSpec, intentHints []assetdomain.Hint) error {

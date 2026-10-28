@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/cdkgen"
+	"github.com/radryc/guardian/internal/cdkgen"
 )
 
 // Policy modes accepted by `guardianctl aws setup --policy`.

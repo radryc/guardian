@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/radryc/monofs/pkg/repowatch"
-	"github.com/rydzu/ainfra/guardian/internal/registry"
-	"github.com/rydzu/ainfra/guardian/internal/repoconfig"
-	"github.com/rydzu/ainfra/guardian/internal/repoimport"
+	"github.com/radryc/guardian/internal/registry"
+	"github.com/radryc/guardian/internal/repoconfig"
+	"github.com/radryc/guardian/internal/repoimport"
 )
 
 // RunRepoImportLoop starts one importer per shard. Each shard acquires a

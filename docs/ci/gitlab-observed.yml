@@ -2,7 +2,7 @@
 #
 # Include this job in the repository that holds your CDK app, e.g.:
 #   include:
-#     - remote: 'https://raw.githubusercontent.com/rydzu/ainfra/main/guardian/docs/ci/gitlab-observed.yml'
+#     - remote: 'https://raw.githubusercontent.com/radryc/guardian/main/docs/ci/gitlab-observed.yml'
 # or copy the job into .gitlab-ci.yml.
 #
 # CI/CD variables to define (masked):
@@ -24,8 +24,9 @@ guardian-observed-sync:
     GIT_DEPTH: "1"
   before_script:
     - apt-get update -qq && apt-get install -y -qq git curl nodejs npm >/dev/null
-    - git clone --depth 1 https://github.com/rydzu/ainfra.git /tmp/strata
-    - (cd /tmp/strata && go build -o /usr/local/bin/guardianctl ./guardian/cmd/guardianctl)
+    - git clone --depth 1 https://github.com/radryc/strata.git /tmp/strata
+    - /tmp/strata/scripts/clone.sh /tmp
+    - (cd /tmp/guardian && go build -o /usr/local/bin/guardianctl ./cmd/guardianctl)
   script:
     # ── Mode 1 (recommended): apply repo config, synth, push bundle ──
     - guardianctl repo apply --dir . --synth

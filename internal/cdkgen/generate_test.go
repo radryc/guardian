@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rydzu/ainfra/guardian/internal/compiler/manifest"
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
+	"github.com/radryc/guardian/internal/compiler/manifest"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
 )
 
 // dumpGenerated writes the generated file tree when CDKGEN_DUMP_DIR is set so

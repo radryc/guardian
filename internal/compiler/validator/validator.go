@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/reugn/go-quartz/quartz"
-	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
-	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
-	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
+	intentdomain "github.com/radryc/guardian/internal/domain/intent"
+	partitiondomain "github.com/radryc/guardian/internal/domain/partition"
+	targetdomain "github.com/radryc/guardian/internal/domain/target"
 )
 
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)

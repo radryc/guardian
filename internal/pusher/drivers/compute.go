@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sync"
 
-	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
-	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
+	taskdomain "github.com/radryc/guardian/internal/domain/task"
+	"github.com/radryc/guardian/internal/pusher/registry"
 )
 
 type ComputeDriver struct {

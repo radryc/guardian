@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
+	taskdomain "github.com/radryc/guardian/internal/domain/task"
 )
 
 func TestMonofsMetricsFlowEvaluatorBusyOnDelta(t *testing.T) {

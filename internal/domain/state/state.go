@@ -3,8 +3,8 @@ package state
 import (
 	"time"
 
-	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
-	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
+	targetdomain "github.com/radryc/guardian/internal/domain/target"
+	taskdomain "github.com/radryc/guardian/internal/domain/task"
 )
 
 type IntentStatus string

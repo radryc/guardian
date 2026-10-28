@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
+	intentdomain "github.com/radryc/guardian/internal/domain/intent"
+	"github.com/radryc/guardian/internal/paths"
 )
 
 type intentManifestSource struct {

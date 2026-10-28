@@ -7,7 +7,7 @@ import (
 	"os"
 	"text/tabwriter"
 
-	cliformat "github.com/rydzu/ainfra/guardian/internal/cli/format"
+	cliformat "github.com/radryc/guardian/internal/cli/format"
 )
 
 type Printer struct {

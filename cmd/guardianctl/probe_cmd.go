@@ -6,11 +6,11 @@ import (
 	"flag"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/cli/command"
-	"github.com/rydzu/ainfra/guardian/internal/cli/output"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/pusher/probes"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/cli/command"
+	"github.com/radryc/guardian/internal/cli/output"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/pusher/probes"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 func probeListCommand(store guardianapi.Store, printer *output.Printer) *command.Command {

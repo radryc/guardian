@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rydzu/ainfra/guardian/internal/compiler/manifest"
+	"github.com/radryc/guardian/internal/compiler/manifest"
 	"gopkg.in/yaml.v3"
 )
 

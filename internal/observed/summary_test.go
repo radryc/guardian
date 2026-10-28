@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rydzu/ainfra/guardian/internal/awsobserve"
-	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
+	"github.com/radryc/guardian/internal/awsobserve"
+	statedomain "github.com/radryc/guardian/internal/domain/state"
 )
 
 func TestSummarizeResourceDrift(t *testing.T) {

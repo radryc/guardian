@@ -3,7 +3,7 @@ FROM golang:1.26.4 AS build
 WORKDIR /src/guardian
 
 # Guardian's go.mod replaces github.com/radryc/monofs with ../monofs, and
-# monofs/go.mod replaces github.com/rydzu/ainfra/kvs with ../kvs, so builds
+# monofs/go.mod replaces github.com/radryc/kvs with ../kvs, so builds
 # must provide both sibling repos as named build contexts.
 COPY go.mod go.sum ./
 COPY --from=monofs go.mod /src/monofs/go.mod

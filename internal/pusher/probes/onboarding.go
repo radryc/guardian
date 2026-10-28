@@ -3,8 +3,8 @@ package probes
 import (
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/onboarding"
-	"github.com/rydzu/ainfra/guardian/internal/pusher/driverutil"
+	"github.com/radryc/guardian/internal/onboarding"
+	"github.com/radryc/guardian/internal/pusher/driverutil"
 )
 
 // TargetsFromOnboarding converts storeless onboarding descriptors into probe

@@ -6,9 +6,9 @@ package probe
 import (
 	"context"
 
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
-	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
-	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
+	taskdomain "github.com/radryc/guardian/internal/domain/task"
+	"github.com/radryc/guardian/internal/pusher/registry"
 )
 
 type Driver struct{}

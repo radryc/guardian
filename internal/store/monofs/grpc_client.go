@@ -14,8 +14,8 @@ import (
 
 	pb "github.com/radryc/monofs/api/proto"
 	"github.com/radryc/monofs/pkg/grpcx"
-	"github.com/rydzu/ainfra/guardian/internal/clitoken"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/clitoken"
+	"github.com/radryc/guardian/pkg/guardianapi"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"

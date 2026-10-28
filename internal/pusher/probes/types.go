@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/pusher/secrets"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/pusher/secrets"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 type Config struct {

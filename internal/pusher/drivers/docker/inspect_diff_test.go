@@ -8,16 +8,16 @@ import (
 	"strings"
 	"testing"
 
-	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
-	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
-	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/pusher/driverutil"
-	"github.com/rydzu/ainfra/guardian/internal/pusher/registry"
-	runtimepkg "github.com/rydzu/ainfra/guardian/internal/pusher/runtime"
-	"github.com/rydzu/ainfra/guardian/internal/pusher/secrets"
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	assetdefs "github.com/radryc/guardian/internal/domain/assets"
+	targetdomain "github.com/radryc/guardian/internal/domain/target"
+	taskdomain "github.com/radryc/guardian/internal/domain/task"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/pusher/driverutil"
+	"github.com/radryc/guardian/internal/pusher/registry"
+	runtimepkg "github.com/radryc/guardian/internal/pusher/runtime"
+	"github.com/radryc/guardian/internal/pusher/secrets"
+	"github.com/radryc/guardian/internal/store/memory"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 // ----------------------------------------------------------------------------

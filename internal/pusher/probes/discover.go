@@ -13,15 +13,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/compiler/manifest"
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
-	assetdefs "github.com/rydzu/ainfra/guardian/internal/domain/assets"
-	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
-	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
-	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/pusher/driverutil"
-	"github.com/rydzu/ainfra/guardian/internal/pusher/secrets"
+	"github.com/radryc/guardian/internal/compiler/manifest"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
+	assetdefs "github.com/radryc/guardian/internal/domain/assets"
+	intentdomain "github.com/radryc/guardian/internal/domain/intent"
+	partitiondomain "github.com/radryc/guardian/internal/domain/partition"
+	statedomain "github.com/radryc/guardian/internal/domain/state"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/pusher/driverutil"
+	"github.com/radryc/guardian/internal/pusher/secrets"
 )
 
 // probePolicy is the effective probe configuration for one partition. It

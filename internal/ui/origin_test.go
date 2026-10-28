@@ -6,12 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rydzu/ainfra/guardian/internal/cdkgen"
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
-	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/cdkgen"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
+	intentdomain "github.com/radryc/guardian/internal/domain/intent"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/store/memory"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 func TestIntentOriginAdoptedAndObserved(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/rydzu/ainfra/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/paths"
 )
 
 // federationPartition is the normalized partition metadata consumed by the

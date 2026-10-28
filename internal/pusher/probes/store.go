@@ -8,8 +8,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 func (r *Runner) writeSnapshots(ctx context.Context) {

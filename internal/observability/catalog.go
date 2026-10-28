@@ -6,9 +6,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/compiler/manifest"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/compiler/manifest"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 // IdentityRecord is one entry in the observable identity catalog.

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
 )
 
 // ProbeSpec describes an explicit health probe. When Target is set, the probe

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/cli/command"
-	"github.com/rydzu/ainfra/guardian/internal/cli/output"
-	"github.com/rydzu/ainfra/guardian/internal/observedgen"
+	"github.com/radryc/guardian/internal/cli/command"
+	"github.com/radryc/guardian/internal/cli/output"
+	"github.com/radryc/guardian/internal/observedgen"
 )
 
 // awsObservedGenerateCommand generates a local observed partition bundle from a

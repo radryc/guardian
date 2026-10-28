@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	coreauthz "github.com/radryc/monofs/pkg/authz"
-	"github.com/rydzu/ainfra/guardian/internal/cli/command"
-	"github.com/rydzu/ainfra/guardian/internal/clitoken"
+	"github.com/radryc/guardian/internal/cli/command"
+	"github.com/radryc/guardian/internal/clitoken"
 )
 
 func authEnvOr(keys []string, fallback string) string {

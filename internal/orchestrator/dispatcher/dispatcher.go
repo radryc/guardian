@@ -15,14 +15,14 @@ import (
 	"sync"
 	"time"
 
-	historydomain "github.com/rydzu/ainfra/guardian/internal/domain/history"
-	releasedomain "github.com/rydzu/ainfra/guardian/internal/domain/release"
-	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
-	taskdomain "github.com/rydzu/ainfra/guardian/internal/domain/task"
-	"github.com/rydzu/ainfra/guardian/internal/orchestrator/common"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/versioning/revisions"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	historydomain "github.com/radryc/guardian/internal/domain/history"
+	releasedomain "github.com/radryc/guardian/internal/domain/release"
+	statedomain "github.com/radryc/guardian/internal/domain/state"
+	taskdomain "github.com/radryc/guardian/internal/domain/task"
+	"github.com/radryc/guardian/internal/orchestrator/common"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/versioning/revisions"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 type compliancePublisher interface {

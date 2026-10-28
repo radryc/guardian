@@ -8,7 +8,7 @@ package observed
 import (
 	"time"
 
-	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
+	statedomain "github.com/radryc/guardian/internal/domain/state"
 )
 
 // StackPayload mirrors the AWS CDKStack asset payload manifest fields the

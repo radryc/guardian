@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 func TestAdapterReadOperationsUsePhysicalPaths(t *testing.T) {

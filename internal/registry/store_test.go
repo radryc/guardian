@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
+	"github.com/radryc/guardian/internal/store/memory"
 )
 
 func TestPusherCRUD(t *testing.T) {

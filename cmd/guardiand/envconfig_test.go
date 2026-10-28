@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/rydzu/ainfra/guardian/internal/config"
+	"github.com/radryc/guardian/internal/config"
 )
 
 func TestParseGuardianPushers(t *testing.T) {

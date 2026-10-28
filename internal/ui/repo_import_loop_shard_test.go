@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/radryc/monofs/pkg/repowatch"
-	"github.com/rydzu/ainfra/guardian/internal/registry"
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
+	"github.com/radryc/guardian/internal/registry"
+	"github.com/radryc/guardian/internal/store/memory"
 )
 
 func TestSyncRepoBundlesShardFiltersRepos(t *testing.T) {

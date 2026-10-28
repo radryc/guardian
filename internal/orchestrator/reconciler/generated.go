@@ -6,11 +6,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/rydzu/ainfra/guardian/internal/cdkgen"
-	"github.com/rydzu/ainfra/guardian/internal/compiler/planner"
-	intentdomain "github.com/rydzu/ainfra/guardian/internal/domain/intent"
-	"github.com/rydzu/ainfra/guardian/internal/paths"
-	"github.com/rydzu/ainfra/guardian/internal/versioning/digest"
+	"github.com/radryc/guardian/internal/cdkgen"
+	"github.com/radryc/guardian/internal/compiler/planner"
+	intentdomain "github.com/radryc/guardian/internal/domain/intent"
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/versioning/digest"
 )
 
 func cdkIntentFingerprint(partition, name string, compiledIntent *planner.CompiledIntent) string {

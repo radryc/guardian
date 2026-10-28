@@ -4,12 +4,12 @@ import (
 	"context"
 	"flag"
 
-	"github.com/rydzu/ainfra/guardian/internal/cli/command"
-	"github.com/rydzu/ainfra/guardian/internal/cli/output"
-	"github.com/rydzu/ainfra/guardian/internal/observed"
-	"github.com/rydzu/ainfra/guardian/internal/onboard"
-	"github.com/rydzu/ainfra/guardian/internal/registry"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/cli/command"
+	"github.com/radryc/guardian/internal/cli/output"
+	"github.com/radryc/guardian/internal/observed"
+	"github.com/radryc/guardian/internal/onboard"
+	"github.com/radryc/guardian/internal/registry"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 // awsOnboardCommand materializes observed partitions from the onboarding

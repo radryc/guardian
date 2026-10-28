@@ -1,9 +1,9 @@
 package intent
 
 import (
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
-	partitiondomain "github.com/rydzu/ainfra/guardian/internal/domain/partition"
-	targetdomain "github.com/rydzu/ainfra/guardian/internal/domain/target"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
+	partitiondomain "github.com/radryc/guardian/internal/domain/partition"
+	targetdomain "github.com/radryc/guardian/internal/domain/target"
 )
 
 type Metadata = partitiondomain.Metadata

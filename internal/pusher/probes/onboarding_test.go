@@ -3,7 +3,7 @@ package probes
 import (
 	"testing"
 
-	"github.com/rydzu/ainfra/guardian/internal/onboarding"
+	"github.com/radryc/guardian/internal/onboarding"
 )
 
 func TestTargetsFromOnboarding(t *testing.T) {

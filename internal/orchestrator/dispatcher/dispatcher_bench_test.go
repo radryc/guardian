@@ -6,9 +6,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	statedomain "github.com/rydzu/ainfra/guardian/internal/domain/state"
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
-	"github.com/rydzu/ainfra/guardian/pkg/guardianapi"
+	statedomain "github.com/radryc/guardian/internal/domain/state"
+	"github.com/radryc/guardian/internal/store/memory"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 func benchIntentState(partition, intent string, generation int) *statedomain.IntentState {

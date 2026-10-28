@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
 )
 
 // TestCloudFormationFromTemplates compiles the generated payload with tsc and

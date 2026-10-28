@@ -5,7 +5,7 @@ import (
 	"net"
 	"strings"
 
-	assetdomain "github.com/rydzu/ainfra/guardian/internal/domain/asset"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
 )
 
 type NetworkSpec struct {

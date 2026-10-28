@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/rydzu/ainfra/guardian/internal/store/memory"
-	"github.com/rydzu/ainfra/guardian/internal/unmanaged"
+	"github.com/radryc/guardian/internal/store/memory"
+	"github.com/radryc/guardian/internal/unmanaged"
 )
 
 type fakeUnmanagedService struct {
