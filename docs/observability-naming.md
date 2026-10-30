@@ -109,7 +109,8 @@ guardian.probe.info
 Metric labels: `guardian_probe_name`, `guardian_probe_type`,
 `guardian_probe_mode`. `guardian_probe_target`, `guardian_probe_path`,
 `guardian_probe_id`, and `guardian_probe_status` are available on the info
-metric, logs, and spans.
+metric, logs, and spans. Synthetic journeys also carry
+`guardian_probe_failed_step` and `guardian_probe_step_count` on logs and spans.
 
 Scope: `guardian.probe`. Span: `guardian.probe.run`.
 

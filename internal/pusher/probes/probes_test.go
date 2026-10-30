@@ -141,6 +141,49 @@ func TestProbeTelemetryJSONShape(t *testing.T) {
 	}
 }
 
+func TestProbeTelemetryJourneyAttributes(t *testing.T) {
+	bodies := make(map[string]string)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies[r.URL.Path] = string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	runner := New(Config{Pusher: "k8s-main", OTLPEndpoint: server.URL})
+	result := Result{
+		ProbeID:    "journey123",
+		Service:    "demo.api.app",
+		Pusher:     "k8s-main",
+		Partition:  "demo",
+		Intent:     "api",
+		Asset:      "app",
+		Name:       "checkout",
+		Type:       "journey",
+		Mode:       "explicit",
+		Target:     "app:8080",
+		Status:     "down",
+		Success:    false,
+		Error:      `step "update": unexpected HTTP status 500`,
+		FailedStep: "update",
+		Steps: []StepResult{
+			{Name: "read", Type: "http", Status: "up", Success: true},
+			{Name: "update", Type: "http", Status: "down", Success: false},
+		},
+		CheckedAt: time.Now().UTC(),
+	}
+	runner.emitTelemetry(context.Background(), []Result{result}, map[string]string{})
+	for _, path := range []string{"/v1/logs", "/v1/traces"} {
+		body := bodies[path]
+		if !strings.Contains(body, `"guardian.probe.failed_step"`) {
+			t.Fatalf("%s missing failed step: %s", path, body)
+		}
+		if !strings.Contains(body, `"guardian.probe.step_count"`) {
+			t.Fatalf("%s missing step count: %s", path, body)
+		}
+	}
+}
+
 func contains(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
@@ -179,6 +222,23 @@ func TestDisabledExplicitProbeSuppressesAutoprobe(t *testing.T) {
 	policy := probePolicy{Enabled: true, Interval: time.Second, Timeout: time.Second, HTTPPaths: []string{"/healthz"}}
 	if targets := runner.targetsForIntent(context.Background(), intent, state, policy); len(targets) != 0 {
 		t.Fatalf("disabled explicit probe generated targets: %+v", targets)
+	}
+}
+
+func TestSkippedProbeIsIgnored(t *testing.T) {
+	runner := New(Config{Pusher: "k8s-main"})
+	intent := &intentView{
+		Partition: "demo",
+		Name:      "api",
+		Spec: intentdomain.IntentSpec{Assets: []intentdomain.AssetSpec{
+			{Type: assetdomain.TypeProbe, Name: "health", Skip: true, Properties: map[string]any{"target": "app"}},
+			{Type: assetdomain.TypeCompute, Name: "app"},
+		}},
+	}
+	state := &statedomain.IntentState{Outputs: map[string]string{"app.address": "app:8080"}}
+	policy := probePolicy{Enabled: true, Interval: time.Second, Timeout: time.Second, HTTPPaths: []string{"/healthz"}}
+	if targets := runner.targetsForIntent(context.Background(), intent, state, policy); len(targets) != 1 {
+		t.Fatalf("targets = %+v", targets)
 	}
 }
 
@@ -236,5 +296,69 @@ func TestProbeIDDeterministic(t *testing.T) {
 	}
 	if len(first) != 16 {
 		t.Fatalf("probe ID length = %d", len(first))
+	}
+}
+
+func TestProbeHTTPUsesExplicitURLPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/foo/bar" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	runner := New(Config{
+		Timeout:     time.Second,
+		HTTPPaths:   []string{"/healthz"},
+		Concurrency: 1,
+	})
+	target := Target{
+		ID:        "probe-url-path",
+		Partition: "demo",
+		Intent:    "api",
+		Asset:     "app",
+		Name:      "explicit",
+		Type:      "http",
+		URL:       server.URL + "/foo/bar",
+		Timeout:   time.Second,
+	}
+	result := runner.execute(context.Background(), target)
+	if !result.Success || result.Path != "/foo/bar" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestProbeHTTPPutBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/foo/bar" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		if string(body) != `{"status":"ready"}` {
+			t.Errorf("body = %s", body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	runner := New(Config{Timeout: time.Second, Concurrency: 1})
+	target := Target{
+		ID:           "probe-put",
+		Partition:    "demo",
+		Intent:       "api",
+		Asset:        "app",
+		Name:         "update",
+		Type:         "http",
+		URL:          server.URL + "/foo/bar",
+		Method:       "PUT",
+		Body:         map[string]any{"status": "ready"},
+		ExpectStatus: []int{http.StatusNoContent},
+		Timeout:      time.Second,
+	}
+	result := runner.execute(context.Background(), target)
+	if !result.Success || result.Status != "up" {
+		t.Fatalf("result = %+v", result)
 	}
 }

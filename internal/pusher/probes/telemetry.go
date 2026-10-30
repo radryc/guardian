@@ -212,10 +212,17 @@ func metricAttributes(result Result, cfg Config) []any {
 // They are intentionally not part of the metric label set.
 func recordAttributes(result Result, cfg Config) []any {
 	attrs := append([]any(nil), metricAttributes(result, cfg)...)
-	return append(attrs,
+	attrs = append(attrs,
 		attrString("guardian.probe.id", result.ProbeID),
 		attrString("guardian.probe.status", result.Status),
 	)
+	if result.FailedStep != "" {
+		attrs = append(attrs, attrString("guardian.probe.failed_step", result.FailedStep))
+	}
+	if len(result.Steps) > 0 {
+		attrs = append(attrs, attrString("guardian.probe.step_count", strconv.Itoa(len(result.Steps))))
+	}
+	return attrs
 }
 
 func metricGauge(name, unit string, value float64, at time.Time, attrs []any) map[string]any {
