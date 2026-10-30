@@ -794,3 +794,166 @@ func mustJSON(v any) string {
 	}
 	return string(encoded)
 }
+
+// ListAlarms returns CloudWatch metric and composite alarms across the
+// configured regions.
+func (r *AWSReader) ListAlarms(ctx context.Context, q AlarmQuery) ([]Alarm, error) {
+	regions := r.targetRegions()
+	if strings.TrimSpace(q.Region) != "" {
+		regions = []string{strings.TrimSpace(q.Region)}
+	}
+	var out []Alarm
+	for _, region := range regions {
+		cfg, err := r.loadConfig(ctx, region)
+		if err != nil {
+			return nil, err
+		}
+		client := cloudwatch.NewFromConfig(cfg)
+		input := &cloudwatch.DescribeAlarmsInput{}
+		if strings.TrimSpace(q.NamePrefix) != "" {
+			input.AlarmNamePrefix = awsroot.String(strings.TrimSpace(q.NamePrefix))
+		}
+		if strings.TrimSpace(q.State) != "" {
+			input.StateValue = cwtypes.StateValue(strings.ToUpper(strings.TrimSpace(q.State)))
+		}
+		if q.Limit > 0 {
+			input.MaxRecords = awsroot.Int32(int32(q.Limit))
+		}
+		paginator := cloudwatch.NewDescribeAlarmsPaginator(client, input)
+		for paginator.HasMorePages() {
+			page, err := paginator.NextPage(ctx)
+			if err != nil {
+				return nil, err
+			}
+			for _, alarm := range page.MetricAlarms {
+				mapped := mapMetricAlarm(alarm, r.account, region)
+				mapped.Tags = r.alarmTags(ctx, client, mapped.ARN)
+				out = append(out, mapped)
+			}
+			for _, alarm := range page.CompositeAlarms {
+				mapped := mapCompositeAlarm(alarm, r.account, region)
+				mapped.Tags = r.alarmTags(ctx, client, mapped.ARN)
+				out = append(out, mapped)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Region != out[j].Region {
+			return out[i].Region < out[j].Region
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out, nil
+}
+
+// AlarmHistory returns recent history for one alarm.
+func (r *AWSReader) AlarmHistory(ctx context.Context, q AlarmHistoryQuery) ([]AlarmHistoryItem, error) {
+	region := strings.TrimSpace(q.Region)
+	if region == "" {
+		region = r.defaultRegion
+	}
+	cfg, err := r.loadConfig(ctx, region)
+	if err != nil {
+		return nil, err
+	}
+	client := cloudwatch.NewFromConfig(cfg)
+	input := &cloudwatch.DescribeAlarmHistoryInput{
+		AlarmName: awsroot.String(strings.TrimSpace(q.AlarmName)),
+	}
+	if !q.From.IsZero() {
+		input.StartDate = awsroot.Time(q.From)
+	}
+	if !q.To.IsZero() {
+		input.EndDate = awsroot.Time(q.To)
+	}
+	if q.Limit > 0 {
+		input.MaxRecords = awsroot.Int32(int32(q.Limit))
+	}
+	paginator := cloudwatch.NewDescribeAlarmHistoryPaginator(client, input)
+	var out []AlarmHistoryItem
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range page.AlarmHistoryItems {
+			out = append(out, AlarmHistoryItem{
+				AlarmName:       awsroot.ToString(item.AlarmName),
+				AlarmType:       string(item.AlarmType),
+				Timestamp:       awsroot.ToTime(item.Timestamp),
+				HistoryItemType: string(item.HistoryItemType),
+				HistorySummary:  awsroot.ToString(item.HistorySummary),
+				HistoryData:     awsroot.ToString(item.HistoryData),
+				Region:          region,
+				Account:         r.account,
+			})
+		}
+	}
+	return out, nil
+}
+
+func (r *AWSReader) alarmTags(ctx context.Context, client *cloudwatch.Client, arn string) map[string]string {
+	if strings.TrimSpace(arn) == "" {
+		return nil
+	}
+	resp, err := client.ListTagsForResource(ctx, &cloudwatch.ListTagsForResourceInput{
+		ResourceARN: awsroot.String(arn),
+	})
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]string, len(resp.Tags))
+	for _, tag := range resp.Tags {
+		out[awsroot.ToString(tag.Key)] = awsroot.ToString(tag.Value)
+	}
+	return out
+}
+
+func mapMetricAlarm(alarm cwtypes.MetricAlarm, account, region string) Alarm {
+	dimensions := make(map[string]string, len(alarm.Dimensions))
+	for _, dimension := range alarm.Dimensions {
+		dimensions[awsroot.ToString(dimension.Name)] = awsroot.ToString(dimension.Value)
+	}
+	return Alarm{
+		Name:                    awsroot.ToString(alarm.AlarmName),
+		ARN:                     awsroot.ToString(alarm.AlarmArn),
+		Account:                 account,
+		Region:                  region,
+		Type:                    "metric",
+		State:                   string(alarm.StateValue),
+		StateReason:             awsroot.ToString(alarm.StateReason),
+		StateUpdatedAt:          awsroot.ToTime(alarm.StateUpdatedTimestamp),
+		Namespace:               awsroot.ToString(alarm.Namespace),
+		MetricName:              awsroot.ToString(alarm.MetricName),
+		Dimensions:              dimensions,
+		Statistic:               string(alarm.Statistic),
+		Period:                  awsroot.ToInt32(alarm.Period),
+		EvaluationPeriods:       awsroot.ToInt32(alarm.EvaluationPeriods),
+		DatapointsToAlarm:       awsroot.ToInt32(alarm.DatapointsToAlarm),
+		Threshold:               awsroot.ToFloat64(alarm.Threshold),
+		ComparisonOperator:      string(alarm.ComparisonOperator),
+		TreatMissingData:        awsroot.ToString(alarm.TreatMissingData),
+		ActionsEnabled:          awsroot.ToBool(alarm.ActionsEnabled),
+		AlarmActions:            append([]string(nil), alarm.AlarmActions...),
+		OKActions:               append([]string(nil), alarm.OKActions...),
+		InsufficientDataActions: append([]string(nil), alarm.InsufficientDataActions...),
+	}
+}
+
+func mapCompositeAlarm(alarm cwtypes.CompositeAlarm, account, region string) Alarm {
+	return Alarm{
+		Name:                    awsroot.ToString(alarm.AlarmName),
+		ARN:                     awsroot.ToString(alarm.AlarmArn),
+		Account:                 account,
+		Region:                  region,
+		Type:                    "composite",
+		State:                   string(alarm.StateValue),
+		StateReason:             awsroot.ToString(alarm.StateReason),
+		StateUpdatedAt:          awsroot.ToTime(alarm.StateUpdatedTimestamp),
+		ActionsEnabled:          awsroot.ToBool(alarm.ActionsEnabled),
+		AlarmActions:            append([]string(nil), alarm.AlarmActions...),
+		OKActions:               append([]string(nil), alarm.OKActions...),
+		InsufficientDataActions: append([]string(nil), alarm.InsufficientDataActions...),
+		CompositeRule:           awsroot.ToString(alarm.AlarmRule),
+	}
+}
