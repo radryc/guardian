@@ -148,12 +148,18 @@ func (e *Evaluator) evaluatePartition(ctx context.Context, partition string) err
 					},
 					FiredAt: now,
 				}
-				e.dispatch(ctx, partition, alert)
-				state.ActiveEvent = alert.Event
-				state.ActiveSeverity = severity
-				state.ActiveSummary = alert.Summary
-				state.FirstSeenAt = now
-				state.LastNotifiedAt = now
+				sent, attempted := e.dispatch(ctx, partition, alert)
+				if attempted == 0 || sent {
+					state.ActiveEvent = alert.Event
+					state.ActiveSeverity = severity
+					state.ActiveSummary = alert.Summary
+					state.FirstSeenAt = now
+					state.LastNotifiedAt = now
+				} else {
+					// Keep the event unarmed so the next evaluation retries
+					// delivery instead of waiting for RepeatInterval.
+					log.Printf("[alerting] %s: all channels failed; will retry on next evaluation", partition)
+				}
 			}
 		} else if state.ActiveEvent != "" && e.repeatDue(state, now) {
 			alert := notify.Alert{
@@ -168,8 +174,10 @@ func (e *Evaluator) evaluatePartition(ctx context.Context, partition string) err
 				},
 				FiredAt: now,
 			}
-			e.dispatch(ctx, partition, alert)
-			state.LastNotifiedAt = now
+			sent, attempted := e.dispatch(ctx, partition, alert)
+			if attempted == 0 || sent {
+				state.LastNotifiedAt = now
+			}
 		}
 	} else {
 		state.ConsecutiveHealthy++
@@ -189,12 +197,16 @@ func (e *Evaluator) evaluatePartition(ctx context.Context, partition string) err
 					"resolvedEvent": state.ActiveEvent,
 				},
 			}
-			e.dispatch(ctx, partition, alert)
-			state.ActiveEvent = ""
-			state.ActiveSeverity = ""
-			state.ActiveSummary = ""
-			state.FirstSeenAt = time.Time{}
-			state.LastNotifiedAt = now
+			sent, attempted := e.dispatch(ctx, partition, alert)
+			if attempted == 0 || sent {
+				state.ActiveEvent = ""
+				state.ActiveSeverity = ""
+				state.ActiveSummary = ""
+				state.FirstSeenAt = time.Time{}
+				state.LastNotifiedAt = now
+			} else {
+				log.Printf("[alerting] %s: recovery delivery failed; will retry on next evaluation", partition)
+			}
 		}
 	}
 	state.LastStatus = partState.Status
@@ -202,12 +214,13 @@ func (e *Evaluator) evaluatePartition(ctx context.Context, partition string) err
 	return e.saveState(ctx, partition, state)
 }
 
-func (e *Evaluator) dispatch(ctx context.Context, partition string, alert notify.Alert) {
+func (e *Evaluator) dispatch(ctx context.Context, partition string, alert notify.Alert) (sent bool, attempted int) {
 	for _, channel := range e.channelsFor(alert) {
 		notifier, ok := e.Notifiers[channel]
 		if !ok {
 			continue
 		}
+		attempted++
 		sendCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		err := notifier.Send(sendCtx, alert)
 		cancel()
@@ -221,6 +234,7 @@ func (e *Evaluator) dispatch(ctx context.Context, partition string, alert notify
 			})
 			continue
 		}
+		sent = true
 		_ = e.Dispatcher.WriteEvent(ctx, &historydomain.EventRecord{
 			Partition: partition,
 			Type:      "notification.sent",
@@ -237,6 +251,7 @@ func (e *Evaluator) dispatch(ctx context.Context, partition string, alert notify
 			"status":   alert.Status,
 		},
 	})
+	return sent, attempted
 }
 
 func (e *Evaluator) channelsFor(alert notify.Alert) []string {
