@@ -61,6 +61,8 @@ type Target struct {
 	Paths        []string
 	Method       string
 	Headers      map[string]string
+	Body         any
+	Steps        []Step
 	ExpectStatus []int
 	ExpectBody   string
 	ExpectIPs    []string
@@ -69,6 +71,31 @@ type Target struct {
 	Retries      int
 	Insecure     bool
 	Labels       map[string]string
+}
+
+// Step is one request in a synthetic journey. A Target with Steps runs every
+// step in order instead of the single-request probe path.
+type Step struct {
+	Name         string
+	Type         string
+	URL          string
+	Address      string
+	Port         int
+	Path         string
+	Method       string
+	Headers      map[string]string
+	Body         any
+	Patch        map[string]any
+	Service      string
+	GRPCMethod   string
+	Request      any
+	Metadata     map[string]string
+	ExpectStatus []int
+	ExpectBody   string
+	ExpectJSON   map[string]any
+	Capture      map[string]string
+	Timeout      time.Duration
+	Insecure     bool
 }
 
 type Result struct {
@@ -95,7 +122,25 @@ type Result struct {
 	LastFailureAt       time.Time         `json:"lastFailureAt,omitempty"`
 	ConsecutiveFailures int               `json:"consecutiveFailures"`
 	Path                string            `json:"path,omitempty"`
+	FailedStep          string            `json:"failedStep,omitempty"`
+	Steps               []StepResult      `json:"steps,omitempty"`
 	Labels              map[string]string `json:"labels,omitempty"`
+}
+
+// StepResult is the outcome of one synthetic-journey step. Captured values are
+// intentionally not persisted: they often contain tokens or user data.
+type StepResult struct {
+	Name       string   `json:"name"`
+	Type       string   `json:"type,omitempty"`
+	Method     string   `json:"method,omitempty"`
+	Target     string   `json:"target,omitempty"`
+	Path       string   `json:"path,omitempty"`
+	Status     string   `json:"status"`
+	Success    bool     `json:"success"`
+	DurationMs int64    `json:"durationMs"`
+	StatusCode int      `json:"statusCode,omitempty"`
+	Error      string   `json:"error,omitempty"`
+	Captured   []string `json:"captured,omitempty"`
 }
 
 type Snapshot struct {

@@ -36,7 +36,8 @@ See [`docs/architecture.md`](docs/architecture.md) for the full architecture.
   compiles CDK-expressible assets into one generated TypeScript stack.
 - **Asset** — typed building block: Compute, ImageBuild, CDKStack, Database,
   SQLDatabase, Volume, Config, Network, Secret, LoadBalancer, TraefikRoute,
-  ObjectStore, Observability, Probe, K8sResource.
+  ObjectStore, Observability, Probe (single check or synthetic journey),
+  K8sResource.
 - **Rollout / rollback** — spec changes on applied intents become deployment
   revisions; failed applies record a rollback and preserve the pushed manifest
   for retry, while operators can restore archived tags explicitly.
@@ -178,6 +179,7 @@ Logs Insights, X-Ray, CloudWatch PromQL, observed stacks).
 - [AWS pusher](docs/aws-pusher.md), [AWS scan](docs/aws-scan.md),
   [AWS observed](docs/aws-observed.md)
 - [Alerting](docs/alerting.md)
+- [Probes and user journeys](docs/probes.md)
 - [Flow topology metrics](docs/flow-topology-metrics.md)
 - [UI partition builder design](docs/ui-partition-builder.md)
 

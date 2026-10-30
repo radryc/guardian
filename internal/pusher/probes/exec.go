@@ -1,6 +1,7 @@
 package probes
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -14,7 +15,18 @@ import (
 
 func (r *Runner) execute(ctx context.Context, target Target) Result {
 	started := time.Now()
-	result := Result{
+	result := r.newResult(target)
+	if len(target.Steps) > 0 {
+		r.executeJourney(ctx, target, &result)
+	} else {
+		r.executeSingle(ctx, target, &result)
+	}
+	result.DurationMs = time.Since(started).Milliseconds()
+	return result
+}
+
+func (r *Runner) newResult(target Target) Result {
+	return Result{
 		ProbeID:   target.ID,
 		Service:   target.Service,
 		FullName:  target.FullName,
@@ -31,6 +43,9 @@ func (r *Runner) execute(ctx context.Context, target Target) Result {
 		CheckedAt: time.Now().UTC(),
 		Labels:    target.Labels,
 	}
+}
+
+func (r *Runner) executeSingle(ctx context.Context, target Target, result *Result) {
 	timeout := target.Timeout
 	if timeout <= 0 {
 		timeout = r.cfg.Timeout
@@ -63,7 +78,6 @@ func (r *Runner) execute(ctx context.Context, target Target) Result {
 		lastErr = err
 	}
 done:
-	result.DurationMs = time.Since(started).Milliseconds()
 	result.StatusCode = lastStatus
 	result.Path = lastPath
 	if lastErr != nil {
@@ -74,7 +88,6 @@ done:
 		result.Success = true
 		result.Status = "up"
 	}
-	return result
 }
 
 func (r *Runner) probeOnce(ctx context.Context, target Target) (int, string, error) {
@@ -86,7 +99,7 @@ func (r *Runner) probeOnce(ctx context.Context, target Target) (int, string, err
 	case "tls":
 		return 0, "", probeTLS(ctx, target)
 	case "grpc":
-		return probeTCP(ctx, target)
+		return r.probeGRPCHealth(ctx, target)
 	default:
 		return probeTCP(ctx, target)
 	}
@@ -96,8 +109,15 @@ func (r *Runner) probeHTTP(ctx context.Context, target Target) (int, string, err
 	paths := append([]string(nil), target.Paths...)
 	if strings.TrimSpace(target.Path) != "" {
 		paths = []string{target.Path}
+	} else if target.URL != "" && urlHasPath(target.URL) {
+		// An explicit URL with a path is a user definition; do not replace it
+		// with the standard health paths.
+		paths = []string{""}
 	} else if len(paths) == 0 {
 		paths = r.cfg.HTTPPaths
+	}
+	if len(paths) == 0 {
+		paths = []string{""}
 	}
 	client := &http.Client{
 		Timeout: target.Timeout,
@@ -116,32 +136,38 @@ func (r *Runner) probeHTTP(ctx context.Context, target Target) (int, string, err
 			continue
 		}
 		method := strings.ToUpper(firstNonEmpty(target.Method, http.MethodGet))
-		req, err := http.NewRequestWithContext(ctx, method, requestURL, nil)
+		body, bodyIsJSON, err := encodeHTTPBody(target.Body, nil, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		req, err := http.NewRequestWithContext(ctx, method, requestURL, bytes.NewReader(body))
 		if err != nil {
 			lastErr = err
 			continue
 		}
 		req.Header.Set("User-Agent", "guardian-probe/1")
-		for key, value := range target.Headers {
-			req.Header.Set(key, value)
+		setHTTPHeaders(req, target.Headers)
+		if bodyIsJSON && req.Header.Get("Content-Type") == "" {
+			req.Header.Set("Content-Type", "application/json")
 		}
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		_ = resp.Body.Close()
 		lastStatus = resp.StatusCode
 		if !expectedStatus(resp.StatusCode, target.ExpectStatus) {
 			lastErr = fmt.Errorf("unexpected HTTP status %d", resp.StatusCode)
 			continue
 		}
-		if target.ExpectBody != "" && !strings.Contains(string(body), target.ExpectBody) {
+		if target.ExpectBody != "" && !strings.Contains(string(responseBody), target.ExpectBody) {
 			lastErr = fmt.Errorf("response body does not contain %q", target.ExpectBody)
 			continue
 		}
-		return resp.StatusCode, path, nil
+		return resp.StatusCode, req.URL.Path, nil
 	}
 	return lastStatus, "", firstNonNil(lastErr, fmt.Errorf("no HTTP path succeeded"))
 }
@@ -221,6 +247,14 @@ func probeTLS(ctx context.Context, target Target) error {
 	}
 	defer conn.Close()
 	return nil
+}
+
+func urlHasPath(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	return parsed.Path != "" && parsed.Path != "/"
 }
 
 func httpURL(target Target, path string) string {
