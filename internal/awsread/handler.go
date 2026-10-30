@@ -85,6 +85,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	case path == "/v1/aws/meta":
 		h.handleMeta(w, r)
+	case path == "/v1/aws/alarms":
+		h.handleListAlarms(w, r)
+	case path == "/v1/aws/alarms/history":
+		h.handleAlarmHistory(w, r)
 	case path == "/v1/aws/metrics":
 		h.handleListMetrics(w, r)
 	case path == "/v1/aws/metrics/query":
@@ -588,6 +592,47 @@ func (h *Handler) handleObservedDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) handleListAlarms(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(queryParam(r, "limit"))
+	alarms, err := h.Reader.ListAlarms(r.Context(), AlarmQuery{
+		State:      queryParam(r, "state"),
+		NamePrefix: queryParam(r, "namePrefix"),
+		Region:     queryParam(r, "region"),
+		Limit:      limit,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"alarms": alarms, "count": len(alarms)})
+}
+
+func (h *Handler) handleAlarmHistory(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(queryParam(r, "limit"))
+	from, err := parseTime(queryParam(r, "from"), time.Time{})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	to, err := parseTime(queryParam(r, "to"), time.Time{})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	items, err := h.Reader.AlarmHistory(r.Context(), AlarmHistoryQuery{
+		AlarmName: queryParam(r, "name"),
+		Region:    queryParam(r, "region"),
+		From:      from,
+		To:        to,
+		Limit:     limit,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"history": items, "count": len(items)})
 }
 
 func queryParam(r *http.Request, name string) string {
