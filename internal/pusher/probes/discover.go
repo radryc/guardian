@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"os"
@@ -227,7 +228,7 @@ func (r *Runner) targetsForIntent(ctx context.Context, intent *intentView, state
 	outputs := state.Outputs
 
 	for _, asset := range intent.Spec.Assets {
-		if asset.Type != assetdomain.TypeProbe {
+		if asset.Skip || asset.Type != assetdomain.TypeProbe {
 			continue
 		}
 		target, managed, ok := r.explicitProbe(ctx, intent, state, asset, outputs, policy)
@@ -281,14 +282,26 @@ func (r *Runner) explicitProbe(ctx context.Context, intent *intentView, state *s
 	if spec.Enabled != nil && !*spec.Enabled {
 		return managed, true, false
 	}
-	if resolved == "" && spec.URL == "" && spec.Address == "" {
+	journey := len(spec.Steps) > 0
+	hasStepTarget := stepsHaveExplicitTarget(spec.Steps)
+	if journey {
+		if resolved == "" && spec.URL == "" && spec.Address == "" && !hasStepTarget {
+			return managed, true, false
+		}
+	} else if resolved == "" && spec.URL == "" && spec.Address == "" {
 		return managed, true, false
 	}
 	external := strings.TrimSpace(spec.Target) == "" &&
 		(strings.TrimSpace(spec.URL) != "" ||
 			strings.TrimSpace(spec.Address) != "" ||
 			(probeType == "dns" && strings.TrimSpace(spec.Name) != ""))
-	if external && !policy.AllowExternal {
+	if journey {
+		// Step-level URL/address overrides bypass the resolved target, so
+		// treat them as external targets too.
+		if !policy.AllowExternal && (hasStepTarget || external) {
+			return managed, true, false
+		}
+	} else if external && !policy.AllowExternal {
 		return managed, true, false
 	}
 	interval := parseDuration(spec.Interval, policy.Interval)
@@ -296,6 +309,10 @@ func (r *Runner) explicitProbe(ctx context.Context, intent *intentView, state *s
 	retries := policy.Retries
 	if spec.Retries != nil {
 		retries = *spec.Retries
+	} else if journey {
+		// A retry reruns the whole journey from step 1, which is unsafe for
+		// journeys that create state. Require an explicit retries value.
+		retries = 0
 	}
 	headers, err := secrets.ResolveStringMap(ctx, r.cfg.Resolver, spec.Headers)
 	if err != nil {
@@ -317,6 +334,7 @@ func (r *Runner) explicitProbe(ctx context.Context, intent *intentView, state *s
 		Paths:        append([]string(nil), policy.HTTPPaths...),
 		Method:       firstNonEmpty(spec.Method, "GET"),
 		Headers:      headers,
+		Body:         spec.Body,
 		ExpectStatus: spec.ExpectStatus,
 		ExpectBody:   spec.ExpectBody,
 		ExpectIPs:    spec.ExpectIPs,
@@ -332,14 +350,145 @@ func (r *Runner) explicitProbe(ctx context.Context, intent *intentView, state *s
 	if target.URL == "" && target.Address == "" {
 		target.Address = resolved
 	}
+	if target.URL != "" && !strings.Contains(target.URL, "://") {
+		// Load balancer outputs are often host names without a scheme.
+		if target.Address == "" {
+			target.Address = target.URL
+		}
+		if target.Port == 0 {
+			target.Port = portFromAddress(target.URL)
+		}
+		target.URL = ""
+	}
 	if target.Port == 0 && target.Address != "" {
 		target.Port = portFromAddress(target.Address)
+	}
+	if journey {
+		target.Steps = r.buildJourneySteps(ctx, spec, target, probeType)
+		if target.URL == "" && target.Address == "" && len(target.Steps) > 0 {
+			target.URL = target.Steps[0].URL
+			target.Address = target.Steps[0].Address
+			target.Port = target.Steps[0].Port
+		}
+		target.Type = "journey"
 	}
 	identity := driverutil.CanonicalServiceIdentity(intent.Partition, intent.Name, assetName)
 	target.Service = identity.Name
 	target.FullName = identity.FullName
 	target.ID = ProbeID(r.cfg.Pusher, intent.Partition, intent.Name, assetName, target.Name, target.Type, targetValue(target))
 	return target, true, true
+}
+
+func stepsHaveExplicitTarget(steps []assetdefs.ProbeStep) bool {
+	for _, step := range steps {
+		if strings.TrimSpace(step.URL) != "" || strings.TrimSpace(step.Address) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Runner) buildJourneySteps(ctx context.Context, spec *assetdefs.ProbeSpec, base Target, baseType string) []Step {
+	steps := make([]Step, 0, len(spec.Steps))
+	for idx, raw := range spec.Steps {
+		name := strings.TrimSpace(raw.Name)
+		if name == "" {
+			name = fmt.Sprintf("step-%d", idx+1)
+		}
+		stepType := strings.ToLower(strings.TrimSpace(raw.Type))
+		if stepType == "" {
+			switch {
+			case strings.TrimSpace(raw.Service) != "" || strings.TrimSpace(raw.GRPCMethod) != "":
+				stepType = "grpc"
+			case strings.TrimSpace(raw.URL) != "":
+				stepType = inferProbeType(raw.URL, raw.Port)
+			case baseType == "http" || baseType == "https":
+				stepType = baseType
+			default:
+				stepType = inferProbeType(raw.Address, raw.Port)
+				if stepType != "https" {
+					stepType = "http"
+				}
+			}
+		}
+		headers, err := secrets.ResolveStringMap(ctx, r.cfg.Resolver, raw.Headers)
+		if err != nil {
+			log.Printf("[Probes] resolve headers for %s/%s step %s: %v", base.Partition, base.Intent, name, err)
+			headers = nil
+		}
+		headers = mergeStringMaps(base.Headers, headers)
+		metadata, err := secrets.ResolveStringMap(ctx, r.cfg.Resolver, raw.Metadata)
+		if err != nil {
+			log.Printf("[Probes] resolve metadata for %s/%s step %s: %v", base.Partition, base.Intent, name, err)
+			metadata = nil
+		}
+		step := Step{
+			Name:         name,
+			Type:         stepType,
+			URL:          raw.URL,
+			Address:      raw.Address,
+			Port:         raw.Port,
+			Path:         raw.Path,
+			Method:       firstNonEmpty(raw.Method, "GET"),
+			Headers:      headers,
+			Body:         raw.Body,
+			Patch:        raw.Patch,
+			Service:      raw.Service,
+			GRPCMethod:   raw.GRPCMethod,
+			Request:      raw.Request,
+			Metadata:     metadata,
+			ExpectStatus: append([]int(nil), raw.ExpectStatus...),
+			ExpectBody:   raw.ExpectBody,
+			ExpectJSON:   copyAnyMap(raw.ExpectJSON),
+			Capture:      copyStringMap(raw.Capture),
+			Timeout:      parseDuration(raw.Timeout, base.Timeout),
+			Insecure:     base.Insecure,
+		}
+		if raw.InsecureSkipVerify != nil {
+			step.Insecure = *raw.InsecureSkipVerify
+		}
+		if step.Type == "grpc" {
+			step.Method = ""
+		}
+		steps = append(steps, step)
+	}
+	return steps
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func copyAnyMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func mergeStringMaps(base, override map[string]string) map[string]string {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(base)+len(override))
+	for key, value := range base {
+		out[key] = value
+	}
+	for key, value := range override {
+		out[key] = value
+	}
+	return out
 }
 
 func (r *Runner) autoprobeTargets(intent *intentView, asset, output, value string, policy probePolicy) []Target {
