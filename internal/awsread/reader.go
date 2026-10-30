@@ -82,6 +82,65 @@ type ServiceInfo struct {
 	Account string `json:"account,omitempty"`
 }
 
+// Alarm is a normalized CloudWatch alarm.
+type Alarm struct {
+	Name                    string            `json:"name"`
+	ARN                     string            `json:"arn,omitempty"`
+	Account                 string            `json:"account,omitempty"`
+	Region                  string            `json:"region,omitempty"`
+	Type                    string            `json:"type"` // metric or composite
+	State                   string            `json:"state"`
+	StateReason             string            `json:"stateReason,omitempty"`
+	StateUpdatedAt          time.Time         `json:"stateUpdatedAt,omitempty"`
+	Namespace               string            `json:"namespace,omitempty"`
+	MetricName              string            `json:"metricName,omitempty"`
+	Dimensions              map[string]string `json:"dimensions,omitempty"`
+	Statistic               string            `json:"statistic,omitempty"`
+	Period                  int32             `json:"period,omitempty"`
+	EvaluationPeriods       int32             `json:"evaluationPeriods,omitempty"`
+	DatapointsToAlarm       int32             `json:"datapointsToAlarm,omitempty"`
+	Threshold               float64           `json:"threshold,omitempty"`
+	ComparisonOperator      string            `json:"comparisonOperator,omitempty"`
+	TreatMissingData        string            `json:"treatMissingData,omitempty"`
+	ActionsEnabled          bool              `json:"actionsEnabled"`
+	AlarmActions            []string          `json:"alarmActions,omitempty"`
+	OKActions               []string          `json:"okActions,omitempty"`
+	InsufficientDataActions []string          `json:"insufficientDataActions,omitempty"`
+	Tags                    map[string]string `json:"tags,omitempty"`
+	CompositeRule           string            `json:"compositeRule,omitempty"`
+	Parent                  string            `json:"parent,omitempty"`
+	Children                []string          `json:"children,omitempty"`
+}
+
+// AlarmQuery selects CloudWatch alarms.
+type AlarmQuery struct {
+	State      string
+	NamePrefix string
+	Region     string
+	Limit      int
+}
+
+// AlarmHistoryQuery selects CloudWatch alarm history.
+type AlarmHistoryQuery struct {
+	AlarmName string
+	Region    string
+	From      time.Time
+	To        time.Time
+	Limit     int
+}
+
+// AlarmHistoryItem is one alarm state transition.
+type AlarmHistoryItem struct {
+	AlarmName       string    `json:"alarmName"`
+	AlarmType       string    `json:"alarmType,omitempty"`
+	Timestamp       time.Time `json:"timestamp"`
+	HistoryItemType string    `json:"historyItemType,omitempty"`
+	HistorySummary  string    `json:"historySummary,omitempty"`
+	HistoryData     string    `json:"historyData,omitempty"`
+	Region          string    `json:"region,omitempty"`
+	Account         string    `json:"account,omitempty"`
+}
+
 // MetricQuery selects a CloudWatch metric series.
 type MetricQuery struct {
 	Namespace  string
@@ -119,4 +178,6 @@ type Reader interface {
 	ListServices(ctx context.Context) ([]ServiceInfo, error)
 	QueryTraces(ctx context.Context, q TraceQuery) ([]TraceSummary, error)
 	GetTrace(ctx context.Context, traceID string) ([]Span, error)
+	ListAlarms(ctx context.Context, q AlarmQuery) ([]Alarm, error)
+	AlarmHistory(ctx context.Context, q AlarmHistoryQuery) ([]AlarmHistoryItem, error)
 }

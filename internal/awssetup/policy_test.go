@@ -98,6 +98,9 @@ func TestDeployPolicyScoped(t *testing.T) {
 		"sts:GetCallerIdentity",
 		"cloudcontrol:ListResources",
 		"cloudwatch:GetMetricData",
+		"cloudwatch:DescribeAlarms",
+		"cloudwatch:DescribeAlarmHistory",
+		"cloudwatch:ListTagsForResource",
 		"logs:StartQuery",
 		"xray:GetTraceSummaries",
 	} {

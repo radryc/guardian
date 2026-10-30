@@ -88,6 +88,8 @@ type fakeReader struct {
 	spans     []Span
 	services  []string
 	groups    []string
+	alarms    []Alarm
+	history   []AlarmHistoryItem
 	lastQuery LogQuery
 }
 
@@ -119,6 +121,31 @@ func (f *fakeReader) QueryTraces(context.Context, TraceQuery) ([]TraceSummary, e
 }
 
 func (f *fakeReader) GetTrace(context.Context, string) ([]Span, error) { return f.spans, nil }
+
+func (f *fakeReader) ListAlarms(context.Context, AlarmQuery) ([]Alarm, error) {
+	return f.alarms, nil
+}
+
+func (f *fakeReader) AlarmHistory(context.Context, AlarmHistoryQuery) ([]AlarmHistoryItem, error) {
+	return f.history, nil
+}
+
+func TestHandlerListsAlarms(t *testing.T) {
+	reader := &fakeReader{alarms: []Alarm{{
+		Name: "guardian-probe-payments-down", State: "ALARM", Type: "metric",
+		Region: "eu-west-1", Tags: map[string]string{"sentinel.io/import": "true"},
+	}}}
+	h := NewHandler(reader, "")
+	req := httptest.NewRequest(http.MethodGet, "/v1/aws/alarms?state=ALARM&region=eu-west-1", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "guardian-probe-payments-down") {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
 
 func TestHandlerRequiresToken(t *testing.T) {
 	h := NewHandler(&fakeReader{}, "secret")

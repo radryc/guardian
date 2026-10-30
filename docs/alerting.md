@@ -90,3 +90,22 @@ go run ./cmd/guardianctl notify test \
 - End-to-end: point a local webhook receiver at the config, mark an intent
   `ApplyFailed` in the store, and observe exactly one firing notification and
   one recovery notification.
+
+## Sentinel delivery
+
+Guardian can use the existing webhook channel to deliver partition alerts to
+Sentinel. Configure the Sentinel URL and the same HMAC secret:
+
+```yaml
+notifications:
+  enabled: true
+  channels:
+    - name: sentinel
+      type: webhook
+      url: http://doctor-sentinel:18082/v1/alerts/intake/guardian
+      secretEnv: DOCTOR_SENTINEL_GUARDIAN_HMAC_SECRET
+```
+
+When Sentinel owns routing, disable any other Guardian notification channels to
+avoid duplicate pages. Sentinel retries failed deliveries; Guardian also retries
+on the next evaluation when every configured channel fails.
