@@ -98,6 +98,11 @@ Each asset spec has `type, name, version, dependsOn, flowMetricGroups, hints,
 payload, properties, skip`. Typed payload schemas and UI builder metadata live
 in `internal/domain/assets/`.
 
+`Probe` assets are executed by the pusher's probe runner rather than the
+deployment driver. A probe is either a single HTTP/TCP/DNS/TLS/gRPC-health
+check or a multi-step synthetic journey with HTTP and gRPC steps, captures,
+JSON assertions, and request patches. See [`probes.md`](probes.md).
+
 ### 2.4 Tasks and results
 
 Task ops: `CHECK | DIFF | APPLY | DESTROY` (`internal/domain/task`). A task

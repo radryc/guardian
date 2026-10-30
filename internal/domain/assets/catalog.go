@@ -291,8 +291,8 @@ var catalogTemplates = map[string]CatalogTemplate{
 	},
 	assetdomain.TypeProbe: {
 		Type:        assetdomain.TypeProbe,
-		Title:       "Health probe",
-		Description: "Explicit health probe executed by the pusher; results are exported as service telemetry.",
+		Title:       "Probe / user journey",
+		Description: "Explicit probe executed by the pusher: a single health check or a multi-step synthetic journey with GET/PUT/gRPC steps. Results are exported as service telemetry.",
 		Icon:        "🩺",
 		Category:    "Operations",
 		Template: map[string]any{
@@ -648,19 +648,22 @@ func objectStoreCatalogFields() []CatalogField {
 func probeCatalogFields() []CatalogField {
 	return []CatalogField{
 		{Path: "target", Title: "Target asset", Control: "asset-ref", RefTypes: []string{"Compute", "LoadBalancer", "Database", "SQLDatabase", "ObjectStore", "Observability"}, Description: "Asset whose outputs are probed. Overrides autoprobe for that asset."},
-		{Path: "type", Title: "Probe type", Control: "select", Options: []string{"http", "https", "tcp", "grpc", "dns", "tls"}, Description: "Probe protocol."},
+		{Path: "type", Title: "Probe type", Control: "select", Options: []string{"http", "https", "tcp", "grpc", "dns", "tls"}, Description: "Probe protocol. For journey steps that omit their own type, this is the default step type."},
 		{Path: "name", Title: "Probe name", Control: "text", Description: "Stable probe name; defaults to the asset name."},
 		{Path: "url", Title: "URL", Control: "text", Description: "Explicit URL for an independent probe."},
 		{Path: "address", Title: "Address", Control: "text", Description: "Explicit host:port or hostname."},
 		{Path: "port", Title: "Port", Control: "number", Description: "Port when the address does not include one."},
 		{Path: "path", Title: "HTTP path", Control: "text", Description: "Single HTTP path. Empty tries the standard health paths."},
 		{Path: "method", Title: "HTTP method", Control: "text", Description: "HTTP method, defaults to GET."},
+		{Path: "body", Title: "Request body JSON", Control: "json", Description: "Optional request body for the single-request probe. Objects are sent as JSON; strings are sent verbatim."},
+		{Path: "headers", Title: "Headers JSON", Control: "json", Description: "Request headers for single checks and HTTP journey steps. Values may contain secret references or ${var} placeholders."},
 		{Path: "expectStatus", Title: "Expected statuses", Control: "list", Description: "Accepted HTTP status codes."},
 		{Path: "expectBody", Title: "Expected body", Control: "text", Description: "Substring that must appear in the response body."},
 		{Path: "expectIps", Title: "Expected IPs", Control: "list", Description: "Accepted DNS answers."},
+		{Path: "steps", Title: "Journey steps JSON", Control: "json", Description: "Optional ordered synthetic journey. Each step supports HTTP (method/path/body) or gRPC (service/grpcMethod/request), response checks (expectStatus/expectBody/expectJson), and captures. Later steps can use ${name} values captured from earlier responses."},
 		{Path: "interval", Title: "Interval", Control: "text", Description: "Probe interval, e.g. 30s."},
-		{Path: "timeout", Title: "Timeout", Control: "text", Description: "Per-attempt timeout, e.g. 3s."},
-		{Path: "retries", Title: "Retries", Control: "number", Description: "Retries before reporting down."},
+		{Path: "timeout", Title: "Timeout", Control: "text", Description: "Per-step timeout, e.g. 3s."},
+		{Path: "retries", Title: "Retries", Control: "number", Description: "Retries before reporting down. Journeys default to 0 because a retry reruns every step."},
 		{Path: "insecureSkipVerify", Title: "Skip TLS verification", Control: "boolean", Description: "Disable TLS certificate verification."},
 		{Path: "enabled", Title: "Enabled", Control: "boolean", Description: "Disable this probe without removing it."},
 	}
