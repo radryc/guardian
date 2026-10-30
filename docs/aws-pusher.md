@@ -243,3 +243,19 @@ packageManager: none
 outputMap:
   vpcId: VpcId
 ```
+
+## Default Sentinel alarms
+
+The CDK pusher stacks create a default CloudWatch alarm pack for the pusher and
+its probes. The alarms are tagged `sentinel.io/import=true` and
+`sentinel.io/rule-pack=default`, so Sentinel's default `managed-only` selection
+policy imports them.
+
+When the stack has no `snsTopicArn`, the alarms have no actions and Sentinel
+polls them through `GET /v1/aws/alarms` and owns delivery. When an SNS topic is
+supplied, the alarms use native SNS delivery and Sentinel only presents them.
+
+The default pack covers probe down, consecutive failures, stale probe state,
+pusher CPU/memory, observe queue age, and DLQ depth. Use the
+`SentinelDefaultAlarms` construct props to disable the pack or override
+thresholds.
