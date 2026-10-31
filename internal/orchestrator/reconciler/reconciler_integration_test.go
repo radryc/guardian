@@ -1385,3 +1385,72 @@ spec:
 		}
 	}
 }
+
+func TestPartitionDeletionRequeuesStaleDestroy(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "test")
+	recon := reconciler.NewReconcilerWithOptions(store, disp, "1m", time.Millisecond)
+	seedRaw(t, ctx, store, paths.PartitionConfig("del-stale"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Partition
+metadata:
+  name: del-stale
+spec:
+  deletionPolicy: destroy
+  reconciliation:
+    mode: auto
+    interval: 30s
+`))
+	seedRaw(t, ctx, store, paths.IntentManifest("del-stale", "app"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: app
+spec:
+  intentType: standard
+  targetPusher: local
+  target:
+    cluster: local
+  assets:
+    - type: Compute
+      name: web
+      properties:
+        image: img:v1
+`))
+	if err := recon.ReconcilePartition(ctx, "del-stale", true); err != nil {
+		t.Fatalf("initial reconcile: %v", err)
+	}
+	if _, err := reconciler.RequestPartitionDeletion(ctx, store, "del-stale", "test"); err != nil {
+		t.Fatalf("request deletion: %v", err)
+	}
+	if err := recon.ReconcilePartition(ctx, "del-stale", true); err != nil {
+		t.Fatalf("deletion reconcile: %v", err)
+	}
+	first, err := common.LoadIntentState(ctx, store, "del-stale", "app")
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	firstTask := first.LastTaskID
+	if firstTask == "" {
+		t.Fatal("no DESTROY task queued")
+	}
+
+	time.Sleep(5 * time.Millisecond)
+	if err := recon.ReconcilePartition(ctx, "del-stale", true); err != nil {
+		t.Fatalf("stale reconcile: %v", err)
+	}
+	second, err := common.LoadIntentState(ctx, store, "del-stale", "app")
+	if err != nil {
+		t.Fatalf("reload state: %v", err)
+	}
+	if second.Status != statedomain.StatusDestroying {
+		t.Fatalf("status = %q, want Destroying", second.Status)
+	}
+	if second.LastTaskID == firstTask {
+		t.Fatal("stale DESTROY was not re-queued")
+	}
+	if _, err := store.ReadFile(ctx, paths.QueueTask("local", second.LastTaskID)); err != nil {
+		t.Fatalf("new DESTROY task missing: %v", err)
+	}
+}

@@ -15,6 +15,7 @@ import (
 	historydomain "github.com/radryc/guardian/internal/domain/history"
 	statedomain "github.com/radryc/guardian/internal/domain/state"
 	targetdomain "github.com/radryc/guardian/internal/domain/target"
+	taskdomain "github.com/radryc/guardian/internal/domain/task"
 	"github.com/radryc/guardian/internal/orchestrator/common"
 	"github.com/radryc/guardian/internal/paths"
 	"github.com/radryc/guardian/internal/store/memory"
@@ -576,4 +577,36 @@ func metricHasLabels(metricLabels []*dto.LabelPair, labels map[string]string) bo
 		}
 	}
 	return true
+}
+
+func TestQueueTaskWritesAuditCopy(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	d := NewDispatcher(store, "test")
+	task := &taskdomain.Task{
+		APIVersion:   "guardian/v1alpha1",
+		Kind:         "Task",
+		TaskID:       "task-audit-1",
+		Partition:    "demo",
+		Intent:       "api",
+		Op:           taskdomain.OpApply,
+		TargetPusher: "local",
+	}
+	if err := d.QueueTask(ctx, task); err != nil {
+		t.Fatalf("QueueTask: %v", err)
+	}
+	if _, err := store.ReadFile(ctx, paths.QueueTask("local", task.TaskID)); err != nil {
+		t.Fatalf("queue file missing: %v", err)
+	}
+	content, err := store.ReadFile(ctx, paths.TaskSpec("demo", task.TaskID))
+	if err != nil {
+		t.Fatalf("audit task spec missing: %v", err)
+	}
+	var got taskdomain.Task
+	if err := json.Unmarshal(content, &got); err != nil {
+		t.Fatalf("decode audit task: %v", err)
+	}
+	if got.TaskID != task.TaskID || got.Op != task.Op || got.Partition != task.Partition {
+		t.Fatalf("audit task mismatch: %+v", got)
+	}
 }

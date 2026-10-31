@@ -1,4 +1,21 @@
 import "./main.css";
+import {
+  createIcons,
+  ClipboardCheck,
+  Database,
+  ExternalLink,
+  GitBranch,
+  History,
+  LayoutGrid,
+  Link2,
+  ListChecks,
+  Menu,
+  Network,
+  Radar,
+  Sparkles,
+  Workflow,
+  X,
+} from "lucide";
 import { AppState, createState } from "./state";
 import {
   fetchJSON,
@@ -66,32 +83,320 @@ function rolloutsRefreshMs(): number {
 const FAST_REFRESH_BURST_MS = 60_000;
 const STALE_SNAPSHOT_AFTER_MS = 60_000;
 
-const THEME_KEY = "guardian.theme";
-const THEMES = ["midnight", "graphite", "ocean", "forest", "daylight"];
+const THEME_KEY = "strata.theme";
+const LEGACY_THEME_KEY = "guardian.theme";
+const THEMES = ["system", "midnight", "daylight", "graphite", "ocean", "forest"];
+
+function resolveTheme(theme: string): string {
+  if (theme !== "system") return THEMES.includes(theme) ? theme : "midnight";
+  try {
+    return window.matchMedia("(prefers-color-scheme: light)").matches ? "daylight" : "midnight";
+  } catch {
+    return "midnight";
+  }
+}
 
 function initThemePicker(): void {
   const select = document.getElementById("themeSelect") as HTMLSelectElement | null;
-  let saved = "midnight";
+  let saved = "system";
   try {
-    const stored = localStorage.getItem(THEME_KEY);
+    const stored = localStorage.getItem(THEME_KEY) || localStorage.getItem(LEGACY_THEME_KEY);
     if (stored && THEMES.includes(stored)) saved = stored;
   } catch { /* localStorage unavailable */ }
   applyTheme(saved);
+  watchSystemTheme();
   if (!select) return;
   select.value = saved;
   select.addEventListener("change", () => applyTheme(select.value));
 }
 
 function applyTheme(theme: string): void {
-  const next = THEMES.includes(theme) ? theme : "midnight";
-  document.documentElement.setAttribute("data-theme", next);
+  const next = THEMES.includes(theme) ? theme : "system";
+  const resolved = resolveTheme(next);
+  document.documentElement.setAttribute("data-theme", resolved);
+  document.documentElement.dataset.themePreference = next;
   try { localStorage.setItem(THEME_KEY, next); } catch { /* ignore */ }
   const select = document.getElementById("themeSelect") as HTMLSelectElement | null;
   if (select && select.value !== next) select.value = next;
+  window.dispatchEvent(new CustomEvent("strata:themechange", {
+    detail: { preference: next, resolved },
+  }));
+}
+
+function watchSystemTheme(): void {
+  try {
+    const media = window.matchMedia("(prefers-color-scheme: light)");
+    media.addEventListener?.("change", () => {
+      let preference = "system";
+      try { preference = localStorage.getItem(THEME_KEY) || "system"; } catch { /* ignore */ }
+      if (preference === "system") applyTheme("system");
+    });
+  } catch { /* matchMedia unavailable */ }
+}
+
+// ── Mobile navigation ────────────────────────────────
+function initMobileSidebar(): void {
+  const toggle = document.getElementById("sidebarToggle");
+  const sidebar = document.getElementById("sidebar");
+  const backdrop = document.getElementById("sidebarBackdrop");
+  if (!toggle || !sidebar || !backdrop) return;
+  const setOpen = (open: boolean) => {
+    sidebar.classList.toggle("is-open", open);
+    backdrop.hidden = !open;
+    toggle.setAttribute("aria-expanded", String(open));
+  };
+  toggle.addEventListener("click", () => setOpen(!sidebar.classList.contains("is-open")));
+  backdrop.addEventListener("click", () => setOpen(false));
+  sidebar.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    if (target.closest(".nav-item")) setOpen(false);
+  });
+  window.addEventListener("resize", () => {
+    if (window.innerWidth > 900) setOpen(false);
+  });
+}
+
+// ── Ask Strata drawer ────────────────────────────────
+function agentBaseUrl(): string {
+  const configured = (window as unknown as { STRATA_AGENT_URL?: string }).STRATA_AGENT_URL;
+  return (configured || "http://localhost:3000").replace(/\/$/, "");
+}
+
+function askStrataUrl(): string {
+  const context = `Guardian · ${window.location.pathname}${window.location.search}`;
+  return `${agentBaseUrl()}/embed/ask?context=${encodeURIComponent(context)}`;
+}
+
+function initAskStrata(): void {
+  const drawer = document.getElementById("askStrataDrawer");
+  const frame = document.getElementById("askStrataFrame") as HTMLIFrameElement | null;
+  const external = document.getElementById("askStrataExternal") as HTMLAnchorElement | null;
+  const close = document.getElementById("askStrataClose") as HTMLButtonElement | null;
+  let previousFocus: HTMLElement | null = null;
+  const open = () => {
+    const url = askStrataUrl();
+    if (frame) frame.src = url;
+    if (external) external.href = url;
+    previousFocus = document.activeElement as HTMLElement | null;
+    if (drawer) drawer.hidden = false;
+    window.setTimeout(() => close?.focus(), 30);
+  };
+  const hide = () => {
+    if (drawer) drawer.hidden = true;
+    previousFocus?.focus();
+  };
+  document.getElementById("askStrataButton")?.addEventListener("click", open);
+  close?.addEventListener("click", hide);
+  drawer?.addEventListener("click", (event) => {
+    if (event.target === drawer) hide();
+  });
+  window.addEventListener("keydown", (event) => {
+    if (!drawer || drawer.hidden) return;
+    if (event.key === "Escape") {
+      hide();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = Array.from(drawer.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), iframe, input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    ));
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+}
+
+// ── Command palette ──────────────────────────────────
+interface PaletteCommand {
+  group: string;
+  label: string;
+  hint?: string;
+  run: () => void;
+}
+
+let paletteCommands: PaletteCommand[] = [];
+let paletteActive = 0;
+
+function buildPaletteCommands(): PaletteCommand[] {
+  const panels: Array<[string, string]> = [
+    ["Overview", "overviewPanel"],
+    ["Topology", "topologyPanel"],
+    ["Rollouts", "rolloutsPanel"],
+    ["History", "historyPanel"],
+    ["Scan & Import", "scanPanel"],
+    ["Unmanaged Stacks", "unmanagedPanel"],
+    ["Pushers & Repos", "registryPanel"],
+    ["Build", "builderPanel"],
+  ];
+  const commands: PaletteCommand[] = panels.map(([label, panel]) => ({
+    group: "Go to",
+    label,
+    hint: "panel",
+    run: () => activatePanel(panel),
+  }));
+  for (const partition of state.overview?.partitions ?? []) {
+    commands.push({
+      group: "Partitions",
+      label: partition.name,
+      hint: partition.health ?? "partition",
+      run: () => { selectPartition(partition.name).catch(handleError); },
+    });
+  }
+  return commands;
+}
+
+function renderPalette(query = ""): void {
+  const list = document.getElementById("commandList");
+  if (!list) return;
+  const needle = query.trim().toLowerCase();
+  const filtered = paletteCommands.filter((command) =>
+    `${command.group} ${command.label}`.toLowerCase().includes(needle)
+  );
+  paletteActive = Math.max(0, Math.min(paletteActive, filtered.length - 1));
+  if (filtered.length === 0) {
+    list.innerHTML = '<div class="command-empty">No matching commands.</div>';
+    return;
+  }
+  let lastGroup = "";
+  list.innerHTML = filtered.map((command, index) => {
+    const group = command.group !== lastGroup
+      ? `<div class="command-group">${escapeHtml(command.group)}</div>`
+      : "";
+    lastGroup = command.group;
+    return `${group}<button type="button" class="command-item${index === paletteActive ? " is-active" : ""}" data-command-index="${index}">
+      <span>${escapeHtml(command.label)}</span>
+      ${command.hint ? `<kbd>${escapeHtml(command.hint)}</kbd>` : ""}
+    </button>`;
+  }).join("");
+  list.querySelectorAll<HTMLElement>("[data-command-index]").forEach((element) => {
+    element.addEventListener("click", () => {
+      const index = Number(element.dataset.commandIndex);
+      const command = filtered[index];
+      if (!command) return;
+      closeCommandPalette();
+      command.run();
+    });
+  });
+  // Keep the active row in view.
+  list.querySelector<HTMLElement>(".command-item.is-active")?.scrollIntoView({ block: "nearest" });
+}
+
+function openCommandPalette(): void {
+  paletteCommands = buildPaletteCommands();
+  paletteActive = 0;
+  const root = document.getElementById("commandPalette");
+  const input = document.getElementById("commandSearch") as HTMLInputElement | null;
+  if (!root || !input) return;
+  root.classList.remove("hidden");
+  input.value = "";
+  renderPalette();
+  window.setTimeout(() => input.focus(), 20);
+}
+
+function closeCommandPalette(): void {
+  document.getElementById("commandPalette")?.classList.add("hidden");
+}
+
+function initCommandPalette(): void {
+  document.getElementById("commandTrigger")?.addEventListener("click", openCommandPalette);
+  const root = document.getElementById("commandPalette");
+  const input = document.getElementById("commandSearch") as HTMLInputElement | null;
+  root?.addEventListener("click", (event) => {
+    if (event.target === root) closeCommandPalette();
+  });
+  input?.addEventListener("input", () => {
+    paletteActive = 0;
+    renderPalette(input.value);
+  });
+  input?.addEventListener("keydown", (event) => {
+    const filtered = paletteCommands.filter((command) =>
+      `${command.group} ${command.label}`.toLowerCase().includes(input.value.trim().toLowerCase())
+    );
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      paletteActive = Math.min(paletteActive + 1, filtered.length - 1);
+      renderPalette(input.value);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      paletteActive = Math.max(paletteActive - 1, 0);
+      renderPalette(input.value);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const command = filtered[paletteActive];
+      if (command) {
+        closeCommandPalette();
+        command.run();
+      }
+    } else if (event.key === "Escape") {
+      closeCommandPalette();
+    }
+  });
+  window.addEventListener("keydown", (event) => {
+    if (root && !root.classList.contains("hidden") && event.key === "Tab") {
+      const card = root.querySelector<HTMLElement>(".command-palette-card");
+      if (card) {
+        const focusable = Array.from(card.querySelectorAll<HTMLElement>(
+          'input, button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'
+        ));
+        if (focusable.length > 0) {
+          const first = focusable[0];
+          const last = focusable[focusable.length - 1];
+          if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+          }
+        }
+      }
+    }
+    const target = event.target as HTMLElement | null;
+    const typing = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      if (root?.classList.contains("hidden")) openCommandPalette();
+      else closeCommandPalette();
+      return;
+    }
+    if (!typing && event.key === "/") {
+      event.preventDefault();
+      openCommandPalette();
+    }
+  });
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  createIcons({
+    icons: {
+      LayoutGrid,
+      Link2,
+      ClipboardCheck,
+      Workflow,
+      Network,
+      GitBranch,
+      History,
+      Radar,
+      Sparkles,
+      ExternalLink,
+      X,
+      Menu,
+      ListChecks,
+      Database,
+    },
+    attrs: { "stroke-width": 1.75 },
+  });
   initThemePicker();
+  initCommandPalette();
+  initAskStrata();
+  initMobileSidebar();
   hydrateStateFromLocation();
   wireEvents();
   bootstrap().catch(handleError);
@@ -272,8 +577,11 @@ function activatePanel(panelId: string, scope?: PanelScope): void {
   const navTarget = ["topologyPanel", "rolloutsPanel", "historyPanel", "setPanel"].includes(panelId)
     ? "overviewPanel"
     : panelId === "scanPanel" ? "unmanagedPanel" : panelId;
-  document.querySelectorAll(".nav-item[data-tab-target]").forEach((btn) => {
-    btn.classList.toggle("active", (btn as HTMLElement).dataset.tabTarget === navTarget);
+  document.querySelectorAll<HTMLElement>(".nav-item[data-tab-target]").forEach((btn) => {
+    const active = btn.dataset.tabTarget === navTarget;
+    btn.classList.toggle("active", active);
+    if (active) btn.setAttribute("aria-current", "page");
+    else btn.removeAttribute("aria-current");
   });
   document.querySelectorAll<HTMLElement>("[data-adopt-tab]").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.adoptTab === panelId);
@@ -517,7 +825,7 @@ function renderPartitionList(): void {
   const container = document.getElementById("partitionList");
   if (!container) return;
   if (!state.overview) {
-    container.className = "grid gap-1 loading-state text-sm text-[#566778]";
+    container.className = "grid gap-1 loading-state text-sm text-text-muted";
     container.textContent = "Loading partitions…";
     return;
   }
@@ -527,7 +835,7 @@ function renderPartitionList(): void {
     return `${p.name} ${Object.keys(p.labels ?? {}).join(" ")} ${Object.values(p.labels ?? {}).join(" ")}`.toLowerCase().includes(search);
   });
   if (!partitions.length) {
-    container.className = "grid gap-1 empty-state text-sm text-[#566778]";
+    container.className = "grid gap-1 empty-state text-sm text-text-muted";
     container.textContent = "No partitions available.";
     return;
   }
@@ -568,7 +876,7 @@ function renderAppGrid(): void {
   });
   const partitions = allPartitions.slice(0, 12);
   if (!partitions.length) {
-    container.className = "grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-2.5 empty-state text-sm text-[#566778]";
+    container.className = "grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-2.5 empty-state text-sm text-text-muted";
     container.textContent = state.overview ? "No partitions match the filter." : "Loading partitions…";
     return;
   }
@@ -621,7 +929,7 @@ function renderPartitionDetail(): void {
   }
 
   if (!detail) {
-    hero.className = "loading-state text-sm text-[#566778]";
+    hero.className = "loading-state text-sm text-text-muted";
     hero.textContent = "Select a partition to inspect its current shape.";
     renderGlobalAttention();
     setDetailCardsVisible(false);
@@ -781,7 +1089,7 @@ function assignmentPath(label: string, value: unknown): string {
 
 function heroMetric(label: string, value: number): string {
   return `
-    <div class="stat-card rounded-lg border border-white/[0.09]">
+    <div class="stat-card rounded-lg border border-border">
       <div class="stat-label">${escapeHtml(label)}</div>
       <div class="stat-value">${value}</div>
     </div>
@@ -804,7 +1112,7 @@ function renderGlobalAttention(): void {
     return health !== "healthy" && health !== "observed";
   }).slice(0, 12);
   if (!items.length) {
-    container.className = "empty-state text-sm text-[#566778]";
+    container.className = "empty-state text-sm text-text-muted";
     container.textContent = "Nothing needs attention right now.";
     return;
   }
@@ -832,7 +1140,7 @@ function renderAttentionAssets(): void {
   const flagged = collectFlaggedAssets();
   const pending = collectPendingAssets();
   if (!flagged.length && !pending.length) {
-    container.className = "empty-state text-sm text-[#566778]";
+    container.className = "empty-state text-sm text-text-muted";
     container.textContent = "No assets need attention right now.";
     return;
   }
@@ -921,7 +1229,7 @@ function renderIntentCards(): void {
   if (!container) return;
   const intents = state.detail?.intents ?? [];
   if (!intents.length) {
-    container.className = "empty-state text-sm text-[#566778]";
+    container.className = "empty-state text-sm text-text-muted";
     container.textContent = "No intents defined for this partition yet.";
     return;
   }
@@ -1179,7 +1487,7 @@ function renderServiceHealth(): void {
   if (!container) return;
   const services = state.detail?.health?.services ?? [];
   if (!services.length) {
-    container.className = "empty-state text-sm text-[#566778]";
+    container.className = "empty-state text-sm text-text-muted";
     container.textContent = "No service-like assets to score yet.";
     return;
   }
@@ -1264,7 +1572,7 @@ function renderRecentEvents(): void {
   if (!container) return;
   const events = state.detail?.recentEvents ?? [];
   if (!events.length) {
-    container.className = "empty-state text-sm text-[#566778]";
+    container.className = "empty-state text-sm text-text-muted";
     container.textContent = "Recent event history loads only in the History tab.";
     return;
   }
@@ -1278,31 +1586,31 @@ function renderHistory(): void {
   const eContainer = document.getElementById("eventTimeline");
   if (!dContainer || !eContainer) return;
   if (!state.selectedPartition) {
-    dContainer.className = "empty-state text-sm text-[#566778]";
+    dContainer.className = "empty-state text-sm text-text-muted";
     dContainer.textContent = "Select a partition to inspect deployment history.";
-    eContainer.className = "empty-state text-sm text-[#566778]";
+    eContainer.className = "empty-state text-sm text-text-muted";
     eContainer.textContent = "Select a partition to inspect event history.";
     return;
   }
   if (state.historyLoading) {
-    dContainer.className = "loading-state text-sm text-[#566778]";
+    dContainer.className = "loading-state text-sm text-text-muted";
     dContainer.textContent = "Loading deployment history…";
-    eContainer.className = "loading-state text-sm text-[#566778]";
+    eContainer.className = "loading-state text-sm text-text-muted";
     eContainer.textContent = "Loading event history…";
     return;
   }
   if (state.historyError) {
-    dContainer.className = "empty-state text-sm text-[#566778]";
+    dContainer.className = "empty-state text-sm text-text-muted";
     dContainer.textContent = state.historyError;
-    eContainer.className = "empty-state text-sm text-[#566778]";
+    eContainer.className = "empty-state text-sm text-text-muted";
     eContainer.textContent = state.historyError;
     return;
   }
   const history = state.history;
   if (!history) {
-    dContainer.className = "empty-state text-sm text-[#566778]";
+    dContainer.className = "empty-state text-sm text-text-muted";
     dContainer.textContent = "Open the History tab to load deployment history.";
-    eContainer.className = "empty-state text-sm text-[#566778]";
+    eContainer.className = "empty-state text-sm text-text-muted";
     eContainer.textContent = "Open the History tab to load event history.";
     return;
   }
@@ -1316,13 +1624,13 @@ function renderHistory(): void {
     return `${e.intent ?? ""} ${e.title ?? ""} ${e.message ?? ""}`.toLowerCase().includes(filter);
   });
 
-  dContainer.className = deployments.length ? "timeline-stack" : "empty-state text-sm text-[#566778]";
+  dContainer.className = deployments.length ? "timeline-stack" : "empty-state text-sm text-text-muted";
   dContainer.innerHTML = deployments.length ? deployments.map(renderDeploymentCard).join("") : "No deployment entries match the current filter.";
 
   const groupToggle = document.getElementById("historyGroupToggle") as HTMLInputElement | null;
   const shouldGroup = !groupToggle || groupToggle.checked;
   const groupedEvents = shouldGroup ? groupEventsByType(events) : events;
-  eContainer.className = groupedEvents.length ? "timeline-stack" : "empty-state text-sm text-[#566778]";
+  eContainer.className = groupedEvents.length ? "timeline-stack" : "empty-state text-sm text-text-muted";
   eContainer.innerHTML = groupedEvents.length ? groupedEvents.map(renderEventCard).join("") : "No events match the current filter.";
 }
 
@@ -1352,23 +1660,23 @@ function renderRollouts(): void {
   const container = document.getElementById("rolloutsTimeline");
   if (!container) return;
   if (!state.selectedPartition) {
-    container.className = "empty-state text-sm text-[#566778]";
+    container.className = "empty-state text-sm text-text-muted";
     container.textContent = "Select a partition to inspect rollout history.";
     return;
   }
   if (state.rolloutsLoading) {
-    container.className = "loading-state text-sm text-[#566778]";
+    container.className = "loading-state text-sm text-text-muted";
     container.textContent = "Loading rollouts…";
     return;
   }
   if (state.rolloutsError) {
-    container.className = "empty-state text-sm text-[#566778]";
+    container.className = "empty-state text-sm text-text-muted";
     container.textContent = state.rolloutsError;
     return;
   }
   const rollouts: any[] = state.rollouts?.rollouts ?? [];
   if (!rollouts.length) {
-    container.className = "empty-state text-sm text-[#566778]";
+    container.className = "empty-state text-sm text-text-muted";
     container.textContent = "No archived rollouts were found for this partition yet.";
     return;
   }
@@ -2076,7 +2384,7 @@ function renderDeploymentCard(item: any): string {
           <div class="timeline-asset">
             <div class="flex justify-between items-start gap-2">
               <div>
-                <strong class="text-[13px] text-[#E5ECF4]">${escapeHtml(a.asset)}</strong>
+                <strong class="text-[13px] text-text-primary">${escapeHtml(a.asset)}</strong>
                 <div class="muted">${escapeHtml(a.summary ?? "")}</div>
               </div>
               ${renderBadge(a.status, a.displayStatus)}
@@ -2137,14 +2445,14 @@ function renderTopologyDetailsPanel(): void {
   if (!container) return;
   const topology = state.detail?.topology;
   if (!topology?.nodes?.length) {
-    container.className = "empty-state text-sm text-[#566778]";
+    container.className = "empty-state text-sm text-text-muted";
     container.textContent = "Select a node to inspect its status, metadata, and linked details.";
     return;
   }
   const nodeMap = new Map<string, any>(topology.nodes.map((n: any) => [n.id, n]));
   const selectedNode = nodeMap.get(state.topology.selectedNodeId);
   if (!selectedNode) {
-    container.className = "empty-state text-sm text-[#566778]";
+    container.className = "empty-state text-sm text-text-muted";
     container.textContent = "Select a node to inspect its status, metadata, and linked details.";
     return;
   }

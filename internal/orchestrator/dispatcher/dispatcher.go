@@ -138,13 +138,22 @@ func (d *Dispatcher) QueueTask(ctx context.Context, t *taskdomain.Task) error {
 	if correlationID == "" {
 		correlationID = revisions.NewCorrelationID()
 	}
-	// Write only the queue file — TaskState under .state/tasks/ is an audit
-	// duplicate of the same content.  Removing it halves the write cost per
-	// task queue operation.
+	// Queue files are deleted by the result processor. Keep an immutable audit
+	// copy under .state/tasks so the exact executed payload is reconstructible
+	// for incident response and compliance.
+	writes := []guardianapi.PathWrite{
+		{LogicalPath: paths.QueueTask(t.TargetPusher, t.TaskID), Content: content},
+	}
+	if err := paths.ValidatePartitionName(t.Partition); err == nil && strings.TrimSpace(t.TaskID) != "" {
+		if err := paths.ValidateTaskID(t.TaskID); err == nil {
+			writes = append(writes, guardianapi.PathWrite{
+				LogicalPath: paths.TaskSpec(t.Partition, t.TaskID),
+				Content:     content,
+			})
+		}
+	}
 	_, err = d.store.UpsertFiles(ctx, guardianapi.MutationBatch{
-		Writes: []guardianapi.PathWrite{
-			{LogicalPath: paths.QueueTask(t.TargetPusher, t.TaskID), Content: content},
-		},
+		Writes:  writes,
 		Context: guardianapi.MutationContext{PrincipalID: d.principalID, Reason: "queue task", CorrelationID: correlationID},
 	})
 	if err != nil {

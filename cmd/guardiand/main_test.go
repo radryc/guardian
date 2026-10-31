@@ -183,6 +183,15 @@ spec:
         image: api:v1
 `))
 
+	seedJSONFile(t, ctx, store, paths.QueueTask("local", "task-apply-2"), taskdomain.Task{
+		APIVersion:   "guardian/v1alpha1",
+		Kind:         "Task",
+		TaskID:       "task-apply-2",
+		Op:           taskdomain.OpApply,
+		Partition:    "payments",
+		Intent:       "api",
+		TargetPusher: "local",
+	})
 	seedJSONFile(t, ctx, store, paths.QueueResult("local", "task-apply-2"), taskdomain.TaskResult{
 		APIVersion: "guardian/v1alpha1",
 		Kind:       "TaskResult",
@@ -332,6 +341,15 @@ func TestProcessLiveResultFilesProcessesManyResults(t *testing.T) {
 			Target:            targetdomain.Placement{Cluster: "local"},
 			LastTaskID:        taskID,
 			Timestamps:        statedomain.StateTimestamps{LastQueuedAt: finishedAt},
+		})
+		seedJSONFile(t, ctx, store, paths.QueueTask("local", taskID), taskdomain.Task{
+			APIVersion:   "guardian/v1alpha1",
+			Kind:         "Task",
+			TaskID:       taskID,
+			Op:           taskdomain.OpDestroy,
+			Partition:    partition,
+			Intent:       "api",
+			TargetPusher: "local",
 		})
 		seedJSONFile(t, ctx, store, paths.QueueResult("local", taskID), taskdomain.TaskResult{
 			APIVersion: "guardian/v1alpha1",

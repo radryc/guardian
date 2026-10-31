@@ -8,123 +8,118 @@
   <script type="module" crossorigin src="/app.js"></script>
   <link rel="stylesheet" crossorigin href="/app.css">
 </head>
-<body class="bg-[#060A14] text-[#E5ECF4] font-sans antialiased">
+<body class="bg-bg-base text-text-primary font-sans antialiased">
+  <a class="s-skip-link" href="#mainContent">Skip to content</a>
 
   <!-- Top navigation -->
-  <nav id="topnav" class="fixed inset-x-0 top-0 z-50 h-12 flex items-center gap-0 px-4 bg-[#0D1220] border-b border-white/[0.09]">
-    <a href="/" class="inline-flex items-center gap-2.5 mr-2 pr-4 border-r border-white/[0.09] no-underline">
-      <img src="/guardian.png" alt="Guardian" class="w-6 h-6 shrink-0 object-contain" />
-      <span class="text-sm font-bold text-[#E5ECF4] leading-none">Guardian</span>
+  <nav id="topnav" aria-label="Primary" class="fixed inset-x-0 top-0 z-50 h-[52px] flex items-center gap-0 px-4 bg-bg-surface border-b border-border">
+    <button id="sidebarToggle" class="sidebar-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false">
+      <i data-lucide="menu" class="w-4 h-4"></i>
+    </button>
+    <a href="/" class="inline-flex items-center gap-2.5 mr-2 pr-4 border-r border-border no-underline">
+      <img src="/guardian.png" alt="" class="w-6 h-6 shrink-0 object-contain" />
+      <span class="text-sm font-bold text-text-primary leading-none">Guardian</span>
     </a>
-    <div class="flex items-center gap-1 text-[#9BB0CF] text-[13px] ml-1">
+    <div id="topnavBreadcrumb" class="flex items-center gap-1 text-text-secondary text-[13px] ml-1">
       <span>Local</span>
-      <span class="text-[#566778] text-base leading-none">/</span>
-      <span id="topnavPartition" class="text-[#E5ECF4] font-semibold">Control Center</span>
+      <span class="text-text-muted text-base leading-none">/</span>
+      <span id="topnavPartition" class="text-text-primary font-semibold">Control Center</span>
     </div>
     <div class="flex-1"></div>
+    <button id="askStrataButton" class="btn-secondary ml-2" type="button" title="Ask Strata about this view">
+      <i data-lucide="sparkles" class="w-4 h-4"></i>
+      <span>Ask</span>
+    </button>
     <span
       id="buildVersionStamp"
-      class="inline-flex items-center gap-1 px-2 py-1 mr-2 rounded-full text-[10px] font-semibold text-[#9BB0CF] bg-[#151B2B] border border-white/[0.09]"
+      class="inline-flex items-center gap-1 px-2 py-1 mr-2 rounded-full text-[10px] font-semibold text-text-secondary bg-bg-elevated border border-border"
       title="build: local static preview"
     >
       dev
     </span>
-    <span id="syncIndicator" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold text-[#9BB0CF] bg-[#151B2B] border border-white/[0.09] cursor-pointer select-none" title="Click to change refresh rate">Loading…</span>
-    <a href="/auth/logout" class="inline-flex items-center px-2.5 py-1 ml-2 rounded-full text-[11px] font-semibold text-[#9BB0CF] bg-[#151B2B] border border-white/[0.09] hover:text-[#E5ECF4] no-underline" title="Sign out">Sign out</a>
+    <span id="syncIndicator" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold text-text-secondary bg-bg-elevated border border-border cursor-pointer select-none" title="Click to change refresh rate">Loading…</span>
+    <a href="/auth/logout" class="inline-flex items-center px-2.5 py-1 ml-2 rounded-full text-[11px] font-semibold text-text-secondary bg-bg-elevated border border-border hover:text-text-primary no-underline" title="Sign out">Sign out</a>
     <!-- Refresh rate popover -->
-    <div id="refreshPopover" class="refresh-popover hidden absolute top-full right-4 mt-1.5 w-52 rounded-lg border border-white/[0.09] bg-[#151B2B] shadow-lg p-3 z-50">
+    <div id="refreshPopover" class="refresh-popover hidden absolute top-full right-4 mt-1.5 w-52 rounded-lg border border-border bg-bg-elevated shadow-lg p-3 z-50">
       <div class="flex items-center justify-between mb-1.5">
-        <span class="text-[11px] font-semibold text-[#9BB0CF]">Auto-refresh</span>
-        <span id="refreshIntervalLabel" class="text-[11px] font-bold text-[#E5ECF4] tabular-nums">20s</span>
+        <span class="text-[11px] font-semibold text-text-secondary">Auto-refresh</span>
+        <span id="refreshIntervalLabel" class="text-[11px] font-bold text-text-primary tabular-nums">20s</span>
       </div>
       <input type="range" id="refreshSlider" class="refresh-slider w-full" min="1" max="120" value="20" step="1" />
-      <div class="flex justify-between text-[9px] text-[#566778] mt-0.5">
+      <div class="flex justify-between text-[9px] text-text-muted mt-0.5">
         <span>1s</span>
         <span>120s</span>
       </div>
     </div>
   </nav>
 
-  <div class="app-shell flex min-h-screen pt-12">
+  <div id="sidebarBackdrop" class="sidebar-backdrop" hidden></div>
+  <div class="app-shell flex min-h-screen pt-[52px]">
     <!-- Sidebar -->
-    <aside id="sidebar" class="fixed top-12 bottom-0 left-0 w-[220px] flex flex-col bg-[#0D1220] border-r border-white/[0.09]">
-      <nav class="grid gap-0.5 p-2.5 shrink-0">
+    <aside id="sidebar" class="fixed top-[52px] bottom-0 left-0 w-[236px] flex flex-col bg-bg-surface border-r border-border">
+      <nav aria-label="Sections" class="grid gap-0.5 p-2.5 shrink-0">
         <button class="nav-item active" data-tab-target="overviewPanel">
-          <svg class="w-4 h-4 shrink-0 opacity-85" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-            <rect x="2" y="2" width="7" height="7" rx="1.5"/><rect x="11" y="2" width="7" height="7" rx="1.5"/>
-            <rect x="2" y="11" width="7" height="7" rx="1.5"/><rect x="11" y="11" width="7" height="7" rx="1.5"/>
-          </svg>
+          <i data-lucide="layout-grid" class="w-4 h-4 shrink-0 opacity-85"></i>
           <span>Applications</span>
         </button>
         <button class="nav-item" data-tab-target="topologyPanel">
-          <svg class="w-4 h-4 shrink-0 opacity-85" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-            <circle cx="10" cy="4" r="2"/><circle cx="3.5" cy="15.5" r="2"/><circle cx="16.5" cy="15.5" r="2"/>
-            <line x1="10" y1="6" x2="4.5" y2="13.5"/><line x1="10" y1="6" x2="15.5" y2="13.5"/>
-          </svg>
+          <i data-lucide="network" class="w-4 h-4 shrink-0 opacity-85"></i>
           <span>Topology</span>
         </button>
         <button class="nav-item" data-tab-target="rolloutsPanel">
-          <svg class="w-4 h-4 shrink-0 opacity-85" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-            <path d="M4 10h12"/><path d="M10 4l6 6-6 6"/>
-          </svg>
+          <i data-lucide="git-branch" class="w-4 h-4 shrink-0 opacity-85"></i>
           <span>Rollouts</span>
         </button>
         <button class="nav-item" data-tab-target="historyPanel">
-          <svg class="w-4 h-4 shrink-0 opacity-85" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-            <circle cx="10" cy="10" r="7.5"/><polyline points="10,6 10,10 13,12"/>
-          </svg>
+          <i data-lucide="history" class="w-4 h-4 shrink-0 opacity-85"></i>
           <span>History</span>
         </button>
         <button class="nav-item" data-tab-target="scanPanel" data-open-scope="new">
-          <svg class="w-4 h-4 shrink-0 opacity-85" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-            <circle cx="10" cy="10" r="2"/><path d="M10 4a6 6 0 0 1 6 6"/><path d="M10 1.5a8.5 8.5 0 0 1 8.5 8.5"/><path d="M10 16a6 6 0 0 1-6-6"/><path d="M10 18.5A8.5 8.5 0 0 1 1.5 10"/>
-          </svg>
+          <i data-lucide="radar" class="w-4 h-4 shrink-0 opacity-85"></i>
           <span>Scan &amp; Import</span>
         </button>
         <button class="nav-item" data-tab-target="unmanagedPanel" data-open-scope="new">
-          <svg class="w-4 h-4 shrink-0 opacity-85" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-            <path d="M3 4.5h14M3 10h14M3 15.5h9"/><circle cx="16" cy="15.5" r="2"/>
-          </svg>
+          <i data-lucide="list-checks" class="w-4 h-4 shrink-0 opacity-85"></i>
           <span>Unmanaged Stacks</span>
         </button>
         <button class="nav-item" data-tab-target="registryPanel" data-open-scope="new">
-          <svg class="w-4 h-4 shrink-0 opacity-85" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-            <ellipse cx="10" cy="5" rx="6.5" ry="2.5"/><path d="M3.5 5v5c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5V5"/><path d="M3.5 10v5c0 1.4 2.9 2.5 6.5 2.5s6.5-1.1 6.5-2.5v-5"/>
-          </svg>
+          <i data-lucide="database" class="w-4 h-4 shrink-0 opacity-85"></i>
           <span>Pushers &amp; Repos</span>
         </button>
         <button class="nav-item" data-tab-target="builderPanel" data-open-scope="new">
-          <svg class="w-4 h-4 shrink-0 opacity-85" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-            <rect x="2" y="2" width="6" height="6" rx="1.5"/><rect x="12" y="12" width="6" height="6" rx="1.5"/>
-            <path d="M8 5h4a3 3 0 0 1 3 3v4"/>
-          </svg>
+          <i data-lucide="workflow" class="w-4 h-4 shrink-0 opacity-85"></i>
           <span>Build</span>
         </button>
       </nav>
 
+      <button id="commandTrigger" class="btn-ghost mx-2.5 mb-2 w-[calc(100%-20px)]" type="button" title="Quick jump (Ctrl/Cmd-K)">
+        <span>Quick jump</span>
+        <kbd>⌘K</kbd>
+      </button>
+
       <section id="sidebarPartitionSection" class="flex-1 min-h-0 overflow-y-auto px-2.5 pb-4">
-        <div class="px-0.5 mb-2 text-[10px] font-bold uppercase tracking-[0.1em] text-[#566778]">Partitions</div>
+        <div class="px-0.5 mb-2 text-[10px] font-bold uppercase tracking-[0.1em] text-text-muted">Partitions</div>
         <div class="flex gap-1.5 mb-2">
           <input id="partitionSearch" class="search-input flex-1" type="search" placeholder="Search partitions" />
           <button id="createPartitionButton" class="btn-ghost">New</button>
         </div>
-        <div id="partitionList" class="grid gap-1 loading-state text-sm text-[#566778]">Loading partitions…</div>
+        <div id="partitionList" class="grid gap-1 loading-state text-sm text-text-muted">Loading partitions…</div>
       </section>
 
-      <section class="shrink-0 border-t border-white/[0.09] px-2.5 py-3">
-        <div class="px-0.5 mb-2 text-[10px] font-bold uppercase tracking-[0.1em] text-[#566778]">Actions</div>
+      <section class="shrink-0 border-t border-border px-2.5 py-3">
+        <div class="px-0.5 mb-2 text-[10px] font-bold uppercase tracking-[0.1em] text-text-muted">Actions</div>
         <button id="refreshButton" class="btn-secondary w-full mt-1.5">Refresh</button>
         <button id="reconcileButton" class="btn-primary w-full mt-1.5">Reconcile now</button>
       </section>
     </aside>
 
     <!-- Main content -->
-    <main id="mainContent" class="ml-[220px] flex-1 min-w-0 bg-[#060A14]">
-      <header class="flex justify-between items-start gap-4 px-6 py-5 pb-4 bg-[#0D1220] border-b border-white/[0.09]">
+    <main id="mainContent" class="ml-[236px] flex-1 min-w-0 bg-bg-base">
+      <header class="flex justify-between items-start gap-4 px-6 py-5 pb-4 bg-bg-surface border-b border-border">
         <div>
-          <p id="pageEyebrow" class="text-[10px] font-bold uppercase tracking-[0.1em] text-[#00ADE4] mb-1">Control Center</p>
-          <h1 id="pageTitle" class="text-[22px] font-bold tracking-tight text-[#E5ECF4] mb-1">Control Center</h1>
-          <p id="pageSubtitle" class="text-[13px] text-[#9BB0CF]">Monitor partitions, inspect topology, and review history.</p>
+          <p id="pageEyebrow" class="text-[10px] font-bold uppercase tracking-[0.1em] text-primary mb-1">Control Center</p>
+          <h1 id="pageTitle" class="text-[22px] font-bold tracking-tight text-text-primary mb-1">Control Center</h1>
+          <p id="pageSubtitle" class="text-[13px] text-text-secondary">Monitor partitions, inspect topology, and review history.</p>
         </div>
         <div class="flex gap-2 items-center flex-wrap justify-end shrink-0">
           <div id="headerContextPills" class="flex gap-1.5 flex-wrap justify-end"></div>
@@ -132,7 +127,7 @@
       </header>
 
       <!-- Summary stat strip (overview only) -->
-      <section id="summaryGrid" class="grid grid-cols-6 gap-px bg-white/[0.09] border-y border-white/[0.09]">
+      <section id="summaryGrid" class="grid grid-cols-6 gap-px bg-border border-y border-border">
         <article class="stat-card"><div class="stat-label">Partitions</div><div class="stat-value" id="summaryPartitions">-</div></article>
         <article class="stat-card"><div class="stat-label">Intents</div><div class="stat-value" id="summaryIntents">-</div></article>
         <article class="stat-card"><div class="stat-label">Assets</div><div class="stat-value" id="summaryAssets">-</div></article>
@@ -144,22 +139,22 @@
       <!-- App grid (overview only) -->
       <section id="appGridSection" class="px-6 py-5">
         <div class="flex items-center gap-2.5 mb-3.5 flex-wrap">
-          <span class="text-[11px] font-bold uppercase tracking-[0.09em] text-[#566778] flex-1">Partitions</span>
+          <span class="text-[11px] font-bold uppercase tracking-[0.09em] text-text-muted flex-1">Partitions</span>
           <div class="flex gap-1.5">
             <input id="appGridSearch" class="search-input w-44" type="search" placeholder="Filter partitions…" />
             <button id="overviewCreatePartitionButton" class="btn-ghost">New</button>
           </div>
         </div>
-        <div id="appGrid" class="grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-2.5 loading-state text-sm text-[#566778]">Loading partitions…</div>
+        <div id="appGrid" class="grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-2.5 loading-state text-sm text-text-muted">Loading partitions…</div>
       </section>
 
       <!-- Hero card (overview only) -->
-      <section id="selectedPartitionHero" class="mx-6 mb-0 rounded-lg border border-white/[0.09] bg-[#0D1220] p-5">
-        <div id="heroContent" class="loading-state text-sm text-[#566778]">Select a partition to inspect its current shape.</div>
+      <section id="selectedPartitionHero" class="mx-6 mb-0 rounded-lg border border-border bg-bg-surface p-5">
+        <div id="heroContent" class="loading-state text-sm text-text-muted">Select a partition to inspect its current shape.</div>
       </section>
 
       <!-- Tab bar -->
-      <div class="flex flex-wrap border-b border-white/[0.09] px-6 mt-5 bg-[#0D1220] sticky top-12 z-10">
+      <div class="flex flex-wrap border-b border-border px-6 mt-5 bg-bg-surface sticky top-12 z-10">
         <button class="tab-button active" data-tab-target="overviewPanel">Overview</button>
         <button class="tab-button" data-tab-target="topologyPanel">Topology</button>
         <button class="tab-button" data-tab-target="rolloutsPanel">Rollouts</button>
@@ -177,7 +172,7 @@
             <h2 class="card-title">Needs attention</h2>
             <p class="text-muted text-[13px]">Failing and drifted assets are grouped here first.</p>
           </div>
-          <div id="attentionAssetsList" class="loading-state text-sm text-[#566778]">Loading attention view…</div>
+          <div id="attentionAssetsList" class="loading-state text-sm text-text-muted">Loading attention view…</div>
         </article>
         <div class="overview-map-grid">
           <article class="card">
@@ -185,14 +180,14 @@
               <h2 class="card-title">Intent map</h2>
               <p class="text-muted text-[13px]">Friendly summaries for each blueprint and its assets.</p>
             </div>
-            <div id="intentCards" class="loading-state text-sm text-[#566778]">Loading intents…</div>
+            <div id="intentCards" class="loading-state text-sm text-text-muted">Loading intents…</div>
           </article>
           <article class="card">
             <div class="card-header">
               <h2 class="card-title">Service health</h2>
               <p class="text-muted text-[13px]">Operational status for service-like assets. Open details in the intent map for config, ports, and outputs.</p>
             </div>
-            <div id="serviceHealthCards" class="loading-state text-sm text-[#566778]">Loading services…</div>
+            <div id="serviceHealthCards" class="loading-state text-sm text-text-muted">Loading services…</div>
           </article>
         </div>
         <article class="card">
@@ -200,51 +195,51 @@
             <h2 class="card-title">Recent events</h2>
             <p class="text-muted text-[13px]">Latest lifecycle changes and deployment actions.</p>
           </div>
-          <div id="recentEventsList" class="loading-state text-sm text-[#566778]">Loading recent activity…</div>
+          <div id="recentEventsList" class="loading-state text-sm text-text-muted">Loading recent activity…</div>
         </article>
       </section>
 
       <!-- ── Topology panel ────────────────────────── -->
       <section id="topologyPanel" class="panel hidden">
         <div class="flex flex-col h-[calc(100vh-10rem)]">
-          <div class="flex items-start justify-between gap-4 px-6 py-4 border-b border-white/[0.09]">
+          <div class="flex items-start justify-between gap-4 px-6 py-4 border-b border-border">
             <div>
-              <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-[#00ADE4] mb-1">Deployment graph</p>
-              <h2 class="text-lg font-bold text-[#E5ECF4]">Topology</h2>
-              <p class="text-[13px] text-[#9BB0CF]">Inspect intent and asset relationships for the active partition.</p>
+              <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-primary mb-1">Deployment graph</p>
+              <h2 class="text-lg font-bold text-text-primary">Topology</h2>
+              <p class="text-[13px] text-text-secondary">Inspect intent and asset relationships for the active partition.</p>
             </div>
             <div class="flex flex-col gap-2 items-end">
-              <div class="flex items-center gap-1 rounded border border-white/[0.09] bg-[#151B2B] p-0.5" role="group" aria-label="Topology zoom controls">
+              <div class="flex items-center gap-1 rounded border border-border bg-bg-elevated p-0.5" role="group" aria-label="Topology zoom controls">
                 <button id="topologyZoomOut" class="zoom-btn" aria-label="Zoom out">−</button>
-                <span id="topologyZoomValue" class="text-[11px] font-semibold text-[#9BB0CF] px-2 min-w-[40px] text-center">100%</span>
+                <span id="topologyZoomValue" class="text-[11px] font-semibold text-text-secondary px-2 min-w-[40px] text-center">100%</span>
                 <button id="topologyZoomIn" class="zoom-btn" aria-label="Zoom in">+</button>
                 <button id="topologyResetLayout" class="zoom-btn px-3 text-[11px]" aria-label="Reset layout">Reset</button>
               </div>
-              <div class="flex items-center gap-3 text-[12px] text-[#9BB0CF]">
-                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showContainEdges" type="checkbox" checked class="accent-[#00ADE4]" />Containment</label>
-                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showInfrastructure" type="checkbox" class="accent-[#00ADE4]" />Infrastructure</label>
-                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showJoinEdges" type="checkbox" checked class="accent-[#00ADE4]" />Joins</label>
-                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showSemanticEdges" type="checkbox" checked class="accent-[#00ADE4]" />Routes / triggers</label>
-                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showUsesEdges" type="checkbox" class="accent-[#00ADE4]" />Uses / network</label>
-                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showAssetEdges" type="checkbox" checked class="accent-[#00ADE4]" />Dependencies</label>
-                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showOutputEdges" type="checkbox" checked class="accent-[#00ADE4]" />Output refs</label>
+              <div class="flex items-center gap-3 text-[12px] text-text-secondary">
+                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showContainEdges" type="checkbox" checked class="accent-primary" />Containment</label>
+                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showInfrastructure" type="checkbox" class="accent-primary" />Infrastructure</label>
+                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showJoinEdges" type="checkbox" checked class="accent-primary" />Joins</label>
+                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showSemanticEdges" type="checkbox" checked class="accent-primary" />Routes / triggers</label>
+                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showUsesEdges" type="checkbox" class="accent-primary" />Uses / network</label>
+                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showAssetEdges" type="checkbox" checked class="accent-primary" />Dependencies</label>
+                <label class="flex items-center gap-1.5 cursor-pointer"><input id="showOutputEdges" type="checkbox" checked class="accent-primary" />Output refs</label>
               </div>
             </div>
           </div>
           <div class="flex flex-1 min-h-0">
             <div class="flex-1 overflow-auto">
-              <div id="topologyCanvas" class="topology-canvas empty-state text-sm text-[#566778] p-6">
+              <div id="topologyCanvas" class="topology-canvas empty-state text-sm text-text-muted p-6">
                 Select a partition to visualize its topology.
               </div>
             </div>
-            <aside class="w-72 flex flex-col border-l border-white/[0.09] overflow-y-auto">
-              <section class="p-4 border-b border-white/[0.09]">
-                <div class="text-[11px] font-bold uppercase tracking-[0.09em] text-[#566778] mb-3">Legend</div>
+            <aside class="w-72 flex flex-col border-l border-border overflow-y-auto">
+              <section class="p-4 border-b border-border">
+                <div class="text-[11px] font-bold uppercase tracking-[0.09em] text-text-muted mb-3">Legend</div>
                 <div id="topologyLegend"></div>
               </section>
               <section class="p-4 flex-1">
-                <div class="text-[11px] font-bold uppercase tracking-[0.09em] text-[#566778] mb-3">Node details</div>
-                <div id="topologyDetails" class="empty-state text-sm text-[#566778]">
+                <div class="text-[11px] font-bold uppercase tracking-[0.09em] text-text-muted mb-3">Node details</div>
+                <div id="topologyDetails" class="empty-state text-sm text-text-muted">
                   Select a node to inspect its status, metadata, and linked details.
                 </div>
               </section>
@@ -257,24 +252,24 @@
       <section id="rolloutsPanel" class="panel hidden px-6 py-5">
         <div class="flex items-center justify-between gap-3 mb-4">
           <div>
-            <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-[#00ADE4] mb-0.5">Release timeline</p>
-            <h2 class="text-[18px] font-bold text-[#E5ECF4]">Rollouts</h2>
-            <p class="text-[13px] text-[#9BB0CF] mt-0.5">Per-intent deployment history — when each rollout deployed, what changed, what failed, and what recovered.</p>
+            <p class="text-[10px] font-bold uppercase tracking-[0.1em] text-primary mb-0.5">Release timeline</p>
+            <h2 class="text-[18px] font-bold text-text-primary">Rollouts</h2>
+            <p class="text-[13px] text-text-secondary mt-0.5">Per-intent deployment history — when each rollout deployed, what changed, what failed, and what recovered.</p>
           </div>
           <div class="flex items-center gap-2 flex-wrap justify-end shrink-0">
             <!-- Inline legend -->
-            <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[#9BB0CF] px-3 py-2 rounded-lg bg-[#0D1220] border border-white/[0.07]">
-              <span class="inline-flex items-center gap-1.5"><span class="inline-block w-2 h-2 rounded-full bg-[#00C369]"></span>Healthy</span>
-              <span class="inline-flex items-center gap-1.5"><span class="inline-block w-2 h-2 rounded-full bg-[#E5484D]"></span>Failed</span>
-              <span class="inline-flex items-center gap-1.5"><span class="inline-block w-2 h-2 rounded-full bg-[#FCB519]"></span>Degraded</span>
-              <span class="inline-flex items-center gap-1.5"><span class="inline-block w-2 h-2 rounded-full bg-[#00ADE4]"></span>New / Deploy</span>
-              <span class="inline-flex items-center gap-1.5"><span class="inline-block w-2 h-2 rounded-full bg-[#F97316]"></span>Self-heal</span>
-              <span class="inline-flex items-center gap-1.5"><span class="inline-block w-2 h-2 rounded-full bg-[#566778]/60"></span>Superseded</span>
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-text-secondary px-3 py-2 rounded-lg bg-bg-surface border border-border">
+              <span class="inline-flex items-center gap-1.5"><span class="inline-block w-2 h-2 rounded-full bg-healthy"></span>Healthy</span>
+              <span class="inline-flex items-center gap-1.5"><span class="inline-block w-2 h-2 rounded-full bg-critical"></span>Failed</span>
+              <span class="inline-flex items-center gap-1.5"><span class="inline-block w-2 h-2 rounded-full bg-warning"></span>Degraded</span>
+              <span class="inline-flex items-center gap-1.5"><span class="inline-block w-2 h-2 rounded-full bg-primary"></span>New / Deploy</span>
+              <span class="inline-flex items-center gap-1.5"><span class="inline-block w-2 h-2 rounded-full bg-warning"></span>Self-heal</span>
+              <span class="inline-flex items-center gap-1.5"><span class="inline-block w-2 h-2 rounded-full bg-text-muted/60"></span>Superseded</span>
             </div>
             <button id="refreshRolloutsButton" class="btn-secondary shrink-0">Refresh</button>
           </div>
         </div>
-        <div id="rolloutsTimeline" class="loading-state text-sm text-[#566778]">Loading rollouts…</div>
+        <div id="rolloutsTimeline" class="loading-state text-sm text-text-muted">Loading rollouts…</div>
       </section>
 
       <!-- ── History panel ─────────────────────────── -->
@@ -282,15 +277,15 @@
         <div class="card mb-5">
           <div class="card-header">
             <div class="flex flex-wrap items-end gap-3">
-              <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+              <label class="grid gap-1 text-[12px] text-text-secondary">
                 <span>Entries per intent</span>
                 <input id="historyLimit" class="search-input w-28" type="number" min="1" step="1" value="10" />
               </label>
-              <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+              <label class="grid gap-1 text-[12px] text-text-secondary">
                 <span>From</span>
                 <input id="historySince" class="search-input w-52" type="datetime-local" />
               </label>
-              <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+              <label class="grid gap-1 text-[12px] text-text-secondary">
                 <span>To</span>
                 <input id="historyUntil" class="search-input w-52" type="datetime-local" />
               </label>
@@ -310,7 +305,7 @@
                 <input id="historyFilter" class="search-input w-44" type="search" placeholder="Filter intent or asset" />
               </div>
             </div>
-            <div id="deploymentTimeline" class="loading-state text-sm text-[#566778]">Loading deployment history…</div>
+            <div id="deploymentTimeline" class="loading-state text-sm text-text-muted">Loading deployment history…</div>
           </article>
           <article class="card">
             <div class="card-header">
@@ -319,13 +314,13 @@
                   <h2 class="card-title">State transitions</h2>
                   <p class="text-muted text-[13px]">Timeline of events, errors, and queue activity.</p>
                 </div>
-                <label class="flex items-center gap-1.5 text-[12px] text-[#9BB0CF] cursor-pointer whitespace-nowrap">
-                  <input id="historyGroupToggle" type="checkbox" checked class="accent-[#00ADE4]" />
+                <label class="flex items-center gap-1.5 text-[12px] text-text-secondary cursor-pointer whitespace-nowrap">
+                  <input id="historyGroupToggle" type="checkbox" checked class="accent-primary" />
                   Group by type
                 </label>
               </div>
             </div>
-            <div id="eventTimeline" class="loading-state text-sm text-[#566778]">Loading event timeline…</div>
+            <div id="eventTimeline" class="loading-state text-sm text-text-muted">Loading event timeline…</div>
           </article>
         </div>
       </section>
@@ -337,28 +332,28 @@
             <p class="text-muted text-[13px]">Scan an AWS account through its guardian-pusher-aws worker and import discovered resources as partition intents.</p>
           </div>
           <div class="flex flex-wrap items-end gap-3">
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+            <label class="grid gap-1 text-[12px] text-text-secondary">
               <span>Pusher</span>
               <select id="scanPusher" class="search-input w-56"></select>
             </label>
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+            <label class="grid gap-1 text-[12px] text-text-secondary">
               <span>Regions</span>
               <input id="scanRegions" class="search-input w-56" type="text" placeholder="all or eu-west-1,us-east-1" />
             </label>
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+            <label class="grid gap-1 text-[12px] text-text-secondary">
               <span>Include types</span>
               <input id="scanIncludeTypes" class="search-input w-44" type="text" placeholder="AWS::EC2::*" />
             </label>
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+            <label class="grid gap-1 text-[12px] text-text-secondary">
               <span>Exclude types</span>
               <input id="scanExcludeTypes" class="search-input w-44" type="text" placeholder="AWS::IAM::*" />
             </label>
-            <label class="flex items-center gap-1.5 text-[12px] text-[#9BB0CF] cursor-pointer pb-2">
-              <input id="scanInventory" type="checkbox" class="accent-[#00ADE4]" /> Full inventory
+            <label class="flex items-center gap-1.5 text-[12px] text-text-secondary cursor-pointer pb-2">
+              <input id="scanInventory" type="checkbox" class="accent-primary" /> Full inventory
             </label>
             <button id="scanStartButton" class="btn-primary mb-0.5">Start scan</button>
           </div>
-          <p class="text-[12px] text-[#566778] mt-2">The scan executes on the AWS pusher worker using its credentials. Mappable resources (S3, EFS, SSM, Secrets Manager, ECS, ELBv2) become adoption intents; everything else is shown as inventory.</p>
+          <p class="text-[12px] text-text-muted mt-2">The scan executes on the AWS pusher worker using its credentials. Mappable resources (S3, EFS, SSM, Secrets Manager, ECS, ELBv2) become adoption intents; everything else is shown as inventory.</p>
         </article>
 
         <article class="card">
@@ -366,7 +361,7 @@
             <h2 class="card-title">Scans</h2>
             <p class="text-muted text-[13px]">Recent account scans and their results.</p>
           </div>
-          <div id="scanList" class="loading-state text-sm text-[#566778]">No scans yet.</div>
+          <div id="scanList" class="loading-state text-sm text-text-muted">No scans yet.</div>
         </article>
 
         <div id="scanDetailWrap" class="hidden space-y-5">
@@ -389,19 +384,19 @@
             </div>
             <div class="mb-3">
               <div class="flex items-center gap-2 mb-1.5">
-                <span class="text-[11px] font-bold uppercase tracking-[0.09em] text-[#566778]">CloudFormation stacks</span>
+                <span class="text-[11px] font-bold uppercase tracking-[0.09em] text-text-muted">CloudFormation stacks</span>
                 <button id="scanStackAll" type="button" class="btn-ghost text-[11px] px-2 py-0.5">Select all</button>
                 <button id="scanStackNone" type="button" class="btn-ghost text-[11px] px-2 py-0.5">Clear</button>
-                <span id="scanStackCount" class="text-[11px] text-[#566778]"></span>
+                <span id="scanStackCount" class="text-[11px] text-text-muted"></span>
               </div>
               <div id="scanStackSelect" class="grid gap-1 max-h-56 overflow-y-auto"></div>
             </div>
             <div class="flex flex-wrap items-end gap-3 mb-3">
-              <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+              <label class="grid gap-1 text-[12px] text-text-secondary">
                 <span>Partition</span>
                 <input id="scanPartitionName" class="search-input w-56" type="text" placeholder="aws-imports">
               </label>
-              <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+              <label class="grid gap-1 text-[12px] text-text-secondary">
                 <span>Grouping</span>
                 <select id="scanGrouping" class="search-input w-52">
                   <option value="stack">By CloudFormation stack</option>
@@ -423,7 +418,7 @@
           </div>
           <div class="flex items-center gap-3">
             <button id="unmanagedRefreshButton" class="btn-secondary">Refresh</button>
-            <span class="text-[12px] text-[#566778]">Detection reads the pusher observed API and the Guardian store; nothing is written to AWS.</span>
+            <span class="text-[12px] text-text-muted">Detection reads the pusher observed API and the Guardian store; nothing is written to AWS.</span>
           </div>
         </article>
         <article class="card">
@@ -431,7 +426,7 @@
             <h2 class="card-title">Stacks needing a repository</h2>
             <p class="text-muted text-[13px]">"missing repo" stacks are already managed by a partition but have no repository binding; "unmanaged" stacks have no partition at all.</p>
           </div>
-          <div id="unmanagedList" class="text-sm text-[#566778]">No stacks loaded yet.</div>
+          <div id="unmanagedList" class="text-sm text-text-muted">No stacks loaded yet.</div>
         </article>
       </section>
       <!-- Pushers & repositories panel -->
@@ -442,31 +437,31 @@
             <p class="muted text-[13px]">Register a pusher's observed read API URL. Guardian pulls observed CloudFormation state from this URL; the pusher never dials Guardian or MonoFS.</p>
           </div>
           <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+            <label class="grid gap-1 text-[12px] text-text-secondary">
               <span>Name</span>
               <input id="pusherName" class="search-input" type="text" placeholder="aws-123456789012">
             </label>
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+            <label class="grid gap-1 text-[12px] text-text-secondary">
               <span>Account</span>
               <input id="pusherAccount" class="search-input" type="text" placeholder="123456789012">
             </label>
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+            <label class="grid gap-1 text-[12px] text-text-secondary">
               <span>Region</span>
               <input id="pusherRegion" class="search-input" type="text" placeholder="eu-west-1">
             </label>
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF] md:col-span-2">
+            <label class="grid gap-1 text-[12px] text-text-secondary md:col-span-2">
               <span>Observed API URL</span>
               <input id="pusherUrl" class="search-input" type="text" placeholder="http://guardian-awsread:19090">
             </label>
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+            <label class="grid gap-1 text-[12px] text-text-secondary">
               <span>Token env var</span>
               <input id="pusherTokenEnv" class="search-input" type="text" placeholder="GUARDIAN_AWSREAD_TOKEN">
             </label>
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+            <label class="grid gap-1 text-[12px] text-text-secondary">
               <span>Token (optional)</span>
               <input id="pusherToken" class="search-input" type="password" placeholder="stored in MonoFS">
             </label>
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF] md:col-span-2">
+            <label class="grid gap-1 text-[12px] text-text-secondary md:col-span-2">
               <span>Description</span>
               <input id="pusherDescription" class="search-input" type="text" placeholder="prod account">
             </label>
@@ -481,7 +476,7 @@
             <h2 class="card-title">Registered pushers</h2>
             <p class="muted text-[13px]">Pushers available to observed intents.</p>
           </div>
-          <div id="pusherList" class="grid gap-2 text-sm text-[#566778]">Loading pushers…</div>
+          <div id="pusherList" class="grid gap-2 text-sm text-text-muted">Loading pushers…</div>
         </article>
 
         <article class="card">
@@ -490,35 +485,35 @@
             <p class="muted text-[13px]">Add a Git or MonoFS repository. A pusher and partition bindings are optional: register the source first and bind it when the target is ready. Ingest generates observed intents per CloudFormation stack, filtered by each binding's selector.</p>
           </div>
           <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+            <label class="grid gap-1 text-[12px] text-text-secondary">
               <span>Name</span>
               <input id="repoName" class="search-input" type="text" placeholder="strata-aws">
             </label>
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+            <label class="grid gap-1 text-[12px] text-text-secondary">
               <span>Pusher</span>
               <select id="repoPusher" class="search-input"></select>
             </label>
-            <div class="grid gap-1 text-[12px] text-[#9BB0CF] md:col-span-3">
+            <div class="grid gap-1 text-[12px] text-text-secondary md:col-span-3">
               <span>Partitions</span>
-              <div id="repoPartitionPicker" class="grid gap-1 max-h-56 overflow-y-auto rounded border border-white/[0.07] p-2"></div>
-              <p class="text-[11px] text-[#566778]">Optional — bind partitions now or later. One repo can feed many partitions; each binding can set a stack selector and payload path.</p>
+              <div id="repoPartitionPicker" class="grid gap-1 max-h-56 overflow-y-auto rounded border border-border p-2"></div>
+              <p class="text-[11px] text-text-muted">Optional — bind partitions now or later. One repo can feed many partitions; each binding can set a stack selector and payload path.</p>
             </div>
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+            <label class="grid gap-1 text-[12px] text-text-secondary">
               <span>Source type</span>
               <select id="repoSourceType" class="search-input">
                 <option value="git">Git repository</option>
                 <option value="monofs">MonoFS repository</option>
               </select>
             </label>
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF] md:col-span-2">
+            <label class="grid gap-1 text-[12px] text-text-secondary md:col-span-2">
               <span id="repoSourceLabel">Git URL or local checkout</span>
               <input id="repoSource" class="search-input" type="text" placeholder="https://github.com/org/strata.git">
             </label>
-            <label id="repoBranchField" class="grid gap-1 text-[12px] text-[#9BB0CF]">
+            <label id="repoBranchField" class="grid gap-1 text-[12px] text-text-secondary">
               <span>Branch</span>
               <input id="repoBranch" class="search-input" type="text" placeholder="main">
             </label>
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF]">
+            <label class="grid gap-1 text-[12px] text-text-secondary">
               <span>Assembly subdir</span>
               <input id="repoAssemblySubdir" class="search-input" type="text" placeholder="cdk.out">
             </label>
@@ -526,7 +521,7 @@
           <div class="mt-3">
             <button id="repoSaveButton" class="btn-primary">Register repo</button>
           </div>
-          <p class="text-[12px] text-[#566778] mt-2">Ingest requires a cloud assembly (cdk.out) already in MonoFS. For git sources, run <code>guardianctl repo sync --name &lt;repo&gt; --synth</code> to clone, synthesize and push.</p>
+          <p class="text-[12px] text-text-muted mt-2">Ingest requires a cloud assembly (cdk.out) already in MonoFS. For git sources, run <code>guardianctl repo sync --name &lt;repo&gt; --synth</code> to clone, synthesize and push.</p>
         </article>
 
         <article class="card">
@@ -534,13 +529,13 @@
             <h2 class="card-title">Registered repositories</h2>
             <p class="muted text-[13px]">Ingest regenerates observed intents for every assigned partition from the stored assembly.</p>
           </div>
-          <div id="repoList" class="grid gap-2 text-sm text-[#566778]">Loading repositories…</div>
-          <div id="repoAssignPanel" class="hidden mt-3 rounded border border-[#00ADE4]/40 bg-[#00ADE4]/[0.05] p-3">
+          <div id="repoList" class="grid gap-2 text-sm text-text-muted">Loading repositories…</div>
+          <div id="repoAssignPanel" class="hidden mt-3 rounded border border-primary/40 bg-primary/[0.05] p-3">
             <div class="flex items-center justify-between gap-2 mb-2">
-              <span class="text-[13px] font-semibold text-[#E5ECF4]">Bind <span id="repoAssignName"></span> to partitions</span>
+              <span class="text-[13px] font-semibold text-text-primary">Bind <span id="repoAssignName"></span> to partitions</span>
               <button id="repoAssignCancel" class="btn-ghost text-[12px]">Cancel</button>
             </div>
-            <label class="grid gap-1 text-[12px] text-[#9BB0CF] mb-2">
+            <label class="grid gap-1 text-[12px] text-text-secondary mb-2">
               <span>Pusher</span>
               <select id="repoAssignPusher" class="search-input"></select>
             </label>
@@ -548,7 +543,7 @@
             <div class="mt-3">
               <button id="repoAssignSave" class="btn-primary">Save bindings</button>
             </div>
-            <p class="text-[11px] text-[#566778] mt-2">Bindings are optional. The repo source and credentials are not changed here.</p>
+            <p class="text-[11px] text-text-muted mt-2">Bindings are optional. The repo source and credentials are not changed here.</p>
           </div>
         </article>
       </section>
@@ -592,6 +587,35 @@
     </main>
   </div>
 
-  <div id="toastContainer" class="fixed bottom-5 right-5 z-[200] flex flex-col gap-2 pointer-events-none"></div>
+  <div id="askStrataDrawer" class="s-drawer-backdrop" hidden role="dialog" aria-modal="true" aria-label="Ask Strata">
+    <aside class="s-drawer">
+      <header class="s-drawer__header">
+        <div class="flex items-center gap-2">
+          <i data-lucide="sparkles" class="w-4 h-4 text-ai"></i>
+          <span class="s-drawer__title">Ask Strata</span>
+        </div>
+        <div class="flex items-center gap-1">
+          <a id="askStrataExternal" class="s-icon-btn" href="#" target="_blank" rel="noreferrer" title="Open in Agent" aria-label="Open in Agent">
+            <i data-lucide="external-link" class="w-4 h-4"></i>
+          </a>
+          <button id="askStrataClose" class="s-icon-btn" type="button" aria-label="Close Ask Strata">
+            <i data-lucide="x" class="w-4 h-4"></i>
+          </button>
+        </div>
+      </header>
+      <div class="s-drawer__body">
+        <iframe id="askStrataFrame" title="Ask Strata" class="h-full w-full border-0" allow="clipboard-read; clipboard-write"></iframe>
+      </div>
+    </aside>
+  </div>
+
+  <div id="commandPalette" class="command-palette hidden" role="dialog" aria-modal="true" aria-label="Quick jump">
+    <div class="command-palette-card">
+      <input id="commandSearch" type="search" placeholder="Jump to a panel or partition…" autocomplete="off" />
+      <div id="commandList" class="command-list"></div>
+    </div>
+  </div>
+
+  <div id="toastContainer" class="fixed bottom-5 right-5 z-[200] flex flex-col gap-2 pointer-events-none" aria-live="polite" aria-atomic="false"></div>
 </body>
 </html>

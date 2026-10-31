@@ -19,7 +19,6 @@ import (
 	"syscall"
 	"time"
 
-	coreauthz "github.com/radryc/monofs/pkg/authz"
 	"github.com/radryc/guardian/internal/access"
 	"github.com/radryc/guardian/internal/alerting"
 	guardauthz "github.com/radryc/guardian/internal/authz"
@@ -44,6 +43,7 @@ import (
 	unmanagedpkg "github.com/radryc/guardian/internal/unmanaged"
 	"github.com/radryc/guardian/internal/workspacepub"
 	"github.com/radryc/guardian/pkg/guardianapi"
+	coreauthz "github.com/radryc/monofs/pkg/authz"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
@@ -235,6 +235,9 @@ func main() {
 	// (no identity in context) is always allowed; human-initiated reconciles that
 	// carry an SSO identity must hold the maintainer/admin role on the partition.
 	if deployGuard, guardErr := guardauthz.LoadGuardWithInline(strings.TrimSpace(authzGrantsPath), strings.TrimSpace(os.Getenv("MONOFS_AUTHZ_GRANTS_JSON")), authzEnforceDeploy); guardErr != nil {
+		if authzEnforceDeploy {
+			log.Fatalf("guardian: control-plane authz is enforced but grants could not be loaded: %v", guardErr)
+		}
 		log.Printf("guardian: control-plane authz disabled: %v", guardErr)
 	} else {
 		recon.SetAuthorizer(func(actx context.Context, partition string) error {
@@ -333,6 +336,9 @@ func main() {
 				Audience: strings.TrimSpace(authzOIDCAudience),
 				JWKSURL:  strings.TrimSpace(authzOIDCJWKSURL),
 			}); verr != nil {
+				if strings.EqualFold(strings.TrimSpace(os.Getenv("MONOFS_AUTHZ_ENFORCE_UI")), "true") {
+					log.Fatalf("guardian ui: OIDC verification is enforced but setup failed: %v", verr)
+				}
 				log.Printf("guardian ui: OIDC verifier disabled: %v", verr)
 			} else {
 				uiVerifier = v

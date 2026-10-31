@@ -28,7 +28,7 @@ async function refreshUnmanaged(): Promise<void> {
   if (loading) return;
   loading = true;
   const container = document.getElementById("unmanagedList");
-  if (container) container.innerHTML = `<div class="loading-state text-sm text-[#566778]">Loading stacks…</div>`;
+  if (container) container.innerHTML = `<div class="loading-state text-sm text-text-muted">Loading stacks…</div>`;
   try {
     const result = await fetchJSON("/api/aws/unmanaged");
     stacks = Array.isArray(result?.stacks) ? result.stacks : [];
@@ -45,7 +45,7 @@ function renderList(warnings: string[]): void {
     ? `<div class="text-[12px] text-amber-300 mb-2">${warnings.map(escapeHtml).join("<br>")}</div>`
     : "";
   if (!stacks.length) {
-    container.innerHTML = warningHtml + `<div class="text-[12px] text-[#566778]">No unmanaged stacks detected. Every live stack is covered by a repository-backed partition.</div>`;
+    container.innerHTML = warningHtml + `<div class="text-[12px] text-text-muted">No unmanaged stacks detected. Every live stack is covered by a repository-backed partition.</div>`;
     return;
   }
   const rows = stacks.map((stack) => {

@@ -423,6 +423,7 @@ func (r *Runtime) processTaskEntry(ctx context.Context, pusher, taskID string, s
 	stopHeartbeat := r.startClaimHeartbeat(ctx, pusher, claim, claimVersionID)
 	result := r.executeTask(ctx, t)
 	stopHeartbeat()
+	redactTaskResultSecrets(t, result)
 	changed := []string{}
 	if result.Drift != nil {
 		changed = result.Drift.ChangedAssets
@@ -431,6 +432,39 @@ func (r *Runtime) processTaskEntry(ctx context.Context, pusher, taskID string, s
 		taskID, t.Op, t.Partition, t.Intent, result.Status, changed)
 	if err := r.writeResult(ctx, result); err != nil {
 		log.Printf("[Pusher] Error writing result for task %s: %v", taskID, err)
+	}
+}
+
+// redactTaskResultSecrets removes plaintext Secret asset values from the
+// result before it is written to the store. valueHash and secretRef are kept so
+// drift detection can still work without persisting the secret.
+func redactTaskResultSecrets(t *taskdomain.Task, result *taskdomain.TaskResult) {
+	if t == nil || result == nil {
+		return
+	}
+	names := t.SecretAssetNames()
+	if len(names) == 0 {
+		return
+	}
+	secrets := make([]string, 0, len(names)+1)
+	for _, name := range names {
+		if value := result.Outputs[name+".value"]; strings.TrimSpace(value) != "" {
+			secrets = append(secrets, value)
+		}
+	}
+	if value := result.Outputs["value"]; strings.TrimSpace(value) != "" {
+		secrets = append(secrets, value)
+	}
+	result.Outputs = taskdomain.RedactSecretOutputs(t, result.Outputs)
+	if len(secrets) == 0 {
+		return
+	}
+	for i := range result.Logs {
+		result.Logs[i].Message = taskdomain.RedactSecretStrings([]string{result.Logs[i].Message}, secrets)[0]
+	}
+	if result.Error != nil {
+		redacted := taskdomain.RedactSecretStrings([]string{*result.Error}, secrets)[0]
+		result.Error = &redacted
 	}
 }
 
