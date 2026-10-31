@@ -62,9 +62,12 @@ func StartRegistration(ctx context.Context, store guardianapi.Store, info Pusher
 			log.Printf("[Registry] read pusher registration failed: %v", existingErr)
 			return
 		}
-		if existing == nil && info.ObservedAPIURL == "" {
-			// The pusher normally starts before guardianctl registers it. Do
-			// not spam heartbeat errors while waiting for registration.
+		if existing == nil && info.ObservedAPIURL == "" && info.Provider != "kubernetes" {
+			// AWS pushers normally start before guardianctl registers them with
+			// an observed read API URL and token. Do not spam heartbeat errors
+			// while waiting for that registration. Kubernetes pushers have no
+			// observed read API, so they self-register instead of waiting for a
+			// guardianctl registration that may never happen.
 			return
 		}
 		record := &platformregistry.Pusher{
