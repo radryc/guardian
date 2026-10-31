@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -85,7 +86,7 @@ func main() {
 	flag.IntVar(&maxConcurrency, "max-concurrency", 0, "maximum tasks executed concurrently (0 = auto from CPU count)")
 	flag.IntVar(&shardIndex, "shard-index", 0, "shard index for this replica when sharding a shared queue")
 	flag.IntVar(&shardCount, "shard-count", 1, "number of shards sharing the queue; 1 disables sharding")
-	flag.StringVar(&awsReadAddr, "awsread-addr", envOr("GUARDIAN_AWSREAD_ADDR", ":19090"), "HTTP listen address for the read-only CloudWatch/X-Ray API (empty disables)")
+	flag.StringVar(&awsReadAddr, "awsread-addr", envOr("GUARDIAN_AWSREAD_ADDR", "127.0.0.1:19090"), "HTTP listen address for the read-only CloudWatch/X-Ray API (empty disables; loopback by default)")
 	flag.StringVar(&awsReadToken, "awsread-token", os.Getenv("GUARDIAN_AWSREAD_TOKEN"), "bearer token required by the AWS read API (empty disables auth)")
 	flag.BoolVar(&awsReadDisabled, "awsread-disabled", false, "disable the read-only CloudWatch/X-Ray API")
 	flag.StringVar(&eventsQueueURL, "events-queue-url", os.Getenv("GUARDIAN_AWS_EVENTS_QUEUE_URL"), "SQS queue URL carrying CloudFormation EventBridge events (empty disables)")
@@ -344,6 +345,9 @@ func main() {
 	}
 
 	if !awsReadDisabled && strings.TrimSpace(awsReadAddr) != "" {
+		if strings.TrimSpace(awsReadToken) == "" && !isLoopbackListen(awsReadAddr) {
+			log.Printf("WARNING: AWS read API is listening on %s without a bearer token; anyone who can reach this address can read telemetry and trigger observed diffs", awsReadAddr)
+		}
 		// The read API must query the target account, not the management
 		// account that hosts the fleet task. Assume the per-account role once
 		// and use those credentials for CloudWatch and X-Ray.
@@ -439,6 +443,19 @@ func envOr(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func isLoopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		host = strings.TrimSpace(addr)
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func splitRegions(region string) []string {

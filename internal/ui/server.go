@@ -23,23 +23,24 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	coreauthz "github.com/radryc/monofs/pkg/authz"
 	"github.com/radryc/guardian/internal/access"
 	"github.com/radryc/guardian/internal/buildinfo"
 	historydomain "github.com/radryc/guardian/internal/domain/history"
+	intentdomain "github.com/radryc/guardian/internal/domain/intent"
 	"github.com/radryc/guardian/internal/historyquery"
 	"github.com/radryc/guardian/internal/orchestrator/dispatcher"
 	"github.com/radryc/guardian/internal/orchestrator/reconciler"
 	"github.com/radryc/guardian/internal/paths"
 	"github.com/radryc/guardian/internal/versioning/revisions"
 	"github.com/radryc/guardian/pkg/guardianapi"
+	coreauthz "github.com/radryc/monofs/pkg/authz"
 	"gopkg.in/yaml.v3"
 )
 
 //go:embed templates/*.html
 var templateFS embed.FS
 
-//go:embed static/*.css static/*.js static/*.png
+//go:embed static/*.css static/*.js static/*.png static/fonts/*.woff2
 var staticFS embed.FS
 
 type Options struct {
@@ -275,7 +276,55 @@ func New(opts Options) (*Server, error) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeMutation(r) {
+		writeError(w, http.StatusForbidden, fmt.Errorf("principal is not authorized to modify this resource"))
+		return
+	}
 	s.mux.ServeHTTP(w, r)
+}
+
+// authorizeMutation applies the repo-managed access policy to every mutating
+// UI/API request. Partition-scoped mutations require the maintainer/admin role
+// on that partition; other registry/scan/set mutations require admin. The
+// check is a no-op when the access policy is disabled (the default), and it is
+// permissive in observe mode, mirroring read filtering.
+func (s *Server) authorizeMutation(r *http.Request) bool {
+	if s == nil || s.access == nil || !s.access.Enabled() {
+		return true
+	}
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+	if !strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/api/m2m/") ||
+		strings.HasPrefix(r.URL.Path, "/api/access/") {
+		return true
+	}
+	// CI merge notifications use the internal M2M token rather than a human
+	// maintainer session.
+	if strings.HasPrefix(r.URL.Path, "/api/repos/") && strings.HasSuffix(r.URL.Path, "/notify") {
+		return s.requestCanReadAccessPolicy(r)
+	}
+	if name, ok := partitionFromAPIPath(r.URL.Path); ok {
+		return s.access.CanModify(r.Context(), name)
+	}
+	return s.access.IsAdmin(r.Context())
+}
+
+func partitionFromAPIPath(path string) (string, bool) {
+	const prefix = "/api/partitions/"
+	if !strings.HasPrefix(path, prefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(path, prefix)
+	if rest == "" {
+		return "", false
+	}
+	name := strings.SplitN(rest, "/", 2)[0]
+	if name == "" {
+		return "", false
+	}
+	return name, true
 }
 
 func (s *Server) routes() http.Handler {
@@ -535,6 +584,9 @@ func (s *Server) handleM2MOverview(w http.ResponseWriter, r *http.Request) {
 		writeMethodNotAllowed(w, http.MethodGet)
 		return
 	}
+	if !s.requireM2MAccess(w, r) {
+		return
+	}
 	payload, err := s.buildOverview(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -574,6 +626,9 @@ func (s *Server) handleM2MPartitions(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if !s.requireM2MAccess(w, r) {
+		return
+	}
 	cloned := r.Clone(r.Context())
 	cloned.URL.Path = "/api/partitions"
 	s.handlePartitions(w, cloned)
@@ -584,6 +639,9 @@ func (s *Server) handleM2MPartitionRoute(w http.ResponseWriter, r *http.Request)
 	trimmed = strings.Trim(trimmed, "/")
 	if trimmed == "" {
 		http.NotFound(w, r)
+		return
+	}
+	if !s.requireM2MAccess(w, r) {
 		return
 	}
 	cloned := r.Clone(r.Context())
@@ -600,8 +658,12 @@ func (s *Server) handlePartitionRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	parts := strings.Split(trimmed, "/")
 	name := parts[0]
+	if err := paths.ValidatePartitionName(name); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	// Repo-managed access policy: hide GETs on partitions the caller cannot
-	// see (DELETE/PUT/POST keep their existing authz behavior).
+	// see. Mutating requests are authorized centrally in ServeHTTP.
 	if r.Method == http.MethodGet && !s.canSeePartition(r.Context(), name) {
 		http.NotFound(w, r)
 		return
@@ -718,7 +780,7 @@ func (s *Server) handlePartitionRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var req SaveBundleRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<20)).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("decode request: %w", err))
 			return
 		}
@@ -770,6 +832,10 @@ func (s *Server) handlePartitionRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		intentName := parts[2]
+		if err := paths.ValidateIntentName(intentName); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		if r.Method != http.MethodGet {
 			writeMethodNotAllowed(w, http.MethodGet)
 			return
@@ -888,9 +954,48 @@ func (s *Server) validateBundle(ctx context.Context, partitionName string, req *
 	return response
 }
 
+// restoreRedactedSecretValues replaces the UI redaction placeholder with the
+// stored secret when the browser round-trips a manifest it only saw redacted.
+// If no stored value exists, the save fails rather than persisting "******".
+func restoreRedactedSecretValues(existing, incoming *intentdomain.Intent) error {
+	if existing == nil || incoming == nil {
+		return nil
+	}
+	existingByName := make(map[string]string, len(existing.Spec.Assets))
+	for _, asset := range existing.Spec.Assets {
+		if !strings.EqualFold(strings.TrimSpace(asset.Type), "Secret") {
+			continue
+		}
+		value, _ := asset.Properties["value"].(string)
+		existingByName[asset.Name] = value
+	}
+	for i := range incoming.Spec.Assets {
+		asset := &incoming.Spec.Assets[i]
+		if !strings.EqualFold(strings.TrimSpace(asset.Type), "Secret") {
+			continue
+		}
+		value, _ := asset.Properties["value"].(string)
+		if value != redactedSecretValue {
+			continue
+		}
+		stored, ok := existingByName[asset.Name]
+		if !ok || stored == "" {
+			return fmt.Errorf("intent %s asset %s: cannot save the redacted secret placeholder", incoming.Metadata.Name, asset.Name)
+		}
+		if asset.Properties == nil {
+			asset.Properties = map[string]any{}
+		}
+		asset.Properties["value"] = stored
+	}
+	return nil
+}
+
 func (s *Server) saveBundle(ctx context.Context, partitionName string, req *SaveBundleRequest) (*SaveBundleResponse, error) {
 	if req == nil {
 		return nil, fmt.Errorf("request body is required")
+	}
+	if err := paths.ValidatePartitionName(partitionName); err != nil {
+		return nil, err
 	}
 	req.Partition.APIVersion = defaultString(req.Partition.APIVersion, "guardian/v1alpha1")
 	req.Partition.Kind = defaultString(req.Partition.Kind, "Partition")
@@ -909,6 +1014,9 @@ func (s *Server) saveBundle(ctx context.Context, partitionName string, req *Save
 		req.Intents[i].Manifest.Kind = defaultString(req.Intents[i].Manifest.Kind, "Intent")
 		if strings.TrimSpace(req.Intents[i].Manifest.Metadata.Name) == "" {
 			return nil, fmt.Errorf("intent at index %d is missing metadata.name", i)
+		}
+		if err := paths.ValidateIntentName(req.Intents[i].Manifest.Metadata.Name); err != nil {
+			return nil, err
 		}
 		if _, exists := intentSeen[req.Intents[i].Manifest.Metadata.Name]; exists {
 			return nil, fmt.Errorf("duplicate intent %q", req.Intents[i].Manifest.Metadata.Name)
@@ -941,10 +1049,17 @@ func (s *Server) saveBundle(ctx context.Context, partitionName string, req *Save
 		existingPaths[source.Name] = source.LogicalPath
 	}
 	intentPaths := make(map[string]string, len(req.Intents))
+	existingByName := make(map[string]*intentdomain.Intent, len(existingSources))
+	for _, source := range existingSources {
+		existingByName[source.Name] = source.Manifest
+	}
 	sort.Slice(req.Intents, func(i, j int) bool {
 		return req.Intents[i].Manifest.Metadata.Name < req.Intents[j].Manifest.Metadata.Name
 	})
 	for _, intent := range req.Intents {
+		if err := restoreRedactedSecretValues(existingByName[intent.Manifest.Metadata.Name], &intent.Manifest); err != nil {
+			return nil, err
+		}
 		content, err := yaml.Marshal(intent.Manifest)
 		if err != nil {
 			return nil, fmt.Errorf("marshal intent %s: %w", intent.Manifest.Metadata.Name, err)

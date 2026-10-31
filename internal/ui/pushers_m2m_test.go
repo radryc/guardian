@@ -90,3 +90,27 @@ func TestM2MPusherListPaginates(t *testing.T) {
 		t.Fatalf("page = %#v", page)
 	}
 }
+
+func TestM2MOverviewRequiresInternalToken(t *testing.T) {
+	srv, err := New(Options{
+		Store:             memory.New(),
+		PrincipalID:       "test-ui",
+		AccessPolicyToken: "internal-token",
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/m2m/overview", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusForbidden {
+		t.Fatalf("unauthenticated status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/m2m/overview", nil)
+	req.Header.Set("X-Guardian-Internal-Token", "internal-token")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("authorized status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+}

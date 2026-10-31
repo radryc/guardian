@@ -134,7 +134,7 @@ func releaseAll(ctx context.Context, printer *output.Printer, build, bump, inclu
 	partitions := []string{
 		"shared",
 		"guardian-configs", "opentelemetry", "k8s-top",
-		"doctor", "monitoring", "dev-workspace", "agent", "lolipop",
+		"doctor", "monitoring", "dev-workspace", "agent", "nightwatch", "lolipop",
 	}
 
 	for _, name := range partitions {

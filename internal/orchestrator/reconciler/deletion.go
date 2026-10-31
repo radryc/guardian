@@ -131,8 +131,16 @@ func (r *Reconciler) reconcilePartitionDeletion(ctx context.Context, partitionNa
 			case statedomain.StatusDestroyed:
 				continue
 			case statedomain.StatusDestroying:
-				pending++
-				continue
+				// A lost DESTROY result must not wedge partition teardown
+				// forever. Treat the task as dead after the stale timeout and
+				// queue a fresh DESTROY below.
+				stale := state.Timestamps.LastQueuedAt.IsZero() ||
+					time.Since(state.Timestamps.LastQueuedAt) > r.staleTaskAfter
+				if !stale {
+					pending++
+					continue
+				}
+				log.Printf("reconciler: partition=%s intent=%s DESTROY task %s is stale, re-queueing", partitionName, name, state.LastTaskID)
 			}
 			manifestContent, err := r.loadDeletedIntentManifest(ctx, partitionName, name, state)
 			if err != nil {

@@ -133,7 +133,7 @@ function renderSidebar(): void {
   const container = document.getElementById("partitionList");
   if (!container) return;
   if (!loaded) {
-    container.className = "set-tree text-sm text-[#566778]";
+    container.className = "set-tree text-sm text-text-muted";
     container.textContent = "Loading sets…";
     return;
   }

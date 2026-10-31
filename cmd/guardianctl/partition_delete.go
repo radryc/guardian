@@ -37,6 +37,9 @@ func partitionDeleteCommand(store guardianapi.Store, printer *output.Printer) *c
 		if *partitionName == "" {
 			return fmt.Errorf("--partition is required")
 		}
+		if err := paths.ValidatePartitionName(*partitionName); err != nil {
+			return err
+		}
 		if *timeoutAlias != defaultPartitionWaitTimeout && *waitTimeout == defaultPartitionWaitTimeout {
 			*waitTimeout = *timeoutAlias
 		}
@@ -71,6 +74,9 @@ func partitionDeleteCommand(store guardianapi.Store, printer *output.Printer) *c
 }
 
 func forceDeletePartition(ctx context.Context, store guardianapi.Store, printer *output.Printer, partitionName string) error {
+	if err := paths.ValidatePartitionName(partitionName); err != nil {
+		return err
+	}
 	correlationID := revisions.NewCorrelationID()
 	files, err := walkFiles(ctx, store, paths.PartitionRoot(partitionName))
 	if err != nil {

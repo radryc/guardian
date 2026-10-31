@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/radryc/monofs/api/proto"
-	"github.com/radryc/monofs/pkg/grpcx"
 	"github.com/radryc/guardian/internal/clitoken"
 	"github.com/radryc/guardian/pkg/guardianapi"
+	pb "github.com/radryc/monofs/api/proto"
+	"github.com/radryc/monofs/pkg/grpcx"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -136,6 +136,11 @@ func dialRouter(addr string) (*grpc.ClientConn, error) {
 	)
 }
 
+const initMaxAttempts = 5
+
+// initRetryBase is a variable so tests can shorten the backoff.
+var initRetryBase = time.Second
+
 func NewGRPCClient(ctx context.Context, cfg ClientConfig) (*GRPCClient, error) {
 	if cfg.RouterAddr == "" {
 		return nil, fmt.Errorf("monofs router address is required")
@@ -166,50 +171,84 @@ func NewGRPCClient(ctx context.Context, cfg ClientConfig) (*GRPCClient, error) {
 		cfg.Hostname = hostname
 	}
 
-	conn, err := dialRouter(cfg.RouterAddr)
-	if err != nil {
-		return nil, fmt.Errorf("connect to monofs router: %w", err)
-	}
-
 	routerHost, _, err := net.SplitHostPort(cfg.RouterAddr)
 	if err != nil {
 		return nil, fmt.Errorf("parse monofs router address %q: %w", cfg.RouterAddr, err)
 	}
 
-	client := &GRPCClient{
-		routerAddr:           cfg.RouterAddr,
-		routerHost:           routerHost,
-		clientID:             cfg.ClientID,
-		token:                cfg.Token,
-		principalID:          cfg.PrincipalID,
-		role:                 cfg.Role,
-		baseURL:              strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/"),
-		version:              cfg.Version,
-		hostname:             cfg.Hostname,
-		mountPoint:           cfg.MountPoint,
-		useExternalAddresses: cfg.UseExternalAddresses,
-		rpcTimeout:           cfg.RPCTimeout,
-		writable:             cfg.Writable,
-		routerConn:           conn,
-		router:               pb.NewMonoFSRouterClient(conn),
-		nodeConns:            map[string]*grpc.ClientConn{},
-		nodeClients:          map[string]pb.MonoFSClient{},
-		nodeAddrs:            map[string]string{},
-		refreshTTL:           defaultTopologyRefreshInterval,
-		stopHeartbeat:        make(chan struct{}),
+	// Router pods can roll while a CLI or pusher is starting (for example when
+	// credentials are patched into the deployment). Retry transient transport
+	// errors instead of failing the whole command with "error reading server
+	// preface: EOF" just because a new router pod was taking over.
+	var lastErr error
+	for attempt := 0; attempt < initMaxAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(initRetryBase * time.Duration(attempt)):
+			}
+		}
+
+		conn, err := dialRouter(cfg.RouterAddr)
+		if err != nil {
+			lastErr = fmt.Errorf("connect to monofs router: %w", err)
+			continue
+		}
+
+		client := &GRPCClient{
+			routerAddr:           cfg.RouterAddr,
+			routerHost:           routerHost,
+			clientID:             cfg.ClientID,
+			token:                cfg.Token,
+			principalID:          cfg.PrincipalID,
+			role:                 cfg.Role,
+			baseURL:              strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/"),
+			version:              cfg.Version,
+			hostname:             cfg.Hostname,
+			mountPoint:           cfg.MountPoint,
+			useExternalAddresses: cfg.UseExternalAddresses,
+			rpcTimeout:           cfg.RPCTimeout,
+			writable:             cfg.Writable,
+			routerConn:           conn,
+			router:               pb.NewMonoFSRouterClient(conn),
+			nodeConns:            map[string]*grpc.ClientConn{},
+			nodeClients:          map[string]pb.MonoFSClient{},
+			nodeAddrs:            map[string]string{},
+			refreshTTL:           defaultTopologyRefreshInterval,
+			stopHeartbeat:        make(chan struct{}),
+		}
+
+		if err := client.refreshNodes(ctx); err != nil {
+			for _, nodeConn := range client.nodeConns {
+				_ = nodeConn.Close()
+			}
+			_ = conn.Close()
+			lastErr = err
+			if !isTransportUnavailable(err) {
+				return nil, err
+			}
+			continue
+		}
+
+		heartbeatInterval, err := client.register(ctx)
+		if err != nil {
+			for _, nodeConn := range client.nodeConns {
+				_ = nodeConn.Close()
+			}
+			_ = conn.Close()
+			lastErr = err
+			if !isTransportUnavailable(err) {
+				return nil, err
+			}
+			continue
+		}
+
+		client.startHeartbeatLoop(heartbeatInterval)
+		return client, nil
 	}
 
-	if err := client.refreshNodes(ctx); err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-	heartbeatInterval, err := client.register(ctx)
-	if err != nil {
-		_ = client.Close()
-		return nil, err
-	}
-	client.startHeartbeatLoop(heartbeatInterval)
-	return client, nil
+	return nil, fmt.Errorf("initialize monofs client after %d attempts: %w", initMaxAttempts, lastErr)
 }
 
 func (c *GRPCClient) Close() error {

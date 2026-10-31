@@ -15,6 +15,7 @@ package repoimport
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -106,8 +107,21 @@ type Options struct {
 	// Partition limits the import to one partition. Empty imports every
 	// partition under guardian/partitions/.
 	Partition string
+	// PartitionPath overrides the repo-relative bundle directory for Partition
+	// (for example a custom RepoBinding.PartitionPath). Empty uses
+	// guardian/partitions/<partition>.
+	PartitionPath string
+	// IgnoreMissing returns an empty result instead of an error when the
+	// repository has no matching partition bundle.
+	IgnoreMissing bool
 	// Principal is the mutation principal id recorded in the store.
 	Principal string
+	// Source identifies the repository source (URL or logical path). Pruning
+	// only removes files recorded by the same source.
+	Source string
+	// Prune removes previously imported files that are no longer present in
+	// the repository. It is a no-op when no ownership manifest exists.
+	Prune bool
 }
 
 // Result summarizes an import run.
@@ -118,8 +132,18 @@ type Result struct {
 	Warnings []string `json:"warnings,omitempty"`
 	// FilesWritten counts changed files pushed into the store.
 	FilesWritten int `json:"filesWritten"`
+	// FilesDeleted counts stale files removed by pruning.
+	FilesDeleted int `json:"filesDeleted,omitempty"`
 	// Changed reports whether any file content changed.
 	Changed bool `json:"changed"`
+}
+
+type ownershipManifest struct {
+	APIVersion string   `json:"apiVersion"`
+	Kind       string   `json:"kind"`
+	Source     string   `json:"source,omitempty"`
+	Repo       string   `json:"repo,omitempty"`
+	Files      []string `json:"files"`
 }
 
 // Import reads guardian/partitions/** from source and writes changed files into
@@ -130,23 +154,39 @@ func Import(ctx context.Context, source Source, store guardianapi.Store, opts Op
 		return nil, fmt.Errorf("source and store are required")
 	}
 	result := &Result{RepoName: opts.RepoName}
+	if strings.TrimSpace(opts.PartitionPath) != "" && strings.TrimSpace(opts.Partition) == "" {
+		return nil, fmt.Errorf("partitionPath requires a single partition filter")
+	}
 
-	partitions, err := listPartitions(ctx, source, opts.Partition)
+	partitions, err := listPartitions(ctx, source, opts.Partition, opts.PartitionPath)
 	if err != nil {
 		return nil, err
 	}
 	if len(partitions) == 0 {
+		if opts.IgnoreMissing {
+			return result, nil
+		}
 		return nil, fmt.Errorf("no %s/<partition> found in the repository", PartitionsSubdir)
 	}
 
+	sourceID := strings.TrimSpace(opts.Source)
+	if sourceID == "" {
+		sourceID = strings.TrimSpace(opts.RepoName)
+	}
 	writes := make([]guardianapi.PathWrite, 0, 16)
+	deletes := make([]guardianapi.PathDelete, 0)
+	manifests := make([]guardianapi.PathWrite, 0, len(partitions))
 	for _, partition := range partitions {
-		partitionWrites, warnings, err := collectPartition(ctx, source, partition)
+		partitionWrites, warnings, err := collectPartition(ctx, source, partition, partitionBundlePath(partition, opts.PartitionPath))
 		if err != nil {
 			return nil, fmt.Errorf("partition %s: %w", partition, err)
 		}
 		result.Warnings = append(result.Warnings, warnings...)
 
+		desired := make(map[string]bool, len(partitionWrites))
+		for _, write := range partitionWrites {
+			desired[write.LogicalPath] = true
+		}
 		changed := false
 		for _, write := range partitionWrites {
 			current, readErr := store.ReadFile(ctx, write.LogicalPath)
@@ -159,7 +199,33 @@ func Import(ctx context.Context, source Source, store guardianapi.Store, opts Op
 			writes = append(writes, write)
 			changed = true
 		}
-		if changed {
+		partitionDeletes := 0
+		if opts.Prune && sourceID != "" {
+			previous, previousRaw, loadErr := loadOwnershipManifest(ctx, store, partition)
+			if loadErr == nil && previous.Source == sourceID {
+				prefix := paths.PartitionRoot(partition) + "/"
+				for _, owned := range previous.Files {
+					if desired[owned] || !strings.HasPrefix(owned, prefix) {
+						continue
+					}
+					deletes = append(deletes, guardianapi.PathDelete{LogicalPath: owned})
+					partitionDeletes++
+				}
+			} else if loadErr == nil && previous.Source != "" && previous.Source != sourceID {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("partition %s: refusing to prune files owned by %s", partition, previous.Source))
+			}
+			manifestContent, marshalErr := buildOwnershipManifest(sourceID, opts.RepoName, desired)
+			if marshalErr != nil {
+				return nil, fmt.Errorf("partition %s: %w", partition, marshalErr)
+			}
+			if !bytes.Equal(previousRaw, manifestContent) {
+				manifests = append(manifests, guardianapi.PathWrite{
+					LogicalPath: paths.RepoImportManifest(partition),
+					Content:     manifestContent,
+				})
+			}
+		}
+		if changed || partitionDeletes > 0 {
 			result.Imported = append(result.Imported, partition)
 			result.Changed = true
 		} else {
@@ -167,31 +233,86 @@ func Import(ctx context.Context, source Source, store guardianapi.Store, opts Op
 		}
 	}
 
+	principal := strings.TrimSpace(opts.Principal)
+	if principal == "" {
+		principal = "guardian-repo-import"
+	}
+	mutationCtx := guardianapi.MutationContext{PrincipalID: principal, Reason: "repo import " + opts.RepoName}
 	if len(writes) > 0 {
-		principal := strings.TrimSpace(opts.Principal)
-		if principal == "" {
-			principal = "guardian-repo-import"
-		}
-		batch := guardianapi.MutationBatch{
-			Writes: writes,
-			Context: guardianapi.MutationContext{
-				PrincipalID: principal,
-				Reason:      "repo import " + opts.RepoName,
-			},
-		}
-		if _, err := store.UpsertFiles(ctx, batch); err != nil {
+		if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{Writes: writes, Context: mutationCtx}); err != nil {
 			return nil, fmt.Errorf("write partition bundle: %w", err)
 		}
 		result.FilesWritten = len(writes)
+	}
+	if len(deletes) > 0 {
+		if _, err := store.DeletePaths(ctx, guardianapi.DeleteBatch{Deletes: deletes, Context: mutationCtx}); err != nil {
+			return nil, fmt.Errorf("prune repository files: %w", err)
+		}
+		result.FilesDeleted = len(deletes)
+	}
+	if len(manifests) > 0 {
+		if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{Writes: manifests, Context: mutationCtx}); err != nil {
+			return nil, fmt.Errorf("write ownership manifest: %w", err)
+		}
 	}
 	sort.Strings(result.Imported)
 	sort.Strings(result.Skipped)
 	return result, nil
 }
 
-func listPartitions(ctx context.Context, source Source, filter string) ([]string, error) {
+func loadOwnershipManifest(ctx context.Context, store guardianapi.ReadStore, partition string) (*ownershipManifest, []byte, error) {
+	raw, err := store.ReadFile(ctx, paths.RepoImportManifest(partition))
+	if err != nil {
+		return nil, nil, err
+	}
+	var manifest ownershipManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return nil, raw, err
+	}
+	return &manifest, raw, nil
+}
+
+func buildOwnershipManifest(source, repo string, desired map[string]bool) ([]byte, error) {
+	files := make([]string, 0, len(desired))
+	for file := range desired {
+		files = append(files, file)
+	}
+	sort.Strings(files)
+	return json.MarshalIndent(ownershipManifest{
+		APIVersion: "guardian/v1alpha1",
+		Kind:       "RepoImportOwnership",
+		Source:     source,
+		Repo:       repo,
+		Files:      files,
+	}, "", "  ")
+}
+
+func partitionBundlePath(partition, override string) string {
+	override = strings.TrimSpace(override)
+	if override == "" {
+		return PartitionsSubdir + "/" + partition
+	}
+	return path.Clean(strings.TrimPrefix(override, "/"))
+}
+
+func validateRepoPath(root string) error {
+	root = strings.TrimSpace(root)
+	if root == "" || root == "." || root == ".." || strings.HasPrefix(root, "../") || strings.Contains(root, "/../") || strings.HasPrefix(root, "/") {
+		return fmt.Errorf("invalid repository path %q", root)
+	}
+	return nil
+}
+
+func listPartitions(ctx context.Context, source Source, filter, partitionPath string) ([]string, error) {
 	if strings.TrimSpace(filter) != "" {
-		entries, err := source.ListDir(ctx, PartitionsSubdir+"/"+filter)
+		if err := paths.ValidatePartitionName(filter); err != nil {
+			return nil, err
+		}
+		root := partitionBundlePath(filter, partitionPath)
+		if err := validateRepoPath(root); err != nil {
+			return nil, err
+		}
+		entries, err := source.ListDir(ctx, root)
 		if err != nil {
 			if isNotExist(err) {
 				return nil, nil
@@ -215,6 +336,9 @@ func listPartitions(ctx context.Context, source Source, filter string) ([]string
 		if !entry.IsDir {
 			continue
 		}
+		if err := paths.ValidatePartitionName(entry.Name); err != nil {
+			return nil, fmt.Errorf("invalid partition directory: %w", err)
+		}
 		partitions = append(partitions, entry.Name)
 	}
 	sort.Strings(partitions)
@@ -236,8 +360,10 @@ func hasPartitionManifest(ctx context.Context, source Source, partition string, 
 
 // collectPartition reads one partition bundle and returns the canonical
 // store writes plus non-fatal warnings.
-func collectPartition(ctx context.Context, source Source, partition string) ([]guardianapi.PathWrite, []string, error) {
-	root := PartitionsSubdir + "/" + partition
+func collectPartition(ctx context.Context, source Source, partition, root string) ([]guardianapi.PathWrite, []string, error) {
+	if err := validateRepoPath(root); err != nil {
+		return nil, nil, err
+	}
 	entries, err := source.ListDir(ctx, root)
 	if err != nil {
 		return nil, nil, err
@@ -250,14 +376,14 @@ func collectPartition(ctx context.Context, source Source, partition string) ([]g
 		if entry.IsDir {
 			switch entry.Name {
 			case "intents":
-				intentWrites, intentWarnings, err := collectIntents(ctx, source, partition)
+				intentWrites, intentWarnings, err := collectIntents(ctx, source, root, partition)
 				if err != nil {
 					return nil, nil, err
 				}
 				writes = append(writes, intentWrites...)
 				warnings = append(warnings, intentWarnings...)
 			case "payloads":
-				payloadWrites, err := collectTree(ctx, source, partition, "payloads", "payloads")
+				payloadWrites, err := collectTree(ctx, source, root, partition, "payloads", "payloads")
 				if err != nil {
 					return nil, nil, err
 				}
@@ -294,8 +420,8 @@ func collectPartition(ctx context.Context, source Source, partition string) ([]g
 	return writes, warnings, nil
 }
 
-func collectIntents(ctx context.Context, source Source, partition string) ([]guardianapi.PathWrite, []string, error) {
-	root := PartitionsSubdir + "/" + partition + "/intents"
+func collectIntents(ctx context.Context, source Source, partitionRoot, partition string) ([]guardianapi.PathWrite, []string, error) {
+	root := partitionRoot + "/intents"
 	entries, err := source.ListDir(ctx, root)
 	if err != nil {
 		if isNotExist(err) {
@@ -321,6 +447,9 @@ func collectIntents(ctx context.Context, source Source, partition string) ([]gua
 		if err != nil {
 			return nil, nil, fmt.Errorf("parse intent %s: %w", entry.Name, err)
 		}
+		if err := paths.ValidateIntentName(parsed.Metadata.Name); err != nil {
+			return nil, nil, fmt.Errorf("intent %s: %w", entry.Name, err)
+		}
 		if err := rejectInlineSecretValues(parsed); err != nil {
 			return nil, nil, fmt.Errorf("intent %s: %w", entry.Name, err)
 		}
@@ -334,8 +463,8 @@ func collectIntents(ctx context.Context, source Source, partition string) ([]gua
 
 // collectTree walks dir recursively and maps files under the partition payload
 // namespace.
-func collectTree(ctx context.Context, source Source, partition, dir, logicalSubdir string) ([]guardianapi.PathWrite, error) {
-	root := PartitionsSubdir + "/" + partition + "/" + dir
+func collectTree(ctx context.Context, source Source, partitionRoot, partition, dir, logicalSubdir string) ([]guardianapi.PathWrite, error) {
+	root := partitionRoot + "/" + dir
 	entries, err := source.ListDir(ctx, root)
 	if err != nil {
 		if isNotExist(err) {
@@ -347,7 +476,7 @@ func collectTree(ctx context.Context, source Source, partition, dir, logicalSubd
 	for _, entry := range entries {
 		rel := logicalSubdir + "/" + entry.Name
 		if entry.IsDir {
-			nested, err := collectTree(ctx, source, partition, dir+"/"+entry.Name, rel)
+			nested, err := collectTree(ctx, source, partitionRoot, partition, dir+"/"+entry.Name, rel)
 			if err != nil {
 				return nil, err
 			}

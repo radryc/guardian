@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -415,3 +417,73 @@ func (f *fakeGuardianChangeStream) Recv() (*pb.GuardianChangeEvent, error) {
 }
 
 var _ routerClient = (*fakeRouterClient)(nil)
+
+// startupRetryRouter simulates a router that is still rolling: the first
+// GetClusterInfo calls fail with the same transport error seen when a router
+// pod is replaced, then it starts serving normally.
+type startupRetryRouter struct {
+	pb.UnimplementedMonoFSRouterServer
+
+	mu            sync.Mutex
+	failures      int
+	clusterCalls  int
+	registerCalls int
+}
+
+func (r *startupRetryRouter) GetClusterInfo(context.Context, *pb.ClusterInfoRequest) (*pb.ClusterInfoResponse, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.clusterCalls++
+	if r.clusterCalls <= r.failures {
+		return nil, status.Error(codes.Unavailable, "error reading server preface: EOF")
+	}
+	return &pb.ClusterInfoResponse{Nodes: []*pb.NodeInfo{{
+		NodeId:  "node-a",
+		Address: "127.0.0.1:1",
+		Healthy: true,
+	}}}, nil
+}
+
+func (r *startupRetryRouter) RegisterClient(context.Context, *pb.RegisterClientRequest) (*pb.RegisterClientResponse, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.registerCalls++
+	return &pb.RegisterClientResponse{Success: true, HeartbeatIntervalMs: 30000}, nil
+}
+
+func TestNewGRPCClientRetriesTransientRouterStartup(t *testing.T) {
+	oldBase := initRetryBase
+	initRetryBase = 10 * time.Millisecond
+	t.Cleanup(func() { initRetryBase = oldBase })
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	server := grpc.NewServer()
+	router := &startupRetryRouter{failures: 2}
+	pb.RegisterMonoFSRouterServer(server, router)
+	go func() { _ = server.Serve(lis) }()
+	t.Cleanup(server.Stop)
+
+	client, err := NewGRPCClient(context.Background(), ClientConfig{
+		RouterAddr: lis.Addr().String(),
+		ClientID:   "guardianctl-test",
+		Token:      "test-token",
+		RPCTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewGRPCClient() error = %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	router.mu.Lock()
+	clusterCalls, registerCalls := router.clusterCalls, router.registerCalls
+	router.mu.Unlock()
+	if clusterCalls != 3 {
+		t.Fatalf("GetClusterInfo call count = %d, want 3 (two transient EOFs then success)", clusterCalls)
+	}
+	if registerCalls != 1 {
+		t.Fatalf("RegisterClient call count = %d, want 1", registerCalls)
+	}
+}

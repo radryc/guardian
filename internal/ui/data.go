@@ -1188,7 +1188,7 @@ func buildIntentDocument(ctx context.Context, store guardianapi.Store, manifest 
 	}
 	doc := IntentDocument{
 		Name:              manifest.Metadata.Name,
-		Manifest:          manifest,
+		Manifest:          redactIntentManifestForUI(manifest),
 		ManifestVersionID: versionID,
 		State:             state,
 		ObservedHealth:    statedomain.CloneHealthObservation(stateHealth(state)),
@@ -1399,7 +1399,7 @@ func buildAssetDocument(ctx context.Context, partitionName, intentName string, s
 		Service:          service,
 		Ports:            ports,
 		Replicas:         replicas,
-		Properties:       cloneMap(spec.Properties),
+		Properties:       redactSecretPropertiesForUI(spec.Type, spec.Properties),
 		Payload:          copyStringMap(spec.Payload),
 		Hints:            assetdefs.ResolveAssetHints(spec.Type, spec.Name, spec.Hints, intentHints),
 	}
@@ -2722,6 +2722,30 @@ func assetOutputs(state *statedomain.IntentState, assetName string) map[string]s
 }
 
 const redactedSecretValue = "******"
+
+// redactSecretPropertiesForUI masks inline Secret material before manifests or
+// asset documents are returned to the browser. Secret references remain
+// visible: they are names, not values.
+func redactSecretPropertiesForUI(assetType string, properties map[string]any) map[string]any {
+	out := cloneMap(properties)
+	if !strings.EqualFold(strings.TrimSpace(assetType), string(assetdomain.TypeSecret)) {
+		return out
+	}
+	if _, ok := out["value"]; ok {
+		out["value"] = redactedSecretValue
+	}
+	return out
+}
+
+func redactIntentManifestForUI(manifest intentdomain.Intent) intentdomain.Intent {
+	out := manifest
+	out.Spec.Assets = make([]assetdomain.Spec, len(manifest.Spec.Assets))
+	for i, asset := range manifest.Spec.Assets {
+		out.Spec.Assets[i] = asset
+		out.Spec.Assets[i].Properties = redactSecretPropertiesForUI(asset.Type, asset.Properties)
+	}
+	return out
+}
 
 func isSensitiveAssetOutputForUI(outputKey string) bool {
 	return strings.EqualFold(strings.TrimSpace(outputKey), "value")

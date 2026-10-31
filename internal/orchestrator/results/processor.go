@@ -76,12 +76,16 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		return err
 	}
 
+	if err := validateResultIdentity(result); err != nil {
+		return fail(err)
+	}
 	state, err := common.LoadIntentState(ctx, p.store, result.Partition, result.Intent)
 	if err != nil {
 		return fail(err)
 	}
 	// Skip stale results: if the intent's last task ID no longer matches this
 	// result (e.g. a newer task was already queued), this result is outdated.
+	// An empty LastTaskID is still verified against the queued task below.
 	if state.LastTaskID != "" && state.LastTaskID != result.TaskID {
 		log.Printf("results: skipping stale result task=%s (current task=%s) for %s/%s", result.TaskID, state.LastTaskID, result.Partition, result.Intent)
 		p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
@@ -92,6 +96,16 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 	if err != nil && !os.IsNotExist(err) {
 		return fail(err)
 	}
+	if taskFile == nil {
+		return fail(fmt.Errorf("result %s has no queued task; refusing to apply an unverifiable result", result.TaskID))
+	}
+	if err := validateTaskResult(taskFile, result); err != nil {
+		return fail(err)
+	}
+	if state.TargetPusher != "" && result.Pusher != state.TargetPusher {
+		return fail(fmt.Errorf("result pusher %q does not match intent target pusher %q", result.Pusher, state.TargetPusher))
+	}
+	redactResultSecrets(taskFile, result)
 
 	switch result.Op {
 	case taskdomain.OpCheck:
@@ -501,7 +515,78 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 	}
 }
 
+func validateResultIdentity(result *taskdomain.TaskResult) error {
+	if result == nil {
+		return fmt.Errorf("result is nil")
+	}
+	if err := paths.ValidatePartitionName(result.Partition); err != nil {
+		return fmt.Errorf("result partition: %w", err)
+	}
+	if err := paths.ValidateIntentName(result.Intent); err != nil {
+		return fmt.Errorf("result intent: %w", err)
+	}
+	if err := paths.ValidateQueueIdentity(result.Pusher, result.TaskID); err != nil {
+		return fmt.Errorf("result queue identity: %w", err)
+	}
+	return nil
+}
+
+func validateTaskResult(task *taskdomain.Task, result *taskdomain.TaskResult) error {
+	if task == nil || result == nil {
+		return fmt.Errorf("task and result are required")
+	}
+	if task.TaskID != result.TaskID {
+		return fmt.Errorf("result task id %q does not match queued task %q", result.TaskID, task.TaskID)
+	}
+	if task.Op != result.Op {
+		return fmt.Errorf("result op %q does not match queued task op %q", result.Op, task.Op)
+	}
+	if task.Partition != result.Partition {
+		return fmt.Errorf("result partition %q does not match queued task partition %q", result.Partition, task.Partition)
+	}
+	if task.Intent != result.Intent {
+		return fmt.Errorf("result intent %q does not match queued task intent %q", result.Intent, task.Intent)
+	}
+	if task.TargetPusher != "" && task.TargetPusher != result.Pusher {
+		return fmt.Errorf("result pusher %q does not match queued task pusher %q", result.Pusher, task.TargetPusher)
+	}
+	return nil
+}
+
+func redactResultSecrets(task *taskdomain.Task, result *taskdomain.TaskResult) {
+	if task == nil || result == nil {
+		return
+	}
+	names := task.SecretAssetNames()
+	if len(names) == 0 {
+		return
+	}
+	secrets := make([]string, 0, len(names)+1)
+	for _, name := range names {
+		if value := result.Outputs[name+".value"]; strings.TrimSpace(value) != "" && value != taskdomain.RedactedValue {
+			secrets = append(secrets, value)
+		}
+	}
+	if value := result.Outputs["value"]; strings.TrimSpace(value) != "" && value != taskdomain.RedactedValue {
+		secrets = append(secrets, value)
+	}
+	result.Outputs = taskdomain.RedactSecretOutputs(task, result.Outputs)
+	if len(secrets) == 0 {
+		return
+	}
+	for i := range result.Logs {
+		result.Logs[i].Message = taskdomain.RedactSecretStrings([]string{result.Logs[i].Message}, secrets)[0]
+	}
+	if result.Error != nil {
+		redacted := taskdomain.RedactSecretStrings([]string{*result.Error}, secrets)[0]
+		result.Error = &redacted
+	}
+}
+
 func (p *Processor) loadTask(ctx context.Context, pusher, taskID string) (*taskdomain.Task, error) {
+	if err := paths.ValidateQueueIdentity(pusher, taskID); err != nil {
+		return nil, err
+	}
 	data, err := p.store.ReadFile(ctx, paths.QueueTask(pusher, taskID))
 	if err != nil {
 		return nil, err
@@ -514,7 +599,8 @@ func (p *Processor) loadTask(ctx context.Context, pusher, taskID string) (*taskd
 }
 
 func (p *Processor) cleanupQueueArtifacts(ctx context.Context, pusher, taskID string) {
-	if pusher == "" || taskID == "" {
+	if err := paths.ValidateQueueIdentity(pusher, taskID); err != nil {
+		telemetry.EmitWarn(ctx, processorScope, fmt.Sprintf("refusing to clean queue artifacts: %v", err))
 		return
 	}
 	_, err := p.store.DeletePaths(ctx, guardianapi.DeleteBatch{

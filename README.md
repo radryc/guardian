@@ -12,7 +12,10 @@ Guardian has no database of its own: **MonoFS is the store and the message
 bus**. Partitions, intents, runtime state, queues, archives, and the platform
 registry are all versioned files under the `guardian/` namespace.
 
-See [`docs/architecture.md`](docs/architecture.md) for the full architecture.
+See [`docs/architecture.md`](docs/architecture.md) for the full architecture,
+[`docs/logical-flow.md`](docs/logical-flow.md) for end-to-end flows, and
+[`docs/security-architecture.md`](docs/security-architecture.md) for the threat
+model and trust boundaries.
 
 ## Components
 
@@ -155,8 +158,8 @@ Repositories declare their deployment surface in `.guardian/config.yaml`
 ```
 
 `guardian/partitions/<name>/{config.yaml,intents/*.yaml,payloads/**}` in the
-repo maps to `/partitions/<name>/...` in the store. CI templates for GitHub
-Actions and GitLab live in `docs/ci/`.
+repo maps to `/partitions/<name>/...` in the store. Legacy CI templates for
+GitHub Actions and GitLab are kept in `docs_backup/ci/`.
 
 ## AWS
 
@@ -174,14 +177,16 @@ Logs Insights, X-Ray, CloudWatch PromQL, observed stacks).
 ## Documentation
 
 - [Architecture](docs/architecture.md)
-- [Control loop](docs/guardian-control-loop.md)
-- [Partition GitOps](docs/partition-gitops.md)
-- [AWS pusher](docs/aws-pusher.md), [AWS scan](docs/aws-scan.md),
-  [AWS observed](docs/aws-observed.md)
-- [Alerting](docs/alerting.md)
-- [Probes and user journeys](docs/probes.md)
-- [Flow topology metrics](docs/flow-topology-metrics.md)
-- [UI partition builder design](docs/ui-partition-builder.md)
+- [Logical flows](docs/logical-flow.md)
+- [Security architecture](docs/security-architecture.md)
+- [Codebase map](docs/codebase-map.md)
+- Internal findings: [missing pieces](docs/internal/missing.md),
+  [duplication](docs/internal/duplication.md),
+  [simplification](docs/internal/simplification.md)
+- [Remaining work / TODO](TODO.md)
+
+The previous documentation set was moved to
+[`docs_backup/`](docs_backup/) and is kept for historical reference only.
 
 ## Troubleshooting
 

@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/radryc/monofs/pkg/repowatch"
 	"github.com/radryc/guardian/internal/registry"
 	"github.com/radryc/guardian/internal/repoconfig"
 	"github.com/radryc/guardian/internal/repoimport"
+	"github.com/radryc/monofs/pkg/repowatch"
 )
 
 // RunRepoImportLoop starts one importer per shard. Each shard acquires a
@@ -125,6 +125,8 @@ func (s *Server) syncRepoBundlesShard(ctx context.Context, shard, shards int) {
 				RepoName:  repo.Name,
 				Partition: binding.Partition,
 				Principal: s.principalID,
+				Source:    repo.Source,
+				Prune:     true,
 			})
 			if err != nil {
 				if ctx.Err() == nil {
