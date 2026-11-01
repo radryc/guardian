@@ -117,6 +117,12 @@ type GuardianConfig struct {
 	RepoImportLease bool `yaml:"repoImportLease"`
 	// RepoImportLeaseName is the Lease name prefix.
 	RepoImportLeaseName string `yaml:"repoImportLeaseName"`
+	// TaskArchiveRetention is the number of task specs kept per partition.
+	// Zero keeps every spec (subject to TaskArchiveMaxAge).
+	TaskArchiveRetention int `yaml:"taskArchiveRetention"`
+	// TaskArchiveMaxAge is a Go duration such as "720h". Zero disables age-based
+	// pruning.
+	TaskArchiveMaxAge string `yaml:"taskArchiveMaxAge"`
 }
 
 type ComplianceConfig struct {
@@ -125,6 +131,18 @@ type ComplianceConfig struct {
 	S3Prefix       string `yaml:"s3Prefix"`
 	S3Endpoint     string `yaml:"s3Endpoint"`
 	ForcePathStyle bool   `yaml:"forcePathStyle"`
+	// ServerSideEncryption is "AES256" or "aws:kms".
+	ServerSideEncryption string `yaml:"serverSideEncryption"`
+	SSEKMSKeyID          string `yaml:"sseKmsKeyId"`
+	// ObjectLockMode is "GOVERNANCE" or "COMPLIANCE".
+	ObjectLockMode string `yaml:"objectLockMode"`
+	// ObjectLockRetainUntil is an RFC3339 timestamp. It is required when
+	// ObjectLockMode is set.
+	ObjectLockRetainUntil string `yaml:"objectLockRetainUntil"`
+	// MaxRetries is the number of retries after the first upload attempt.
+	MaxRetries int `yaml:"maxRetries"`
+	// RetryBaseDelay is a Go duration such as "200ms".
+	RetryBaseDelay string `yaml:"retryBaseDelay"`
 }
 
 type PusherConfig struct {

@@ -95,6 +95,32 @@ guardian-build:
 	@if [ ! -d "$(KVS_DIR)" ]; then echo "KVS repo not found at $(KVS_DIR)"; exit 1; fi
 	DOCKER_BUILDKIT=1 docker build --build-context monofs=$(abspath $(MONOFS_DIR)) --build-context kvs=$(KVS_DIR) -t $(GUARDIAN_IMAGE) .
 
+guardian-up: guardian-build
+	docker rm -f $(GUARDIAN_CONTAINER) >/dev/null 2>&1 || true
+	docker run -d --name $(GUARDIAN_CONTAINER) --network host \
+		-e GUARDIAN_MONOFS_ROUTER=$(GUARDIAN_MONOFS_ROUTER) \
+		-e GUARDIAN_MONOFS_TOKEN=$(GUARDIAN_MONOFS_TOKEN) \
+		-e GUARDIAN_MONOFS_PRINCIPAL=$(GUARDIAN_MONOFS_PRINCIPAL) \
+		-e GUARDIAN_PRINCIPAL_ID=$(GUARDIAN_PRINCIPAL_ID) \
+		-e GUARDIAN_MONOFS_MOUNT_PATH=$(GUARDIAN_MONOFS_MOUNT_PATH) \
+		-e GUARDIAN_MONOFS_USE_EXTERNAL_ADDRESSES=$(GUARDIAN_MONOFS_USE_EXTERNAL_ADDRESSES) \
+		-e GUARDIAN_UI_LISTEN=$(GUARDIAN_UI_LISTEN) \
+		-e GUARDIAN_RECONCILE_INTERVAL=$(GUARDIAN_RECONCILE_INTERVAL) \
+		-e GUARDIAN_DEBOUNCE_MS=$(GUARDIAN_DEBOUNCE_MS) \
+		-e GUARDIAN_PUSHERS=$(GUARDIAN_PUSHERS) \
+		-e GUARDIAN_OTEL_ENDPOINT=$(GUARDIAN_OTEL_ENDPOINT) \
+		-e GUARDIAN_OTEL_INSECURE=$(GUARDIAN_OTEL_INSECURE) \
+		$(GUARDIAN_IMAGE)
+	@echo "Guardian started. UI: http://$(GUARDIAN_UI_LISTEN)"
+
+guardian-down:
+	docker rm -f $(GUARDIAN_CONTAINER) >/dev/null 2>&1 || true
+
+guardian-restart: guardian-down guardian-up
+
+guardian-logs:
+	docker logs -f $(GUARDIAN_CONTAINER)
+
 
 deploy-s3:
 	@if [ ! -d "$(MONOFS_DIR)" ]; then echo "MonoFS repo not found at $(MONOFS_DIR)"; exit 1; fi

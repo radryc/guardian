@@ -32,12 +32,15 @@ type Config struct {
 	Retries           int
 	Concurrency       int
 	MaxTargets        int
-	AllowExternal     bool
-	HTTPPaths         []string
-	TCPPorts          []int
-	OTLPEndpoint      string
-	Store             guardianapi.Store
-	Resolver          secrets.Resolver
+	// HistoryLimit bounds the per-probe result history kept in snapshots.
+	// Zero disables history.
+	HistoryLimit  int
+	AllowExternal bool
+	HTTPPaths     []string
+	TCPPorts      []int
+	OTLPEndpoint  string
+	Store         guardianapi.Store
+	Resolver      secrets.Resolver
 	// ExternalTargets lets a storeless pusher (for example --observed-only)
 	// discover probe targets from onboarding descriptors instead of MonoFS.
 	ExternalTargets func(ctx context.Context) ([]Target, error)
@@ -154,6 +157,9 @@ type Snapshot struct {
 	ShardCount int       `json:"shardCount,omitempty"`
 	UpdatedAt  time.Time `json:"updatedAt"`
 	Probes     []Result  `json:"probes"`
+	// History is a bounded, newest-first sample of probe results for this
+	// partition. It is empty when HistoryLimit is zero.
+	History []Result `json:"history,omitempty"`
 }
 
 func ProbeID(pusher, partition, intent, asset, name, probeType, target string) string {
@@ -170,6 +176,7 @@ func ConfigFromEnv() Config {
 		Retries:           envInt("GUARDIAN_PROBE_RETRIES", 2),
 		Concurrency:       envInt("GUARDIAN_PROBE_CONCURRENCY", 8),
 		MaxTargets:        envInt("GUARDIAN_PROBE_MAX_TARGETS", 200),
+		HistoryLimit:      envInt("GUARDIAN_PROBE_HISTORY_LIMIT", 20),
 		AllowExternal:     envBool("GUARDIAN_PROBE_ALLOW_EXTERNAL", false),
 		HTTPPaths:         envList("GUARDIAN_PROBE_HTTP_PATHS", []string{"/healthz", "/health", "/ready", "/livez", "/"}),
 		TCPPorts:          envIntList("GUARDIAN_PROBE_TCP_PORTS", []int{80, 443, 8080}),
@@ -189,6 +196,9 @@ func ConfigFromEnv() Config {
 	}
 	if cfg.MaxTargets < 1 {
 		cfg.MaxTargets = 200
+	}
+	if cfg.HistoryLimit < 0 {
+		cfg.HistoryLimit = 0
 	}
 	return cfg
 }

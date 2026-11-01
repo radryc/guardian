@@ -22,4 +22,12 @@ func TestSecretValidate(t *testing.T) {
 	if err := (secretDefinition{}).Validate(both, ValidationContext{}); err == nil {
 		t.Fatal("Validate(both) expected error")
 	}
+
+	strictCtx := ValidationContext{RequireSecretRefs: true}
+	if err := (secretDefinition{}).Validate(validValue, strictCtx); err == nil {
+		t.Fatal("strict context accepted inline secret value")
+	}
+	if err := (secretDefinition{}).Validate(validRef, strictCtx); err != nil {
+		t.Fatalf("strict context rejected secretRef: %v", err)
+	}
 }

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
@@ -62,6 +64,16 @@ func main() {
 	var shardCount int
 	var awsReadAddr string
 	var awsReadToken string
+	var awsReadTokenFile string
+	var awsReadScopes string
+	var awsReadEnableDiff bool
+	var awsReadTLSCert string
+	var awsReadTLSKey string
+	var awsReadTLSClientCA string
+	var awsReadRateLimit float64
+	var awsReadRateBurst int
+	var awsReadMaxBodyBytes int64
+	var awsReadAllowPlaintext bool
 	var awsReadDisabled bool
 	var eventsQueueURL string
 	var eventsDisabled bool
@@ -87,7 +99,17 @@ func main() {
 	flag.IntVar(&shardIndex, "shard-index", 0, "shard index for this replica when sharding a shared queue")
 	flag.IntVar(&shardCount, "shard-count", 1, "number of shards sharing the queue; 1 disables sharding")
 	flag.StringVar(&awsReadAddr, "awsread-addr", envOr("GUARDIAN_AWSREAD_ADDR", "127.0.0.1:19090"), "HTTP listen address for the read-only CloudWatch/X-Ray API (empty disables; loopback by default)")
-	flag.StringVar(&awsReadToken, "awsread-token", os.Getenv("GUARDIAN_AWSREAD_TOKEN"), "bearer token required by the AWS read API (empty disables auth)")
+	flag.StringVar(&awsReadToken, "awsread-token", os.Getenv("GUARDIAN_AWSREAD_TOKEN"), "bearer token required by the AWS read API (empty disables auth on loopback only)")
+	flag.StringVar(&awsReadTokenFile, "awsread-token-file", os.Getenv("GUARDIAN_AWSREAD_TOKEN_FILE"), "file containing the bearer token; re-read on each request for rotation")
+	flag.StringVar(&awsReadScopes, "awsread-scopes", envOr("GUARDIAN_AWSREAD_SCOPES", "read"), "comma-separated scopes for the bearer token: read,diff,admin")
+	flag.BoolVar(&awsReadEnableDiff, "awsread-enable-diff", false, "enable the privileged /v1/aws/observed/diff endpoint (runs npm/cdk on caller input)")
+	flag.StringVar(&awsReadTLSCert, "awsread-tls-cert", os.Getenv("GUARDIAN_AWSREAD_TLS_CERT"), "TLS certificate for the AWS read API (empty = plain HTTP on loopback only)")
+	flag.StringVar(&awsReadTLSKey, "awsread-tls-key", os.Getenv("GUARDIAN_AWSREAD_TLS_KEY"), "TLS private key for the AWS read API")
+	flag.StringVar(&awsReadTLSClientCA, "awsread-tls-client-ca", os.Getenv("GUARDIAN_AWSREAD_TLS_CLIENT_CA"), "CA bundle for mutual TLS client verification (empty = no client certificate requirement)")
+	flag.Float64Var(&awsReadRateLimit, "awsread-rate-limit", 50, "per-caller requests per second (0 disables)")
+	flag.IntVar(&awsReadRateBurst, "awsread-rate-burst", 100, "per-caller burst for the AWS read API rate limiter")
+	flag.Int64Var(&awsReadMaxBodyBytes, "awsread-max-body-bytes", 1<<20, "maximum request body size for the AWS read API")
+	flag.BoolVar(&awsReadAllowPlaintext, "awsread-allow-plaintext", false, "allow the read API to listen on a non-loopback address without TLS (dangerous)")
 	flag.BoolVar(&awsReadDisabled, "awsread-disabled", false, "disable the read-only CloudWatch/X-Ray API")
 	flag.StringVar(&eventsQueueURL, "events-queue-url", os.Getenv("GUARDIAN_AWS_EVENTS_QUEUE_URL"), "SQS queue URL carrying CloudFormation EventBridge events (empty disables)")
 	flag.BoolVar(&eventsDisabled, "events-disabled", false, "disable the CloudFormation EventBridge event consumer")
@@ -345,8 +367,16 @@ func main() {
 	}
 
 	if !awsReadDisabled && strings.TrimSpace(awsReadAddr) != "" {
-		if strings.TrimSpace(awsReadToken) == "" && !isLoopbackListen(awsReadAddr) {
-			log.Printf("WARNING: AWS read API is listening on %s without a bearer token; anyone who can reach this address can read telemetry and trigger observed diffs", awsReadAddr)
+		loopback := isLoopbackListen(awsReadAddr)
+		hasToken := strings.TrimSpace(awsReadToken) != "" || strings.TrimSpace(awsReadTokenFile) != ""
+		if !loopback && !hasToken {
+			log.Fatalf("AWS read API is listening on %s without a bearer token; configure --awsread-token or --awsread-token-file", awsReadAddr)
+		}
+		if (strings.TrimSpace(awsReadTLSCert) == "") != (strings.TrimSpace(awsReadTLSKey) == "") {
+			log.Fatalf("AWS read API TLS requires both --awsread-tls-cert and --awsread-tls-key")
+		}
+		if !loopback && strings.TrimSpace(awsReadTLSCert) == "" && !awsReadAllowPlaintext {
+			log.Fatalf("AWS read API is listening on %s without TLS; configure --awsread-tls-cert/--awsread-tls-key or pass --awsread-allow-plaintext for a trusted network", awsReadAddr)
 		}
 		// The read API must query the target account, not the management
 		// account that hosts the fleet task. Assume the per-account role once
@@ -380,24 +410,47 @@ func main() {
 		}
 		reader := awsread.NewAWSReader(readerConfig)
 		promQL := awsread.NewPromQLClient(readerConfig)
+		readHandler := awsread.NewHandler(reader, awsReadToken).
+			WithPromQL(promQL).
+			WithObserved(observedService).
+			WithOnboarding(onboardingReader).
+			WithProbes(probeRunner).
+			WithIdentity(pusherName, account, region).
+			WithScopes(splitCSV(awsReadScopes)...).
+			WithObservedDiff(awsReadEnableDiff).
+			WithRateLimit(awsReadRateLimit, awsReadRateBurst).
+			WithMaxRequestBodyBytes(awsReadMaxBodyBytes)
+		if strings.TrimSpace(awsReadTokenFile) != "" {
+			readHandler.WithTokenFile(awsReadTokenFile)
+		}
+		readTLS, err := awsReadTLSConfig(awsReadTLSCert, awsReadTLSKey, awsReadTLSClientCA)
+		if err != nil {
+			log.Fatalf("configure AWS read API TLS: %v", err)
+		}
 		readServer := &http.Server{
-			Addr: awsReadAddr,
-			Handler: awsread.NewHandler(reader, awsReadToken).
-				WithPromQL(promQL).
-				WithObserved(observedService).
-				WithOnboarding(onboardingReader).
-				WithProbes(probeRunner).
-				WithIdentity(pusherName, account, region),
+			Addr:              awsReadAddr,
+			Handler:           readHandler,
+			TLSConfig:         readTLS,
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      2 * time.Minute,
+			IdleTimeout:       2 * time.Minute,
 		}
 		goroutines++
 		go func() {
-			log.Printf("aws read API listening on %s", awsReadAddr)
+			log.Printf("aws read API listening on %s (tls=%t, diff=%t, scopes=%s)", awsReadAddr, readTLS != nil, awsReadEnableDiff, strings.TrimSpace(awsReadScopes))
 			go func() {
 				<-ctx.Done()
 				_ = readServer.Shutdown(context.Background())
 			}()
-			if err := readServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				readErr <- err
+			var serveErr error
+			if readTLS != nil {
+				serveErr = readServer.ListenAndServeTLS(awsReadTLSCert, awsReadTLSKey)
+			} else {
+				serveErr = readServer.ListenAndServe()
+			}
+			if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+				readErr <- serveErr
 				return
 			}
 			readErr <- nil
@@ -456,6 +509,43 @@ func isLoopbackListen(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func splitCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func awsReadTLSConfig(certFile, keyFile, clientCAFile string) (*tls.Config, error) {
+	if strings.TrimSpace(certFile) == "" && strings.TrimSpace(keyFile) == "" {
+		return nil, nil
+	}
+	if strings.TrimSpace(certFile) == "" || strings.TrimSpace(keyFile) == "" {
+		return nil, fmt.Errorf("both certificate and key are required")
+	}
+	if _, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
+		return nil, fmt.Errorf("load certificate: %w", err)
+	}
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	if strings.TrimSpace(clientCAFile) != "" {
+		content, err := os.ReadFile(clientCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("read client CA: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(content) {
+			return nil, fmt.Errorf("parse client CA bundle")
+		}
+		cfg.ClientCAs = pool
+		cfg.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+	return cfg, nil
 }
 
 func splitRegions(region string) []string {

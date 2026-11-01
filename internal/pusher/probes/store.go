@@ -13,6 +13,11 @@ import (
 )
 
 func (r *Runner) writeSnapshots(ctx context.Context) {
+	if r.cfg.Store == nil {
+		// Storeless pushers expose Latest() through the read API; there is no
+		// durable snapshot to write.
+		return
+	}
 	r.mu.Lock()
 	partitions := make(map[string]struct{}, len(r.snapshotHashes))
 	for partition := range r.snapshotHashes {
@@ -25,6 +30,10 @@ func (r *Runner) writeSnapshots(ctx context.Context) {
 		}
 		partitions[result.Partition] = struct{}{}
 		latest = append(latest, result)
+	}
+	historyByPartition := make(map[string][]Result, len(partitions))
+	for partition := range partitions {
+		historyByPartition[partition] = r.historyForPartition(partition)
 	}
 	r.mu.Unlock()
 
@@ -50,6 +59,7 @@ func (r *Runner) writeSnapshots(ctx context.Context) {
 			ShardCount: r.cfg.ShardCount,
 			UpdatedAt:  time.Now().UTC(),
 			Probes:     partitionResults,
+			History:    historyByPartition[partition],
 		}
 
 		// UpdatedAt must not defeat content-hash suppression. Hash the probe

@@ -2,6 +2,7 @@ package validator
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -110,7 +111,10 @@ func validateIntentAssets(assets []intentdomain.AssetSpec, intentHints []assetdo
 		return err
 	}
 
-	ctx := assetdefs.ValidationContext{AssetTypes: assetTypes}
+	ctx := assetdefs.ValidationContext{
+		AssetTypes:        assetTypes,
+		RequireSecretRefs: strings.EqualFold(strings.TrimSpace(os.Getenv("GUARDIAN_REQUIRE_SECRET_REFS")), "true"),
+	}
 	for _, asset := range orderedAssets {
 		for _, dep := range asset.DependsOn {
 			if _, ok := assetNames[dep]; !ok {

@@ -40,6 +40,8 @@ ARG BUILD_COMMIT=unknown
 ARG BUILD_TIME=unknown
 
 RUN apk add --no-cache ca-certificates kubectl yq
+RUN addgroup -S guardian && adduser -S -G guardian guardian && \
+  mkdir -p /home/guardian/.kube && chown -R guardian:guardian /home/guardian
 
 LABEL org.opencontainers.image.version=${BUILD_VERSION}
 LABEL org.opencontainers.image.revision=${BUILD_COMMIT}
@@ -49,5 +51,6 @@ COPY --from=build /out/guardian-pusher-k8s /usr/local/bin/guardian-pusher-k8s
 COPY docker/pusher-k8s-entrypoint.sh /usr/local/bin/pusher-k8s-entrypoint
 
 RUN chmod +x /usr/local/bin/pusher-k8s-entrypoint
+USER guardian
 
 ENTRYPOINT ["/usr/local/bin/pusher-k8s-entrypoint"]

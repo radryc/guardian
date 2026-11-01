@@ -40,6 +40,7 @@ ARG BUILD_COMMIT=unknown
 ARG BUILD_TIME=unknown
 
 RUN apk add --no-cache ca-certificates
+RUN addgroup -S guardian && adduser -S -G guardian guardian
 ENV OTEL_GO_DISABLED_INSTRUMENTATIONS=nethttp
 
 LABEL org.opencontainers.image.version=${BUILD_VERSION}
@@ -50,5 +51,6 @@ COPY --from=build /out/guardiand /usr/local/bin/guardiand
 COPY docker/entrypoint.sh /usr/local/bin/guardian-entrypoint
 
 RUN chmod +x /usr/local/bin/guardian-entrypoint
+USER guardian
 
 ENTRYPOINT ["/usr/local/bin/guardian-entrypoint"]

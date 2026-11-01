@@ -31,14 +31,15 @@ func Rank(severity Severity) int {
 
 // Alert is a partition-level notification.
 type Alert struct {
-	Event      string            `json:"event"`
-	Partition  string            `json:"partition"`
-	Status     string            `json:"status"`
-	Severity   Severity          `json:"severity"`
-	Summary    string            `json:"summary"`
-	Details    map[string]string `json:"details,omitempty"`
-	FiredAt    time.Time         `json:"firedAt"`
-	ResolvedAt *time.Time        `json:"resolvedAt,omitempty"`
+	Event          string            `json:"event"`
+	Partition      string            `json:"partition"`
+	Status         string            `json:"status"`
+	Severity       Severity          `json:"severity"`
+	Summary        string            `json:"summary"`
+	Details        map[string]string `json:"details,omitempty"`
+	FiredAt        time.Time         `json:"firedAt"`
+	ResolvedAt     *time.Time        `json:"resolvedAt,omitempty"`
+	IdempotencyKey string            `json:"idempotencyKey,omitempty"`
 }
 
 // Notifier delivers an alert to one channel.
