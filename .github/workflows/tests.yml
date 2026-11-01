@@ -38,8 +38,23 @@ jobs:
         with:
           go-version-file: guardian/go.mod
           cache-dependency-path: guardian/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: guardian/package-lock.json
       # internal/bootstrap tests render templates from the private stratatools
       # repo (ST_ROOT), so they cannot run against a plain public checkout.
       - name: Run tests
         working-directory: guardian
         run: go test $(go list ./... | grep -v '/internal/bootstrap$')
+      - name: Vet
+        working-directory: guardian
+        run: go vet $(go list ./... | grep -v '/internal/bootstrap$')
+      - name: Build UI
+        working-directory: guardian
+        run: npm ci && npm run build:ui
+      - name: Vulnerability scan
+        uses: golang/govulncheck-action@v1
+        with:
+          work-dir: guardian

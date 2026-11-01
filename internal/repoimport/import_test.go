@@ -327,3 +327,25 @@ func TestImportDoesNotPruneAnotherOwnersFiles(t *testing.T) {
 		t.Fatalf("api intent owned by source-a was pruned: %v", err)
 	}
 }
+
+func TestImportReportsOrphanedPartitionWithoutDeletingIt(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	if _, err := Import(ctx, NewLocalSource(seedRepo(t)), store, Options{RepoName: "strata", Principal: "tester", Prune: true}); err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+
+	root := t.TempDir()
+	writeRepoFile(t, root, "guardian/partitions/stage/partition.yaml", strings.ReplaceAll(partitionYAML, "name: prod", "name: stage"))
+	writeRepoFile(t, root, "guardian/partitions/stage/intents/api.yaml", intentYAML)
+	result, err := Import(ctx, NewLocalSource(root), store, Options{RepoName: "strata", Principal: "tester", Prune: true})
+	if err != nil {
+		t.Fatalf("second import: %v", err)
+	}
+	if len(result.Orphaned) != 1 || result.Orphaned[0] != "prod" {
+		t.Fatalf("orphaned = %#v, want [prod]", result.Orphaned)
+	}
+	if _, err := store.ReadFile(ctx, paths.PartitionConfig("prod")); err != nil {
+		t.Fatalf("orphaned partition was deleted: %v", err)
+	}
+}

@@ -3,10 +3,13 @@ package dispatcher
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log"
 	"os"
 	"path"
 	"sort"
@@ -56,9 +59,22 @@ type Dispatcher struct {
 
 	partitionWriteMu    sync.Mutex
 	partitionWriteLocks map[string]*sync.Mutex
+
+	archiveMu       sync.Mutex
+	taskArchiveKeep int
+	taskArchiveAge  time.Duration
 }
 
 const maxEventsPerPartition = 250
+
+// SetTaskArchiveRetention bounds the immutable task-spec archive. keep <= 0
+// disables count-based retention; maxAge <= 0 disables age-based retention.
+func (d *Dispatcher) SetTaskArchiveRetention(keep int, maxAge time.Duration) {
+	d.archiveMu.Lock()
+	d.taskArchiveKeep = keep
+	d.taskArchiveAge = maxAge
+	d.archiveMu.Unlock()
+}
 
 func NewDispatcher(store guardianapi.Store, principalID string) *Dispatcher {
 	return &Dispatcher{
@@ -144,13 +160,18 @@ func (d *Dispatcher) QueueTask(ctx context.Context, t *taskdomain.Task) error {
 	writes := []guardianapi.PathWrite{
 		{LogicalPath: paths.QueueTask(t.TargetPusher, t.TaskID), Content: content},
 	}
-	if err := paths.ValidatePartitionName(t.Partition); err == nil && strings.TrimSpace(t.TaskID) != "" {
-		if err := paths.ValidateTaskID(t.TaskID); err == nil {
-			writes = append(writes, guardianapi.PathWrite{
-				LogicalPath: paths.TaskSpec(t.Partition, t.TaskID),
-				Content:     content,
-			})
+	var archiveDeletes []guardianapi.PathDelete
+	archiveEnabled := paths.ValidatePartitionName(t.Partition) == nil && strings.TrimSpace(t.TaskID) != "" &&
+		paths.ValidateTaskID(t.TaskID) == nil
+	if archiveEnabled {
+		d.archiveMu.Lock()
+		defer d.archiveMu.Unlock()
+		archiveWrites, deletes, archiveErr := d.buildTaskArchive(ctx, t.Partition, t.TaskID, content)
+		if archiveErr != nil {
+			return archiveErr
 		}
+		writes = append(writes, archiveWrites...)
+		archiveDeletes = append(archiveDeletes, deletes...)
 	}
 	_, err = d.store.UpsertFiles(ctx, guardianapi.MutationBatch{
 		Writes:  writes,
@@ -159,9 +180,127 @@ func (d *Dispatcher) QueueTask(ctx context.Context, t *taskdomain.Task) error {
 	if err != nil {
 		return err
 	}
+	if len(archiveDeletes) > 0 {
+		if _, err := d.store.DeletePaths(ctx, guardianapi.DeleteBatch{
+			Deletes: archiveDeletes,
+			Context: guardianapi.MutationContext{PrincipalID: d.principalID, Reason: "prune task archive", CorrelationID: correlationID},
+		}); err != nil {
+			log.Printf("dispatcher: prune task archive: %v", err)
+		}
+	}
 	guardianWritesTotal.WithLabelValues("queue_task").Inc()
 	guardianWriteBytesTotal.WithLabelValues("queue_task").Add(float64(len(content)))
+	if archiveEnabled {
+		d.publish(paths.TaskSpec(t.Partition, t.TaskID), content, contentTypeJSON)
+	}
 	return nil
+}
+
+type taskArchiveEntry struct {
+	TaskID     string    `json:"taskId"`
+	SHA256     string    `json:"sha256"`
+	PrevSHA256 string    `json:"prevSha256,omitempty"`
+	ArchivedAt time.Time `json:"archivedAt"`
+}
+
+type taskArchiveChain struct {
+	Version int                `json:"version"`
+	Entries []taskArchiveEntry `json:"entries"`
+}
+
+// buildTaskArchive returns the task-spec write, the updated hash chain, and
+// deletes for entries that fall outside the configured retention window. The
+// caller must hold d.archiveMu.
+func (d *Dispatcher) buildTaskArchive(ctx context.Context, partition, taskID string, content []byte) ([]guardianapi.PathWrite, []guardianapi.PathDelete, error) {
+	chain, err := d.loadTaskArchiveChain(ctx, partition)
+	if err != nil {
+		return nil, nil, err
+	}
+	now := time.Now().UTC()
+	cutoff := time.Time{}
+	if d.taskArchiveAge > 0 {
+		cutoff = now.Add(-d.taskArchiveAge)
+	}
+	entries, err := d.store.ListDir(ctx, paths.TaskSpecDir(partition))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, err
+	}
+	type candidate struct {
+		id      string
+		modTime time.Time
+	}
+	candidates := make([]candidate, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir || !strings.HasSuffix(entry.Name, ".json") || entry.Name == ".chain.json" {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name, ".json")
+		if id == taskID {
+			continue
+		}
+		info, statErr := d.store.Stat(ctx, paths.TaskSpec(partition, id))
+		if statErr != nil {
+			continue
+		}
+		candidates = append(candidates, candidate{id: id, modTime: info.ModTime})
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].id < candidates[j].id })
+
+	pruned := make(map[string]struct{})
+	deletes := make([]guardianapi.PathDelete, 0)
+	for idx, candidate := range candidates {
+		tooMany := d.taskArchiveKeep > 0 && idx < len(candidates)+1-d.taskArchiveKeep
+		tooOld := !cutoff.IsZero() && !candidate.modTime.IsZero() && candidate.modTime.Before(cutoff)
+		if !tooMany && !tooOld {
+			continue
+		}
+		pruned[candidate.id] = struct{}{}
+		deletes = append(deletes, guardianapi.PathDelete{LogicalPath: paths.TaskSpec(partition, candidate.id)})
+	}
+
+	kept := chain.Entries[:0]
+	for _, entry := range chain.Entries {
+		if _, remove := pruned[entry.TaskID]; remove || entry.TaskID == taskID {
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	prevHash := ""
+	if len(kept) > 0 {
+		prevHash = kept[len(kept)-1].SHA256
+	}
+	sum := sha256.Sum256(append([]byte(prevHash), content...))
+	chain.Version = 1
+	chain.Entries = append(kept, taskArchiveEntry{
+		TaskID:     taskID,
+		SHA256:     hex.EncodeToString(sum[:]),
+		PrevSHA256: prevHash,
+		ArchivedAt: now,
+	})
+	chainContent, err := json.MarshalIndent(chain, "", "  ")
+	if err != nil {
+		return nil, nil, err
+	}
+	writes := []guardianapi.PathWrite{
+		{LogicalPath: paths.TaskSpec(partition, taskID), Content: content},
+		{LogicalPath: paths.TaskArchiveChain(partition), Content: chainContent},
+	}
+	return writes, deletes, nil
+}
+
+func (d *Dispatcher) loadTaskArchiveChain(ctx context.Context, partition string) (taskArchiveChain, error) {
+	content, err := d.store.ReadFile(ctx, paths.TaskArchiveChain(partition))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return taskArchiveChain{Version: 1}, nil
+		}
+		return taskArchiveChain{}, err
+	}
+	var chain taskArchiveChain
+	if err := json.Unmarshal(content, &chain); err != nil {
+		return taskArchiveChain{}, fmt.Errorf("decode task archive chain: %w", err)
+	}
+	return chain, nil
 }
 
 func (d *Dispatcher) WriteIntentState(ctx context.Context, s *statedomain.IntentState) error {

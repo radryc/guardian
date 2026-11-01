@@ -66,6 +66,20 @@ type Options struct {
 	// AccessPolicyToken authenticates /api/access/policy pollers. When empty
 	// the endpoint is open to loopback callers only.
 	AccessPolicyToken string
+	// RequireAuthentication rejects anonymous UI/API mutations. It is enabled
+	// by default in production deployments and can be disabled for local
+	// development with an explicit escape hatch.
+	RequireAuthentication bool
+	// AllowLoopbackAnonymous keeps local development usable when no identity
+	// provider is configured. It only applies to loopback callers and should be
+	// disabled in shared deployments.
+	AllowLoopbackAnonymous bool
+	// TrustedOrigins lists additional scheme://host origins allowed to submit
+	// browser mutations (for example an embedding control plane).
+	TrustedOrigins []string
+	// EnableHSTS emits Strict-Transport-Security even when TLS terminates at a
+	// proxy in front of Guardian.
+	EnableHSTS bool
 }
 
 type ClientConfig struct {
@@ -79,26 +93,30 @@ type MonoFSClientConfig struct {
 }
 
 type Server struct {
-	store              guardianapi.Store
-	dispatcher         *dispatcher.Dispatcher
-	principalID        string
-	pushers            []string
-	staleTaskAfter     time.Duration
-	enableFlowTopology bool
-	flowEvaluator      FlowStateEvaluator
-	partitionData      *partitionDataCache
-	rolloutCache       *rolloutCache
-	projectionCache    *uiProjectionCache
-	clientConfig       ClientConfig
-	clientConfigToken  string
-	autoDeployOnIngest bool
-	repoImportMu       sync.Mutex
-	unmanaged          UnmanagedService
-	access             *access.Service
-	accessPolicyToken  string
-	index              *template.Template
-	static             http.Handler
-	mux                http.Handler
+	store                  guardianapi.Store
+	dispatcher             *dispatcher.Dispatcher
+	principalID            string
+	pushers                []string
+	staleTaskAfter         time.Duration
+	enableFlowTopology     bool
+	flowEvaluator          FlowStateEvaluator
+	partitionData          *partitionDataCache
+	rolloutCache           *rolloutCache
+	projectionCache        *uiProjectionCache
+	clientConfig           ClientConfig
+	clientConfigToken      string
+	autoDeployOnIngest     bool
+	repoImportMu           sync.Mutex
+	unmanaged              UnmanagedService
+	access                 *access.Service
+	accessPolicyToken      string
+	requireAuthentication  bool
+	allowLoopbackAnonymous bool
+	trustedOrigins         []string
+	enableHSTS             bool
+	index                  *template.Template
+	static                 http.Handler
+	mux                    http.Handler
 }
 
 const defaultUIDataCacheTTL = 3 * time.Second
@@ -246,24 +264,28 @@ func New(opts Options) (*Server, error) {
 		dataCacheTTL = defaultUIDataCacheTTL
 	}
 	s := &Server{
-		store:              opts.Store,
-		dispatcher:         opts.Dispatcher,
-		principalID:        strings.TrimSpace(opts.PrincipalID),
-		pushers:            pushers,
-		staleTaskAfter:     staleTaskAfter,
-		enableFlowTopology: opts.EnableFlowTopology,
-		flowEvaluator:      opts.FlowEvaluator,
-		partitionData:      newPartitionDataCache(dataCacheTTL),
-		rolloutCache:       newRolloutCache(defaultRolloutTTL),
-		projectionCache:    newUIProjectionCache(opts.Store, dataCacheTTL),
-		clientConfig:       opts.ClientConfig,
-		clientConfigToken:  strings.TrimSpace(opts.ClientConfigToken),
-		autoDeployOnIngest: !opts.DisableAutoDeployOnIngest,
-		unmanaged:          opts.Unmanaged,
-		access:             opts.Access,
-		accessPolicyToken:  strings.TrimSpace(opts.AccessPolicyToken),
-		index:              index,
-		static:             http.StripPrefix("/static/", http.FileServer(http.FS(staticRoot))),
+		store:                  opts.Store,
+		dispatcher:             opts.Dispatcher,
+		principalID:            strings.TrimSpace(opts.PrincipalID),
+		pushers:                pushers,
+		staleTaskAfter:         staleTaskAfter,
+		enableFlowTopology:     opts.EnableFlowTopology,
+		flowEvaluator:          opts.FlowEvaluator,
+		partitionData:          newPartitionDataCache(dataCacheTTL),
+		rolloutCache:           newRolloutCache(defaultRolloutTTL),
+		projectionCache:        newUIProjectionCache(opts.Store, dataCacheTTL),
+		clientConfig:           opts.ClientConfig,
+		clientConfigToken:      strings.TrimSpace(opts.ClientConfigToken),
+		autoDeployOnIngest:     !opts.DisableAutoDeployOnIngest,
+		unmanaged:              opts.Unmanaged,
+		access:                 opts.Access,
+		accessPolicyToken:      strings.TrimSpace(opts.AccessPolicyToken),
+		requireAuthentication:  opts.RequireAuthentication,
+		allowLoopbackAnonymous: opts.AllowLoopbackAnonymous,
+		trustedOrigins:         append([]string(nil), opts.TrustedOrigins...),
+		enableHSTS:             opts.EnableHSTS,
+		index:                  index,
+		static:                 http.StripPrefix("/static/", http.FileServer(http.FS(staticRoot))),
 	}
 	if s.flowEvaluator == nil {
 		s.flowEvaluator = defaultFlowStateEvaluator()
@@ -276,6 +298,13 @@ func New(opts Options) (*Server, error) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.applySecurityHeaders(w, r)
+	if !s.checkUIAuth(w, r) {
+		return
+	}
+	if !s.checkMutationOrigin(w, r) {
+		return
+	}
 	if !s.authorizeMutation(r) {
 		writeError(w, http.StatusForbidden, fmt.Errorf("principal is not authorized to modify this resource"))
 		return

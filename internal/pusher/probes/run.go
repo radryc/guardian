@@ -2,7 +2,9 @@ package probes
 
 import (
 	"context"
+	"crypto/tls"
 	"log"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -14,7 +16,12 @@ type Runner struct {
 	targets        []Target
 	lastRun        map[string]time.Time
 	previous       map[string]Result
+	history        map[string][]Result
 	snapshotHashes map[string]string
+
+	httpOnce     sync.Once
+	httpSecure   *http.Client
+	httpInsecure *http.Client
 }
 
 func New(cfg Config) *Runner {
@@ -23,6 +30,7 @@ func New(cfg Config) *Runner {
 		otel:           newOTELExporter(cfg.OTLPEndpoint),
 		lastRun:        map[string]time.Time{},
 		previous:       map[string]Result{},
+		history:        map[string][]Result{},
 		snapshotHashes: map[string]string{},
 	}
 }
@@ -32,6 +40,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		return nil
 	}
 	log.Printf("[Probes] enabled pusher=%s cluster=%s interval=%s timeout=%s max=%d", r.cfg.Pusher, r.cfg.Cluster, r.cfg.Interval, r.cfg.Timeout, r.cfg.MaxTargets)
+	defer r.closeTransports()
 	r.refresh(ctx)
 	runTicker := time.NewTicker(5 * time.Second)
 	discoveryTicker := time.NewTicker(r.cfg.DiscoveryInterval)
@@ -65,6 +74,7 @@ func (r *Runner) refresh(ctx context.Context) {
 		if !active[id] {
 			delete(r.lastRun, id)
 			delete(r.previous, id)
+			delete(r.history, id)
 		}
 	}
 	r.mu.Unlock()
@@ -130,6 +140,7 @@ func (r *Runner) runDue(ctx context.Context) {
 			result.ConsecutiveFailures = prev.ConsecutiveFailures + 1
 		}
 		r.previous[result.ProbeID] = *result
+		r.appendHistoryLocked(*result)
 	}
 	r.mu.Unlock()
 
@@ -160,4 +171,65 @@ func (r *Runner) statusMap() map[string]string {
 		out[id] = result.Status
 	}
 	return out
+}
+
+func (r *Runner) appendHistoryLocked(result Result) {
+	if r.cfg.HistoryLimit <= 0 || result.ProbeID == "" {
+		return
+	}
+	history := append(r.history[result.ProbeID], result)
+	if len(history) > r.cfg.HistoryLimit {
+		history = history[len(history)-r.cfg.HistoryLimit:]
+	}
+	r.history[result.ProbeID] = history
+}
+
+func (r *Runner) historyForPartition(partition string) []Result {
+	if r.cfg.HistoryLimit <= 0 {
+		return nil
+	}
+	out := make([]Result, 0)
+	for _, results := range r.history {
+		for _, result := range results {
+			if result.Partition == partition {
+				out = append(out, result)
+			}
+		}
+	}
+	SortResults(out)
+	if len(out) > r.cfg.HistoryLimit {
+		out = out[len(out)-r.cfg.HistoryLimit:]
+	}
+	return out
+}
+
+func (r *Runner) httpClient(insecure bool) *http.Client {
+	r.httpOnce.Do(func() {
+		base := http.DefaultTransport.(*http.Transport).Clone()
+		base.MaxIdleConns = 100
+		base.MaxIdleConnsPerHost = 8
+		secure := base.Clone()
+		insecureTransport := base.Clone()
+		insecureTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
+		r.httpSecure = &http.Client{Transport: secure}
+		r.httpInsecure = &http.Client{Transport: insecureTransport}
+	})
+	if insecure {
+		return r.httpInsecure
+	}
+	return r.httpSecure
+}
+
+func (r *Runner) closeTransports() {
+	r.httpOnce.Do(func() {})
+	if r.httpSecure != nil {
+		if transport, ok := r.httpSecure.Transport.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+	}
+	if r.httpInsecure != nil {
+		if transport, ok := r.httpInsecure.Transport.(*http.Transport); ok {
+			transport.CloseIdleConnections()
+		}
+	}
 }

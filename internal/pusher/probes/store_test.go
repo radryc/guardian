@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/radryc/guardian/internal/paths"
 	memorystore "github.com/radryc/guardian/internal/store/memory"
@@ -39,6 +40,42 @@ func TestWriteSnapshotsMergesLatestState(t *testing.T) {
 	}
 }
 
+func TestWriteSnapshotsStorelessDoesNotPanic(t *testing.T) {
+	runner := New(Config{Pusher: "storeless"})
+	runner.previous["a"] = Result{ProbeID: "a", Partition: "demo", Status: "up"}
+	runner.writeSnapshots(context.Background())
+}
+
+func TestProbeHistoryIsBounded(t *testing.T) {
+	runner := New(Config{Pusher: "k8s-main", HistoryLimit: 2})
+	runner.mu.Lock()
+	runner.appendHistoryLocked(Result{ProbeID: "a", Partition: "demo", Status: "up", CheckedAt: time.Unix(1, 0)})
+	runner.appendHistoryLocked(Result{ProbeID: "a", Partition: "demo", Status: "down", CheckedAt: time.Unix(2, 0)})
+	runner.appendHistoryLocked(Result{ProbeID: "a", Partition: "demo", Status: "up", CheckedAt: time.Unix(3, 0)})
+	history := runner.historyForPartition("demo")
+	runner.mu.Unlock()
+	if len(history) != 2 {
+		t.Fatalf("history = %d, want 2", len(history))
+	}
+	if history[1].CheckedAt.Unix() != 3 {
+		t.Fatalf("history order = %+v", history)
+	}
+}
+
+func TestHTTPClientReusesTransports(t *testing.T) {
+	runner := New(Config{Pusher: "k8s-main"})
+	secure := runner.httpClient(false)
+	if secure != runner.httpClient(false) {
+		t.Fatal("secure client was not reused")
+	}
+	insecure := runner.httpClient(true)
+	if insecure != runner.httpClient(true) {
+		t.Fatal("insecure client was not reused")
+	}
+	if secure == insecure {
+		t.Fatal("secure and insecure clients must not share a transport")
+	}
+}
 func readSnapshot(t *testing.T, store interface {
 	ReadFile(context.Context, string) ([]byte, error)
 }) Snapshot {

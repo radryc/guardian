@@ -23,7 +23,7 @@ func (secretDefinition) Type() string { return assetdomain.TypeSecret }
 
 func (secretDefinition) NewSpec() any { return &SecretSpec{} }
 
-func (secretDefinition) Validate(spec any, _ ValidationContext) error {
+func (secretDefinition) Validate(spec any, ctx ValidationContext) error {
 	typed, ok := spec.(*SecretSpec)
 	if !ok {
 		return fmt.Errorf("internal secret spec type mismatch")
@@ -41,6 +41,9 @@ func (secretDefinition) Validate(spec any, _ ValidationContext) error {
 	}
 	if hasValue && hasSecretRef {
 		return fmt.Errorf("property value and property secretRef are mutually exclusive")
+	}
+	if hasValue && ctx.RequireSecretRefs {
+		return fmt.Errorf("inline property value is disabled; use secretRef")
 	}
 	if hasSecretRef {
 		if err := requireString(typed.SecretRef, "secretRef"); err != nil {

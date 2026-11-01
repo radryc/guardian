@@ -2,14 +2,16 @@ package validator
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"time"
 
-	"github.com/reugn/go-quartz/quartz"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
 	intentdomain "github.com/radryc/guardian/internal/domain/intent"
 	partitiondomain "github.com/radryc/guardian/internal/domain/partition"
 	targetdomain "github.com/radryc/guardian/internal/domain/target"
+	"github.com/reugn/go-quartz/quartz"
 )
 
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
@@ -95,6 +97,15 @@ func ValidateIntent(i *intentdomain.Intent, knownIntents []string, knownPushers 
 	}
 	switch i.Spec.Implementation {
 	case "", intentdomain.ImplementationNative:
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("GUARDIAN_NATIVE_AWS_STRICT")), "true") && isAWSPusher(i.Spec.TargetPusher) {
+			for _, asset := range i.Spec.Assets {
+				switch asset.Type {
+				case assetdomain.TypeDatabase, assetdomain.TypeSQLDatabase, assetdomain.TypeVolume,
+					assetdomain.TypeNetwork, assetdomain.TypeLoadBalancer, assetdomain.TypeObjectStore:
+					return fmt.Errorf("asset %q type %q is experimental with implementation native; use implementation: cdk or set GUARDIAN_NATIVE_AWS_STRICT=false", asset.Name, asset.Type)
+				}
+			}
+		}
 	case intentdomain.ImplementationCDK:
 		if i.Spec.IntentType == intentdomain.TypeObserved {
 			return fmt.Errorf("implementation %q is not supported for observed intents", intentdomain.ImplementationCDK)

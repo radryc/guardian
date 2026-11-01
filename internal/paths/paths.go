@@ -69,6 +69,12 @@ func TaskSpec(partition, taskID string) string {
 	return normalize(TaskSpecDir(partition), taskID+".json")
 }
 
+// TaskArchiveChain is the hash chain for the task-spec archive. Each entry
+// binds a task spec to its predecessor so deletion or tampering is detectable.
+func TaskArchiveChain(partition string) string {
+	return normalize(TaskSpecDir(partition), ".chain.json")
+}
+
 // RepoImportManifest records which files were written by the repo importer so
 // a later import can prune removed intents/payloads without deleting files
 // authored outside the repository.

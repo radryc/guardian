@@ -134,6 +134,10 @@ type Result struct {
 	FilesWritten int `json:"filesWritten"`
 	// FilesDeleted counts stale files removed by pruning.
 	FilesDeleted int `json:"filesDeleted,omitempty"`
+	// Orphaned lists partitions owned by this source that disappeared from the
+	// repository. They are reported for explicit approval, not deleted
+	// automatically.
+	Orphaned []string `json:"orphaned,omitempty"`
 	// Changed reports whether any file content changed.
 	Changed bool `json:"changed"`
 }
@@ -172,6 +176,32 @@ func Import(ctx context.Context, source Source, store guardianapi.Store, opts Op
 	sourceID := strings.TrimSpace(opts.Source)
 	if sourceID == "" {
 		sourceID = strings.TrimSpace(opts.RepoName)
+	}
+	if opts.Prune && strings.TrimSpace(opts.Partition) == "" && sourceID != "" {
+		current := make(map[string]struct{}, len(partitions))
+		for _, partition := range partitions {
+			current[partition] = struct{}{}
+		}
+		stored, listErr := store.ListDir(ctx, paths.PartitionsRoot())
+		if listErr != nil && !isNotExist(listErr) {
+			return nil, fmt.Errorf("list stored partitions: %w", listErr)
+		}
+		for _, entry := range stored {
+			if !entry.IsDir {
+				continue
+			}
+			if _, ok := current[entry.Name]; ok {
+				continue
+			}
+			previous, _, loadErr := loadOwnershipManifest(ctx, store, entry.Name)
+			if loadErr == nil && previous.Source == sourceID {
+				result.Orphaned = append(result.Orphaned, entry.Name)
+			}
+		}
+		sort.Strings(result.Orphaned)
+		if len(result.Orphaned) > 0 {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("partitions no longer present in %s require explicit deletion: %s", opts.RepoName, strings.Join(result.Orphaned, ", ")))
+		}
 	}
 	writes := make([]guardianapi.PathWrite, 0, 16)
 	deletes := make([]guardianapi.PathDelete, 0)
