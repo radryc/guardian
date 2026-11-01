@@ -21,6 +21,7 @@ import (
 	"github.com/radryc/guardian/internal/pusher/driverutil"
 	"github.com/radryc/guardian/internal/pusher/registry"
 	"github.com/radryc/guardian/internal/pusher/secrets"
+	"github.com/radryc/guardian/internal/versioning/digest"
 )
 
 type baseDriver struct {
@@ -264,7 +265,12 @@ func (d *SecretDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 	if err != nil {
 		return changedDrift(in.Asset.Name, "secret outputs pending"), nil
 	}
-	if strings.TrimSpace(state.Outputs[in.Asset.Name+".value"]) != strings.TrimSpace(value) {
+	hash := digest.ContentHash([]byte(value))
+	if stored := strings.TrimSpace(state.Outputs[in.Asset.Name+".valueHash"]); stored != "" {
+		if stored != hash {
+			return changedDrift(in.Asset.Name, "secret outputs differ"), nil
+		}
+	} else if strings.TrimSpace(state.Outputs[in.Asset.Name+".value"]) != strings.TrimSpace(value) {
 		return changedDrift(in.Asset.Name, "secret outputs differ"), nil
 	}
 	if strings.TrimSpace(spec.SecretRef) != "" && strings.TrimSpace(state.Outputs[in.Asset.Name+".secretRef"]) != strings.TrimSpace(spec.SecretRef) {
@@ -288,7 +294,7 @@ func (d *SecretDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 			return registry.AssetResult{}, err
 		}
 	}
-	outputs := map[string]string{"value": value}
+	outputs := map[string]string{"value": value, "valueHash": digest.ContentHash([]byte(value))}
 	if spec.SecretRef != "" {
 		outputs["secretRef"] = spec.SecretRef
 	}

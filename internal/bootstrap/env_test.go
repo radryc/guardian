@@ -141,7 +141,7 @@ func TestRenderFetcherOTelWiring(t *testing.T) {
 		"http://collector.otel.svc:4318/v1/traces",
 		"OTEL_METRICS_EXPORTER",
 		"OTEL_LOGS_EXPORTER",
-		"value: monofs-fetcher-a",
+		"service.alias=monofs-fetcher-a",
 		"guardian.partition=monofs",
 	}
 	for _, want := range wants {

@@ -31,3 +31,7 @@ ui/dist/
 # Local dogfood and test state
 /tmp/guardian-dogfood/
 *.log
+
+# Internal notes, duplicates, and generated backups (not public docs)
+docs_backup/
+docs/internal/

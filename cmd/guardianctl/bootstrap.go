@@ -12,7 +12,6 @@ import (
 
 	"github.com/radryc/guardian/internal/bootstrap"
 	"github.com/radryc/guardian/internal/cli/command"
-	"gopkg.in/yaml.v3"
 )
 
 // bootstrapReg holds a command registration descriptor.
@@ -52,7 +51,7 @@ func devBuildCommand() *command.Command {
 			if bootstrapDir != "" {
 				tag := resolveDevTag(ctx)
 				fmt.Fprintf(os.Stderr, "=== building bootstrap images via partition intents (tag: %s) ===\n", tag)
-				if err := runImageBuildDir(ctx, bootstrapDir, *dryRun, tag); err != nil {
+				if err := buildImages(ctx, bootstrapDir, *dryRun, tag); err != nil {
 					return fmt.Errorf("image build: %w", err)
 				}
 				return nil
@@ -187,7 +186,7 @@ func devInitCommand() *command.Command {
 
 				if useBootstrapIntents {
 					fmt.Fprintf(os.Stderr, "=== building images with tag %s ===\n", tag)
-					if err := runImageBuildDir(ctx, bootstrapDir, *dryRun, tag); err != nil {
+					if err := buildImages(ctx, bootstrapDir, *dryRun, tag); err != nil {
 						return fmt.Errorf("image build: %w", err)
 					}
 				} else {
@@ -276,12 +275,12 @@ func devInitCommand() *command.Command {
 			// Push bootstrap images to registry now that it's running
 			if useBootstrapIntents && !*skipBuild {
 				fmt.Fprintln(os.Stderr, "=== pushing bootstrap images to registry ===")
-				if err := runImagePushDir(ctx, bootstrapDir, "registry.strata.local:5000", *dryRun); err != nil {
+				if err := pushImages(ctx, bootstrapDir, "registry.strata.local:5000", *dryRun, true); err != nil {
 					fmt.Fprintf(os.Stderr, "  WARNING: image push failed: %v\n", err)
 				}
 
 				fmt.Fprintln(os.Stderr, "=== stamping bootstrap intent versions ===")
-				if err := runImageStampDir(ctx, bootstrapDir, *dryRun); err != nil {
+				if err := stampImages(bootstrapDir, *dryRun); err != nil {
 					fmt.Fprintf(os.Stderr, "  WARNING: image stamp failed: %v\n", err)
 				}
 
@@ -302,7 +301,7 @@ func devInitCommand() *command.Command {
 						if err := saveImageState(partDir, state); err != nil {
 							return err
 						}
-						return runImageStampDir(ctx, partDir, *dryRun)
+						return stampImages(partDir, *dryRun)
 					}(); err != nil {
 						fmt.Fprintf(os.Stderr, "  WARNING: %s stamp failed: %v\n", partName, err)
 					} else {
@@ -1160,287 +1159,4 @@ func findBootstrapDir() string {
 		}
 	}
 	return ""
-}
-
-func runImageBuildDir(ctx context.Context, dir string, dryRun bool, tag string) error {
-	assets, err := loadImageBuildAssets(dir)
-	if err != nil {
-		return err
-	}
-	if len(assets) == 0 {
-		fmt.Fprintf(os.Stderr, "  no buildable ImageBuild assets in %s — skipping\n", dir)
-		return nil
-	}
-
-	state := &imageState{Images: map[string]imageEntry{}}
-
-	for _, asset := range assets {
-		if asset.ImageFromUpstream != "" {
-			imgTag := asset.Repository + ":" + tag
-			if asset.SourceImage != "" {
-				imgTag = asset.SourceImage
-			}
-
-			if dryRun {
-				fmt.Fprintf(os.Stderr, "+ docker pull %s\n", asset.ImageFromUpstream)
-				fmt.Fprintf(os.Stderr, "+ docker tag %s %s\n", asset.ImageFromUpstream, imgTag)
-			} else {
-				fmt.Fprintf(os.Stderr, "+ docker pull %s\n", asset.ImageFromUpstream)
-				cmd := dockerExecCommand(ctx, "docker", "pull", asset.ImageFromUpstream)
-				cmd.Stdout = os.Stdout
-				cmd.Stderr = os.Stderr
-				if err := cmd.Run(); err != nil {
-					return fmt.Errorf("docker pull %s: %w", asset.ImageFromUpstream, err)
-				}
-
-				fmt.Fprintf(os.Stderr, "+ docker tag %s %s\n", asset.ImageFromUpstream, imgTag)
-				cmd = dockerExecCommand(ctx, "docker", "tag", asset.ImageFromUpstream, imgTag)
-				if err := cmd.Run(); err != nil {
-					return fmt.Errorf("docker tag %s -> %s: %w", asset.ImageFromUpstream, imgTag, err)
-				}
-			}
-			fmt.Fprintf(os.Stderr, "  pulled %s\n", imgTag)
-
-			state.Images[asset.AssetName] = imageEntry{
-				AssetName:   asset.AssetName,
-				IntentFile:  asset.IntentFile,
-				LocalTag:    imgTag,
-				Repository:  asset.Repository,
-				Registry:    asset.Registry,
-				SourceImage: asset.SourceImage,
-			}
-			continue
-		}
-		if asset.BuildContext == "" {
-			continue
-		}
-		buildContext := expandBuildContext(asset.BuildContext)
-		dockerfile := resolveDockerfile(asset.Dockerfile, buildContext, dir)
-		imgTag := asset.Repository + ":" + tag
-
-		buildArgs := make(map[string]string)
-		for k, v := range asset.BuildArgs {
-			buildArgs[k] = v
-		}
-		buildArgs = resolveImageBuildArgs(buildArgs, state)
-		for k, v := range buildArgs {
-			if intentOutputRe.MatchString(v) {
-				dep := intentOutputRe.FindStringSubmatch(v)[1]
-				return fmt.Errorf("asset %q: build arg %q has unresolved placeholder %q — ensure asset %q is listed before this one in images.yaml",
-					asset.AssetName, k, v, dep)
-			}
-		}
-
-		dockerArgs := []string{"build", "-t", imgTag, "-f", dockerfile}
-		if asset.Target != "" {
-			dockerArgs = append(dockerArgs, "--target", asset.Target)
-		}
-		if asset.Platform != "" {
-			dockerArgs = append(dockerArgs, "--platform", asset.Platform)
-		}
-		for _, key := range sortedKeys(buildArgs) {
-			dockerArgs = append(dockerArgs, "--build-arg", key+"="+buildArgs[key])
-		}
-		for _, key := range sortedKeys(asset.BuildContexts) {
-			ctxPath := expandBuildContext(asset.BuildContexts[key])
-			dockerArgs = append(dockerArgs, "--build-context", key+"="+ctxPath)
-		}
-		dockerArgs = append(dockerArgs, buildContext)
-
-		if dryRun {
-			fmt.Fprintf(os.Stderr, "+ docker %s\n", strings.Join(dockerArgs, " "))
-		} else {
-			fmt.Fprintf(os.Stderr, "+ docker %s\n", strings.Join(dockerArgs, " "))
-			cmd := dockerExecCommand(ctx, "docker", dockerArgs...)
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			if err := cmd.Run(); err != nil {
-				return fmt.Errorf("docker build %s: %w", imgTag, err)
-			}
-		}
-		fmt.Fprintf(os.Stderr, "  built %s\n", imgTag)
-
-		state.Images[asset.AssetName] = imageEntry{
-			AssetName:     asset.AssetName,
-			IntentFile:    asset.IntentFile,
-			LocalTag:      imgTag,
-			Repository:    asset.Repository,
-			Registry:      asset.Registry,
-			Dockerfile:    dockerfile,
-			Context:       buildContext,
-			BuildArgs:     buildArgs,
-			Target:        asset.Target,
-			Platform:      asset.Platform,
-			BuildContexts: asset.BuildContexts,
-			SourceImage:   asset.SourceImage,
-		}
-	}
-	return saveImageState(dir, state)
-}
-
-func runImagePushDir(ctx context.Context, dir, registry string, dryRun bool) error {
-	state, err := loadImageState(dir)
-	if err != nil {
-		return err
-	}
-
-	for name, entry := range state.Images {
-		reg := entry.Registry
-		if registry != "" {
-			reg = registry
-		}
-		if reg == "" {
-			return fmt.Errorf("no registry specified for %s (set --registry or add registry to asset)", name)
-		}
-
-		tag := computeImageTag(ctx, entry.LocalTag)
-		entry.Tag = tag
-		imageRef := reg + "/" + entry.Repository + ":" + tag
-		entry.ImageRef = imageRef
-
-		cmd := dockerExecCommand(ctx, "docker", "tag", entry.LocalTag, imageRef)
-		if dryRun {
-			fmt.Fprintf(os.Stderr, "+ docker tag %s %s\n", entry.LocalTag, imageRef)
-		} else {
-			fmt.Fprintf(os.Stderr, "+ docker tag %s %s\n", entry.LocalTag, imageRef)
-			if err := cmd.Run(); err != nil {
-				return fmt.Errorf("docker tag %s -> %s: %w", entry.LocalTag, imageRef, err)
-			}
-		}
-
-		if dryRun {
-			fmt.Fprintf(os.Stderr, "+ docker push %s\n", imageRef)
-		} else {
-			var lastErr error
-			for attempt := 0; attempt < 5; attempt++ {
-				if attempt > 0 {
-					wait := time.Duration(attempt) * 2 * time.Second
-					fmt.Fprintf(os.Stderr, "  retrying push in %v (attempt %d/5)...\n", wait, attempt+1)
-					select {
-					case <-time.After(wait):
-					case <-ctx.Done():
-						return ctx.Err()
-					}
-				}
-				cmd := dockerExecCommand(ctx, "docker", "push", imageRef)
-				fmt.Fprintf(os.Stderr, "+ docker push %s\n", imageRef)
-				cmd.Stdout = os.Stdout
-				cmd.Stderr = os.Stderr
-				if err := cmd.Run(); err != nil {
-					lastErr = err
-					continue
-				}
-				lastErr = nil
-				break
-			}
-			if lastErr != nil {
-				return fmt.Errorf("docker push %s: %w", imageRef, lastErr)
-			}
-		}
-
-		libraryImageRef := reg + "/library/" + entry.Repository + ":" + tag
-		if dryRun {
-			fmt.Fprintf(os.Stderr, "+ docker tag %s %s (for docker.io mirror)\n", entry.LocalTag, libraryImageRef)
-			fmt.Fprintf(os.Stderr, "+ docker push %s\n", libraryImageRef)
-		} else {
-			cmd = dockerExecCommand(ctx, "docker", "tag", entry.LocalTag, libraryImageRef)
-			if err := cmd.Run(); err != nil {
-				return fmt.Errorf("docker tag %s -> %s: %w", entry.LocalTag, libraryImageRef, err)
-			}
-			cmd = dockerExecCommand(ctx, "docker", "push", libraryImageRef)
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			if err := cmd.Run(); err != nil {
-				fmt.Fprintf(os.Stderr, "  WARNING: docker push %s (library mirror) failed: %v\n", libraryImageRef, err)
-			}
-		}
-
-		state.Images[name] = entry
-	}
-	return saveImageState(dir, state)
-}
-
-func runImageStampDir(ctx context.Context, dir string, dryRun bool) error {
-	state, err := loadImageState(dir)
-	if err != nil {
-		return err
-	}
-
-	intentsDir := filepath.Join(dir, "intents")
-	entries, err := os.ReadDir(intentsDir)
-	if err != nil {
-		return err
-	}
-
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
-			continue
-		}
-		intentPath := filepath.Join(intentsDir, entry.Name())
-		content, err := os.ReadFile(intentPath)
-		if err != nil {
-			return err
-		}
-
-		var doc yaml.Node
-		if err := yaml.Unmarshal(content, &doc); err != nil {
-			return err
-		}
-		if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
-			continue
-		}
-
-		modified := false
-		assetsNode := findNode(doc.Content[0], "spec", "assets")
-		if assetsNode == nil || assetsNode.Kind != yaml.SequenceNode {
-			continue
-		}
-
-		for _, assetNode := range assetsNode.Content {
-			typeNode := findNode(assetNode, "type")
-			if typeNode == nil || typeNode.Value != "ImageBuild" {
-				continue
-			}
-			nameNode := findNode(assetNode, "name")
-			if nameNode == nil {
-				continue
-			}
-
-			imgEntry, ok := state.Images[nameNode.Value]
-			if !ok || imgEntry.Tag == "" {
-				continue
-			}
-
-			versionNode := findNode(assetNode, "version")
-			if versionNode != nil {
-				versionNode.Value = imgEntry.Tag
-			}
-			modified = true
-
-			propsNode := findNode(assetNode, "properties")
-			if propsNode == nil || propsNode.Kind != yaml.MappingNode {
-				continue
-			}
-
-			if imgEntry.ImageRef != "" {
-				setStringNode(propsNode, "sourceImage", imgEntry.ImageRef)
-			}
-			stampBuildArgRefs(propsNode, state)
-		}
-
-		if modified && !dryRun {
-			out, err := yaml.Marshal(&doc)
-			if err != nil {
-				return err
-			}
-			if err := os.WriteFile(intentPath, out, 0644); err != nil {
-				return err
-			}
-		}
-	}
-
-	// Cross-intent ${intent.NAME.outputs.ASSET.FIELD} refs are resolved
-	// in-memory at partition push time, not written back to disk,
-	// so that template refs are preserved for future builds.
-	return nil
 }

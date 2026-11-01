@@ -117,6 +117,113 @@ func TestEvaluatorFiresOnceOnFailingAndRecovers(t *testing.T) {
 	}
 }
 
+type failingNotifier struct {
+	mu       sync.Mutex
+	failures int
+	attempts int
+	alerts   []notify.Alert
+}
+
+func (f *failingNotifier) Name() string { return "failing" }
+
+func (f *failingNotifier) Send(_ context.Context, alert notify.Alert) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.attempts++
+	if f.failures > 0 {
+		f.failures--
+		return errTestDelivery
+	}
+	f.alerts = append(f.alerts, alert)
+	return nil
+}
+
+func (f *failingNotifier) counts() (attempts int, delivered int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.attempts, len(f.alerts)
+}
+
+var errTestDelivery = &testDeliveryError{}
+
+type testDeliveryError struct{}
+
+func (*testDeliveryError) Error() string { return "delivery failed" }
+
+func TestEvaluatorRetriesOnlyFailedChannels(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	success := &recordingNotifier{}
+	failing := &failingNotifier{failures: 3}
+	evaluator := &Evaluator{
+		Store:      store,
+		Dispatcher: dispatcher.NewDispatcher(store, "guardiand"),
+		Notifiers: map[string]notify.Notifier{
+			"success": success,
+			"failing": failing,
+		},
+		Channels:       []string{"success", "failing"},
+		FailThreshold:  2,
+		Cooldown:       0,
+		RepeatInterval: time.Hour,
+	}
+	seedIntentStatus(t, ctx, store, statedomain.StatusApplyFailed)
+
+	for i := 0; i < 3; i++ {
+		if err := evaluator.EvaluateOnce(ctx); err != nil {
+			t.Fatalf("EvaluateOnce #%d: %v", i+1, err)
+		}
+	}
+	if got := len(success.snapshot()); got != 1 {
+		t.Fatalf("successful channel deliveries = %d, want 1", got)
+	}
+	attempts, delivered := failing.counts()
+	if delivered != 1 {
+		t.Fatalf("failing channel deliveries = %d, want 1 (attempts=%d)", delivered, attempts)
+	}
+	if attempts != 4 {
+		t.Fatalf("failing channel attempts = %d, want 4 (three failures, one success)", attempts)
+	}
+}
+
+func TestEvaluatorDispatchIsIdempotentPerChannel(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	notifier := &recordingNotifier{}
+	evaluator := newTestEvaluator(store, notifier)
+	state := &notificationState{Partition: "payments"}
+	alert := notify.Alert{
+		Event:          eventPartitionFailing,
+		Partition:      "payments",
+		Status:         "firing",
+		Severity:       notify.SeverityCritical,
+		FiredAt:        time.Now().UTC(),
+		IdempotencyKey: "payments|failing|once",
+	}
+	if sent, _ := evaluator.dispatch(ctx, "payments", alert, state); !sent {
+		t.Fatal("first dispatch did not deliver")
+	}
+	if sent, _ := evaluator.dispatch(ctx, "payments", alert, state); !sent {
+		t.Fatal("second dispatch should report already delivered")
+	}
+	if got := len(notifier.snapshot()); got != 1 {
+		t.Fatalf("deliveries = %d, want 1", got)
+	}
+}
+
+func TestEvaluatorStateWriteUsesCAS(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	evaluator := newTestEvaluator(store, &recordingNotifier{})
+	state := &notificationState{Partition: "payments", LastStatus: "Failing"}
+	if err := evaluator.saveState(ctx, "payments", state, "absent"); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+	if err := evaluator.saveState(ctx, "payments", state, "absent"); err == nil {
+		t.Fatal("second save with stale version succeeded, want conflict")
+	}
+}
+
 func TestEvaluatorRulesFilterChannels(t *testing.T) {
 	evaluator := &Evaluator{
 		Channels: []string{"a", "b"},

@@ -267,3 +267,85 @@ func TestImportStoreSource(t *testing.T) {
 		t.Fatalf("imported intent missing: %v", err)
 	}
 }
+
+func TestImportPrunesRemovedIntent(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	root := seedRepo(t)
+	writeRepoFile(t, root, "guardian/partitions/prod/intents/worker.yaml", strings.Replace(intentYAML, "name: api", "name: worker", 1))
+	source := NewLocalSource(root)
+	opts := Options{RepoName: "strata", Principal: "tester", Source: "https://example/repo", Prune: true}
+
+	if _, err := Import(ctx, source, store, opts); err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+	if _, err := store.ReadFile(ctx, paths.IntentManifest("prod", "worker")); err != nil {
+		t.Fatalf("worker intent missing after first import: %v", err)
+	}
+	if _, err := store.ReadFile(ctx, paths.RepoImportManifest("prod")); err != nil {
+		t.Fatalf("ownership manifest missing: %v", err)
+	}
+
+	if err := os.Remove(filepath.Join(root, "guardian/partitions/prod/intents/worker.yaml")); err != nil {
+		t.Fatalf("remove worker: %v", err)
+	}
+	result, err := Import(ctx, source, store, opts)
+	if err != nil {
+		t.Fatalf("second import: %v", err)
+	}
+	if result.FilesDeleted != 1 {
+		t.Fatalf("FilesDeleted = %d, want 1", result.FilesDeleted)
+	}
+	if _, err := store.ReadFile(ctx, paths.IntentManifest("prod", "worker")); err == nil {
+		t.Fatal("worker intent was not pruned")
+	}
+	if _, err := store.ReadFile(ctx, paths.IntentManifest("prod", "api")); err != nil {
+		t.Fatalf("api intent was pruned: %v", err)
+	}
+}
+
+func TestImportDoesNotPruneAnotherOwnersFiles(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	source := NewLocalSource(seedRepo(t))
+
+	if _, err := Import(ctx, source, store, Options{RepoName: "a", Principal: "tester", Source: "source-a", Prune: true}); err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+	// A second owner for the same partition must not prune source-a's files.
+	// Use a repo with only a config so the intent is absent from its desired set.
+	rootB := t.TempDir()
+	writeRepoFile(t, rootB, "guardian/partitions/prod/partition.yaml", partitionYAML)
+	result, err := Import(ctx, NewLocalSource(rootB), store, Options{RepoName: "b", Principal: "tester", Source: "source-b", Prune: true})
+	if err != nil {
+		t.Fatalf("second import: %v", err)
+	}
+	if result.FilesDeleted != 0 {
+		t.Fatalf("FilesDeleted = %d, want 0", result.FilesDeleted)
+	}
+	if _, err := store.ReadFile(ctx, paths.IntentManifest("prod", "api")); err != nil {
+		t.Fatalf("api intent owned by source-a was pruned: %v", err)
+	}
+}
+
+func TestImportReportsOrphanedPartitionWithoutDeletingIt(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	if _, err := Import(ctx, NewLocalSource(seedRepo(t)), store, Options{RepoName: "strata", Principal: "tester", Prune: true}); err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+
+	root := t.TempDir()
+	writeRepoFile(t, root, "guardian/partitions/stage/partition.yaml", strings.ReplaceAll(partitionYAML, "name: prod", "name: stage"))
+	writeRepoFile(t, root, "guardian/partitions/stage/intents/api.yaml", intentYAML)
+	result, err := Import(ctx, NewLocalSource(root), store, Options{RepoName: "strata", Principal: "tester", Prune: true})
+	if err != nil {
+		t.Fatalf("second import: %v", err)
+	}
+	if len(result.Orphaned) != 1 || result.Orphaned[0] != "prod" {
+		t.Fatalf("orphaned = %#v, want [prod]", result.Orphaned)
+	}
+	if _, err := store.ReadFile(ctx, paths.PartitionConfig("prod")); err != nil {
+		t.Fatalf("orphaned partition was deleted: %v", err)
+	}
+}

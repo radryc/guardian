@@ -302,8 +302,11 @@ func TestDockerSecretAssetOutputs(t *testing.T) {
 	if refApply.Status != taskdomain.ResultSucceeded {
 		t.Fatalf("ref apply status = %q, error = %v", refApply.Status, refApply.Error)
 	}
-	if got := refApply.Outputs["team-token.value"]; got != "super-secret-token" {
-		t.Fatalf("team-token.value = %q, want super-secret-token", got)
+	if got := refApply.Outputs["team-token.value"]; got != taskdomain.RedactedValue {
+		t.Fatalf("team-token.value = %q, want redacted", got)
+	}
+	if got := refApply.Outputs["team-token.valueHash"]; got == "" {
+		t.Fatal("team-token.valueHash is empty")
 	}
 	if got := refApply.Outputs["team-token.secretRef"]; got != "monofs-secret://shared/team-token" {
 		t.Fatalf("team-token.secretRef = %q", got)
@@ -319,8 +322,11 @@ func TestDockerSecretAssetOutputs(t *testing.T) {
 	if inlineApply.Status != taskdomain.ResultSucceeded {
 		t.Fatalf("inline apply status = %q, error = %v", inlineApply.Status, inlineApply.Error)
 	}
-	if got := inlineApply.Outputs["inline-token.value"]; got != "inline-secret" {
-		t.Fatalf("inline-token.value = %q, want inline-secret", got)
+	if got := inlineApply.Outputs["inline-token.value"]; got != taskdomain.RedactedValue {
+		t.Fatalf("inline-token.value = %q, want redacted", got)
+	}
+	if got := inlineApply.Outputs["inline-token.valueHash"]; got == "" {
+		t.Fatal("inline-token.valueHash is empty")
 	}
 }
 

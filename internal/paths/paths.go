@@ -61,6 +61,27 @@ func IntentState(partition, intent string) string {
 	return normalize(StateIntentsDir(partition), intent+".json")
 }
 
+// TaskSpecDir holds an immutable audit copy of every queued task. Queue files
+// are deleted after processing; the audit copy is retained under .state.
+func TaskSpecDir(partition string) string { return normalize(StateRoot(partition), "tasks") }
+
+func TaskSpec(partition, taskID string) string {
+	return normalize(TaskSpecDir(partition), taskID+".json")
+}
+
+// TaskArchiveChain is the hash chain for the task-spec archive. Each entry
+// binds a task spec to its predecessor so deletion or tampering is detectable.
+func TaskArchiveChain(partition string) string {
+	return normalize(TaskSpecDir(partition), ".chain.json")
+}
+
+// RepoImportManifest records which files were written by the repo importer so
+// a later import can prune removed intents/payloads without deleting files
+// authored outside the repository.
+func RepoImportManifest(partition string) string {
+	return normalize(StateRoot(partition), "repo-import.json")
+}
+
 func StateAssetsDir(partition string) string { return normalize(StateRoot(partition), "assets") }
 
 func AssetState(partition, intent, asset string) string {

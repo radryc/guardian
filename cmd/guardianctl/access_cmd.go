@@ -11,13 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/radryc/monofs/pkg/authz"
-	"github.com/radryc/monofs/pkg/authz/policy"
 	"github.com/radryc/guardian/internal/access"
 	"github.com/radryc/guardian/internal/cli/command"
 	"github.com/radryc/guardian/internal/cli/output"
 	"github.com/radryc/guardian/internal/paths"
 	"github.com/radryc/guardian/pkg/guardianapi"
+	"github.com/radryc/monofs/pkg/authz"
+	"github.com/radryc/monofs/pkg/authz/policy"
 )
 
 // loadRawPolicy reads a raw ACL from disk and resolves its imports relative to
@@ -301,6 +301,9 @@ func accessPublishCommand(store guardianapi.Store, printer *output.Printer) *com
 		if envName == "" {
 			return fmt.Errorf("--env is required")
 		}
+		if err := paths.ValidateEnvName(envName); err != nil {
+			return err
+		}
 
 		// Collect the file and its imports, mapping them into the store so
 		// guardiand can resolve imports relative to the store path.
@@ -312,6 +315,10 @@ func accessPublishCommand(store guardianapi.Store, printer *output.Printer) *com
 		seen := map[string]bool{}
 		var collect func(localPath, storePath string) error
 		collect = func(localPath, storePath string) error {
+			cleanStorePath := path.Clean(storePath)
+			if cleanStorePath != paths.AccessRoot() && !strings.HasPrefix(cleanStorePath, paths.AccessRoot()+"/") {
+				return fmt.Errorf("import %q escapes %s", storePath, paths.AccessRoot())
+			}
 			if seen[storePath] {
 				return nil
 			}

@@ -9,6 +9,9 @@ import (
 
 type ValidationContext struct {
 	AssetTypes map[string]string
+	// RequireSecretRefs rejects inline Secret values. Repo-sourced bundles
+	// already enforce this; the flag extends the guardrail to all sources.
+	RequireSecretRefs bool
 }
 
 type Definition interface {

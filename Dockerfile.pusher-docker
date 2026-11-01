@@ -29,11 +29,21 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOFLAGS=-trimpath otelc go build -o /o
 
 FROM alpine:3.21
 
+ARG BUILD_VERSION=dev
+ARG BUILD_COMMIT=unknown
+ARG BUILD_TIME=unknown
+
 RUN apk add --no-cache ca-certificates docker-cli yq
+RUN addgroup -S guardian && adduser -S -G guardian guardian
+
+LABEL org.opencontainers.image.version=${BUILD_VERSION}
+LABEL org.opencontainers.image.revision=${BUILD_COMMIT}
+LABEL org.opencontainers.image.created=${BUILD_TIME}
 
 COPY --from=build /out/guardian-pusher-docker /usr/local/bin/guardian-pusher-docker
 COPY docker/pusher-docker-entrypoint.sh /usr/local/bin/pusher-docker-entrypoint
 
 RUN chmod +x /usr/local/bin/pusher-docker-entrypoint
+USER guardian
 
 ENTRYPOINT ["/usr/local/bin/pusher-docker-entrypoint"]

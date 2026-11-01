@@ -19,7 +19,6 @@ import (
 	"syscall"
 	"time"
 
-	coreauthz "github.com/radryc/monofs/pkg/authz"
 	"github.com/radryc/guardian/internal/access"
 	"github.com/radryc/guardian/internal/alerting"
 	guardauthz "github.com/radryc/guardian/internal/authz"
@@ -44,6 +43,7 @@ import (
 	unmanagedpkg "github.com/radryc/guardian/internal/unmanaged"
 	"github.com/radryc/guardian/internal/workspacepub"
 	"github.com/radryc/guardian/pkg/guardianapi"
+	coreauthz "github.com/radryc/monofs/pkg/authz"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
@@ -69,6 +69,10 @@ func main() {
 	var authzOIDCJWKSURL string
 	var authzGrantsPath string
 	var authzEnforceDeploy bool
+	var requireUIAuth bool
+	var allowLoopbackAnonymous bool
+	var trustedOrigins string
+	var enableHSTS bool
 	flag.StringVar(&configPath, "config", "", "path to guardian config file")
 	flag.StringVar(&reconcileInterval, "reconcile-interval", "10m", "interval between full Guardian reconcile cycles")
 	flag.StringVar(&uiListen, "ui-listen", "", "listen address for Guardian UI/API (for example :8090)")
@@ -77,6 +81,10 @@ func main() {
 	flag.StringVar(&authzOIDCJWKSURL, "oidc-jwks-url", "", "OIDC JWKS URL (discovered from issuer when empty)")
 	flag.StringVar(&authzGrantsPath, "authz-grants-path", "", "Path to the shared authz grant store JSON (control-plane deploy authorization)")
 	flag.BoolVar(&authzEnforceDeploy, "authz-enforce-deploy", false, "Require the maintainer/admin role on a partition for human-initiated deploy/reconcile")
+	flag.BoolVar(&requireUIAuth, "require-ui-auth", false, "Reject anonymous Guardian UI/API mutations")
+	flag.BoolVar(&allowLoopbackAnonymous, "allow-loopback-anonymous", false, "Allow anonymous loopback mutations for local development")
+	flag.StringVar(&trustedOrigins, "trusted-origins", "", "Comma-separated extra origins allowed to submit browser mutations")
+	flag.BoolVar(&enableHSTS, "enable-hsts", false, "Emit Strict-Transport-Security even when TLS terminates upstream")
 	flag.Parse()
 
 	// Environment fallbacks (guardiand is primarily env-driven in deployments).
@@ -91,6 +99,55 @@ func main() {
 	}
 	if !authzEnforceDeploy && strings.EqualFold(strings.TrimSpace(os.Getenv("GUARDIAN_AUTHZ_ENFORCE_DEPLOY")), "true") {
 		authzEnforceDeploy = true
+	}
+
+	accessPolicyConfigured := strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_POLICY_PATH")) != "" ||
+		strings.EqualFold(strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_ENFORCE")), "true")
+	if !flagProvided("require-ui-auth") {
+		if raw := strings.TrimSpace(os.Getenv("GUARDIAN_REQUIRE_UI_AUTH")); raw != "" {
+			parsed, parseErr := strconv.ParseBool(raw)
+			if parseErr != nil {
+				log.Fatalf("invalid GUARDIAN_REQUIRE_UI_AUTH value %q: %v", raw, parseErr)
+			}
+			requireUIAuth = parsed
+		} else {
+			requireUIAuth = strings.TrimSpace(authzOIDCIssuer) != "" || accessPolicyConfigured
+		}
+	}
+	if !flagProvided("allow-loopback-anonymous") {
+		if raw := strings.TrimSpace(os.Getenv("GUARDIAN_ALLOW_LOOPBACK_ANONYMOUS")); raw != "" {
+			parsed, parseErr := strconv.ParseBool(raw)
+			if parseErr != nil {
+				log.Fatalf("invalid GUARDIAN_ALLOW_LOOPBACK_ANONYMOUS value %q: %v", raw, parseErr)
+			}
+			allowLoopbackAnonymous = parsed
+		} else {
+			// Local development remains usable while OIDC is not configured.
+			// Once an identity provider exists, anonymous loopback mutations are
+			// off unless the operator explicitly turns them back on.
+			allowLoopbackAnonymous = !requireUIAuth || strings.TrimSpace(authzOIDCIssuer) == ""
+		}
+	}
+	if !flagProvided("require-ui-auth") && requireUIAuth && !accessPolicyConfigured && strings.TrimSpace(authzOIDCIssuer) == "" {
+		log.Printf("guardian ui: authentication is required but no OIDC/access policy is configured; only loopback mutations are allowed")
+	}
+	if !flagProvided("trusted-origins") {
+		trustedOrigins = strings.TrimSpace(os.Getenv("GUARDIAN_TRUSTED_ORIGINS"))
+	}
+	if !flagProvided("enable-hsts") {
+		if raw := strings.TrimSpace(os.Getenv("GUARDIAN_ENABLE_HSTS")); raw != "" {
+			parsed, parseErr := strconv.ParseBool(raw)
+			if parseErr != nil {
+				log.Fatalf("invalid GUARDIAN_ENABLE_HSTS value %q: %v", raw, parseErr)
+			}
+			enableHSTS = parsed
+		}
+	}
+	var trustedOriginList []string
+	for _, origin := range strings.Split(trustedOrigins, ",") {
+		if origin = strings.TrimSpace(origin); origin != "" {
+			trustedOriginList = append(trustedOriginList, origin)
+		}
 	}
 
 	cfg := config.Default()
@@ -196,15 +253,58 @@ func main() {
 	registry.StartMetrics(ctx, store)
 
 	dispatcher := dispatcher.NewDispatcher(store, cfg.Guardian.PrincipalID)
+	taskArchiveKeep := cfg.Guardian.TaskArchiveRetention
+	if raw := strings.TrimSpace(os.Getenv("GUARDIAN_TASK_ARCHIVE_RETENTION")); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed < 0 {
+			log.Fatalf("invalid GUARDIAN_TASK_ARCHIVE_RETENTION %q", raw)
+		}
+		taskArchiveKeep = parsed
+	}
+	var taskArchiveAge time.Duration
+	if raw := strings.TrimSpace(cfg.Guardian.TaskArchiveMaxAge); raw != "" {
+		parsed, parseErr := time.ParseDuration(raw)
+		if parseErr != nil {
+			log.Fatalf("invalid guardian.taskArchiveMaxAge %q: %v", raw, parseErr)
+		}
+		taskArchiveAge = parsed
+	}
+	if raw := strings.TrimSpace(os.Getenv("GUARDIAN_TASK_ARCHIVE_MAX_AGE")); raw != "" {
+		parsed, parseErr := time.ParseDuration(raw)
+		if parseErr != nil {
+			log.Fatalf("invalid GUARDIAN_TASK_ARCHIVE_MAX_AGE %q: %v", raw, parseErr)
+		}
+		taskArchiveAge = parsed
+	}
+	dispatcher.SetTaskArchiveRetention(taskArchiveKeep, taskArchiveAge)
 	compliancePublisher := compliance.NewNoop()
 	if cfg.Compliance.S3Bucket != "" {
-		publisher, err := compliance.NewS3Publisher(ctx, compliance.Config{
-			S3Bucket:       cfg.Compliance.S3Bucket,
-			S3Region:       cfg.Compliance.S3Region,
-			S3Prefix:       cfg.Compliance.S3Prefix,
-			S3Endpoint:     cfg.Compliance.S3Endpoint,
-			ForcePathStyle: cfg.Compliance.ForcePathStyle,
-		})
+		complianceConfig := compliance.Config{
+			S3Bucket:             cfg.Compliance.S3Bucket,
+			S3Region:             cfg.Compliance.S3Region,
+			S3Prefix:             cfg.Compliance.S3Prefix,
+			S3Endpoint:           cfg.Compliance.S3Endpoint,
+			ForcePathStyle:       cfg.Compliance.ForcePathStyle,
+			ServerSideEncryption: cfg.Compliance.ServerSideEncryption,
+			SSEKMSKeyID:          cfg.Compliance.SSEKMSKeyID,
+			ObjectLockMode:       cfg.Compliance.ObjectLockMode,
+			MaxRetries:           cfg.Compliance.MaxRetries,
+		}
+		if raw := strings.TrimSpace(cfg.Compliance.ObjectLockRetainUntil); raw != "" {
+			retainUntil, parseErr := time.Parse(time.RFC3339, raw)
+			if parseErr != nil {
+				log.Fatalf("invalid compliance.objectLockRetainUntil %q: %v", raw, parseErr)
+			}
+			complianceConfig.ObjectLockRetainUntil = retainUntil
+		}
+		if raw := strings.TrimSpace(cfg.Compliance.RetryBaseDelay); raw != "" {
+			delay, parseErr := time.ParseDuration(raw)
+			if parseErr != nil {
+				log.Fatalf("invalid compliance.retryBaseDelay %q: %v", raw, parseErr)
+			}
+			complianceConfig.RetryBaseDelay = delay
+		}
+		publisher, err := compliance.NewS3Publisher(ctx, complianceConfig)
 		if err != nil {
 			log.Fatalf("open compliance publisher: %v", err)
 		}
@@ -230,11 +330,36 @@ func main() {
 	}
 	processor := results.NewProcessor(store, dispatcher)
 	recon := reconciler.NewReconcilerWithOptions(store, dispatcher, cfg.Guardian.ReconcileInterval, staleTaskDuration)
+	shardIndex, shardCount := 0, 1
+	if raw := strings.TrimSpace(os.Getenv("GUARDIAN_SHARD_INDEX")); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed < 0 {
+			log.Fatalf("invalid GUARDIAN_SHARD_INDEX %q", raw)
+		}
+		shardIndex = parsed
+	}
+	if raw := strings.TrimSpace(os.Getenv("GUARDIAN_SHARD_COUNT")); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed < 1 {
+			log.Fatalf("invalid GUARDIAN_SHARD_COUNT %q", raw)
+		}
+		shardCount = parsed
+	}
+	if shardIndex >= shardCount {
+		log.Fatalf("GUARDIAN_SHARD_INDEX %d must be less than GUARDIAN_SHARD_COUNT %d", shardIndex, shardCount)
+	}
+	recon.SetShardConfig(shardIndex, shardCount)
+	if shardCount > 1 {
+		log.Printf("guardian reconciler sharding enabled: index=%d count=%d", shardIndex, shardCount)
+	}
 
 	// Control-plane deploy authorization (authz epic E2). Trusted automation
 	// (no identity in context) is always allowed; human-initiated reconciles that
 	// carry an SSO identity must hold the maintainer/admin role on the partition.
 	if deployGuard, guardErr := guardauthz.LoadGuardWithInline(strings.TrimSpace(authzGrantsPath), strings.TrimSpace(os.Getenv("MONOFS_AUTHZ_GRANTS_JSON")), authzEnforceDeploy); guardErr != nil {
+		if authzEnforceDeploy {
+			log.Fatalf("guardian: control-plane authz is enforced but grants could not be loaded: %v", guardErr)
+		}
 		log.Printf("guardian: control-plane authz disabled: %v", guardErr)
 	} else {
 		recon.SetAuthorizer(func(actx context.Context, partition string) error {
@@ -293,18 +418,22 @@ func main() {
 				strings.EqualFold(strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_ENFORCE")), "true"))
 		}
 		uiServer, err := uiuipkg.New(uiuipkg.Options{
-			Store:              store,
-			Dispatcher:         dispatcher,
-			PrincipalID:        cfg.Guardian.PrincipalID,
-			Pushers:            pusherNames(cfg.Pushers),
-			StaleTaskAfter:     staleTaskDuration,
-			EnableFlowTopology: cfg.Guardian.EnableFlowTopology,
-			FlowEvaluator:      flowEvaluator,
-			ClientConfig:       clientConfig,
-			ClientConfigToken:  cfg.Guardian.ClientDiscoveryToken,
-			Unmanaged:          unmanagedService,
-			Access:             accessService,
-			AccessPolicyToken:  strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_POLICY_TOKEN")),
+			Store:                  store,
+			Dispatcher:             dispatcher,
+			PrincipalID:            cfg.Guardian.PrincipalID,
+			Pushers:                pusherNames(cfg.Pushers),
+			StaleTaskAfter:         staleTaskDuration,
+			EnableFlowTopology:     cfg.Guardian.EnableFlowTopology,
+			FlowEvaluator:          flowEvaluator,
+			ClientConfig:           clientConfig,
+			ClientConfigToken:      cfg.Guardian.ClientDiscoveryToken,
+			Unmanaged:              unmanagedService,
+			Access:                 accessService,
+			AccessPolicyToken:      strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_POLICY_TOKEN")),
+			RequireAuthentication:  requireUIAuth,
+			AllowLoopbackAnonymous: allowLoopbackAnonymous,
+			TrustedOrigins:         trustedOriginList,
+			EnableHSTS:             enableHSTS,
 			// Auto-deploy is on by default; guardian.autoDeployOnIngest=false
 			// keeps merges manual.
 			DisableAutoDeployOnIngest: !cfg.Guardian.AutoDeployOnIngest,
@@ -333,6 +462,9 @@ func main() {
 				Audience: strings.TrimSpace(authzOIDCAudience),
 				JWKSURL:  strings.TrimSpace(authzOIDCJWKSURL),
 			}); verr != nil {
+				if strings.EqualFold(strings.TrimSpace(os.Getenv("MONOFS_AUTHZ_ENFORCE_UI")), "true") {
+					log.Fatalf("guardian ui: OIDC verification is enforced but setup failed: %v", verr)
+				}
 				log.Printf("guardian ui: OIDC verifier disabled: %v", verr)
 			} else {
 				uiVerifier = v
