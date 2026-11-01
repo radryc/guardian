@@ -119,15 +119,7 @@ func (r *Runner) probeHTTP(ctx context.Context, target Target) (int, string, err
 	if len(paths) == 0 {
 		paths = []string{""}
 	}
-	client := &http.Client{
-		Timeout: target.Timeout,
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: target.Insecure}, //nolint:gosec
-		},
-	}
+	client := r.httpClient(target.Insecure)
 	var lastErr error
 	var lastStatus int
 	for _, path := range paths {

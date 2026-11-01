@@ -155,21 +155,21 @@ function renderBindingPicker(id: string, bindings: Map<string, BindingDraft>): v
   if (!container) return;
   const names = [...new Set([...partitions, ...bindings.keys()])].sort((a, b) => a.localeCompare(b));
   if (names.length === 0) {
-    container.innerHTML = `<p class="text-[12px] text-[#566778]">No partitions found. Create one first from Applications or Build.</p>`;
+    container.innerHTML = `<p class="text-[12px] text-text-muted">No partitions found. Create one first from Applications or Build.</p>`;
     return;
   }
   container.innerHTML = names.map((name) => {
     const checked = bindings.has(name);
     const draft = bindings.get(name) ?? { selector: "", path: "" };
     const classes = checked
-      ? "border-[#00ADE4]/50 bg-[#00ADE4]/[0.06]"
-      : "border-white/[0.07] bg-[#0D1220]";
+      ? "border-primary/50 bg-primary/[0.06]"
+      : "border-border bg-bg-surface";
     return `
       <div class="px-2.5 py-1.5 rounded border ${classes}">
         <label class="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" data-binding-check="${escapeAttr(name)}" ${checked ? "checked" : ""} class="accent-[#00ADE4]" />
-          <span class="text-[12px] text-[#E5ECF4] truncate flex-1">${escapeHtml(name)}</span>
-          ${checked ? "" : `<span class="text-[11px] text-[#566778]">not assigned</span>`}
+          <input type="checkbox" data-binding-check="${escapeAttr(name)}" ${checked ? "checked" : ""} class="accent-primary" />
+          <span class="text-[12px] text-text-primary truncate flex-1">${escapeHtml(name)}</span>
+          ${checked ? "" : `<span class="text-[11px] text-text-muted">not assigned</span>`}
         </label>
         ${checked ? `
         <div class="grid grid-cols-2 gap-2 mt-2 pl-6">
@@ -203,16 +203,16 @@ function renderPushers(): void {
   const container = document.getElementById("pusherList");
   if (!container) return;
   if (pushers.length === 0) {
-    container.innerHTML = `<p class="text-[13px] text-[#566778]">No pushers registered yet.</p>`;
+    container.innerHTML = `<p class="text-[13px] text-text-muted">No pushers registered yet.</p>`;
     return;
   }
   container.innerHTML = pushers
     .map(
       (pusher) => `
-      <div class="flex items-center justify-between gap-3 border border-[#1d2b3f] rounded px-3 py-2">
+      <div class="flex items-center justify-between gap-3 border border-border rounded px-3 py-2">
         <div class="min-w-0">
-          <div class="text-sm text-[#dbe7f7] font-semibold">${escapeHtml(pusher.name)}</div>
-          <div class="text-[12px] text-[#7f93ad] truncate">${escapeHtml(pusher.observedApiUrl)}${pusher.account ? ` · account ${escapeHtml(pusher.account)}` : ""}${pusher.region ? ` · ${escapeHtml(pusher.region)}` : ""}</div>
+          <div class="text-sm text-text-primary font-semibold">${escapeHtml(pusher.name)}</div>
+          <div class="text-[12px] text-text-secondary truncate">${escapeHtml(pusher.observedApiUrl)}${pusher.account ? ` · account ${escapeHtml(pusher.account)}` : ""}${pusher.region ? ` · ${escapeHtml(pusher.region)}` : ""}</div>
         </div>
         <button class="btn-ghost text-[12px]" data-pusher-delete="${escapeAttr(pusher.name)}">Remove</button>
       </div>`,
@@ -224,29 +224,29 @@ function renderRepos(): void {
   const container = document.getElementById("repoList");
   if (!container) return;
   if (repos.length === 0) {
-    container.innerHTML = `<p class="text-[13px] text-[#566778]">No repositories registered yet.</p>`;
+    container.innerHTML = `<p class="text-[13px] text-text-muted">No repositories registered yet.</p>`;
     return;
   }
   container.innerHTML = repos
     .map((repo) => {
       const bindings = repoBindings(repo);
       const chips = bindings.length
-        ? bindings.map((binding) => `<span class="pill">${escapeHtml(binding.partition)}${binding.selector ? ` <span class="text-[#566778]">· ${escapeHtml(binding.selector)}</span>` : ""}</span>`).join(" ")
+        ? bindings.map((binding) => `<span class="pill">${escapeHtml(binding.partition)}${binding.selector ? ` <span class="text-text-muted">· ${escapeHtml(binding.selector)}</span>` : ""}</span>`).join(" ")
         : `<span class="pill">no partitions</span>`;
       const sourceType = repo.sourceType === "monofs" ? "MonoFS" : repo.sourceType === "native" ? "Native" : "Git";
       const native = repo.sourceType === "native";
       const syncLine = repo.lastSyncError
-        ? `<div class="text-[12px] text-[#f87171] truncate">${escapeHtml(repo.lastSyncError)}</div>`
+        ? `<div class="text-[12px] text-critical truncate">${escapeHtml(repo.lastSyncError)}</div>`
         : repo.lastSyncedAt
-          ? `<div class="text-[12px] text-[#566778]">last ingest ${escapeHtml(formatDateTime(repo.lastSyncedAt))}</div>`
+          ? `<div class="text-[12px] text-text-muted">last ingest ${escapeHtml(formatDateTime(repo.lastSyncedAt))}</div>`
           : "";
       return `
-      <div class="border border-[#1d2b3f] rounded px-3 py-2">
+      <div class="border border-border rounded px-3 py-2">
         <div class="flex items-center justify-between gap-3">
           <div class="min-w-0">
-            <div class="text-sm text-[#dbe7f7] font-semibold">${escapeHtml(repo.name)}</div>
+            <div class="text-sm text-text-primary font-semibold">${escapeHtml(repo.name)}</div>
             <div class="flex flex-wrap gap-1 mt-1">${chips}</div>
-            <div class="text-[12px] text-[#7f93ad] truncate mt-1">${sourceType}${native ? " · no repository required" : ` · pusher ${escapeHtml(repo.pusher || "unassigned")} · ${escapeHtml(repo.source || repo.path || "no source")}`}</div>
+            <div class="text-[12px] text-text-secondary truncate mt-1">${sourceType}${native ? " · no repository required" : ` · pusher ${escapeHtml(repo.pusher || "unassigned")} · ${escapeHtml(repo.source || repo.path || "no source")}`}</div>
             ${syncLine}
           </div>
           <div class="flex items-center gap-2 shrink-0">

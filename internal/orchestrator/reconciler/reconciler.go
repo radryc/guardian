@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/reugn/go-quartz/quartz"
 	"github.com/radryc/guardian/internal/compiler/manifest"
 	"github.com/radryc/guardian/internal/compiler/planner"
 	historydomain "github.com/radryc/guardian/internal/domain/history"
@@ -29,6 +28,7 @@ import (
 	"github.com/radryc/guardian/internal/telemetry"
 	"github.com/radryc/guardian/internal/versioning/revisions"
 	"github.com/radryc/guardian/pkg/guardianapi"
+	"github.com/reugn/go-quartz/quartz"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -193,6 +193,9 @@ func (r *Reconciler) ReconcileAll(ctx context.Context) error {
 }
 
 func (r *Reconciler) ReconcilePartition(ctx context.Context, partitionName string, force bool) error {
+	if !r.OwnsPartition(partitionName) {
+		return nil
+	}
 	r.runMu.Lock()
 	authorizer := r.authorize
 	r.runMu.Unlock()

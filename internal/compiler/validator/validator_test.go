@@ -651,3 +651,27 @@ func TestValidateIntentRejectsObservedOnNonAWSPusher(t *testing.T) {
 		t.Fatalf("ValidateIntent() expected observed intent on non-AWS pusher to be rejected")
 	}
 }
+
+func TestValidateIntentStrictNativeAWSRejectsExperimentalAssets(t *testing.T) {
+	t.Setenv("GUARDIAN_NATIVE_AWS_STRICT", "true")
+	intent := &intentdomain.Intent{
+		Metadata: intentdomain.Metadata{Name: "storage"},
+		Spec: intentdomain.IntentSpec{
+			IntentType:   "standard",
+			TargetPusher: "aws-123456789012",
+			Target:       targetdomain.Placement{Account: "123456789012", Region: "eu-west-1"},
+			Assets: []intentdomain.AssetSpec{{
+				Type:       assetdomain.TypeObjectStore,
+				Name:       "assets",
+				Properties: map[string]any{"engine": "s3"},
+			}},
+		},
+	}
+	if err := ValidateIntent(intent, nil, nil); err == nil {
+		t.Fatal("expected experimental native asset to be rejected")
+	}
+	t.Setenv("GUARDIAN_NATIVE_AWS_STRICT", "false")
+	if err := ValidateIntent(intent, nil, nil); err != nil {
+		t.Fatalf("strict=false rejected asset: %v", err)
+	}
+}

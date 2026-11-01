@@ -40,7 +40,7 @@ func imageReleaseOne(ctx context.Context, dir, registry string, dryRun bool) err
 	fmt.Fprintf(os.Stderr, "=== building images in %s ===\n", dir)
 
 	tag := resolveDevTag(ctx)
-	if err := runImageBuildDir(ctx, dir, dryRun, tag); err != nil {
+	if err := buildImages(ctx, dir, dryRun, tag); err != nil {
 		return fmt.Errorf("build: %w", err)
 	}
 
@@ -50,12 +50,12 @@ func imageReleaseOne(ctx context.Context, dir, registry string, dryRun bool) err
 	}
 
 	fmt.Fprintf(os.Stderr, "=== pushing images ===\n")
-	if err := runImagePushDir(ctx, dir, registry, dryRun); err != nil {
+	if err := pushImages(ctx, dir, registry, dryRun, true); err != nil {
 		return fmt.Errorf("push: %w", err)
 	}
 
 	fmt.Fprintf(os.Stderr, "=== stamping image refs ===\n")
-	if err := runImageStampDir(ctx, dir, dryRun); err != nil {
+	if err := stampImages(dir, dryRun); err != nil {
 		return fmt.Errorf("stamp: %w", err)
 	}
 

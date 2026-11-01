@@ -385,6 +385,8 @@ func repoImportCommand(store guardianapi.Store, printer *output.Printer) *comman
 		result, err := repoimport.Import(ctx, src, store, repoimport.Options{
 			RepoName:  repo.Name,
 			Partition: strings.TrimSpace(*partition),
+			Source:    repo.Source,
+			Prune:     true,
 		})
 		if err != nil {
 			return err
@@ -568,7 +570,7 @@ func syncRepoBundle(ctx context.Context, store guardianapi.Store, registryStore 
 		if assemblyErr != nil {
 			assemblyDir = ""
 		}
-		imported, err := importRepoPartition(ctx, store, sourceDir, binding)
+		imported, err := importRepoPartition(ctx, store, repo, sourceDir, binding)
 		if err != nil {
 			_ = registryStore.RecordSync(ctx, repo.Name, commit, err)
 			return err
@@ -644,33 +646,28 @@ func syncRepoBundle(ctx context.Context, store guardianapi.Store, registryStore 
 	return nil
 }
 
-// importRepoPartition pushes the repo-authored partition bundle from
+// importRepoPartition imports the repo-authored partition bundle from
 // binding.PartitionDir() when the checkout contains one. It returns false when
-// the repo does not author that partition.
-func importRepoPartition(ctx context.Context, store guardianapi.Store, sourceDir string, binding registry.RepoBinding) (bool, error) {
+// the repo does not author that partition. Both the CLI and daemon use the
+// shared repoimport package so authoring rules cannot drift.
+func importRepoPartition(ctx context.Context, store guardianapi.Store, repo *registry.Repo, sourceDir string, binding registry.RepoBinding) (bool, error) {
 	partition := strings.TrimSpace(binding.Partition)
 	if strings.TrimSpace(sourceDir) == "" || partition == "" {
 		return false, nil
 	}
-	dir := filepath.Join(sourceDir, filepath.FromSlash(binding.PartitionDir()))
-	info, statErr := os.Stat(dir)
-	if statErr != nil || !info.IsDir() {
-		return false, nil
-	}
-	bundle, err := loadLocalPartitionBundle(dir, false)
+	result, err := repoimport.Import(ctx, repoimport.NewLocalSource(sourceDir), store, repoimport.Options{
+		RepoName:      repo.Name,
+		Partition:     partition,
+		PartitionPath: binding.PartitionDir(),
+		Principal:     "guardianctl",
+		Source:        repo.Source,
+		Prune:         true,
+		IgnoreMissing: true,
+	})
 	if err != nil {
 		return true, fmt.Errorf("import partition %s: %w", partition, err)
 	}
-	if bundle.PartitionName != partition {
-		return true, fmt.Errorf("import partition %s: manifest metadata.name %q does not match", partition, bundle.PartitionName)
-	}
-	if err := rejectInlineSecretValues(bundle); err != nil {
-		return true, err
-	}
-	if _, err := pushPartitionBundle(ctx, store, bundle, false); err != nil {
-		return true, err
-	}
-	return true, nil
+	return len(result.Imported)+len(result.Skipped) > 0, nil
 }
 
 // rejectInlineSecretValues enforces the GitOps rule that repository content

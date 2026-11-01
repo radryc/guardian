@@ -445,6 +445,7 @@ func TestProcessorCheckFailed(t *testing.T) {
 	proc := NewProcessor(store, disp)
 
 	seedIntent(t, ctx, store, "demo", "svc", statedomain.StatusChecking)
+	seedQueueTask(t, ctx, store, "local", "t1", "demo", "svc", taskdomain.OpCheck)
 
 	errMsg := "aws quota exceeded"
 	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
@@ -482,6 +483,7 @@ func TestProcessorDriftedLocked(t *testing.T) {
 	s := baseState("demo", "locked-svc", statedomain.StatusDiffing)
 	s.Locked = true
 	seedIntentState(t, ctx, store, s)
+	seedQueueTask(t, ctx, store, "local", "t2", "demo", "locked-svc", taskdomain.OpDiff)
 
 	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
 		TaskID:    "t2",
@@ -524,6 +526,7 @@ func TestProcessorDriftedReadonly(t *testing.T) {
 	s := baseState("infra", "monofs", statedomain.StatusDiffing)
 	s.PartitionMode = "readonly"
 	seedIntentState(t, ctx, store, s)
+	seedQueueTask(t, ctx, store, "local", "t3", "infra", "monofs", taskdomain.OpDiff)
 
 	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
 		TaskID:    "t3",
@@ -612,6 +615,7 @@ func TestProcessorDestroySuccess(t *testing.T) {
 	proc := NewProcessor(store, disp)
 
 	seedIntent(t, ctx, store, "demo", "old-svc", statedomain.StatusDestroying)
+	seedQueueTask(t, ctx, store, "local", "t4", "demo", "old-svc", taskdomain.OpDestroy)
 
 	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
 		TaskID:    "t4",
@@ -639,6 +643,7 @@ func TestProcessorDiffNoChange(t *testing.T) {
 	proc := NewProcessor(store, disp)
 
 	seedIntent(t, ctx, store, "demo", "stable", statedomain.StatusDiffing)
+	seedQueueTask(t, ctx, store, "local", "t5", "demo", "stable", taskdomain.OpDiff)
 
 	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
 		TaskID:         "t5",
@@ -875,6 +880,23 @@ func seedIntent(t *testing.T, ctx context.Context, store *memory.Store, partitio
 	seedIntentState(t, ctx, store, baseState(partition, intent, status))
 }
 
+func seedQueueTask(t *testing.T, ctx context.Context, store *memory.Store, pusher, taskID, partition, intent string, op taskdomain.Operation) {
+	t.Helper()
+	content, err := json.MarshalIndent(taskdomain.Task{
+		APIVersion:   "guardian/v1alpha1",
+		Kind:         "Task",
+		TaskID:       taskID,
+		Partition:    partition,
+		Intent:       intent,
+		Op:           op,
+		TargetPusher: pusher,
+	}, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal task: %v", err)
+	}
+	seedRawFile(t, ctx, store, paths.QueueTask(pusher, taskID), content)
+}
+
 func seedIntentState(t *testing.T, ctx context.Context, store *memory.Store, s statedomain.IntentState) {
 	t.Helper()
 	writeJSONFile(t, ctx, store, paths.IntentState(s.Partition, s.Intent), s)
@@ -924,6 +946,7 @@ spec:
 	s.LastTaskID = "t-rollout-diff"
 	seedIntentState(t, ctx, store, s)
 	seedRawFile(t, ctx, store, paths.IntentManifest("demo", "svc"), []byte("broken manifest"))
+	seedQueueTask(t, ctx, store, "local", "t-rollout-diff", "demo", "svc", taskdomain.OpDiff)
 
 	errMsg := "diff execution error"
 	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
@@ -1011,6 +1034,7 @@ spec:
 	seedIntentState(t, ctx, store, s)
 	desiredManifest := []byte("desired v2 manifest")
 	seedRawFile(t, ctx, store, paths.IntentManifest("demo", "svc"), desiredManifest)
+	seedQueueTask(t, ctx, store, "local", "t-rollout-check", "demo", "svc", taskdomain.OpCheck)
 
 	errMsg := "check validation error"
 	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
@@ -1076,6 +1100,7 @@ spec:
 	seedIntentState(t, ctx, store, s)
 	desiredManifest := []byte("desired v3 manifest")
 	seedRawFile(t, ctx, store, paths.IntentManifest("demo", "svc"), desiredManifest)
+	seedQueueTask(t, ctx, store, "local", "t-rollout-apply", "demo", "svc", taskdomain.OpApply)
 
 	errMsg := "apply execution error"
 	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
@@ -1132,6 +1157,7 @@ spec:
   assets: [{type: Compute, name: web}]
 `)
 	seedRawFile(t, ctx, store, paths.IntentManifest("demo", "svc"), currentManifest)
+	seedQueueTask(t, ctx, store, "local", "t-steady-diff", "demo", "svc", taskdomain.OpDiff)
 
 	errMsg := "transient diff error"
 	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
@@ -1177,6 +1203,7 @@ func TestProcessorNoRollbackWithoutPreviousDeployment(t *testing.T) {
 	s.DeploymentRevision = ""  // no previous deployment
 	s.LastTaskID = "t-first-diff"
 	seedIntentState(t, ctx, store, s)
+	seedQueueTask(t, ctx, store, "local", "t-first-diff", "demo", "svc", taskdomain.OpDiff)
 
 	errMsg := "diff error on first deploy"
 	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
@@ -1257,6 +1284,7 @@ func TestProcessorObservedDiffDriftStopsAtObservedDrifted(t *testing.T) {
 	dispatch := dispatcher.NewDispatcher(store, "guardiand")
 	processor := NewProcessor(store, dispatch)
 	seedObservedIntent(t, ctx, store, statedomain.StatusDiffing)
+	seedQueueTask(t, ctx, store, "aws-123456789012", "task-observed-1", "strata-aws", "aws-pusher", taskdomain.OpDiff)
 
 	if err := processor.ProcessResult(ctx, &taskdomain.TaskResult{
 		TaskID:    "task-observed-1",
@@ -1290,6 +1318,7 @@ func TestProcessorObservedDiffInSyncNeverQueuesApply(t *testing.T) {
 	dispatch := dispatcher.NewDispatcher(store, "guardiand")
 	processor := NewProcessor(store, dispatch)
 	seedObservedIntent(t, ctx, store, statedomain.StatusDiffing)
+	seedQueueTask(t, ctx, store, "aws-123456789012", "task-observed-1", "strata-aws", "aws-pusher", taskdomain.OpDiff)
 
 	if err := processor.ProcessResult(ctx, &taskdomain.TaskResult{
 		TaskID:    "task-observed-1",
@@ -1319,6 +1348,7 @@ func TestProcessorObservedCheckSuccessNeverQueuesApply(t *testing.T) {
 	dispatch := dispatcher.NewDispatcher(store, "guardiand")
 	processor := NewProcessor(store, dispatch)
 	seedObservedIntent(t, ctx, store, statedomain.StatusChecking)
+	seedQueueTask(t, ctx, store, "aws-123456789012", "task-observed-1", "strata-aws", "aws-pusher", taskdomain.OpCheck)
 
 	if err := processor.ProcessResult(ctx, &taskdomain.TaskResult{
 		TaskID:    "task-observed-1",
@@ -1339,4 +1369,123 @@ func TestProcessorObservedCheckSuccessNeverQueuesApply(t *testing.T) {
 		t.Fatalf("status = %q, want Observed", state.Status)
 	}
 	assertNoQueueFiles(t, ctx, store, "aws-123456789012")
+}
+
+func TestProcessorRejectsSpoofedResultOp(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "guardiand")
+	proc := NewProcessor(store, disp)
+
+	seedIntent(t, ctx, store, "demo", "svc", statedomain.StatusDiffing)
+	seedQueueTask(t, ctx, store, "local", "task-spoof", "demo", "svc", taskdomain.OpDiff)
+
+	err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
+		TaskID:    "task-spoof",
+		Op:        taskdomain.OpApply,
+		Status:    taskdomain.ResultSucceeded,
+		Partition: "demo",
+		Intent:    "svc",
+		Pusher:    "local",
+		Outputs:   map[string]string{"value": "forged"},
+	})
+	if err == nil {
+		t.Fatal("ProcessResult() = nil, want provenance error")
+	}
+	if !strings.Contains(err.Error(), "does not match queued task op") {
+		t.Fatalf("error = %v, want op mismatch", err)
+	}
+	got := loadState(t, ctx, store, "demo", "svc")
+	if got.Status != statedomain.StatusDiffing {
+		t.Fatalf("state mutated by spoofed result: %s", got.Status)
+	}
+}
+
+func TestProcessorRejectsTraversalPusher(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "guardiand")
+	proc := NewProcessor(store, disp)
+
+	victim := []byte(`{"partition":"victim"}`)
+	seedRawFile(t, ctx, store, paths.PartitionReleaseLog("victim"), victim)
+	seedIntent(t, ctx, store, "demo", "svc", statedomain.StatusApplying)
+
+	err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
+		TaskID:    "task-1",
+		Op:        taskdomain.OpApply,
+		Status:    taskdomain.ResultSucceeded,
+		Partition: "demo",
+		Intent:    "svc",
+		Pusher:    "../../partitions/victim",
+	})
+	if err == nil {
+		t.Fatal("ProcessResult() = nil, want traversal rejection")
+	}
+	if _, readErr := store.ReadFile(ctx, paths.PartitionReleaseLog("victim")); readErr != nil {
+		t.Fatalf("victim release log was deleted: %v", readErr)
+	}
+}
+
+func TestProcessorRedactsSecretOutputs(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "guardiand")
+	proc := NewProcessor(store, disp)
+
+	state := baseState("demo", "secrets", statedomain.StatusApplying)
+	state.LastTaskID = "task-secret"
+	seedIntentState(t, ctx, store, state)
+	seedRawFile(t, ctx, store, paths.IntentManifest("demo", "secrets"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: secrets
+spec:
+  intentType: standard
+  targetPusher: local
+  target:
+    cluster: local
+  assets:
+    - type: Secret
+      name: token
+`))
+	seedQueueTask(t, ctx, store, "local", "task-secret", "demo", "secrets", taskdomain.OpApply)
+	// Simulate a pusher that did not redact (older version).
+	taskContent, _ := json.MarshalIndent(taskdomain.Task{
+		APIVersion:   "guardian/v1alpha1",
+		Kind:         "Task",
+		TaskID:       "task-secret",
+		Partition:    "demo",
+		Intent:       "secrets",
+		Op:           taskdomain.OpApply,
+		TargetPusher: "local",
+		Assets:       []taskdomain.AbstractAsset{{Type: "Secret", Name: "token"}},
+	}, "", "  ")
+	seedRawFile(t, ctx, store, paths.QueueTask("local", "task-secret"), taskContent)
+
+	if err := proc.ProcessResult(ctx, &taskdomain.TaskResult{
+		TaskID:    "task-secret",
+		Op:        taskdomain.OpApply,
+		Status:    taskdomain.ResultSucceeded,
+		Partition: "demo",
+		Intent:    "secrets",
+		Pusher:    "local",
+		Outputs: map[string]string{
+			"value":           "super-secret",
+			"token.value":     "super-secret",
+			"token.valueHash": "hash-of-secret",
+		},
+		Logs: []taskdomain.LogEntry{{Message: "applied super-secret"}},
+	}); err != nil {
+		t.Fatalf("ProcessResult: %v", err)
+	}
+
+	got := loadState(t, ctx, store, "demo", "secrets")
+	if got.Outputs["token.value"] != taskdomain.RedactedValue || got.Outputs["value"] != taskdomain.RedactedValue {
+		t.Fatalf("secret outputs not redacted: %v", got.Outputs)
+	}
+	if got.Outputs["token.valueHash"] != "hash-of-secret" {
+		t.Fatalf("valueHash lost: %v", got.Outputs)
+	}
 }

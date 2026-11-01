@@ -61,7 +61,7 @@ spec:
         content: "key: value"
 `)
 
-	imported, err := importRepoPartition(ctx, store, sourceDir, registry.RepoBinding{Partition: "demo"})
+	imported, err := importRepoPartition(ctx, store, &registry.Repo{Name: "test", Source: "source"}, sourceDir, registry.RepoBinding{Partition: "demo"})
 	if err != nil {
 		t.Fatalf("importRepoPartition() error = %v", err)
 	}
@@ -100,7 +100,7 @@ spec:
         value: "super-secret"
 `)
 
-	_, err := importRepoPartition(ctx, store, sourceDir, registry.RepoBinding{Partition: "demo"})
+	_, err := importRepoPartition(ctx, store, &registry.Repo{Name: "test", Source: "source"}, sourceDir, registry.RepoBinding{Partition: "demo"})
 	if err == nil || !strings.Contains(err.Error(), "inline Secret value") {
 		t.Fatalf("error = %v, want inline secret rejection", err)
 	}
@@ -146,7 +146,7 @@ spec:
 		t.Fatalf("write intent: %v", err)
 	}
 
-	imported, err := importRepoPartition(ctx, store, sourceDir, registry.RepoBinding{
+	imported, err := importRepoPartition(ctx, store, &registry.Repo{Name: "test", Source: "source"}, sourceDir, registry.RepoBinding{
 		Partition:     "demo",
 		PartitionPath: "/partitions/demo",
 	})
@@ -164,7 +164,7 @@ spec:
 func TestImportRepoPartitionMissing(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
-	imported, err := importRepoPartition(ctx, store, t.TempDir(), registry.RepoBinding{Partition: "demo"})
+	imported, err := importRepoPartition(ctx, store, &registry.Repo{Name: "test", Source: "source"}, t.TempDir(), registry.RepoBinding{Partition: "demo"})
 	if err != nil {
 		t.Fatalf("importRepoPartition() error = %v", err)
 	}

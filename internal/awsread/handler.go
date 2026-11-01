@@ -19,6 +19,16 @@ import (
 type Handler struct {
 	Reader Reader
 	Token  string
+	// TokenFile optionally rotates Token from a file on each request.
+	TokenFile string
+	// Scopes limits the bearer token to read/diff/admin operations. Empty
+	// preserves the legacy all-endpoint behaviour.
+	Scopes []string
+	// EnableObservedDiff enables the privileged source diff endpoint.
+	EnableObservedDiff bool
+	// MaxRequestBodyBytes bounds request bodies. Zero uses the default.
+	MaxRequestBodyBytes int64
+	rateState
 	// PromQL proxies PromQL to CloudWatch's Prometheus-compatible API.
 	PromQL PromQLProxier
 	// Observed serves observed CloudFormation stack state for Guardian.
@@ -75,11 +85,27 @@ func (h *Handler) WithIdentity(pusher, account, region string) *Handler {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !h.authorized(r) {
+	path := strings.TrimSuffix(r.URL.Path, "/")
+	if !h.tokenValid(r) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	path := strings.TrimSuffix(r.URL.Path, "/")
+	if !h.scopeAllowed(h.scopeFor(path)) {
+		writeError(w, http.StatusForbidden, "insufficient token scope")
+		return
+	}
+	if path != "/healthz" && !h.allowRate(r) {
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+		return
+	}
+	if path == "/v1/aws/observed/diff" && !h.EnableObservedDiff {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
+		r.Body = http.MaxBytesReader(w, r.Body, h.requestBodyLimit())
+	}
 	switch {
 	case path == "/healthz":
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

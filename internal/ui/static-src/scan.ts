@@ -182,7 +182,7 @@ function renderScans(): void {
   const container = document.getElementById("scanList");
   if (!container) return;
   if (scans.length === 0) {
-    container.className = "empty-state text-sm text-[#566778]";
+    container.className = "empty-state text-sm text-text-muted";
     container.textContent = "No scans yet. Start one above.";
     return;
   }
@@ -200,14 +200,14 @@ function renderScans(): void {
     ].join(" · ");
     const selected = scan.scanID === selectedScanID;
     return `
-      <div class="flex items-center gap-3 px-3.5 py-2.5 rounded-lg border ${selected ? "border-[#00ADE4]/50 bg-[#00ADE4]/[0.06]" : "border-white/[0.07] bg-[#0D1220]"}">
+      <div class="flex items-center gap-3 px-3.5 py-2.5 rounded-lg border ${selected ? "border-primary/50 bg-primary/[0.06]" : "border-border bg-bg-surface"}">
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2 flex-wrap">
-            <span class="text-[13px] font-semibold text-[#E5ECF4] truncate">${escapeHtml(scan.pusher)}</span>
+            <span class="text-[13px] font-semibold text-text-primary truncate">${escapeHtml(scan.pusher)}</span>
             <span class="${statusBadge(scan.status)}">${escapeHtml(scan.status ?? "")}</span>
-            <span class="text-[11px] text-[#566778]">${escapeHtml(created)}</span>
+            <span class="text-[11px] text-text-muted">${escapeHtml(created)}</span>
           </div>
-          <div class="text-[12px] text-[#9BB0CF] mt-0.5 truncate">${escapeHtml(regions)} · ${escapeHtml(counts)}</div>
+          <div class="text-[12px] text-text-secondary mt-0.5 truncate">${escapeHtml(regions)} · ${escapeHtml(counts)}</div>
         </div>
         <button class="btn-ghost shrink-0" data-scan-select="${escapeAttr(scan.scanID)}">${scan.status === "Succeeded" ? "Inspect" : "View"}</button>
       </div>`;
@@ -328,7 +328,7 @@ function renderStackSelect(): void {
   const stacks = [...(scanDetail?.stacks ?? [])].sort((a: any, b: any) => String(a?.name ?? "").localeCompare(String(b?.name ?? "")));
   const countEl = document.getElementById("scanStackCount");
   if (stacks.length === 0) {
-    container.innerHTML = `<div class="text-[12px] text-[#566778] px-1">No CloudFormation stacks discovered in this scan.</div>`;
+    container.innerHTML = `<div class="text-[12px] text-text-muted px-1">No CloudFormation stacks discovered in this scan.</div>`;
     if (countEl) countEl.textContent = "";
     return;
   }
@@ -342,15 +342,15 @@ function renderStackSelect(): void {
     if (checked) selected++;
     const importable = counts[name] ?? 0;
     const classes = checked
-      ? "border-[#00ADE4]/50 bg-[#00ADE4]/[0.06]"
-      : "border-white/[0.07] bg-[#0D1220]";
+      ? "border-primary/50 bg-primary/[0.06]"
+      : "border-border bg-bg-surface";
     return `
       <label class="flex items-center gap-2.5 px-3 py-1.5 rounded border ${classes} ${managed ? "opacity-60" : "cursor-pointer"}">
-        <input type="checkbox" ${checked ? "checked" : ""} ${managed ? "disabled" : ""} data-scan-stack="${escapeAttr(name)}" class="accent-[#00ADE4]" />
+        <input type="checkbox" ${checked ? "checked" : ""} ${managed ? "disabled" : ""} data-scan-stack="${escapeAttr(name)}" class="accent-primary" />
         <span class="min-w-0 flex-1 flex items-center gap-2">
-          <span class="text-[12px] text-[#E5ECF4] truncate">${escapeHtml(name)}</span>
+          <span class="text-[12px] text-text-primary truncate">${escapeHtml(name)}</span>
           ${stack?.region ? `<span class="badge badge-neutral">${escapeHtml(String(stack.region))}</span>` : ""}
-          <span class="text-[11px] text-[#566778] shrink-0">${importable} importable</span>
+          <span class="text-[11px] text-text-muted shrink-0">${importable} importable</span>
           ${managed ? `<span class="badge badge-healthy ml-auto">managed</span>` : ""}
         </span>
       </label>`;
@@ -376,15 +376,15 @@ function renderManagedList(): void {
     return;
   }
   container.innerHTML = `
-    <div class="text-[11px] font-bold uppercase tracking-[0.09em] text-[#566778] mb-1.5">Already managed (${entries.length})</div>
+    <div class="text-[11px] font-bold uppercase tracking-[0.09em] text-text-muted mb-1.5">Already managed (${entries.length})</div>
     <div class="grid gap-1">
       ${entries.slice(0, 50).map((entry: any) => `
-        <div class="flex items-center gap-2 text-[12px] text-[#9BB0CF] px-3 py-1.5 rounded border border-white/[0.07] bg-[#0D1220]">
+        <div class="flex items-center gap-2 text-[12px] text-text-secondary px-3 py-1.5 rounded border border-border bg-bg-surface">
           <span class="badge badge-neutral">${escapeHtml(entry.kind ?? "")}</span>
-          <span class="text-[#E5ECF4] truncate">${escapeHtml(entry.identifier ?? "")}</span>
-          <span class="text-[#566778] truncate ml-auto">${escapeHtml(entry.partition ? `${entry.partition}/${entry.intent}/${entry.asset ?? ""}` : (entry.existingIntent ? "referenced by existing intent" : ""))}</span>
+          <span class="text-text-primary truncate">${escapeHtml(entry.identifier ?? "")}</span>
+          <span class="text-text-muted truncate ml-auto">${escapeHtml(entry.partition ? `${entry.partition}/${entry.intent}/${entry.asset ?? ""}` : (entry.existingIntent ? "referenced by existing intent" : ""))}</span>
         </div>`).join("")}
-      ${entries.length > 50 ? `<div class="text-[12px] text-[#566778] px-3">+${entries.length - 50} more</div>` : ""}
+      ${entries.length > 50 ? `<div class="text-[12px] text-text-muted px-3">+${entries.length - 50} more</div>` : ""}
     </div>`;
 }
 
@@ -422,15 +422,15 @@ function renderUnmappedList(): void {
     return;
   }
   container.innerHTML = `
-    <div class="text-[11px] font-bold uppercase tracking-[0.09em] text-[#566778] mb-1.5">Foreign CloudFormation stacks (${stackReasons.length})</div>
+    <div class="text-[11px] font-bold uppercase tracking-[0.09em] text-text-muted mb-1.5">Foreign CloudFormation stacks (${stackReasons.length})</div>
     <div class="grid gap-1">
       ${stackReasons.slice(0, 25).map((stack: any) => `
-        <div class="flex items-center gap-2 text-[12px] text-[#9BB0CF] px-3 py-1.5 rounded border border-white/[0.07] bg-[#0D1220]">
+        <div class="flex items-center gap-2 text-[12px] text-text-secondary px-3 py-1.5 rounded border border-border bg-bg-surface">
           <span class="badge badge-attention">stack</span>
-          <span class="text-[#E5ECF4] truncate">${escapeHtml(stack.name ?? "")}</span>
-          <span class="text-[#566778] truncate ml-auto">${escapeHtml(stack.region ?? "")} · ${escapeHtml(stack.status ?? "")}</span>
+          <span class="text-text-primary truncate">${escapeHtml(stack.name ?? "")}</span>
+          <span class="text-text-muted truncate ml-auto">${escapeHtml(stack.region ?? "")} · ${escapeHtml(stack.status ?? "")}</span>
         </div>`).join("")}
-      ${stackReasons.length > 25 ? `<div class="text-[12px] text-[#566778] px-3">+${stackReasons.length - 25} more</div>` : ""}
+      ${stackReasons.length > 25 ? `<div class="text-[12px] text-text-muted px-3">+${stackReasons.length - 25} more</div>` : ""}
     </div>`;
 }
 
@@ -448,26 +448,26 @@ function renderInventoryList(): void {
     return;
   }
   container.innerHTML = `
-    <div class="text-[11px] font-bold uppercase tracking-[0.09em] text-[#566778] mb-1.5">Inventory (not importable)</div>
+    <div class="text-[11px] font-bold uppercase tracking-[0.09em] text-text-muted mb-1.5">Inventory (not importable)</div>
     <div class="grid gap-1.5">
       ${regions.map((region) => {
         const byType = inventory[region] ?? {};
         const typeNames = Object.keys(byType).sort();
         if (typeNames.length === 0) return "";
         return `
-          <details class="rounded border border-white/[0.07] bg-[#0D1220]">
-            <summary class="px-3 py-2 text-[12px] text-[#E5ECF4] cursor-pointer select-none">${escapeHtml(region)} <span class="text-[#566778]">(${typeNames.length} types)</span></summary>
+          <details class="rounded border border-border bg-bg-surface">
+            <summary class="px-3 py-2 text-[12px] text-text-primary cursor-pointer select-none">${escapeHtml(region)} <span class="text-text-muted">(${typeNames.length} types)</span></summary>
             <div class="px-3 pb-2.5 grid gap-1">
               ${typeNames.map((typeName) => {
                 const resources: any[] = byType[typeName] ?? [];
                 if (resources.length === 0) return "";
                 const shown = resources.slice(0, INVENTORY_DISPLAY_CAP);
                 return `
-                  <details class="rounded border border-white/[0.06] bg-[#151B2B]">
-                    <summary class="px-2.5 py-1.5 text-[12px] text-[#9BB0CF] cursor-pointer select-none">${escapeHtml(typeName)} <span class="text-[#566778]">(${resources.length})</span></summary>
+                  <details class="rounded border border-border bg-bg-elevated">
+                    <summary class="px-2.5 py-1.5 text-[12px] text-text-secondary cursor-pointer select-none">${escapeHtml(typeName)} <span class="text-text-muted">(${resources.length})</span></summary>
                     <div class="px-2.5 pb-2 grid gap-0.5">
-                      ${shown.map((resource) => `<div class="text-[11px] text-[#9BB0CF] truncate">${escapeHtml(resource.identifier ?? "")}</div>`).join("")}
-                      ${resources.length > shown.length ? `<div class="text-[11px] text-[#566778]">+${resources.length - shown.length} more</div>` : ""}
+                      ${shown.map((resource) => `<div class="text-[11px] text-text-secondary truncate">${escapeHtml(resource.identifier ?? "")}</div>`).join("")}
+                      ${resources.length > shown.length ? `<div class="text-[11px] text-text-muted">+${resources.length - shown.length} more</div>` : ""}
                     </div>
                   </details>`;
               }).join("")}
@@ -486,13 +486,13 @@ function renderErrorsList(): void {
     return;
   }
   container.innerHTML = `
-    <div class="text-[11px] font-bold uppercase tracking-[0.09em] text-[#566778] mb-1.5">Scan errors (${errors.length})</div>
+    <div class="text-[11px] font-bold uppercase tracking-[0.09em] text-text-muted mb-1.5">Scan errors (${errors.length})</div>
     <div class="grid gap-1 max-h-52 overflow-y-auto">
       ${errors.slice(0, 100).map((entry) => `
-        <div class="text-[12px] text-[#9BB0CF] px-3 py-1.5 rounded border border-[#E5484D]/25 bg-[#E5484D]/[0.06]">
+        <div class="text-[12px] text-text-secondary px-3 py-1.5 rounded border border-critical/25 bg-critical/[0.06]">
           ${escapeHtml([entry.region, entry.resourceType].filter(Boolean).join(" · "))} — ${escapeHtml(entry.message ?? "")}
         </div>`).join("")}
-      ${errors.length > 100 ? `<div class="text-[12px] text-[#566778] px-3">+${errors.length - 100} more</div>` : ""}
+      ${errors.length > 100 ? `<div class="text-[12px] text-text-muted px-3">+${errors.length - 100} more</div>` : ""}
     </div>`;
 }
 
@@ -536,7 +536,7 @@ function renderBundleResult(): void {
   const intents = bundleResponse.bundle?.intents ?? [];
   if (intents.length === 0) {
     container.innerHTML = `
-      <div class="empty-state text-sm text-[#566778]">
+      <div class="empty-state text-sm text-text-muted">
         Nothing new to import${managed.length > 0 ? ` — ${managed.length} scanned resources are already managed or imported.` : "."}
       </div>`;
     return;
@@ -545,7 +545,7 @@ function renderBundleResult(): void {
   container.innerHTML = `
     ${warnings.length > 0 ? `
       <div class="grid gap-1 mb-3">
-        ${warnings.map((warning) => `<div class="text-[12px] text-[#FCB519] px-3 py-1.5 rounded border border-[#FCB519]/25 bg-[#FCB519]/[0.06]">${escapeHtml(warning)}</div>`).join("")}
+        ${warnings.map((warning) => `<div class="text-[12px] text-warning px-3 py-1.5 rounded border border-warning/25 bg-warning/[0.06]">${escapeHtml(warning)}</div>`).join("")}
       </div>` : ""}
     <div class="grid gap-1.5 mb-3">
       ${intents.map((entry) => {
@@ -555,11 +555,11 @@ function renderBundleResult(): void {
         const assets: any[] = manifest.spec?.assets ?? [];
         const checked = selectedIntents[name] ?? false;
         return `
-          <label class="flex items-start gap-2.5 px-3.5 py-2.5 rounded-lg border ${checked ? "border-[#00ADE4]/50 bg-[#00ADE4]/[0.06]" : "border-white/[0.07] bg-[#0D1220]"} cursor-pointer">
-            <input type="checkbox" ${checked ? "checked" : ""} data-intent-toggle="${escapeAttr(name)}" class="accent-[#00ADE4] mt-0.5" />
+          <label class="flex items-start gap-2.5 px-3.5 py-2.5 rounded-lg border ${checked ? "border-primary/50 bg-primary/[0.06]" : "border-border bg-bg-surface"} cursor-pointer">
+            <input type="checkbox" ${checked ? "checked" : ""} data-intent-toggle="${escapeAttr(name)}" class="accent-primary mt-0.5" />
             <span class="min-w-0 flex-1">
               <span class="flex items-center gap-2 flex-wrap">
-                <span class="text-[13px] font-semibold text-[#E5ECF4]">${escapeHtml(name)}</span>
+                <span class="text-[13px] font-semibold text-text-primary">${escapeHtml(name)}</span>
                 <span class="badge badge-neutral">${escapeHtml(region)}</span>
               </span>
               <span class="flex gap-1 flex-wrap mt-1">
@@ -569,9 +569,9 @@ function renderBundleResult(): void {
           </label>`;
       }).join("")}
     </div>
-    <details class="rounded border border-white/[0.07] bg-[#0D1220] mb-3">
-      <summary class="px-3 py-2 text-[12px] text-[#E5ECF4] cursor-pointer select-none">Manifest preview (selected: ${selectedCount}/${intents.length})</summary>
-      <pre class="px-3 pb-3 text-[11px] text-[#9BB0CF] overflow-x-auto whitespace-pre">${escapeHtml(previewJSON(intents))}</pre>
+    <details class="rounded border border-border bg-bg-surface mb-3">
+      <summary class="px-3 py-2 text-[12px] text-text-primary cursor-pointer select-none">Manifest preview (selected: ${selectedCount}/${intents.length})</summary>
+      <pre class="px-3 pb-3 text-[11px] text-text-secondary overflow-x-auto whitespace-pre">${escapeHtml(previewJSON(intents))}</pre>
     </details>
     <div class="flex gap-2 flex-wrap">
       <button class="btn-primary" data-scan-save="reconcile" ${selectedCount === 0 ? "disabled" : ""}>Save &amp; reconcile</button>

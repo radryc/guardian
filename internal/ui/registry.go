@@ -8,19 +8,14 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/radryc/guardian/internal/compiler/manifest"
-	assetdomain "github.com/radryc/guardian/internal/domain/asset"
-	intentdomain "github.com/radryc/guardian/internal/domain/intent"
 	"github.com/radryc/guardian/internal/observedgen"
-	"github.com/radryc/guardian/internal/paths"
 	"github.com/radryc/guardian/internal/registry"
-	"github.com/radryc/guardian/pkg/guardianapi"
+	"github.com/radryc/guardian/internal/repoimport"
 )
 
 type pusherListResponse struct {
@@ -474,151 +469,33 @@ func firstNonEmpty(values ...string) string {
 }
 
 // importRepoPartitionsFromStore imports repo-authored partition bundles from
-// guardian/partitions/<name>/ when the repo source is a MonoFS logical path. A
-// repo is authoritative for its authored partition, so the config is written
-// as-is; secret values are rejected.
+// guardian/partitions/<name>/ when the repo source is a MonoFS logical path.
+// It delegates to repoimport so the UI and daemon share one importer.
 func (s *Server) importRepoPartitionsFromStore(ctx context.Context, repo *registry.Repo) ([]string, error) {
 	source := strings.TrimSpace(repo.Source)
 	if !strings.HasPrefix(source, "/") {
 		return nil, nil
 	}
+	src := repoimport.NewStoreSource(s.store, source)
 	imported := make([]string, 0)
 	for _, binding := range repo.BindingList() {
-		root := path.Join(strings.TrimRight(source, "/"), binding.PartitionDir())
-		ok, err := s.importStorePartition(ctx, root, binding.Partition)
+		result, err := repoimport.Import(ctx, src, s.store, repoimport.Options{
+			RepoName:      repo.Name,
+			Partition:     binding.Partition,
+			PartitionPath: binding.PartitionDir(),
+			Principal:     s.principalID,
+			Source:        repo.Source,
+			Prune:         true,
+			IgnoreMissing: true,
+		})
 		if err != nil {
 			return imported, err
 		}
-		if ok {
+		if result.Changed {
 			imported = append(imported, binding.Partition)
 		}
 	}
 	return imported, nil
-}
-
-func (s *Server) importStorePartition(ctx context.Context, root, partition string) (bool, error) {
-	configPath := path.Join(root, "partition.yaml")
-	configRaw, err := s.store.ReadFile(ctx, configPath)
-	if err != nil && errors.Is(err, os.ErrNotExist) {
-		configPath = path.Join(root, "config.yaml")
-		configRaw, err = s.store.ReadFile(ctx, configPath)
-	}
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, err
-	}
-	partitionManifest, err := manifest.ParsePartition(configRaw)
-	if err != nil {
-		return false, fmt.Errorf("import partition %s (%s): %w", partition, configPath, err)
-	}
-	if want := strings.TrimSpace(partitionManifest.Metadata.Name); want != "" && want != partition {
-		return false, fmt.Errorf("import partition %s: manifest metadata.name %q does not match", partition, want)
-	}
-
-	writes := []guardianapi.PathWrite{{LogicalPath: paths.PartitionConfig(partition), Content: configRaw}}
-
-	intentEntries, err := s.store.ListDir(ctx, path.Join(root, "intents"))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return false, err
-	}
-	for _, entry := range intentEntries {
-		if entry.IsDir || !strings.HasSuffix(entry.Name, ".yaml") {
-			continue
-		}
-		content, err := s.store.ReadFile(ctx, path.Join(root, "intents", entry.Name))
-		if err != nil {
-			return false, err
-		}
-		intent, err := manifest.ParseIntent(content)
-		if err != nil {
-			return false, fmt.Errorf("import partition %s: intent %s: %w", partition, entry.Name, err)
-		}
-		if err := rejectInlineSecretAssets(intent); err != nil {
-			return false, fmt.Errorf("import partition %s: %w", partition, err)
-		}
-		name := strings.TrimSpace(intent.Metadata.Name)
-		if name == "" {
-			name = strings.TrimSuffix(entry.Name, ".yaml")
-		}
-		writes = append(writes, guardianapi.PathWrite{
-			LogicalPath: paths.IntentManifest(partition, name),
-			Content:     content,
-		})
-	}
-
-	err = s.walkStoreFiles(ctx, root, "", func(relPath string, content []byte) error {
-		switch {
-		case relPath == "partition.yaml", relPath == "config.yaml":
-			return nil
-		case relPath == "intents", strings.HasPrefix(relPath, "intents/"):
-			return nil
-		case relPath == ".state", strings.HasPrefix(relPath, ".state/"):
-			return nil
-		case relPath == "secrets", strings.HasPrefix(relPath, "secrets/"):
-			return nil
-		}
-		writes = append(writes, guardianapi.PathWrite{
-			LogicalPath: paths.PartitionRoot(partition) + "/" + relPath,
-			Content:     content,
-		})
-		return nil
-	})
-	if err != nil {
-		return false, err
-	}
-
-	if _, err := s.store.UpsertFiles(ctx, guardianapi.MutationBatch{
-		Writes: writes,
-		Context: guardianapi.MutationContext{
-			PrincipalID: s.principalID,
-			Reason:      "import repo-authored partition",
-		},
-	}); err != nil {
-		return false, fmt.Errorf("import partition %s: %w", partition, err)
-	}
-	return true, nil
-}
-
-func (s *Server) walkStoreFiles(ctx context.Context, root, rel string, fn func(relPath string, content []byte) error) error {
-	entries, err := s.store.ListDir(ctx, path.Join(root, rel))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	for _, entry := range entries {
-		child := path.Join(rel, entry.Name)
-		if entry.IsDir {
-			if err := s.walkStoreFiles(ctx, root, child, fn); err != nil {
-				return err
-			}
-			continue
-		}
-		content, err := s.store.ReadFile(ctx, path.Join(root, child))
-		if err != nil {
-			return err
-		}
-		if err := fn(child, content); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func rejectInlineSecretAssets(intent *intentdomain.Intent) error {
-	for _, asset := range intent.Spec.Assets {
-		if asset.Type != assetdomain.TypeSecret {
-			continue
-		}
-		value, _ := asset.Properties["value"].(string)
-		if strings.TrimSpace(value) != "" {
-			return fmt.Errorf("intent %s asset %s: inline Secret value is not allowed in repo-sourced partitions; use secretRef", intent.Metadata.Name, asset.Name)
-		}
-	}
-	return nil
 }
 
 // knownPushers merges configured pushers with store-registered pushers so

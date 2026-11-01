@@ -68,3 +68,36 @@ func TestStartRegistrationWaitsForRegistrationWithoutURL(t *testing.T) {
 		t.Fatalf("GetPusher() error = %v, want not found", err)
 	}
 }
+
+func TestStartRegistrationSelfRegistersKubernetesPusher(t *testing.T) {
+	store := memory.New()
+	reg := platformregistry.New(store)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	StartRegistration(ctx, store, PusherInfo{
+		Name:         "k8s-main",
+		Provider:     "kubernetes",
+		Cluster:      "k8s-main",
+		ShardCount:   1,
+		Capabilities: []string{"metrics", "logs", "traces", "probes"},
+		WorkerID:     "worker-1",
+	})
+
+	got, err := reg.GetPusher(context.Background(), "k8s-main")
+	if err != nil {
+		t.Fatalf("GetPusher() error = %v", err)
+	}
+	if got.Provider != "kubernetes" {
+		t.Fatalf("provider = %q", got.Provider)
+	}
+	if got.Status != "healthy" {
+		t.Fatalf("status = %q", got.Status)
+	}
+	if got.LastHeartbeat.IsZero() {
+		t.Fatal("lastHeartbeat is zero")
+	}
+	if got.Labels["workerID"] != "worker-1" {
+		t.Fatalf("labels = %#v", got.Labels)
+	}
+}

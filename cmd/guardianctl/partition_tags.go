@@ -49,6 +49,9 @@ func partitionTagsCommand(store guardianapi.Store, printer *output.Printer) *com
 		if strings.TrimSpace(*partitionName) == "" {
 			return fmt.Errorf("--partition is required")
 		}
+		if err := paths.ValidatePartitionName(*partitionName); err != nil {
+			return err
+		}
 		tags, err := loadPartitionTags(ctx, store, strings.TrimSpace(*partitionName))
 		if err != nil {
 			return err
@@ -83,6 +86,9 @@ func partitionRollbackCommand(store guardianapi.Store, printer *output.Printer) 
 	return &command.Command{Description: "Restore all archived intent manifests for a selected partition tag", Flags: flags, Run: func(ctx context.Context, args []string) error {
 		if strings.TrimSpace(*partitionName) == "" {
 			return fmt.Errorf("--partition is required")
+		}
+		if err := paths.ValidatePartitionName(*partitionName); err != nil {
+			return err
 		}
 		resolvedTag, err := resolvePartitionRollbackTag(ctx, store, strings.TrimSpace(*partitionName), strings.TrimSpace(*tag), *previous)
 		if err != nil {
