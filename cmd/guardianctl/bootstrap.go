@@ -287,7 +287,7 @@ func devInitCommand() *command.Command {
 				// Stamp all deployed partitions with the bootstrapped image tags.
 				for _, partName := range []string{
 					"guardian-configs", "agent", "doctor", "k8s-top",
-					"monitoring", "opentelemetry", "lb-agent",
+					"monitoring", "opentelemetry", "lb-agent", "nightwatch",
 				} {
 					partDir := filepath.Join(filepath.Dir(bootstrapDir), partName)
 					if _, err := os.Stat(partDir); err != nil {
@@ -985,6 +985,9 @@ nodes:
         protocol: TCP
       - containerPort: 9090
         hostPort: 9090
+        protocol: TCP
+      - containerPort: 9091
+        hostPort: 9091
         protocol: TCP
       - containerPort: 15051
         hostPort: 15051
