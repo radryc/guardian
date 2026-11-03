@@ -159,7 +159,9 @@ function initMobileSidebar(): void {
 // ── Ask Strata drawer ────────────────────────────────
 function agentBaseUrl(): string {
   const configured = (window as unknown as { STRATA_AGENT_URL?: string }).STRATA_AGENT_URL;
-  return (configured || "http://localhost:3000").replace(/\/$/, "");
+  const host = window.location.hostname || "localhost";
+  const proto = window.location.protocol === "https:" ? "https:" : "http:";
+  return (configured || `${proto}//${host}:9191`).replace(/\/$/, "");
 }
 
 function askStrataUrl(): string {
@@ -173,19 +175,25 @@ function initAskStrata(): void {
   const external = document.getElementById("askStrataExternal") as HTMLAnchorElement | null;
   const close = document.getElementById("askStrataClose") as HTMLButtonElement | null;
   let previousFocus: HTMLElement | null = null;
+  const button = document.getElementById("askStrataButton");
   const open = () => {
     const url = askStrataUrl();
     if (frame) frame.src = url;
     if (external) external.href = url;
     previousFocus = document.activeElement as HTMLElement | null;
     if (drawer) drawer.hidden = false;
+    button?.setAttribute("aria-expanded", "true");
     window.setTimeout(() => close?.focus(), 30);
   };
   const hide = () => {
     if (drawer) drawer.hidden = true;
+    button?.setAttribute("aria-expanded", "false");
     previousFocus?.focus();
   };
-  document.getElementById("askStrataButton")?.addEventListener("click", open);
+  button?.addEventListener("click", () => {
+    if (drawer?.hidden === false) hide();
+    else open();
+  });
   close?.addEventListener("click", hide);
   drawer?.addEventListener("click", (event) => {
     if (event.target === drawer) hide();
@@ -1250,12 +1258,17 @@ function renderIntentCards(): void {
             const assetKey = makeAssetKey(intent.name, asset.name);
             const expanded = state.expandedAssetKey === assetKey;
             const cat = assetCategory(asset.type);
+            const isProbeAsset = String(asset.type ?? "").toLowerCase() === "probe";
+            const detailsHeading = isProbeAsset ? "Journey steps" : "Manifest details";
+            const expandCopy = isProbeAsset
+              ? "Show journey steps and expected results"
+              : "Show image, mounts, outputs, and manifest details";
             const detailId = `asset-detail-${makeAssetDomKey(assetKey)}`;
             const quickFacts = [...(asset.quickFacts ?? [])]
               .sort((a: any, b: any) => (a.label === "Release" ? -1 : b.label === "Release" ? 1 : 0))
               .map((f: any) => `<span class="fact${factClass(f.label)}" title="${escapeAttr(factTitle(f.label))}">${escapeHtml(f.label)}: ${escapeHtml(f.value)}</span>`)
               .join("");
-            const propertyFacts = expanded ? renderAssetPropertyFacts(asset, { limit: Number.MAX_SAFE_INTEGER, truncateAt: 160 }) : "";
+            const propertyDetails = expanded ? renderAssetPropertiesBlock(asset, { limit: Number.MAX_SAFE_INTEGER, truncateAt: 160 }) : "";
             const outputFacts = expanded ? renderOutputFacts(asset.outputs ?? {}, [], { limit: Number.MAX_SAFE_INTEGER, truncateAt: 160 }) : "";
             const referenceFacts = expanded
               ? (asset.references ?? []).map((r: string) => `<span class="fact">${escapeHtml(r)}</span>`).join("")
@@ -1287,13 +1300,13 @@ function renderIntentCards(): void {
                 ${displaySummary ? `<div class="muted mt-1">${escapeHtml(displaySummary)}</div>` : ""}
                 ${quickFacts ? `<div class="fact-row">${quickFacts}</div>` : ""}
                 <div class="asset-chip-toggle-row">
-                  <span class="asset-chip-toggle-copy">${expanded ? "Hide full asset details" : "Show image, mounts, outputs, and manifest details"}</span>
+                  <span class="asset-chip-toggle-copy">${expanded ? "Hide full asset details" : expandCopy}</span>
                   <span class="asset-chip-toggle-indicator" aria-hidden="true">${expanded ? "−" : "+"}</span>
                 </div>
                 ${expanded ? `
                   <div class="asset-chip-details" id="${escapeAttr(detailId)}">
                     ${dependencyFacts ? `<div class="asset-chip-detail-block"><div class="asset-chip-detail-heading">Depends on</div><div class="fact-row">${dependencyFacts}</div></div>` : ""}
-                    ${propertyFacts ? `<div class="asset-chip-detail-block"><div class="asset-chip-detail-heading">Manifest details</div><div class="fact-row">${propertyFacts}</div></div>` : ""}
+                    ${propertyDetails ? `<div class="asset-chip-detail-block"><div class="asset-chip-detail-heading">${detailsHeading}</div>${propertyDetails}</div>` : ""}
                     ${outputFacts ? `<div class="asset-chip-detail-block"><div class="asset-chip-detail-heading">Outputs</div><div class="fact-row">${outputFacts}</div></div>` : ""}
                     ${referenceFacts ? `<div class="asset-chip-detail-block"><div class="asset-chip-detail-heading">Output refs</div><div class="fact-row">${referenceFacts}</div></div>` : ""}
                   </div>
@@ -2471,7 +2484,7 @@ function renderTopologyDetailsPanel(): void {
   const relatedEdges = edges.filter((e: any) => e.from === selectedNode.id || e.to === selectedNode.id);
   const assetDoc = selectedNode.kind === "asset" ? findAssetInDetail(selectedNode.intent, selectedNode.asset ?? selectedNode.label) : null;
   const intentDoc = selectedNode.kind === "intent" ? findIntentInDetail(selectedNode.intent ?? selectedNode.label) : null;
-  const propertyFacts = assetDoc ? renderAssetPropertyFacts(assetDoc) : "";
+  const propertyDetails = assetDoc ? renderAssetPropertiesBlock(assetDoc) : "";
   const outputFacts = renderOutputFacts(assetDoc?.outputs ?? intentDoc?.outputs ?? {}, assetDoc ? [] : (intentDoc?.outputHints ?? []));
   const refFacts = (assetDoc?.references ?? []).map((r: string) => `<span class="fact">${escapeHtml(r)}</span>`).join("");
 
@@ -2510,7 +2523,7 @@ function renderTopologyDetailsPanel(): void {
           ${Object.entries(selectedNode.meta ?? {}).map(([k, v]) => `<span class="fact">${escapeHtml(`${humanize(k)}: ${v}`)}</span>`).join("")}
         </div>
       ` : ""}
-      ${propertyFacts ? `<div class="topology-detail-block"><div class="topology-detail-heading">Properties</div><div class="fact-row">${propertyFacts}</div></div>` : ""}
+      ${propertyDetails ? `<div class="topology-detail-block"><div class="topology-detail-heading">Properties</div>${propertyDetails}</div>` : ""}
       ${outputFacts ? `<div class="topology-detail-block"><div class="topology-detail-heading">Outputs</div><div class="fact-row">${outputFacts}</div></div>` : ""}
       ${refFacts ? `<div class="topology-detail-block"><div class="topology-detail-heading">Output refs</div><div class="fact-row">${refFacts}</div></div>` : ""}
       <div class="topology-detail-block">
@@ -2956,6 +2969,98 @@ function flattenAssetProperties(value: any, path = ""): Array<{ path: string; va
     return entries.flatMap(([key, child]) => flattenAssetProperties(child, path ? `${path}.${key}` : key));
   }
   return path ? [{ path, value: String(value) }] : [];
+}
+
+function formatJourneyPath(path: string): string {
+  return path.replace(/\.(\d+)(?=\.|$)/g, "[$1]");
+}
+
+function flattenJourneyValues(value: any, path = ""): string[] {
+  if (value == null || value === "") return [];
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) => flattenJourneyValues(item, `${path}[${index}]`));
+  }
+  if (typeof value === "object") {
+    return Object.entries(value).flatMap(([key, child]) =>
+      flattenJourneyValues(child, path ? `${path}.${key}` : key)
+    );
+  }
+  return [`${formatJourneyPath(path)} = ${String(value)}`];
+}
+
+function renderProbeJourney(assetDoc: any): string {
+  const props = assetDoc?.properties ?? {};
+  const steps = Array.isArray(props.steps) ? props.steps : [];
+  if (!steps.length) return "";
+  const meta = [
+    props.target ? `Target: ${props.target}` : "",
+    props.type ? `Type: ${props.type}` : "",
+    props.interval ? `Every ${props.interval}` : "",
+    props.timeout ? `Timeout ${props.timeout}` : "",
+    props.retries != null ? `${props.retries} retries` : "",
+    props.enabled === false ? "Disabled" : "",
+  ].filter(Boolean).map((fact) => `<span class="fact">${escapeHtml(fact)}</span>`).join("");
+
+  const stepHtml = steps.map((step: any, index: number) => {
+    const name = step?.name ? String(step.name) : `Step ${index + 1}`;
+    const endpoint = step?.url
+      ? String(step.url)
+      : step?.address
+        ? `${step.address}${step.port ? `:${step.port}` : ""}`
+        : [step?.method, step?.path].filter(Boolean).join(" ");
+    const rows: string[] = [];
+    if (endpoint) {
+      rows.push(`<div class="probe-journey__row"><span class="probe-journey__label">Request</span><code class="probe-journey__code">${escapeHtml(endpoint)}</code></div>`);
+    }
+    const statuses = Array.isArray(step?.expectStatus)
+      ? step.expectStatus
+      : step?.expectStatus != null
+        ? [step.expectStatus]
+        : [];
+    if (statuses.length) {
+      rows.push(`<div class="probe-journey__row"><span class="probe-journey__label">Expects</span>${statuses.map((status: any) => `<code class="probe-journey__code">${escapeHtml(String(status))}</code>`).join("")}</div>`);
+    }
+    if (step?.expectBody) {
+      rows.push(`<div class="probe-journey__row"><span class="probe-journey__label">Response body</span><span class="probe-journey__value">${escapeHtml(String(step.expectBody))}</span></div>`);
+    }
+    const jsonFacts = flattenJourneyValues(step?.expectJson);
+    if (jsonFacts.length) {
+      rows.push(`<div class="probe-journey__row"><span class="probe-journey__label">Expected JSON</span>${jsonFacts.map((fact) => `<code class="probe-journey__code">${escapeHtml(fact)}</code>`).join("")}</div>`);
+    }
+    const captures = flattenJourneyValues(step?.capture);
+    if (captures.length) {
+      rows.push(`<div class="probe-journey__row"><span class="probe-journey__label">Capture</span>${captures.map((fact) => `<code class="probe-journey__code">${escapeHtml(fact)}</code>`).join("")}</div>`);
+    }
+    if (step?.body) {
+      rows.push(`<div class="probe-journey__row"><span class="probe-journey__label">Request body</span><code class="probe-journey__code">${escapeHtml(truncate(String(step.body), 240))}</code></div>`);
+    }
+    const headers = step?.headers && typeof step.headers === "object" ? Object.entries(step.headers) : [];
+    if (headers.length) {
+      rows.push(`<div class="probe-journey__row"><span class="probe-journey__label">Headers</span>${headers.map(([key, value]) => `<code class="probe-journey__code">${escapeHtml(`${key}: ${String(value)}`)}</code>`).join("")}</div>`);
+    }
+    const options = ["type", "service", "grpcMethod", "timeout", "insecureSkipVerify"]
+      .filter((key) => step?.[key] != null && step[key] !== "")
+      .map((key) => `<code class="probe-journey__code">${escapeHtml(`${key}: ${String(step[key])}`)}</code>`)
+      .join("");
+    if (options) {
+      rows.push(`<div class="probe-journey__row"><span class="probe-journey__label">Options</span>${options}</div>`);
+    }
+    return `<li class="probe-journey__step"><div class="probe-journey__step-head"><span class="probe-journey__index">${index + 1}</span><strong class="probe-journey__step-title">${escapeHtml(name)}</strong></div>${rows.join("")}</li>`;
+  }).join("");
+
+  const rawFacts = renderAssetPropertyFacts(assetDoc, { limit: Number.MAX_SAFE_INTEGER, truncateAt: 200 });
+  return `<div class="probe-journey">
+    <div class="probe-journey__meta">${meta}</div>
+    <ol class="probe-journey__steps">${stepHtml}</ol>
+    ${rawFacts ? `<details class="probe-journey__raw"><summary>Raw manifest properties</summary><div class="fact-row">${rawFacts}</div></details>` : ""}
+  </div>`;
+}
+
+function renderAssetPropertiesBlock(assetDoc: any, options: { limit?: number; truncateAt?: number } = {}): string {
+  const isProbe = String(assetDoc?.type ?? "").toLowerCase() === "probe";
+  const hasSteps = isProbe && Array.isArray(assetDoc?.properties?.steps) && assetDoc.properties.steps.length > 0;
+  if (hasSteps) return renderProbeJourney(assetDoc);
+  return `<div class="fact-row">${renderAssetPropertyFacts(assetDoc, options)}</div>`;
 }
 
 function renderAssetPropertyFacts(assetDoc: any, options: { limit?: number; truncateAt?: number } = {}): string {

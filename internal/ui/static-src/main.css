@@ -599,6 +599,55 @@ body.diagnostics-open { overflow: hidden; }
   color: var(--strata-text-tertiary);
 }
 
+/* ── Probe journeys ────────────────────────────────── */
+.probe-journey { display: flex; flex-direction: column; gap: 10px; }
+.probe-journey__meta { display: flex; flex-wrap: wrap; gap: 4px; }
+.probe-journey__steps { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.probe-journey__step {
+  padding: 10px 12px;
+  border: 1px solid var(--strata-border);
+  border-radius: var(--strata-radius-sm);
+  background: var(--strata-panel);
+}
+.probe-journey__step-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.probe-journey__index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--strata-overlay-soft);
+  color: var(--strata-accent-text);
+  font-size: 11px;
+  font-weight: 800;
+}
+.probe-journey__step-title { color: var(--strata-text); font-size: 12px; font-weight: 700; }
+.probe-journey__row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+.probe-journey__label {
+  color: var(--strata-text-tertiary);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.probe-journey__value { color: var(--strata-text); font-size: 11px; }
+.probe-journey__code {
+  max-width: 100%;
+  padding: 2px 5px;
+  border: 1px solid var(--strata-border);
+  border-radius: 4px;
+  background: var(--strata-input);
+  color: var(--strata-text);
+  font-family: var(--strata-font-mono);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.probe-journey__raw { margin-top: 4px; }
+.probe-journey__raw summary { cursor: pointer; color: var(--strata-text-secondary); font-size: 11px; }
+.probe-journey__raw .fact-row { margin-top: 6px; }
+
 /* ── Fact row ──────────────────────────────────────── */
 .fact-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 0; align-items: flex-start; }
 .fact {

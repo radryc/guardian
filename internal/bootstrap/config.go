@@ -237,7 +237,7 @@ func DefaultConfig() Config {
 			},
 			SearchDiagnosticsAddr:   "search-index:9101",
 			FetcherDiagnosticsAddrs: "fetcher-a:9201,fetcher-b:9201",
-			UserServicePorts:        []int{9191, 8888},
+			UserServicePorts:        []int{9191, 8888, 9091},
 		},
 		LB: LBConfig{
 			Namespace:         "lb-edge",
