@@ -30,6 +30,8 @@ func TestSecurityHeadersArePresent(t *testing.T) {
 
 	if got := rec.Header().Get("Content-Security-Policy"); got == "" {
 		t.Fatal("missing Content-Security-Policy")
+	} else if !strings.Contains(got, "frame-src") || !strings.Contains(got, "http://*:9191") {
+		t.Fatalf("CSP does not allow the Ask Strata embed: %q", got)
 	}
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("X-Content-Type-Options = %q", got)
