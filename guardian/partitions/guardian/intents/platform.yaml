@@ -1,0 +1,41 @@
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: platform
+spec:
+  intentType: standard
+  targetPusher: k8s-main
+  target:
+    cluster: k8s-main
+    namespace: strata
+  locked: false
+  assets:
+    - type: Compute
+      name: guardiand
+      properties:
+        image: strata/guardiand:dev
+        imagePullPolicy: IfNotPresent
+        observeExisting: true
+        ports:
+          - name: http
+            containerPort: 8090
+            servicePort: 8090
+
+    - type: Compute
+      name: guardian-pusher-k8s
+      properties:
+        image: strata/guardian-pusher-k8s:dev
+        imagePullPolicy: IfNotPresent
+        observeExisting: true
+
+    - type: Probe
+      name: guardiand-health
+      dependsOn:
+        - guardiand
+      properties:
+        target: guardiand
+        type: http
+        url: http://guardiand.strata.svc.cluster.local:8090/health
+        interval: 30s
+        timeout: 3s
+        retries: 2

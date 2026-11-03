@@ -15,6 +15,7 @@ const defaultCSP = "default-src 'self'; " +
 	"font-src 'self' data:; " +
 	"form-action 'self'; " +
 	"frame-ancestors 'none'; " +
+	"frame-src 'self' http://localhost:9191 http://127.0.0.1:9191 http://*:9191 https://*:9191; " +
 	"img-src 'self' data:; " +
 	"object-src 'none'; " +
 	"script-src 'self' 'unsafe-inline'; " +
