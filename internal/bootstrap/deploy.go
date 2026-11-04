@@ -107,6 +107,14 @@ func BuildMonoFSImages(ctx context.Context, cfg *Config, dryRun bool) error {
 		}
 	}
 
+	// Build the DuckDB query sidecar. It is intentionally a separate image:
+	// DuckDB requires CGO/glibc while the storage server image is Alpine.
+	fmt.Fprintf(os.Stderr, "=== building logquery (%s) ===\n", img.LogQuery)
+	logqueryDockerfile := filepath.Join(monofsDir, "Dockerfile.logquery")
+	if err := Run(ctx, dryRun, "docker", "build", "-t", img.LogQuery, "-f", logqueryDockerfile, monofsDir); err != nil {
+		return fmt.Errorf("building monofs logquery: %w", err)
+	}
+
 	// Build LB image
 	lbDir := os.Getenv("LB_REPO_DIR")
 	if lbDir == "" {

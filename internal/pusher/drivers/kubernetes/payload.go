@@ -25,6 +25,8 @@ type workloadPayload struct {
 	VolumeMounts       []VolumeMount     `yaml:"volumeMounts,omitempty"`
 	InlineFiles        map[string]string `yaml:"inlineFiles,omitempty"`
 	ReadinessProbe     *Probe            `yaml:"readinessProbe,omitempty"`
+	LivenessProbe      *Probe            `yaml:"livenessProbe,omitempty"`
+	StartupProbe       *Probe            `yaml:"startupProbe,omitempty"`
 	Replicas           *int              `yaml:"replicas,omitempty"`
 	Privileged         *bool             `yaml:"privileged,omitempty"`
 	Capabilities       []string          `yaml:"capabilities,omitempty"`
@@ -89,6 +91,12 @@ func applyWorkloadPayload(deployment *Deployment, payload workloadPayload) {
 	}
 	if payload.ReadinessProbe != nil {
 		deployment.Container.ReadinessProbe = cloneProbe(payload.ReadinessProbe)
+	}
+	if payload.LivenessProbe != nil {
+		deployment.Container.LivenessProbe = cloneProbe(payload.LivenessProbe)
+	}
+	if payload.StartupProbe != nil {
+		deployment.Container.StartupProbe = cloneProbe(payload.StartupProbe)
 	}
 	if payload.Privileged != nil {
 		deployment.Container.Privileged = *payload.Privileged

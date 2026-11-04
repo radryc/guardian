@@ -87,6 +87,8 @@ type Container struct {
 	VolumeMounts    []VolumeMount
 	InlineFiles     map[string]string
 	ReadinessProbe  *Probe
+	LivenessProbe   *Probe
+	StartupProbe    *Probe
 	Privileged      bool
 	Capabilities    []string
 	RunAsUser       *int64
@@ -316,6 +318,8 @@ func cloneContainer(in Container) Container {
 		VolumeMounts:    append([]VolumeMount(nil), in.VolumeMounts...),
 		InlineFiles:     cloneStringMap(in.InlineFiles),
 		ReadinessProbe:  cloneProbe(in.ReadinessProbe),
+		LivenessProbe:   cloneProbe(in.LivenessProbe),
+		StartupProbe:    cloneProbe(in.StartupProbe),
 		Privileged:      in.Privileged,
 		Capabilities:    append([]string(nil), in.Capabilities...),
 		Resources:       cloneContainerResources(in.Resources),

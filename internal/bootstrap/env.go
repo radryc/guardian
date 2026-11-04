@@ -80,6 +80,7 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["MONOFS_SEARCH_IMAGE"] = cfg.Storage.Images.Search
 	env["MONOFS_REGISTRY_IMAGE"] = cfg.Storage.Images.Registry
 	env["MONOFS_LB_IMAGE"] = cfg.Storage.Images.LB
+	env["MONOFS_LOGQUERY_IMAGE"] = cfg.Storage.Images.LogQuery
 	env["FUSE_DEVICE_PLUGIN_IMAGE"] = cfg.Storage.Images.Fuse
 	env["MINIO_IMAGE"] = cfg.Storage.Images.Minio
 	env["MONOFS_IMAGE_PULL_POLICY"] = cfg.Storage.Images.PullPolicy

@@ -50,6 +50,7 @@ type StorageImages struct {
 	LB         string `yaml:"lb"`
 	Minio      string `yaml:"minio"`
 	Fuse       string `yaml:"fuse"`
+	LogQuery   string `yaml:"logQuery"`
 	PullPolicy string `yaml:"pullPolicy"`
 }
 
@@ -192,6 +193,7 @@ func DefaultConfig() Config {
 				Registry:   "monofs-registry:latest",
 				LB:         "lb:latest",
 				Minio:      "docker.io/bitnamilegacy/minio:latest",
+				LogQuery:   "monofs-logquery:latest",
 				PullPolicy: "IfNotPresent",
 			},
 			PVC: StoragePVC{
@@ -373,6 +375,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("MINIO_IMAGE"); v != "" {
 		cfg.Storage.Images.Minio = v
+	}
+	if v := os.Getenv("MONOFS_LOGQUERY_IMAGE"); v != "" {
+		cfg.Storage.Images.LogQuery = v
 	}
 	if v := os.Getenv("MONOFS_IMAGE_PULL_POLICY"); v != "" {
 		cfg.Storage.Images.PullPolicy = v

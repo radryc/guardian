@@ -400,6 +400,16 @@ readinessProbe:
     port: 8080
   initialDelaySeconds: 600
   periodSeconds: 10
+livenessProbe:
+  tcpSocket:
+    port: 8090
+  initialDelaySeconds: 60
+  periodSeconds: 20
+startupProbe:
+  tcpSocket:
+    port: 8090
+  failureThreshold: 30
+  periodSeconds: 5
 privileged: true
 capabilities:
   - NET_ADMIN
@@ -430,6 +440,12 @@ capabilities:
 	}
 	if deployment.Container.ReadinessProbe.TCPSocket == nil || deployment.Container.ReadinessProbe.TCPSocket.Port != 8080 {
 		t.Fatalf("expected readiness probe tcp socket override, got %+v", deployment.Container.ReadinessProbe)
+	}
+	if deployment.Container.LivenessProbe == nil || deployment.Container.LivenessProbe.InitialDelaySeconds != 60 {
+		t.Fatalf("expected liveness probe override, got %+v", deployment.Container.LivenessProbe)
+	}
+	if deployment.Container.StartupProbe == nil || deployment.Container.StartupProbe.FailureThreshold != 30 {
+		t.Fatalf("expected startup probe override, got %+v", deployment.Container.StartupProbe)
 	}
 	service, ok, err := backend.GetService("platform", "k8s-svc-compute-main-platform-demo-stack-app")
 	if err != nil {

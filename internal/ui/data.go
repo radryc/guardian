@@ -2123,10 +2123,19 @@ func deriveIntentPresentation(state *statedomain.IntentState, runtime intentTask
 		}
 		return string(state.Status), "No diff", "healthy", "Desired and live state match"
 	case statedomain.StatusChecking:
+		if displayStatus, health, summary, ok := observedIntentHealthPresentation(state); ok {
+			return string(state.Status), displayStatus, health, summary
+		}
 		return string(state.Status), "Checking", "pending", "Validating that drift can be applied safely"
 	case statedomain.StatusDiffing:
+		if displayStatus, health, summary, ok := observedIntentHealthPresentation(state); ok {
+			return string(state.Status), displayStatus, health, summary
+		}
 		return string(state.Status), "Comparing", "pending", "Comparing desired and live state"
 	case statedomain.StatusApplying:
+		if displayStatus, health, summary, ok := observedIntentHealthPresentation(state); ok {
+			return string(state.Status), displayStatus, health, summary
+		}
 		return string(state.Status), "Pushing", "pending", "Applying the latest blueprint"
 	case statedomain.StatusDiffFailed, statedomain.StatusCheckFailed, statedomain.StatusApplyFailed:
 		return string(state.Status), "Error", "failing", valueOrDefault(observedFailureSummary(state), valueOrDefault(pointerString(state.LastError), "The last task failed"))
@@ -2334,10 +2343,19 @@ func deriveAssetPresentation(state *statedomain.IntentState, assetName string, r
 		}
 		return string(state.Status), "No diff", "healthy", "Matches desired state"
 	case statedomain.StatusChecking:
+		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
+			return string(state.Status), displayStatus, health, summary
+		}
 		return string(state.Status), "Checking", "pending", "Validating that drift can be applied safely"
 	case statedomain.StatusDiffing:
+		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
+			return string(state.Status), displayStatus, health, summary
+		}
 		return string(state.Status), "Comparing", "pending", "Inspecting live drift"
 	case statedomain.StatusApplying:
+		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
+			return string(state.Status), displayStatus, health, summary
+		}
 		return string(state.Status), "Pushing", "pending", "Applying the asset"
 	case statedomain.StatusDiffFailed, statedomain.StatusCheckFailed, statedomain.StatusApplyFailed:
 		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {

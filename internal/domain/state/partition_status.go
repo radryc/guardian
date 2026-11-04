@@ -180,7 +180,10 @@ func intentHealthBucket(state *IntentState) string {
 	if state == nil {
 		return "pending"
 	}
-	if state.Status == StatusHealthy && state.Health != nil {
+	// Health is observed independently of the reconcile phase. A target can
+	// become unhealthy while Guardian is checking/diffing/applying, and that
+	// must escalate the partition instead of being hidden as "Progressing".
+	if state.Status != StatusDestroying && state.Status != StatusDestroyed && state.Health != nil {
 		switch state.Health.Status {
 		case taskdomain.HealthUnhealthy:
 			return "failing"
