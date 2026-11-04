@@ -170,6 +170,12 @@ func deploymentManifestItems(deployment Deployment) []map[string]any {
 	if probe := deployment.Container.ReadinessProbe; probe != nil {
 		containerSpec["readinessProbe"] = probeSpec(probe)
 	}
+	if probe := deployment.Container.LivenessProbe; probe != nil {
+		containerSpec["livenessProbe"] = probeSpec(probe)
+	}
+	if probe := deployment.Container.StartupProbe; probe != nil {
+		containerSpec["startupProbe"] = probeSpec(probe)
+	}
 	if r := deployment.Container.Resources; r.CPURequest != "" || r.CPULimit != "" || r.MemoryRequest != "" || r.MemoryLimit != "" || len(r.ExtendedResources) > 0 {
 		resources := map[string]any{}
 		if req := map[string]string{}; r.CPURequest != "" || r.MemoryRequest != "" {

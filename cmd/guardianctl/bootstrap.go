@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/radryc/guardian/internal/bootstrap"
@@ -213,6 +215,7 @@ func devInitCommand() *command.Command {
 					cfg.Storage.Images.Server, cfg.Storage.Images.Router,
 					cfg.Storage.Images.Fetcher, cfg.Storage.Images.Search,
 					cfg.Storage.Images.Registry, cfg.Storage.Images.LB,
+					cfg.Storage.Images.LogQuery,
 				}
 				guardImages := []string{
 					cfg.Guardian.Images.Guardiand, cfg.Guardian.Images.PusherK8s,
@@ -888,6 +891,21 @@ func deployDockerPusher(ctx context.Context, cfg *bootstrap.Config, dryRun bool)
 	name := "guardian-pusher-docker"
 	image := cfg.Guardian.Images.PusherDocker
 
+	stateDir, err := dockerPusherStateDir()
+	if err != nil {
+		return err
+	}
+	if !dryRun {
+		if err := os.MkdirAll(stateDir, 0o770); err != nil {
+			return fmt.Errorf("create docker pusher state dir %q: %w", stateDir, err)
+		}
+		// MkdirAll is subject to umask, so make the group access explicit:
+		// the container's non-root user is granted this group below.
+		if err := os.Chmod(stateDir, 0o770); err != nil {
+			return fmt.Errorf("chmod docker pusher state dir %q: %w", stateDir, err)
+		}
+	}
+
 	// Remove existing container
 	bootstrap.Run(ctx, dryRun, "docker", "rm", "-f", name)
 
@@ -897,14 +915,64 @@ func deployDockerPusher(ctx context.Context, cfg *bootstrap.Config, dryRun bool)
 		"--name", name,
 		"--network", "host",
 		"-v", "/var/run/docker.sock:/var/run/docker.sock",
+		// Mount the state dir at the same absolute path on both sides: the
+		// host Docker daemon resolves bind-mount sources on the host, so
+		// staged config files must be visible there at the path the pusher
+		// passes to `docker run`.
+		"-v", fmt.Sprintf("%s:%s", stateDir, stateDir),
+		"-e", fmt.Sprintf("GUARDIAN_STATE_DIR=%s", stateDir),
 		"-e", fmt.Sprintf("GUARDIAN_PUSHER_NAME=%s", cfg.Guardian.Pushers.Docker.Name),
 		"-e", "GUARDIAN_CLUSTER=docker-main",
 		"-e", fmt.Sprintf("GUARDIAN_MONOFS_ROUTER=%s", router),
 		"-e", fmt.Sprintf("GUARDIAN_MONOFS_TOKEN=%s", token),
 		"-e", "GUARDIAN_MONOFS_USE_EXTERNAL_ADDRESSES=true",
-		image,
 	}
+	// The pusher runs as the image's non-root guardian user, so grant it the
+	// socket's and state directory's owning groups.
+	groupIDs := make([]int, 0, 2)
+	if gid, ok := fileGroupID("/var/run/docker.sock"); ok {
+		groupIDs = append(groupIDs, gid)
+	}
+	if gid, ok := fileGroupID(stateDir); ok {
+		groupIDs = append(groupIDs, gid)
+	}
+	seen := make(map[int]bool, len(groupIDs))
+	for _, gid := range groupIDs {
+		if seen[gid] {
+			continue
+		}
+		seen[gid] = true
+		args = append(args, "--group-add", strconv.Itoa(gid))
+	}
+	args = append(args, image)
 	return bootstrap.Run(ctx, dryRun, "docker", args...)
+}
+
+// dockerPusherStateDir returns the host-visible directory used to stage
+// Docker config and inline files. GUARDIAN_DOCKER_STATE_DIR overrides the
+// default under the current user's home directory.
+func dockerPusherStateDir() (string, error) {
+	if dir := strings.TrimSpace(os.Getenv("GUARDIAN_DOCKER_STATE_DIR")); dir != "" {
+		return dir, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory for docker pusher state: %w", err)
+	}
+	return filepath.Join(home, ".guardian", "pusher-docker"), nil
+}
+
+// fileGroupID returns the group ID that owns path.
+func fileGroupID(path string) (int, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return int(stat.Gid), true
 }
 
 func bootstrapStampURLsSilent(ctx context.Context, cfg *bootstrap.Config, dryRun bool) error {
@@ -1144,6 +1212,7 @@ func applyDevTag(cfg *bootstrap.Config, tag string) {
 	s.Search = strings.Replace(s.Search, ":latest", suffix, 1)
 	s.Registry = strings.Replace(s.Registry, ":latest", suffix, 1)
 	s.LB = strings.Replace(s.LB, ":latest", suffix, 1)
+	s.LogQuery = strings.Replace(s.LogQuery, ":latest", suffix, 1)
 	g := &cfg.Guardian.Images
 	g.Guardiand = strings.Replace(g.Guardiand, ":latest", suffix, 1)
 	g.PusherK8s = strings.Replace(g.PusherK8s, ":latest", suffix, 1)

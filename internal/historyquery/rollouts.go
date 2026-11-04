@@ -3,9 +3,7 @@ package historyquery
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
 	"path"
 	"reflect"
 	"sort"
@@ -282,7 +280,7 @@ func listArchivePartitionEntries(ctx context.Context, store guardianapi.ReadStor
 		for {
 			page, err := paged.ListDirPage(ctx, logicalDir, guardianapi.DirListOptions{Offset: offset, Limit: archiveScanPageSize})
 			if err != nil {
-				if errors.Is(err, os.ErrNotExist) {
+				if isArchiveNotFound(err) {
 					return nil, nil
 				}
 				return nil, err
@@ -296,7 +294,7 @@ func listArchivePartitionEntries(ctx context.Context, store guardianapi.ReadStor
 	}
 	entries, err := store.ListDir(ctx, logicalDir)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if isArchiveNotFound(err) {
 			return nil, nil
 		}
 		return nil, err

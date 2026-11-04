@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	historydomain "github.com/radryc/guardian/internal/domain/history"
 	"github.com/radryc/guardian/internal/paths"
 	"github.com/radryc/guardian/pkg/guardianapi"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const DefaultDeploymentLimit = 10
@@ -70,7 +73,7 @@ func LoadDeploymentRecords(ctx context.Context, store guardianapi.ReadStore, par
 	if err == nil {
 		return filterAndLimitRecords(records, filter), nil
 	}
-	if !errors.Is(err, os.ErrNotExist) {
+	if !isArchiveNotFound(err) {
 		return nil, err
 	}
 	records, err = loadDeploymentRecordsFromArchiveScan(ctx, store, partitionName, intentName)
@@ -87,7 +90,7 @@ func LoadDeploymentRecords(ctx context.Context, store guardianapi.ReadStore, par
 func loadLatestFromReleaseLog(ctx context.Context, store guardianapi.ReadStore, partitionName, intentName string) ([]historydomain.DeploymentRecord, bool) {
 	rec, err := LoadLatestRelease(ctx, store, partitionName, intentName)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) || IsReleaseNotFound(err) {
+		if isArchiveNotFound(err) || IsReleaseNotFound(err) {
 			return nil, false
 		}
 		// Surface unexpected errors: caller will surface to UI.
@@ -100,7 +103,7 @@ func PrepareArchiveIndexContent(ctx context.Context, store guardianapi.ReadStore
 	records, err := loadDeploymentRecordsFromIndex(ctx, store, record.Partition, record.Intent)
 	switch {
 	case err == nil:
-	case errors.Is(err, os.ErrNotExist):
+	case isArchiveNotFound(err):
 		records, err = loadDeploymentRecordsFromArchiveScan(ctx, store, record.Partition, record.Intent)
 		if err != nil {
 			return nil, err
@@ -160,7 +163,7 @@ func listArchiveEntries(ctx context.Context, store guardianapi.ReadStore, partit
 	}
 	entries, err := store.ListDir(ctx, logicalDir)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if isArchiveNotFound(err) {
 			return nil, nil
 		}
 		return nil, err
@@ -177,7 +180,7 @@ func listArchiveEntriesPaged(ctx context.Context, store guardianapi.PagedDirList
 			Limit:  archiveScanPageSize,
 		})
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
+			if isArchiveNotFound(err) {
 				return nil, nil
 			}
 			return nil, err
@@ -240,4 +243,19 @@ func loadDeploymentRecord(ctx context.Context, store guardianapi.ReadStore, part
 		return record, err
 	}
 	return record, nil
+}
+
+// isArchiveNotFound treats a missing archive/index as an empty history rather
+// than a hard error. During mixed-version rollouts a MonoFS node may wrap the
+// KVS NotFound in codes.Internal, so keep the message check as a narrow
+// compatibility fallback for that exact KVS stat path.
+func isArchiveNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, os.ErrNotExist) || status.Code(err) == codes.NotFound {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "kvs stat") && strings.Contains(msg, "file does not exist")
 }

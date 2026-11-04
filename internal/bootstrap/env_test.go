@@ -177,3 +177,33 @@ func TestRenderGuardianRepoImportWiring(t *testing.T) {
 		}
 	}
 }
+
+func TestNodeTemplateIncludesLogQuerySidecar(t *testing.T) {
+	cfg := DefaultConfig()
+	env, err := ComputeEnv(&cfg)
+	if err != nil {
+		t.Fatalf("ComputeEnv: %v", err)
+	}
+	if env["MONOFS_LOGQUERY_IMAGE"] != "monofs-logquery:latest" {
+		t.Fatalf("MONOFS_LOGQUERY_IMAGE = %q", env["MONOFS_LOGQUERY_IMAGE"])
+	}
+	storageDir, _ := TemplateDirs()
+	rendered, err := RenderTemplate(
+		filepath.Join(storageDir, "deploy-node.yaml"),
+		env,
+		ComputeNodeEnv(&cfg, "a"),
+	)
+	if err != nil {
+		t.Fatalf("RenderTemplate: %v", err)
+	}
+	for _, want := range []string{
+		"--logquery-sidecar=127.0.0.1:9101",
+		"name: logquery",
+		"image: monofs-logquery:latest",
+		"--duckdb-temp-dir=/tmp/duckdb",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered node manifest is missing %q", want)
+		}
+	}
+}

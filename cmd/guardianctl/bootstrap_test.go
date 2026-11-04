@@ -36,6 +36,31 @@ func TestBootstrapDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestDockerPusherStateDir(t *testing.T) {
+	t.Setenv("GUARDIAN_DOCKER_STATE_DIR", "/tmp/custom-pusher-state")
+	got, err := dockerPusherStateDir()
+	if err != nil {
+		t.Fatalf("dockerPusherStateDir failed: %v", err)
+	}
+	if got != "/tmp/custom-pusher-state" {
+		t.Errorf("expected env override, got %s", got)
+	}
+
+	t.Setenv("GUARDIAN_DOCKER_STATE_DIR", "")
+	got, err = dockerPusherStateDir()
+	if err != nil {
+		t.Fatalf("dockerPusherStateDir failed: %v", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, ".guardian", "pusher-docker")
+	if got != want {
+		t.Errorf("expected %s, got %s", want, got)
+	}
+}
+
 func TestBootstrapEnvComputation(t *testing.T) {
 	cfg := bootstrap.DefaultConfig()
 

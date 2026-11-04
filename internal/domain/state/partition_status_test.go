@@ -1,6 +1,10 @@
 package state
 
-import "testing"
+import (
+	"testing"
+
+	taskdomain "github.com/radryc/guardian/internal/domain/task"
+)
 
 func TestNormalizePartitionRuntimeTreatsDependencyBlocksAsProgressing(t *testing.T) {
 	runtime := &PartitionRuntime{
@@ -51,5 +55,38 @@ func TestNormalizePartitionRuntimeCountsBlockedErrorsAsFailing(t *testing.T) {
 	}
 	if got, want := runtime.PartitionState.DisplayStatus, "Needs action"; got != want {
 		t.Fatalf("display status = %q, want %q", got, want)
+	}
+}
+
+func TestNormalizePartitionRuntimeTreatsUnhealthyDiffingAsFailing(t *testing.T) {
+	runtime := &PartitionRuntime{
+		Partition: "goalert",
+		PartitionState: &PartitionState{
+			Partition:      "goalert",
+			IntentVersions: map[string]string{"k8s": "k8s-v1"},
+		},
+		Intents: map[string]*IntentState{
+			"k8s": {
+				Partition: "goalert",
+				Intent:    "k8s",
+				Status:    StatusDiffing,
+				Health: &taskdomain.HealthObservation{
+					Status:  taskdomain.HealthUnhealthy,
+					Summary: "goalert-db: kubernetes deployment has pods in ErrImagePull",
+				},
+			},
+		},
+	}
+
+	NormalizePartitionRuntime(runtime)
+
+	if got, want := runtime.PartitionState.Status, "Failing"; got != want {
+		t.Fatalf("partition status = %q, want %q", got, want)
+	}
+	if got, want := runtime.PartitionState.DisplayStatus, "Needs action"; got != want {
+		t.Fatalf("display status = %q, want %q", got, want)
+	}
+	if got, want := runtime.PartitionState.Metrics.FailingIntents, 1; got != want {
+		t.Fatalf("failing intents = %d, want %d", got, want)
 	}
 }

@@ -3,6 +3,7 @@ package historyquery
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -117,4 +118,16 @@ func seedJSON(t *testing.T, ctx context.Context, store *memory.Store, logicalPat
 
 func timePointer(v time.Time) *time.Time {
 	return &v
+}
+
+func TestIsArchiveNotFoundRecognizesWrappedKVSNotFound(t *testing.T) {
+	err := fmt.Errorf("rpc error: code = Internal desc = kvs stat " +
+		"/guardian-system/.archive/agent/agent/index.json: " +
+		"rpc error: code = NotFound desc = file does not exist")
+	if !isArchiveNotFound(err) {
+		t.Fatalf("isArchiveNotFound(%v) = false, want true", err)
+	}
+	if isArchiveNotFound(fmt.Errorf("permission denied")) {
+		t.Fatal("isArchiveNotFound(permission denied) = true, want false")
+	}
 }

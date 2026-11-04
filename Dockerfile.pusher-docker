@@ -34,7 +34,8 @@ ARG BUILD_COMMIT=unknown
 ARG BUILD_TIME=unknown
 
 RUN apk add --no-cache ca-certificates docker-cli yq
-RUN addgroup -S guardian && adduser -S -G guardian guardian
+RUN addgroup -S guardian && adduser -S -G guardian guardian && \
+  mkdir -p /var/lib/guardian/pusher-docker && chown -R guardian:guardian /var/lib/guardian
 
 LABEL org.opencontainers.image.version=${BUILD_VERSION}
 LABEL org.opencontainers.image.revision=${BUILD_COMMIT}

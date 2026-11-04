@@ -1821,3 +1821,45 @@ func TestDeriveIntentPresentationMarksStaleObservedSnapshot(t *testing.T) {
 		t.Fatalf("summary = %q, want stale snapshot", summary)
 	}
 }
+
+func TestDeriveIntentPresentationUsesObservedHealthWhileDiffing(t *testing.T) {
+	t.Parallel()
+
+	status, displayStatus, health, summary := deriveIntentPresentation(&statedomain.IntentState{
+		Status: statedomain.StatusDiffing,
+		Health: &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: "goalert-db: pods in ErrImagePull"},
+	}, intentTaskRuntime{})
+
+	if status != string(statedomain.StatusDiffing) {
+		t.Fatalf("status = %q, want %q", status, statedomain.StatusDiffing)
+	}
+	if displayStatus != "Unhealthy" || health != "failing" {
+		t.Fatalf("presentation = (%q, %q), want (Unhealthy, failing)", displayStatus, health)
+	}
+	if summary != "goalert-db: pods in ErrImagePull" {
+		t.Fatalf("summary = %q", summary)
+	}
+}
+
+func TestDeriveAssetPresentationUsesAssetObservationWhileDiffing(t *testing.T) {
+	t.Parallel()
+
+	status, displayStatus, health, summary := deriveAssetPresentation(&statedomain.IntentState{
+		Status: statedomain.StatusDiffing,
+		AssetObservations: map[string]*taskdomain.AssetObservation{
+			"goalert-db": {
+				Health: &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: "postgres:17 ImagePullBackOff"},
+			},
+		},
+	}, "goalert-db", intentTaskRuntime{})
+
+	if status != string(statedomain.StatusDiffing) {
+		t.Fatalf("status = %q, want %q", status, statedomain.StatusDiffing)
+	}
+	if displayStatus != "Unhealthy" || health != "failing" {
+		t.Fatalf("presentation = (%q, %q), want (Unhealthy, failing)", displayStatus, health)
+	}
+	if summary != "postgres:17 ImagePullBackOff" {
+		t.Fatalf("summary = %q", summary)
+	}
+}
