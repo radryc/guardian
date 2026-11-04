@@ -15,13 +15,13 @@ func TestBuildPartitionAssignments(t *testing.T) {
 	store := memory.New()
 	reg := registry.New(store)
 	if err := reg.PutPusher(context.Background(), &registry.Pusher{
-		Name: "aws-755370915520", Account: "755370915520", Region: "us-east-1",
+		Name: "aws-444455556666", Account: "444455556666", Region: "us-east-1",
 		ObservedAPIURL: "http://127.0.0.1:19092",
 	}); err != nil {
 		t.Fatalf("PutPusher: %v", err)
 	}
 	if err := reg.PutRepo(context.Background(), &registry.Repo{
-		Name: "strata-demo-observe", Pusher: "aws-755370915520",
+		Name: "strata-demo-observe", Pusher: "aws-444455556666",
 		Source: "https://github.com/example/strata-demo-observe.git",
 		Branch: "main", LastSyncCommit: "f87af8f", LastSyncedAt: time.Now(),
 		Bindings: []registry.RepoBinding{{Partition: "demo-observe", Path: "/partitions/demo-observe/payloads/aws", Selector: "StrataDemoObserve"}},
@@ -33,7 +33,7 @@ func TestBuildPartitionAssignments(t *testing.T) {
 		Name: "strata-demo-observe",
 		Manifest: intent.Intent{
 			Metadata: intent.Metadata{Name: "strata-demo-observe"},
-			Spec:     intent.IntentSpec{TargetPusher: "aws-755370915520", Target: targetdomain.Placement{Account: "755370915520", Region: "us-east-1"}},
+			Spec:     intent.IntentSpec{TargetPusher: "aws-444455556666", Target: targetdomain.Placement{Account: "444455556666", Region: "us-east-1"}},
 		},
 	}}
 	got := srv.buildPartitionAssignments(context.Background(), "demo-observe", intents)

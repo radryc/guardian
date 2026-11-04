@@ -23,7 +23,7 @@ func main() {
 	fs := flag.NewFlagSet(mode, flag.ExitOnError)
 	router := fs.String("monofs-router", "127.0.0.1:9090", "MonoFS router gRPC address")
 	token := fs.String("monofs-token", "", "MonoFS guardian token")
-	pusher := fs.String("pusher", "", "AWS pusher name (e.g. aws-975049940689)")
+	pusher := fs.String("pusher", "", "AWS pusher name (e.g. aws-111111111111)")
 	account := fs.String("account", "", "AWS account to scan")
 	region := fs.String("region", "us-east-1", "AWS region to scan")
 	scanID := fs.String("scan-id", "", "scan id (read/write)")

@@ -16,8 +16,8 @@ import (
 func TestM2MFederationPartitionsPaginatesAndDerivesAWSPlacement(t *testing.T) {
 	ctx := context.Background()
 	files := memory.New()
-	seedFederationPartition(t, ctx, files, "div-a-orders", "780603797542", "us-east-1", "aws-div-780603797542")
-	seedFederationPartition(t, ctx, files, "div-b-inventory", "755370915520", "us-west-2", "aws-div-755370915520")
+	seedFederationPartition(t, ctx, files, "div-a-orders", "222222222222", "us-east-1", "aws-div-222222222222")
+	seedFederationPartition(t, ctx, files, "div-b-inventory", "444455556666", "us-west-2", "aws-div-444455556666")
 
 	srv, err := New(Options{Store: files, PrincipalID: "test-ui"})
 	if err != nil {
@@ -34,7 +34,7 @@ func TestM2MFederationPartitionsPaginatesAndDerivesAWSPlacement(t *testing.T) {
 	if !first.HasMore || first.NextCursor != "div-a-orders" {
 		t.Fatalf("first page cursor = %#v", first)
 	}
-	if first.Partitions[0].Account != "780603797542" ||
+	if first.Partitions[0].Account != "222222222222" ||
 		first.Partitions[0].Region != "us-east-1" ||
 		first.Partitions[0].Provider != "aws" {
 		t.Fatalf("first placement = %#v", first.Partitions[0])
@@ -45,7 +45,7 @@ func TestM2MFederationPartitionsPaginatesAndDerivesAWSPlacement(t *testing.T) {
 	if len(second.Partitions) != 1 || second.Partitions[0].Name != "div-b-inventory" || second.HasMore {
 		t.Fatalf("second page = %#v", second)
 	}
-	if second.Partitions[0].Account != "755370915520" || second.Partitions[0].Region != "us-west-2" {
+	if second.Partitions[0].Account != "444455556666" || second.Partitions[0].Region != "us-west-2" {
 		t.Fatalf("second placement = %#v", second.Partitions[0])
 	}
 }

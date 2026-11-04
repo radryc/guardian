@@ -31,8 +31,8 @@ func compiledCDKIntent(assets []assetdomain.Spec) *planner.CompiledPartition {
 					Spec: intentdomain.IntentSpec{
 						IntentType:     intentdomain.TypeStandard,
 						Implementation: intentdomain.ImplementationCDK,
-						TargetPusher:   "aws-975049940689",
-						Target:         targetdomain.Placement{Account: "975049940689", Region: "us-east-1"},
+						TargetPusher:   "aws-111111111111",
+						Target:         targetdomain.Placement{Account: "111111111111", Region: "us-east-1"},
 						Assets:         assets,
 					},
 				},

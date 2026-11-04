@@ -35,7 +35,7 @@ func demoIntent() Input {
 	return Input{
 		Partition: "aws-demo",
 		Intent:    "demo-stack",
-		Account:   "975049940689",
+		Account:   "111111111111",
 		Region:    "us-east-1",
 		SourceDir: "/partitions/aws-demo/payloads/aws-generated/demo-stack",
 		Order:     []string{"demo-api-key", "nginx-page", "nginx-data", "demo-bucket", "nginx", "nginx-edge", "tracegen", "tracegen-otel"},
@@ -45,7 +45,7 @@ func demoIntent() Input {
 			{Type: "Volume", Name: "nginx-data", Properties: map[string]any{"accessMode": "ReadWriteMany", "size": "1Gi"}},
 			{Type: "ObjectStore", Name: "demo-bucket", Properties: map[string]any{"engine": "s3", "region": "us-east-1", "versioning": true}},
 			{Type: "Compute", Name: "nginx", DependsOn: []string{"nginx-data", "nginx-page", "demo-api-key"}, Properties: map[string]any{
-				"image":        "975049940689.dkr.ecr.us-east-1.amazonaws.com/demo/nginx:latest",
+				"image":        "111111111111.dkr.ecr.us-east-1.amazonaws.com/demo/nginx:latest",
 				"ports":        []any{map[string]any{"name": "http", "containerPort": float64(80), "protocol": "TCP", "servicePort": float64(80)}},
 				"configMounts": []any{map[string]any{"config": "nginx-page", "path": "/usr/share/nginx/html", "readOnly": true}},
 				"volumeMounts": []any{map[string]any{"path": "/var/cache/nginx", "volume": "nginx-data"}},
@@ -165,10 +165,10 @@ func TestGenerateDemoStack(t *testing.T) {
 		t.Fatalf("manifest missing generatedAssets: %s", generatedNames)
 	}
 	component := string(result.Files["lib/stack.ts"])
-	if !strings.Contains(component, "\"serviceName\": \"aws-svc-975049940689-us-east-1-aws-demo-demo-stack-nginx\"") {
+	if !strings.Contains(component, "\"serviceName\": \"aws-svc-111111111111-us-east-1-aws-demo-demo-stack-nginx\"") {
 		t.Errorf("compute generated names missing from stack.ts:\n%s", component)
 	}
-	if !strings.Contains(component, "\"/guardian/aws/ssm/975049940689/us/east/1/aws/demo/demo/stack/nginx/page\"") {
+	if !strings.Contains(component, "\"/guardian/aws/ssm/111111111111/us/east/1/aws/demo/demo/stack/nginx/page\"") {
 		t.Errorf("config SSM parameter name missing from stack.ts:\n%s", component)
 	}
 	dumpGenerated(t, result)
@@ -187,7 +187,7 @@ func TestGenerateComputeClusterNameIsScopedToIntent(t *testing.T) {
 		return Input{
 			Partition: partition,
 			Intent:    intent,
-			Account:   "780603797542",
+			Account:   "222222222222",
 			Region:    "us-east-1",
 			Order:     computes,
 			Assets:    assets,
@@ -208,13 +208,13 @@ func TestGenerateComputeClusterNameIsScopedToIntent(t *testing.T) {
 	// ECS cluster names are account-wide, so two stacks in one account must
 	// not both use the bare account id (CloudFormation reports
 	// "<account> already exists in stack ...").
-	if strings.Contains(firstStack, `"cluster": "780603797542"`) {
+	if strings.Contains(firstStack, `"cluster": "222222222222"`) {
 		t.Fatalf("cluster must not be the bare account id:\n%s", firstStack)
 	}
-	if !strings.Contains(firstStack, "aws-ecs-780603797542-us-east-1-demo-deploy-web") {
+	if !strings.Contains(firstStack, "aws-ecs-222222222222-us-east-1-demo-deploy-web") {
 		t.Fatalf("demo-deploy cluster name missing:\n%s", firstStack)
 	}
-	if !strings.Contains(secondStack, "aws-ecs-780603797542-us-east-1-demo-build-web") {
+	if !strings.Contains(secondStack, "aws-ecs-222222222222-us-east-1-demo-build-web") {
 		t.Fatalf("demo-build cluster name missing:\n%s", secondStack)
 	}
 
@@ -224,7 +224,7 @@ func TestGenerateComputeClusterNameIsScopedToIntent(t *testing.T) {
 		t.Fatalf("Generate(shared cluster): %v", err)
 	}
 	sharedStack := string(shared.Files["lib/stack.ts"])
-	if got := strings.Count(sharedStack, `"cluster": "aws-ecs-780603797542-us-east-1-demo-deploy-web"`); got != 2 {
+	if got := strings.Count(sharedStack, `"cluster": "aws-ecs-222222222222-us-east-1-demo-deploy-web"`); got != 2 {
 		t.Fatalf("cluster name occurrences = %d, want 2 (one per compute):\n%s", got, sharedStack)
 	}
 }
@@ -236,7 +236,7 @@ func TestGenerateLoadBalancerNamesStayDistinct(t *testing.T) {
 		return Input{
 			Partition: partition,
 			Intent:    "web",
-			Account:   "780603797542",
+			Account:   "222222222222",
 			Region:    "us-east-1",
 			Order:     []string{"edge"},
 			Assets: []assetdomain.Spec{
@@ -272,7 +272,7 @@ func TestGenerateHoistsNetworkBeforeDependents(t *testing.T) {
 	input := Input{
 		Partition: "demo-deploy",
 		Intent:    "web",
-		Account:   "807359647816",
+		Account:   "555555555555",
 		Region:    "us-east-1",
 		Order:     []string{"data", "main", "api"},
 		Assets: []assetdomain.Spec{
@@ -547,10 +547,10 @@ func TestOutputLogicalID(t *testing.T) {
 }
 
 func TestResourceNameMatchesDriverNaming(t *testing.T) {
-	if got, want := ssmParameterName("975049940689", "us-east-1", "aws-demo", "demo-stack", "nginx-page"), "/guardian/aws/ssm/975049940689/us/east/1/aws/demo/demo/stack/nginx/page"; got != want {
+	if got, want := ssmParameterName("111111111111", "us-east-1", "aws-demo", "demo-stack", "nginx-page"), "/guardian/aws/ssm/111111111111/us/east/1/aws/demo/demo/stack/nginx/page"; got != want {
 		t.Fatalf("ssm name = %q, want %q", got, want)
 	}
-	if got, want := s3BucketName("975049940689", "us-east-1", "aws-demo", "demo-stack", "demo-bucket"), "guardian-975049940689-us-east-1-aws-demo-demo-stack-demo-bucket"; got != want {
+	if got, want := s3BucketName("111111111111", "us-east-1", "aws-demo", "demo-stack", "demo-bucket"), "guardian-111111111111-us-east-1-aws-demo-demo-stack-demo-bucket"; got != want {
 		t.Fatalf("bucket name = %q, want %q", got, want)
 	}
 }

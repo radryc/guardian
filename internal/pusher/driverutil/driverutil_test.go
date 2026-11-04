@@ -31,7 +31,7 @@ func TestLabelsOmitsEmptyCluster(t *testing.T) {
 		PartitionName: "demo-deploy",
 		IntentName:    "web",
 		Asset:         taskdomain.AbstractAsset{Name: "api", Type: "Compute"},
-		Target:        targetdomain.Placement{Account: "807359647816", Region: "us-east-1"},
+		Target:        targetdomain.Placement{Account: "555555555555", Region: "us-east-1"},
 	}
 	labels := Labels("aws", in, "hash")
 	if _, ok := labels["guardian.cluster"]; ok {

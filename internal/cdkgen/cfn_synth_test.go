@@ -62,7 +62,7 @@ func TestCloudFormationFromTemplates(t *testing.T) {
 				assertLogicalIDPrefix(t, template, "TgNginxEdge0")
 				assertLogicalIDPrefix(t, template, "DefaultVpc")
 				assertLogicalIDPrefix(t, template, "BucketDemoBucket")
-				assertLogicalIDPrefix(t, template, "ClusterAwsEcs975049940689")
+				assertLogicalIDPrefix(t, template, "ClusterAwsEcs111111111111")
 				// Private ECR images need explicit pull permissions on the
 				// task execution role (ContainerImage.fromRegistry cannot
 				// infer them).
@@ -166,7 +166,7 @@ func TestCloudFormationFromTemplates(t *testing.T) {
 			input: Input{
 				Partition: "demo-deploy",
 				Intent:    "web",
-				Account:   "807359647816",
+				Account:   "555555555555",
 				Region:    "us-east-1",
 				// The planner's topological sort only sees explicit dependsOn
 				// edges, so the Volume can precede the Network asset even

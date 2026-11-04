@@ -201,7 +201,7 @@ func TestGeneratedStackTemplateChangeFlipsHash(t *testing.T) {
 // constructs reference the same physical names the native drivers create
 // (config SSM parameters, ECS services, EFS filesystems, log groups, buckets).
 func TestGeneratedPhysicalNameParity(t *testing.T) {
-	target := targetdomain.Placement{Account: "975049940689", Region: "us-east-1"}
+	target := targetdomain.Placement{Account: "111111111111", Region: "us-east-1"}
 	computeIn := registry.AssetInput{
 		PartitionName: "aws-demo",
 		IntentName:    "demo-stack",

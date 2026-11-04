@@ -29,7 +29,8 @@ func main() {
 
 	assume := os.Getenv("ASSUME_ROLE_ARN")
 	if assume == "" {
-		assume = "arn:aws:iam::975049940689:role/GuardianCdkDeployRole"
+		fmt.Println("ASSUME_ROLE_ARN is required")
+		os.Exit(1)
 	}
 	fmt.Println("--- assume role:", assume, "---")
 	provider := stscreds.NewAssumeRoleProvider(sts.NewFromConfig(cfg), assume, func(o *stscreds.AssumeRoleOptions) {

@@ -64,7 +64,7 @@ func Render(info Info) ([]byte, error) {
 	metricExplorer := fmt.Sprintf(`sum($awsMetric{source="%s",%s})`, escape(source), awsSelector)
 	invocationsByFunction := fmt.Sprintf(`sum by (FunctionName) (Invocations{source="%s",%s})`, escape(source), awsSelector)
 	// CloudWatch records returned by the pusher carry the account id in the log
-	// group label ("780603797542:guardian/.../app"). Match with a prefix regex
+	// group label ("222222222222:guardian/.../app"). Match with a prefix regex
 	// so the same panel works with and without the account prefix.
 	logGroupPattern := ".*" + regexp.QuoteMeta(logGroup)
 	awsLogVolume := fmt.Sprintf(`sum(count_over_time({source="%s", aws_log_group=~"%s"}[$__rate_interval]))`, escape(source), escape(logGroupPattern))
