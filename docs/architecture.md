@@ -921,6 +921,12 @@ currently references files outside this repository (see
 - `guardiand` exposes Prometheus metrics on the UI server at `/metrics`.
 - Runtime metrics include partition/intent status gauges, queue/task counters,
   asset health/readiness observations, and dispatcher write counters.
+- Pusher runtime metrics cover task counters, task duration histograms, in-flight
+  tasks (UpDownCounter), queue depth, claim retry backlog, scanned tasks
+  (ObservableCounter), and worker concurrency (ObservableGauge).
+- `GUARDIAN_OTEL_EXPONENTIAL_HISTOGRAMS` selects histogram instruments exported
+  as OTLP exponential histograms (comma-separated; defaults to
+  `guardian.pusher.task.duration.seconds`).
 - Probe results are exported as OTLP metrics/logs/traces and stored as latest
   snapshots in `/.registry/probes/`.
 - AWS read API provides CloudWatch/X-Ray/PromQL access to Doctor.

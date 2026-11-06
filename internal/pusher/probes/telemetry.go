@@ -57,6 +57,7 @@ func (r *Runner) emitTelemetry(ctx context.Context, results []Result, previous m
 				stateAge = age
 			}
 		}
+		runs, failures, durationBuckets, durationCount, durationSum := r.observeProbeRun(result)
 		metrics = append(metrics, map[string]any{
 			"resource": resource,
 			"scopeMetrics": []any{map[string]any{
@@ -71,6 +72,9 @@ func (r *Runner) emitTelemetry(ctx context.Context, results []Result, previous m
 						attrString("guardian.probe.target", metricTarget(result.Target)),
 						attrString("guardian.probe.path", result.Path),
 					)),
+					metricSum("guardian.probe.runs", "1", float64(runs), now, true, attrs),
+					metricSum("guardian.probe.failures", "1", float64(failures), now, true, attrs),
+					metricHistogram("guardian.probe.duration.histogram.seconds", "s", durationBuckets, probeDurationBounds, durationCount, durationSum, now, attrs),
 				},
 			}},
 		})
@@ -237,6 +241,128 @@ func metricGauge(name, unit string, value float64, at time.Time, attrs []any) ma
 			}},
 		},
 	}
+}
+
+// metricSum emits an OTLP cumulative Sum. isMonotonic distinguishes Counter
+// from UpDownCounter.
+func metricSum(name, unit string, value float64, at time.Time, isMonotonic bool, attrs []any) map[string]any {
+	return map[string]any{
+		"name": name,
+		"unit": unit,
+		"sum": map[string]any{
+			"aggregationTemporality": 2, // cumulative
+			"isMonotonic":            isMonotonic,
+			"dataPoints": []any{map[string]any{
+				"attributes":   attrs,
+				"timeUnixNano": strconv.FormatInt(at.UnixNano(), 10),
+				"asDouble":     value,
+			}},
+		},
+	}
+}
+
+// metricHistogram emits a cumulative explicit-bucket Histogram. bucketCounts
+// are per-bucket (not cumulative), matching OTLP.
+func metricHistogram(name, unit string, bucketCounts []uint64, bounds []float64, count uint64, sum float64, at time.Time, attrs []any) map[string]any {
+	counts := make([]string, len(bucketCounts))
+	for i, value := range bucketCounts {
+		counts[i] = strconv.FormatUint(value, 10)
+	}
+	return map[string]any{
+		"name": name,
+		"unit": unit,
+		"histogram": map[string]any{
+			"aggregationTemporality": 2, // cumulative
+			"dataPoints": []any{map[string]any{
+				"attributes":     attrs,
+				"timeUnixNano":   strconv.FormatInt(at.UnixNano(), 10),
+				"count":          strconv.FormatUint(count, 10),
+				"sum":            sum,
+				"bucketCounts":   counts,
+				"explicitBounds": bounds,
+			}},
+		},
+	}
+}
+
+// metricExponentialHistogram emits an OTLP exponential histogram. It is used
+// by tests and future probe instrumentation.
+func metricExponentialHistogram(name, unit string, scale int32, zeroCount uint64, positiveOffset int32, positiveCounts []uint64, count uint64, sum float64, at time.Time, attrs []any) map[string]any {
+	counts := make([]string, len(positiveCounts))
+	for i, value := range positiveCounts {
+		counts[i] = strconv.FormatUint(value, 10)
+	}
+	return map[string]any{
+		"name": name,
+		"unit": unit,
+		"exponentialHistogram": map[string]any{
+			"aggregationTemporality": 2,
+			"dataPoints": []any{map[string]any{
+				"attributes":   attrs,
+				"timeUnixNano": strconv.FormatInt(at.UnixNano(), 10),
+				"count":        strconv.FormatUint(count, 10),
+				"sum":          sum,
+				"scale":        scale,
+				"zeroCount":    strconv.FormatUint(zeroCount, 10),
+				"positive": map[string]any{
+					"offset":       positiveOffset,
+					"bucketCounts": counts,
+				},
+			}},
+		},
+	}
+}
+
+var probeDurationBounds = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
+
+// observeProbeRun updates process-lifetime cumulative run/failure counts and a
+// cumulative duration histogram for one probe. OTLP cumulative counters and
+// histograms must carry totals since process start, not per-run deltas.
+func (r *Runner) observeProbeRun(result Result) (runs, failures uint64, buckets []uint64, count uint64, sum float64) {
+	if r.runCounts == nil {
+		r.runCounts = map[string]uint64{}
+	}
+	if r.failureCounts == nil {
+		r.failureCounts = map[string]uint64{}
+	}
+	if r.durationBuckets == nil {
+		r.durationBuckets = map[string][]uint64{}
+	}
+	if r.durationCounts == nil {
+		r.durationCounts = map[string]uint64{}
+	}
+	if r.durationSums == nil {
+		r.durationSums = map[string]float64{}
+	}
+
+	r.runCounts[result.ProbeID]++
+	runs = r.runCounts[result.ProbeID]
+	if !result.Success {
+		r.failureCounts[result.ProbeID]++
+	}
+	failures = r.failureCounts[result.ProbeID]
+
+	values := r.durationBuckets[result.ProbeID]
+	if values == nil {
+		values = make([]uint64, len(probeDurationBounds)+1)
+	}
+	seconds := float64(result.DurationMs) / 1000
+	bucket := len(probeDurationBounds)
+	for i, bound := range probeDurationBounds {
+		if seconds <= bound {
+			bucket = i
+			break
+		}
+	}
+	values[bucket]++
+	r.durationBuckets[result.ProbeID] = values
+	r.durationCounts[result.ProbeID]++
+	r.durationSums[result.ProbeID] += seconds
+
+	buckets = append([]uint64(nil), values...)
+	count = r.durationCounts[result.ProbeID]
+	sum = r.durationSums[result.ProbeID]
+	return runs, failures, buckets, count, sum
 }
 
 func attrString(key, value string) map[string]any {

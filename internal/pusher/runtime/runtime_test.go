@@ -19,6 +19,8 @@ import (
 	"github.com/radryc/guardian/pkg/guardianapi"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -935,4 +937,42 @@ func (s *readCountingStore) ReadFile(ctx context.Context, logicalPath string) ([
 		s.readCount++
 	}
 	return s.Store.ReadFile(ctx, logicalPath)
+}
+
+func TestRuntimeRegistersObservableInstruments(t *testing.T) {
+	previous := otel.GetMeterProvider()
+	defer otel.SetMeterProvider(previous)
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	otel.SetMeterProvider(provider)
+
+	r := &Runtime{WorkerID: "worker-metrics", MaxConcurrency: 3}
+	r.observedQueueDepth.Store(4)
+	r.observedRetry.Store(2)
+	r.observedDiscovered.Store(11)
+	r.registerObservableMetrics()
+	defer r.shutdownObservableMetrics()
+
+	var collected metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &collected); err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	names := map[string]bool{}
+	for _, scope := range collected.ScopeMetrics {
+		for _, metric := range scope.Metrics {
+			names[metric.Name] = true
+		}
+	}
+	for _, want := range []string{
+		"guardian.pusher.queue.depth",
+		"guardian.pusher.claim.retry_backlog",
+		"guardian.pusher.tasks.scanned",
+		"guardian.pusher.worker.concurrency",
+		"guardian.pusher.active_claims",
+	} {
+		if !names[want] {
+			t.Fatalf("missing observable metric %q in %#v", want, names)
+		}
+	}
 }

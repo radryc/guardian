@@ -78,10 +78,14 @@ func Setup(ctx context.Context, cfg Config) (*Handle, error) {
 		sdktrace.WithBatcher(traceExporter),
 		sdktrace.WithResource(res),
 	)
-	metricProvider := sdkmetric.NewMeterProvider(
+	metricProviderOpts := []sdkmetric.Option{
 		sdkmetric.WithResource(res),
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExporter, sdkmetric.WithInterval(cfg.MetricInterval))),
-	)
+	}
+	if views := metricViews(cfg.ExponentialHistogramInstruments); len(views) > 0 {
+		metricProviderOpts = append(metricProviderOpts, sdkmetric.WithView(views...))
+	}
+	metricProvider := sdkmetric.NewMeterProvider(metricProviderOpts...)
 	logProvider := sdklog.NewLoggerProvider(
 		sdklog.WithResource(res),
 		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExporter)),
@@ -104,6 +108,25 @@ func Setup(ctx context.Context, cfg Config) (*Handle, error) {
 		metrics: metricProvider,
 		logs:    logProvider,
 	}, nil
+}
+
+// metricViews selects exponential-histogram aggregation for the configured
+// histogram instrument names.
+func metricViews(names []string) []sdkmetric.View {
+	views := make([]sdkmetric.View, 0, len(names))
+	for _, name := range names {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		views = append(views, sdkmetric.NewView(
+			sdkmetric.Instrument{Name: strings.TrimSpace(name)},
+			sdkmetric.Stream{Aggregation: sdkmetric.AggregationBase2ExponentialHistogram{
+				MaxSize:  160,
+				MaxScale: 20,
+			}},
+		))
+	}
+	return views
 }
 
 func (h *Handle) Enabled() bool {
