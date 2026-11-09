@@ -288,10 +288,35 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 		return fail(derr)
 	}
 
-	if partitionConfig, parseErr := manifest.ParsePartition(configContent); parseErr == nil {
-		if syncErr := setstore.New(r.store).SyncPartitionConfig(ctx, partitionName, partitionConfig.Spec.Sets, partitionConfig.Spec.PrimarySet); syncErr != nil {
-			log.Printf("reconciler: partition=%s virtual set sync error: %v", partitionName, syncErr)
+	partitionConfig, parseErr := manifest.ParsePartition(configContent)
+	if parseErr != nil {
+		return fail(parseErr)
+	}
+	if !partitionConfig.IsEnabled() {
+		// Disabled means "ignore this definition". Do not compile, queue or
+		// destroy anything; leave the live assets exactly as they are.
+		partitionState := &statedomain.PartitionState{
+			APIVersion:        "guardian/v1alpha1",
+			Kind:              "PartitionState",
+			Partition:         partitionName,
+			Status:            "Disabled",
+			Summary:           "partition definition is disabled; no reconciliation tasks queued",
+			ConfigVersionID:   configInfo.VersionID,
+			PartitionRevision: "",
+			IntentVersions:    map[string]string{},
+			LastCompiledAt:    time.Now().UTC(),
+			LastReconciledAt:  time.Now().UTC(),
 		}
+		if err := r.dispatcher.WritePartitionState(ctx, partitionState); err != nil {
+			return fail(err)
+		}
+		log.Printf("reconciler: partition=%s is disabled (spec.enabled=false); skipping reconciliation", partitionName)
+		telemetry.EmitInfo(ctx, reconcilerScope, fmt.Sprintf("partition %s is disabled; skipping reconciliation", partitionName))
+		span.SetStatus(codes.Ok, "")
+		return nil
+	}
+	if syncErr := setstore.New(r.store).SyncPartitionConfig(ctx, partitionName, partitionConfig.Spec.Sets, partitionConfig.Spec.PrimarySet); syncErr != nil {
+		log.Printf("reconciler: partition=%s virtual set sync error: %v", partitionName, syncErr)
 	}
 
 	intentEntries, err := r.store.ListDir(ctx, paths.PartitionIntentsDir(partitionName))
@@ -368,10 +393,7 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 		return fail(err)
 	}
 
-	partitionSpec, err := manifest.ParsePartition(configContent)
-	if err != nil {
-		return fail(err)
-	}
+	partitionSpec := partitionConfig
 
 	// Manual-mode partitions are inventory-only: compile and write state
 	// but do not queue any reconciliation tasks unless explicitly forced.
@@ -926,6 +948,10 @@ func (r *Reconciler) syncPartitionSchedules(ctx context.Context) error {
 		if parseErr != nil {
 			log.Printf("reconciler: discovery: partition=%s config parse error: %v", name, parseErr)
 			r.schedulePartitionJob(name, r.intervalStr, 0)
+			continue
+		}
+		if !partition.IsEnabled() {
+			r.removePartitionJob(name)
 			continue
 		}
 		if err := setstore.New(r.store).SyncPartitionConfig(ctx, name, partition.Spec.Sets, partition.Spec.PrimarySet); err != nil {

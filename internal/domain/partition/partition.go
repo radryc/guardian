@@ -15,6 +15,10 @@ type Metadata struct {
 }
 
 type Spec struct {
+	// Enabled controls whether Guardian acts on this partition definition.
+	// Nil means enabled (backwards compatible). A disabled partition is
+	// inventoried but never reconciled; live assets are left untouched.
+	Enabled        *bool              `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	DeletionPolicy string             `yaml:"deletionPolicy" json:"deletionPolicy"`
 	Reconciliation ReconciliationSpec `yaml:"reconciliation" json:"reconciliation"`
 	Defaults       PartitionDefaults  `yaml:"defaults,omitempty" json:"defaults,omitempty"`
@@ -26,6 +30,15 @@ type Spec struct {
 	// PrimarySet is the optional primary set for this partition. It is added to
 	// Sets automatically when set.
 	PrimarySet string `yaml:"primarySet,omitempty" json:"primarySet,omitempty"`
+}
+
+// IsEnabled reports whether Guardian should act on this partition. The zero
+// value is enabled so existing partitions keep their behavior.
+func (p *Partition) IsEnabled() bool {
+	if p == nil || p.Spec.Enabled == nil {
+		return true
+	}
+	return *p.Spec.Enabled
 }
 
 type ReconciliationSpec struct {

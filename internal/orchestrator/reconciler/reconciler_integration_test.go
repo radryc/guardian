@@ -21,6 +21,57 @@ import (
 	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
+func TestDisabledPartitionIsNotReconciled(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	disp := dispatcher.NewDispatcher(store, "test")
+	recon := reconciler.NewReconciler(store, disp, time.Minute)
+
+	seedRaw(t, ctx, store, paths.PartitionConfig("disabled-demo"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Partition
+metadata:
+  name: disabled-demo
+spec:
+  enabled: false
+  deletionPolicy: orphan
+  reconciliation:
+    mode: auto
+    interval: 30s
+`))
+	seedRaw(t, ctx, store, paths.IntentManifest("disabled-demo", "worker"), []byte(`
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: worker
+spec:
+  intentType: standard
+  targetPusher: local
+  target:
+    cluster: local
+  locked: false
+  assets:
+    - type: Compute
+      name: worker
+      properties:
+        image: worker:v1
+`))
+
+	if err := recon.ReconcilePartition(ctx, "disabled-demo", true); err != nil {
+		t.Fatalf("ReconcilePartition() error = %v", err)
+	}
+	partitionState, err := common.LoadPartitionState(ctx, store, "disabled-demo")
+	if err != nil {
+		t.Fatalf("LoadPartitionState() error = %v", err)
+	}
+	if partitionState.Status != "Disabled" {
+		t.Fatalf("partition status = %q, want Disabled", partitionState.Status)
+	}
+	if _, err := common.LoadIntentState(ctx, store, "disabled-demo", "worker"); !os.IsNotExist(err) {
+		t.Fatalf("disabled partition created intent state: %v", err)
+	}
+}
+
 func TestEndToEndReconcileFlow(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
