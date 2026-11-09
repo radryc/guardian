@@ -57,6 +57,7 @@ type routerClient interface {
 	DeleteGuardianPaths(ctx context.Context, in *pb.DeleteGuardianPathsRequest, opts ...grpc.CallOption) (*pb.DeleteGuardianPathsResponse, error)
 	ListGuardianVersions(ctx context.Context, in *pb.ListGuardianVersionsRequest, opts ...grpc.CallOption) (*pb.ListGuardianVersionsResponse, error)
 	GetGuardianVersion(ctx context.Context, in *pb.GetGuardianVersionRequest, opts ...grpc.CallOption) (*pb.GetGuardianVersionResponse, error)
+	ReadGuardianPath(ctx context.Context, in *pb.ReadGuardianPathRequest, opts ...grpc.CallOption) (*pb.ReadGuardianPathResponse, error)
 	SubscribeGuardianChanges(ctx context.Context, in *pb.SubscribeGuardianChangesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[pb.GuardianChangeEvent], error)
 	RegisterClient(ctx context.Context, in *pb.RegisterClientRequest, opts ...grpc.CallOption) (*pb.RegisterClientResponse, error)
 	UnregisterClient(ctx context.Context, in *pb.UnregisterClientRequest, opts ...grpc.CallOption) (*pb.UnregisterClientResponse, error)
@@ -468,6 +469,38 @@ func (c *GRPCClient) StatAttr(ctx context.Context, mountPath string) (int64, tim
 		return 0, time.Time{}, os.ErrNotExist
 	}
 	return 0, time.Time{}, wrapDNSHint(lastErr)
+}
+
+// ReadPathVersioned returns a consistent content+version pair from the router.
+func (c *GRPCClient) ReadPathVersioned(ctx context.Context, token, logicalPath string) ([]byte, guardianapi.FileVersion, bool, error) {
+	type result struct {
+		content []byte
+		version guardianapi.FileVersion
+		found   bool
+	}
+	res, err := retryRouterCall(c, ctx, func() (result, error) {
+		callCtx, cancel := c.withTimeout(ctx)
+		defer cancel()
+		resp, err := c.router.ReadGuardianPath(callCtx, &pb.ReadGuardianPathRequest{
+			GuardianToken: token,
+			LogicalPath:   logicalPath,
+		})
+		if err != nil {
+			return result{}, mapRPCError(err)
+		}
+		if !resp.GetFound() {
+			return result{}, nil
+		}
+		return result{
+			content: append([]byte(nil), resp.GetContent()...),
+			version: convertFileVersion(resp.GetVersion()),
+			found:   true,
+		}, nil
+	})
+	if err != nil {
+		return nil, guardianapi.FileVersion{}, false, err
+	}
+	return res.content, res.version, res.found, nil
 }
 
 func (c *GRPCClient) GetVersion(ctx context.Context, token, logicalPath, versionID string) (guardianapi.VersionedFile, error) {

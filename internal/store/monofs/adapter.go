@@ -18,6 +18,10 @@ type MonoFSClient interface {
 	ListDir(ctx context.Context, mountPath string) ([]guardianapi.DirEntry, error)
 }
 
+type versionedMonoFSClient interface {
+	ReadPathVersioned(ctx context.Context, token, logicalPath string) ([]byte, guardianapi.FileVersion, bool, error)
+}
+
 type pagedMonoFSClient interface {
 	ListDirPage(ctx context.Context, mountPath string, opts guardianapi.DirListOptions) (guardianapi.DirListPage, error)
 }
@@ -38,6 +42,32 @@ type Adapter struct {
 
 func New(client MonoFSClient, token string) *Adapter {
 	return &Adapter{client: client, token: token}
+}
+
+// ReadFileVersioned returns a consistent content+version pair. It uses the
+// router's ReadGuardianPath RPC when available and falls back to the legacy
+// two-call path for older routers/fakes.
+func (a *Adapter) ReadFileVersioned(ctx context.Context, logicalPath string) ([]byte, guardianapi.FileVersion, bool, error) {
+	if client, ok := a.client.(versionedMonoFSClient); ok {
+		return client.ReadPathVersioned(ctx, a.token, logicalPath)
+	}
+	versions, err := a.client.ListVersions(ctx, a.token, logicalPath)
+	if err != nil {
+		return nil, guardianapi.FileVersion{}, false, err
+	}
+	if len(versions) == 0 || versions[0].Tombstone {
+		return nil, guardianapi.FileVersion{}, false, nil
+	}
+	version := versions[0]
+	mapped, err := mapLogicalToPhysicalChecked(logicalPath)
+	if err != nil {
+		return nil, guardianapi.FileVersion{}, false, err
+	}
+	content, err := a.client.ReadFile(ctx, mapped)
+	if err != nil {
+		return nil, guardianapi.FileVersion{}, false, err
+	}
+	return content, version, true, nil
 }
 
 func (a *Adapter) ReadFile(ctx context.Context, logicalPath string) ([]byte, error) {

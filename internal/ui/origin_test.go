@@ -134,6 +134,47 @@ func TestAssetOriginsClassifyTemplatesAndFallback(t *testing.T) {
 	}
 }
 
+// readSpyStore records ReadFile calls while delegating to an in-memory store.
+type readSpyStore struct {
+	guardianapi.Store
+	reads []string
+}
+
+func (s *readSpyStore) ReadFile(ctx context.Context, logicalPath string) ([]byte, error) {
+	s.reads = append(s.reads, logicalPath)
+	return s.Store.ReadFile(ctx, logicalPath)
+}
+
+func TestGeneratedPayloadManifestProbesOnlyCDKIntents(t *testing.T) {
+	ctx := context.Background()
+	spy := &readSpyStore{Store: memory.New()}
+
+	native := intentdomain.Intent{
+		Metadata: intentdomain.Metadata{Name: "images"},
+		Spec: intentdomain.IntentSpec{
+			Implementation: intentdomain.ImplementationNative,
+			Assets:         []assetdomain.Spec{{Type: "Compute", Name: "api"}},
+		},
+	}
+	if payload, ok := generatedPayloadManifestForIntent(ctx, spy, "agent", native); ok || payload != nil {
+		t.Fatalf("native intent payload = %+v, %v; want none", payload, ok)
+	}
+	if len(spy.reads) != 0 {
+		t.Fatalf("native intent probed generated payload: %v", spy.reads)
+	}
+
+	cdk := native
+	cdk.Metadata.Name = "stack"
+	cdk.Spec.Implementation = intentdomain.ImplementationCDK
+	if payload, ok := generatedPayloadManifestForIntent(ctx, spy, "agent", cdk); ok || payload != nil {
+		t.Fatalf("absent CDK payload = %+v, %v; want none", payload, ok)
+	}
+	want := paths.GeneratedAWSPayloadDir("agent", "stack") + "/" + cdkgen.PayloadManifestFileName
+	if len(spy.reads) != 1 || spy.reads[0] != want {
+		t.Fatalf("CDK probe reads = %v; want [%s]", spy.reads, want)
+	}
+}
+
 func TestPartitionOriginAggregatesIntents(t *testing.T) {
 	adopted := originInfo{Origin: originAdopted, Label: "Adopted from AWS"}
 

@@ -83,6 +83,9 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 	if err != nil {
 		return fail(err)
 	}
+	// Capture the snapshot this result started from. Writes below merge their
+	// changes onto the latest state so concurrent observation updates survive.
+	base := statedomain.CloneIntentState(state)
 	// Skip stale results: if the intent's last task ID no longer matches this
 	// result (e.g. a newer task was already queued), this result is outdated.
 	// An empty LastTaskID is still verified against the queued task below.
@@ -114,7 +117,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			state.Status = statedomain.StatusCheckFailed
 			state.ApplyReadiness = &taskdomain.ApplyReadiness{Status: taskdomain.ApplyReadinessBlocked, Summary: derefErr(result.Error)}
 			state.LastError = result.Error
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			errMsg := derefErr(result.Error)
@@ -138,7 +141,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			// Report-only: never queue APPLY after a successful CHECK.
 			state.Status = statedomain.StatusObserved
 			state.LastError = nil
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
@@ -159,7 +162,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			return fail(err)
 		}
 		log.Printf("results: queued apply task=%s from check task=%s partition=%s intent=%s pusher=%s", next.TaskID, result.TaskID, state.Partition, state.Intent, state.TargetPusher)
-		if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+		if err := p.persistIntentState(ctx, base, state); err != nil {
 			return fail(err)
 		}
 		p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
@@ -175,7 +178,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			state.ApplyReadiness = nil
 			state.AssetObservations = nil
 			state.LastError = result.Error
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			errMsg := derefErr(result.Error)
@@ -211,7 +214,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 				state.Status = statedomain.StatusObservedDrifted
 			}
 			state.LastError = nil
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			if driftSettled {
@@ -239,7 +242,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		}
 		if driftSettled && applyResultSettled(result) {
 			state.Status = statedomain.StatusHealthy
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			if err := p.queueDependents(ctx, state.Partition); err != nil {
@@ -267,7 +270,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			if err := p.dispatcher.QueueTask(ctx, next); err != nil {
 				return fail(err)
 			}
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
@@ -277,7 +280,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		}
 		if state.Locked || state.PartitionMode == "readonly" {
 			state.Status = statedomain.StatusDriftedLocked
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
@@ -300,7 +303,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		if err := p.dispatcher.QueueTask(ctx, next); err != nil {
 			return fail(err)
 		}
-		if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+		if err := p.persistIntentState(ctx, base, state); err != nil {
 			return fail(err)
 		}
 		p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
@@ -329,7 +332,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		if result.Status == taskdomain.ResultFailed {
 			state.Status = statedomain.StatusApplyFailed
 			state.LastError = result.Error
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			errMsg := derefErr(result.Error)
@@ -372,7 +375,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			if err := p.dispatcher.QueueTask(ctx, next); err != nil {
 				return fail(err)
 			}
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
@@ -389,7 +392,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		state.RollbackTo = ""
 		state.Drift = &taskdomain.DriftReport{Status: "InSync", Summary: "apply completed"}
 		state.DeploymentRevision = revisions.DeploymentRevisionID(state.PartitionRevision, state.IntentVersionID, result.FinishedAt)
-		if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+		if err := p.persistIntentState(ctx, base, state); err != nil {
 			return fail(err)
 		}
 		rec := &historydomain.DeploymentRecord{
@@ -481,7 +484,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		if result.Status == taskdomain.ResultFailed {
 			state.Status = statedomain.StatusApplyFailed
 			state.LastError = result.Error
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			errMsg := derefErr(result.Error)
@@ -503,7 +506,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		state.ApplyReadiness = nil
 		state.AssetObservations = nil
 		state.Outputs = map[string]string{}
-		if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+		if err := p.persistIntentState(ctx, base, state); err != nil {
 			return fail(err)
 		}
 		p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
@@ -596,6 +599,21 @@ func (p *Processor) loadTask(ctx context.Context, pusher, taskID string) (*taskd
 		return nil, err
 	}
 	return &task, nil
+}
+
+// persistIntentState merges the changes between base and state into the latest
+// persisted intent state. State is loaded once per result, so writing it back
+// verbatim would clobber observations (Resources, LastObservedAt) persisted by
+// the observed collector while the task was being processed.
+func (p *Processor) persistIntentState(ctx context.Context, base, state *statedomain.IntentState) error {
+	if state == nil {
+		return nil
+	}
+	_, err := p.dispatcher.UpdateIntentState(ctx, state.Partition, state.Intent, func(latest *statedomain.IntentState) error {
+		statedomain.MergeIntentState(latest, base, state)
+		return nil
+	})
+	return err
 }
 
 func (p *Processor) cleanupQueueArtifacts(ctx context.Context, pusher, taskID string) {
@@ -702,6 +720,7 @@ func (p *Processor) queueDependents(ctx context.Context, partition string) error
 			continue
 		}
 		prevStatus := state.Status
+		base := statedomain.CloneIntentState(state)
 		next, err := common.BuildTask(ctx, p.store, state, taskdomain.OpDiff, outputs, false)
 		if err != nil {
 			return err
@@ -714,7 +733,7 @@ func (p *Processor) queueDependents(ctx context.Context, partition string) error
 		if err := p.dispatcher.QueueTask(ctx, next); err != nil {
 			return err
 		}
-		if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+		if err := p.persistIntentState(ctx, base, state); err != nil {
 			return err
 		}
 		if prevStatus == statedomain.StatusBlocked {
@@ -743,6 +762,7 @@ func (p *Processor) recordRollback(ctx context.Context, state *statedomain.Inten
 	if state.DeploymentRevision == "" {
 		return fmt.Errorf("cannot rollback %s/%s: no previous deployment revision", state.Partition, state.Intent)
 	}
+	base := statedomain.CloneIntentState(state)
 	rollbackReason := derefErr(result.Error)
 	state.RollbackTo = state.DeploymentRevision
 	state.RollbackReason = rollbackReason
@@ -753,7 +773,7 @@ func (p *Processor) recordRollback(ctx context.Context, state *statedomain.Inten
 	state.Health = nil
 	state.ApplyReadiness = nil
 	state.AssetObservations = nil
-	if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+	if err := p.persistIntentState(ctx, base, state); err != nil {
 		return err
 	}
 	correlationID := revisions.NewCorrelationID()

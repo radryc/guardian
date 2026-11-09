@@ -103,6 +103,8 @@ type Server struct {
 	partitionData          *partitionDataCache
 	rolloutCache           *rolloutCache
 	projectionCache        *uiProjectionCache
+	partitionLoadMu        sync.Mutex
+	partitionLoads         map[string]*partitionLoad
 	clientConfig           ClientConfig
 	clientConfigToken      string
 	autoDeployOnIngest     bool
@@ -132,6 +134,14 @@ type partitionDataCache struct {
 type partitionDataCacheEntry struct {
 	expiresAt time.Time
 	payload   *PartitionDetailResponse
+}
+
+// partitionLoad collapses concurrent cache misses for the same partition into a
+// single expensive load instead of a stampede against MonoFS.
+type partitionLoad struct {
+	done    chan struct{}
+	payload *PartitionDetailResponse
+	err     error
 }
 
 func newPartitionDataCache(ttl time.Duration) *partitionDataCache {

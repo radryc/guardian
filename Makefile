@@ -41,6 +41,8 @@ GUARDIAN_K8S_PUSHER_BINARY ?= $(GUARDIAN_BIN_DIR)/guardian-pusher-k8s
 GUARDIAN_K8S_PUSHER_PID_FILE ?= $(GUARDIAN_RUNTIME_DIR)/guardian-pusher-k8s.pid
 GUARDIAN_K8S_PUSHER_LOG ?= $(GUARDIAN_RUNTIME_DIR)/guardian-pusher-k8s.log
 GUARDIAN_KUBECTL_BINARY ?= kubectl
+GUARDIAN_GCP_PUSHER_IMAGE ?= guardian-pusher-gcp:dev
+GUARDIAN_GCP_PUSHER_BINARY ?= $(GUARDIAN_BIN_DIR)/guardian-pusher-gcp
 GUARDIAN_KUBECONFIG ?=
 GUARDIAN_KUBE_CONTEXT ?=
 
@@ -50,6 +52,7 @@ GUARDIAN_KUBE_CONTEXT ?=
 	deploy-s3 deploy-s3-stop deploy-s3-clean \
 	pusher-docker-build pusher-docker-image-build pusher-docker-up pusher-docker-down pusher-docker-logs \
 	pusher-k8s-build pusher-k8s-image-build pusher-k8s-up pusher-k8s-down pusher-k8s-logs \
+	pusher-gcp-build pusher-gcp-image-build \
 	dogfood-secret dogfood-push dogfood-up dogfood-deploy dogfood-status dogfood-stop dogfood-clean \
 	bootstrap bootstrap-down
 
@@ -69,6 +72,8 @@ help:
 	@printf "  make pusher-docker-image-build Build the guardian-pusher-docker Docker image\n"
 	@printf "  make pusher-k8s-up    Build and start the kubernetes pusher against MonoFS\n"
 	@printf "  make pusher-k8s-image-build Build the guardian-pusher-k8s Docker image\n"
+	@printf "  make pusher-gcp-build Build the guardian-pusher-gcp binary\n"
+	@printf "  make pusher-gcp-image-build Build the guardian-pusher-gcp Docker image\n"
 	@printf "  make guardian-down    Stop the Guardian container\n"
 	@printf "  make guardian-logs    Follow Guardian logs\n"
 	@printf "  make deploy-s3-stop   Stop Guardian and stop MonoFS\n"
@@ -203,6 +208,15 @@ pusher-k8s-image-build:
 	@if [ ! -d "$(MONOFS_DIR)" ]; then echo "MonoFS repo not found at $(MONOFS_DIR)"; exit 1; fi
 	@if [ ! -d "$(KVS_DIR)" ]; then echo "KVS repo not found at $(KVS_DIR)"; exit 1; fi
 	DOCKER_BUILDKIT=1 docker build --build-context monofs=$(abspath $(MONOFS_DIR)) --build-context kvs=$(KVS_DIR) -f Dockerfile.pusher-k8s -t $(GUARDIAN_K8S_PUSHER_IMAGE) .
+
+pusher-gcp-build: $(GUARDIAN_BIN_DIR)
+	go build -o "$(GUARDIAN_GCP_PUSHER_BINARY)" ./cmd/guardian-pusher-gcp
+
+pusher-gcp-image-build:
+	@if [ ! -d "$(MONOFS_DIR)" ]; then echo "MonoFS repo not found at $(MONOFS_DIR)"; exit 1; fi
+	@if [ ! -d "$(KVS_DIR)" ]; then echo "KVS repo not found at $(KVS_DIR)"; exit 1; fi
+	DOCKER_BUILDKIT=1 docker build --build-context monofs=$(abspath $(MONOFS_DIR)) --build-context kvs=$(KVS_DIR) -f Dockerfile.pusher-gcp -t $(GUARDIAN_GCP_PUSHER_IMAGE) .
+
 
 pusher-k8s-up: pusher-k8s-build
 	@mkdir -p "$(GUARDIAN_RUNTIME_DIR)"

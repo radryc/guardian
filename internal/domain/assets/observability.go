@@ -8,6 +8,7 @@ import (
 
 type ObservabilitySpec struct {
 	Provider    string   `json:"provider,omitempty" yaml:"provider,omitempty"`
+	Image       string   `json:"image,omitempty" yaml:"image,omitempty"`
 	Mode        string   `json:"mode,omitempty" yaml:"mode,omitempty"` // auto|env|sidecar|gateway|collector
 	ServiceName string   `json:"serviceName,omitempty" yaml:"serviceName,omitempty"`
 	Targets     []string `json:"targets,omitempty" yaml:"targets,omitempty"`

@@ -29,6 +29,8 @@ type PusherInfo struct {
 	CollectorURL   string
 	WorkerID       string
 	ObservedAPIURL string
+	Token          string
+	TokenEnv       string
 	Description    string
 }
 
@@ -90,6 +92,8 @@ func StartRegistration(ctx context.Context, store guardianapi.Store, info Pusher
 				"workerID": info.WorkerID,
 			},
 			ObservedAPIURL: info.ObservedAPIURL,
+			Token:          info.Token,
+			TokenEnv:       info.TokenEnv,
 			Description:    info.Description,
 		}
 		if existing != nil {

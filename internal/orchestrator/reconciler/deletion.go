@@ -158,6 +158,7 @@ func (r *Reconciler) reconcilePartitionDeletion(ctx context.Context, partitionNa
 				return err
 			}
 			correlationID := revisions.NewCorrelationID()
+			base := statedomain.CloneIntentState(state)
 			state.Status = statedomain.StatusDestroying
 			state.LastTaskID = next.TaskID
 			state.LastError = nil
@@ -166,7 +167,7 @@ func (r *Reconciler) reconcilePartitionDeletion(ctx context.Context, partitionNa
 			if err := r.dispatcher.QueueTask(ctx, next); err != nil {
 				return err
 			}
-			if err := r.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := r.persistIntentState(ctx, base, state); err != nil {
 				return err
 			}
 			details := map[string]string{"deletionPolicy": "destroy"}

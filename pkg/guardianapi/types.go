@@ -15,6 +15,13 @@ type ReadStore interface {
 	Stat(ctx context.Context, logicalPath string) (FileInfo, error)
 }
 
+// VersionedReader returns content and its authoritative version atomically.
+// Stores that cannot provide this may omit it; callers must fall back to the
+// legacy read + ListVersions path.
+type VersionedReader interface {
+	ReadFileVersioned(ctx context.Context, logicalPath string) (content []byte, version FileVersion, exists bool, err error)
+}
+
 type DirListOptions struct {
 	Offset int
 	Limit  int

@@ -568,7 +568,13 @@ func resolveProbeAddress(spec *assetdefs.ProbeSpec, outputs map[string]string, a
 	if spec.Address != "" {
 		return spec.Address
 	}
-	for _, key := range []string{"url", "endpoint", "address", "dns_name", "host"} {
+	keys := []string{"url", "endpoint", "address", "dns_name", "host"}
+	// TCP probes need a host:port target. Prefer the endpoint output (which is
+	// normally host:port) over the URL output (normally a scheme-only URL).
+	if strings.EqualFold(strings.TrimSpace(spec.Type), "tcp") {
+		keys = []string{"endpoint", "address", "url", "dns_name", "host"}
+	}
+	for _, key := range keys {
 		if value := strings.TrimSpace(outputs[asset+"."+key]); value != "" {
 			return value
 		}

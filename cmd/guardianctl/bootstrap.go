@@ -865,6 +865,12 @@ func deployGuardianTemplates(ctx context.Context, cfg *bootstrap.Config, env boo
 	if cfg.Guardian.Pushers.AWS.Enabled {
 		bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "deploy-pusher-aws.yaml"), env, nil, dryRun)
 	}
+	if cfg.Guardian.Pushers.GCP.Enabled {
+		path := filepath.Join(guardianDir, "deploy-pusher-gcp.yaml")
+		if _, err := os.Stat(path); err == nil {
+			bootstrap.ApplyTemplate(ctx, path, env, nil, dryRun)
+		}
+	}
 
 	// Deploy docker pusher as Docker container (outside K8s)
 	_ = deployDockerPusher(ctx, cfg, dryRun)

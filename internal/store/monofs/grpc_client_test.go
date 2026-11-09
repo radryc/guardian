@@ -354,6 +354,10 @@ func (f *fakeRouterClient) GetGuardianVersion(context.Context, *pb.GetGuardianVe
 	return nil, nil
 }
 
+func (f *fakeRouterClient) ReadGuardianPath(context.Context, *pb.ReadGuardianPathRequest, ...grpc.CallOption) (*pb.ReadGuardianPathResponse, error) {
+	return nil, nil
+}
+
 func (f *fakeRouterClient) SubscribeGuardianChanges(_ context.Context, req *pb.SubscribeGuardianChangesRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[pb.GuardianChangeEvent], error) {
 	cloned := &pb.SubscribeGuardianChangesRequest{
 		GuardianToken:        req.GetGuardianToken(),

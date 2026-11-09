@@ -10,6 +10,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/radryc/guardian/internal/awsobserve"
@@ -35,8 +36,9 @@ const (
 
 // Endpoint describes one pusher's observed read API.
 type Endpoint struct {
-	Name   string
-	Client *Client
+	Name     string
+	Provider string
+	Client   *Client
 }
 
 // Collector polls pusher observed APIs for every observed intent in the store,
@@ -86,18 +88,39 @@ func (c *Collector) CollectOnce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list partitions: %w", err)
 	}
+	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if !entry.IsDir {
-			continue
-		}
-		if err := c.collectPartition(ctx, entry.Name); err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			log.Printf("[observed] partition %s: %v", entry.Name, err)
+		if entry.IsDir {
+			names = append(names, entry.Name)
 		}
 	}
-	return nil
+	if len(names) == 0 {
+		return nil
+	}
+	// Partitions are independent; a bounded pool keeps a slow pusher from
+	// stalling every other partition.
+	parallelism := len(names)
+	if parallelism > 4 {
+		parallelism = 4
+	}
+	sem := make(chan struct{}, parallelism)
+	var wg sync.WaitGroup
+	for _, name := range names {
+		wg.Add(1)
+		go func(partition string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if err := c.collectPartition(ctx, partition); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				log.Printf("[observed] partition %s: %v", partition, err)
+			}
+		}(name)
+	}
+	wg.Wait()
+	return ctx.Err()
 }
 
 func (c *Collector) collectPartition(ctx context.Context, partition string) error {
@@ -108,6 +131,7 @@ func (c *Collector) collectPartition(ctx context.Context, partition string) erro
 		}
 		return err
 	}
+	standard := make([]*intentdomain.Intent, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir || !strings.HasSuffix(entry.Name, ".yaml") {
 			continue
@@ -122,12 +146,14 @@ func (c *Collector) collectPartition(ctx context.Context, partition string) erro
 			continue
 		}
 		if parsed.Spec.IntentType != intentdomain.TypeObserved {
+			standard = append(standard, parsed)
 			continue
 		}
 		if err := c.collectIntent(ctx, partition, parsed); err != nil {
 			log.Printf("[observed] %s/%s: %v", partition, intentName, err)
 		}
 	}
+	c.collectResourceInventories(ctx, partition, standard)
 	return nil
 }
 
@@ -221,6 +247,9 @@ func (c *Collector) collectIntent(ctx context.Context, partition string, intent 
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	// Capture the base before mutating so the write below can apply only the
+	// observation changes to the latest persisted state.
+	base := statedomain.CloneIntentState(state)
 	if state == nil {
 		state = &statedomain.IntentState{
 			APIVersion: "guardian/v1alpha1",
@@ -243,7 +272,9 @@ func (c *Collector) collectIntent(ctx context.Context, partition string, intent 
 	if len(errorMessages) == 0 {
 		state.Resources = statedomain.CloneResourceObservations(mergedResources)
 	}
-	state.Timestamps.LastDiffAt = time.Now().UTC()
+	observedAt := time.Now().UTC()
+	state.Timestamps.LastDiffAt = observedAt
+	state.Timestamps.LastObservedAt = observedAt
 
 	if len(errorMessages) > 0 {
 		message := strings.Join(errorMessages, "; ")
@@ -263,7 +294,10 @@ func (c *Collector) collectIntent(ctx context.Context, partition string, intent 
 		state.LastError = nil
 		state.Drift = &taskdomain.DriftReport{Status: "InSync", Summary: "observed state matches the desired CDK app"}
 	}
-	if err := c.Dispatcher.WriteIntentState(ctx, state); err != nil {
+	if _, err := c.Dispatcher.UpdateIntentState(ctx, partition, intentName, func(latest *statedomain.IntentState) error {
+		statedomain.MergeIntentState(latest, base, state)
+		return nil
+	}); err != nil {
 		return err
 	}
 	if len(changedAssets) > 0 {
@@ -740,6 +774,7 @@ func (c *Collector) recordIntentError(ctx context.Context, partition string, int
 	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
 		return loadErr
 	}
+	base := statedomain.CloneIntentState(state)
 	if state == nil {
 		state = &statedomain.IntentState{
 			APIVersion: "guardian/v1alpha1",
@@ -756,7 +791,11 @@ func (c *Collector) recordIntentError(ctx context.Context, partition string, int
 	message := err.Error()
 	state.LastError = &message
 	state.Drift = &taskdomain.DriftReport{Status: "Changed", Summary: message}
-	return c.Dispatcher.WriteIntentState(ctx, state)
+	_, updateErr := c.Dispatcher.UpdateIntentState(ctx, partition, intent.Metadata.Name, func(latest *statedomain.IntentState) error {
+		statedomain.MergeIntentState(latest, base, state)
+		return nil
+	})
+	return updateErr
 }
 
 func sanitizeEventID(value string) string {

@@ -19,6 +19,7 @@ Thumbs.db
 /guardian-pusher-docker
 /guardian-pusher-k8s
 /guardian-pusher-aws
+/guardian-pusher-gcp
 
 # Build artifacts
 dist/

@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/radryc/guardian/internal/awsobserve"
+	"github.com/radryc/guardian/internal/gcpobserve"
+	"github.com/radryc/guardian/internal/k8sobserve"
 	"github.com/radryc/guardian/internal/onboarding"
 	"github.com/radryc/guardian/internal/pusher/probes"
 )
@@ -20,9 +22,10 @@ const maxResponseBytes = 16 << 20
 
 // Client talks to the pusher's observed-state read API.
 type Client struct {
-	BaseURL string
-	Token   string
-	HTTP    *http.Client
+	BaseURL  string
+	Token    string
+	Provider string
+	HTTP     *http.Client
 }
 
 // NewClient builds an observed API client. Timeout <= 0 uses 30s.
@@ -31,9 +34,10 @@ func NewClient(baseURL, token string, timeout time.Duration) *Client {
 		timeout = 30 * time.Second
 	}
 	return &Client{
-		BaseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"),
-		Token:   strings.TrimSpace(token),
-		HTTP:    &http.Client{Timeout: timeout},
+		BaseURL:  strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		Token:    strings.TrimSpace(token),
+		Provider: "aws",
+		HTTP:     &http.Client{Timeout: timeout},
 	}
 }
 
@@ -118,6 +122,62 @@ func (c *Client) ListStacks(ctx context.Context, account, region string) ([]awso
 		Stacks []awsobserve.StackState `json:"stacks"`
 	}
 	if _, err := c.do(ctx, http.MethodGet, "/v1/aws/observed/stacks", query, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Stacks, nil
+}
+
+// GCPStacks lists the observed stacks for a GCP project/region. The response
+// includes the Cloud Asset Inventory resource attached to each stack.
+func (c *Client) GCPStacks(ctx context.Context, project, region string) ([]gcpobserve.StackState, error) {
+	query := url.Values{"region": {region}}
+	if project != "" {
+		query.Set("project", project)
+	}
+	var resp struct {
+		Stacks []gcpobserve.StackState `json:"stacks"`
+	}
+	if _, err := c.do(ctx, http.MethodGet, "/v1/gcp/observed/stacks", query, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Stacks, nil
+}
+
+// GCPStackResources lists the live resources for one GCP stack.
+func (c *Client) GCPStackResources(ctx context.Context, project, region, stackName string) ([]gcpobserve.StackResource, error) {
+	query := url.Values{"region": {region}}
+	if project != "" {
+		query.Set("project", project)
+	}
+	var resp struct {
+		StackName string                     `json:"stackName"`
+		Resources []gcpobserve.StackResource `json:"resources"`
+	}
+	if _, err := c.do(ctx, http.MethodGet, "/v1/gcp/observed/stacks/"+url.PathEscape(stackName)+"/resources", query, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Resources, nil
+}
+
+// K8sStacks lists the Kubernetes resource inventories held by a pusher.
+func (c *Client) K8sStacks(ctx context.Context, cluster, namespace, partition, intent string) ([]k8sobserve.Inventory, error) {
+	query := url.Values{}
+	if cluster != "" {
+		query.Set("cluster", cluster)
+	}
+	if namespace != "" {
+		query.Set("namespace", namespace)
+	}
+	if partition != "" {
+		query.Set("partition", partition)
+	}
+	if intent != "" {
+		query.Set("intent", intent)
+	}
+	var resp struct {
+		Stacks []k8sobserve.Inventory `json:"stacks"`
+	}
+	if _, err := c.do(ctx, http.MethodGet, "/v1/k8s/observed/stacks", query, nil, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Stacks, nil

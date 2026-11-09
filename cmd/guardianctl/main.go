@@ -933,6 +933,11 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 		reg.Register(a.Group, a.Name, a.Cmd)
 	}
 
+	// GCP commands (no store required — verify project prerequisites)
+	for _, g := range gcpCommands() {
+		reg.Register(g.Group, g.Name, g.Cmd)
+	}
+
 	// Image commands (no store required — work with docker directly)
 	for _, img := range imageCommands() {
 		reg.Register(img.Group, img.Name, img.Cmd)

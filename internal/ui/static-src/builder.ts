@@ -180,6 +180,7 @@ const TEMPLATE_KEY = "guardian.builder.templates.v1";
 
 const PUSHER_SUPPORT: Record<string, string[]> = {
   aws: ["CDKStack", "Secret", "Volume", "Config", "Compute", "LoadBalancer", "Database", "SQLDatabase", "ObjectStore", "Network", "Observability"],
+  gcp: ["Secret", "Volume", "Config", "Compute", "LoadBalancer", "Database", "SQLDatabase", "ObjectStore", "Network", "Observability"],
   kubernetes: ["Volume", "Config", "Secret", "Compute", "ImageBuild", "TraefikRoute", "LoadBalancer", "ObjectStore", "Database", "SQLDatabase", "Observability", "K8sResource", "Network"],
   docker: ["Volume", "Config", "Network", "Secret", "Compute", "ImageBuild", "TraefikRoute", "LoadBalancer", "ObjectStore", "Database", "SQLDatabase", "Observability"],
   local: ["Compute", "Database", "SQLDatabase"],
@@ -188,6 +189,7 @@ const PUSHER_SUPPORT: Record<string, string[]> = {
 
 const KIND_LABELS: Record<string, string> = {
   aws: "AWS",
+  gcp: "GCP",
   kubernetes: "Kubernetes",
   docker: "Docker",
   local: "Local",
@@ -201,7 +203,7 @@ const ASSET_HINTS: Record<string, string> = {
   Database: "Connect a volume and a network.",
   SQLDatabase: "Connect a volume and a network.",
   ObjectStore: "Connect a volume or set an endpoint.",
-  Observability: "Connect target compute assets; the AWS pusher injects the OTEL sidecar.",
+  Observability: "Connect target compute assets; the pusher injects or deploys the OTEL collector.",
   Volume: "Set a size, then connect a service.",
   Config: "Add inline content or data files.",
   Network: "Connect services that share this network.",
@@ -286,7 +288,7 @@ async function ensureCatalog(): Promise<void> {
     const fromCatalog: PusherInfo[] = (cat?.pushers ?? []).map((name: string) => ({ name, kind: pusherKind(name) }));
     const fromRegistry: PusherInfo[] = (pushers?.pushers ?? []).map((p: any) => ({
       name: p.name,
-      kind: pusherKind(p.name),
+      kind: (p.provider ? String(p.provider).toLowerCase() : pusherKind(p.name)),
       account: p.account,
       region: p.region,
       description: p.description,
@@ -826,8 +828,14 @@ function connectAsset(intent: IntentDraft, consumer: AssetSpec, connector: Conne
     }
     properties.configMounts = mounts;
   } else if (connector.special === "envRef") {
-    const outputKey = provider.type === "ObjectStore" && pusherKind(intent.targetPusher) === "aws" ? "bucket" : (connector.envOutput || "url");
-    let envKey = provider.type === "ObjectStore" && pusherKind(intent.targetPusher) === "aws" ? "S3_BUCKET" : (connector.envKey || "VALUE");
+    const targetKind = pusherKind(intent.targetPusher);
+    const objectStoreBucket = provider.type === "ObjectStore" && (targetKind === "aws" || targetKind === "gcp");
+    const outputKey = objectStoreBucket ? "bucket" : (connector.envOutput || "url");
+    let envKey = provider.type === "ObjectStore" && targetKind === "aws"
+      ? "S3_BUCKET"
+      : provider.type === "ObjectStore" && targetKind === "gcp"
+        ? "GCS_BUCKET"
+        : (connector.envKey || "VALUE");
     const placeholder = `\${intent.${intent.name}.outputs.${provider.name}.${outputKey}}`;
     const env: Record<string, any> = { ...(properties.env ?? {}) };
     const already = Object.values(env).some((value) => outputRefAssetName(String(value ?? "")) === provider.name);
@@ -2462,6 +2470,7 @@ function deleteIntent(uid: string): void {
 function pusherKind(name: string | undefined): string {
   const lower = String(name ?? "").toLowerCase();
   if (lower.includes("aws")) return "aws";
+  if (lower.includes("gcp") || lower.includes("google")) return "gcp";
   if (lower.includes("k8s") || lower.includes("kubernetes")) return "kubernetes";
   if (lower.includes("docker")) return "docker";
   if (lower.includes("local")) return "local";
@@ -2483,7 +2492,7 @@ function pusherOptions(selected: string): string {
 function defaultPlacementFor(pusherName: string): Placement {
   const kind = pusherKind(pusherName);
   const info = registryPushers.find((p) => p.name === pusherName);
-  if (kind === "aws") return { account: info?.account ?? "", region: info?.region ?? "" };
+  if (kind === "aws" || kind === "gcp") return { account: info?.account ?? "", region: info?.region ?? "" };
   if (kind === "kubernetes" || kind === "docker") return { cluster: deriveCluster(pusherName), namespace: "" };
   if (kind === "local") return { cluster: "local" };
   return {};

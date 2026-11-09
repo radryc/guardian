@@ -1047,9 +1047,11 @@ func newObservedResolver(cfg *config.Config, store guardianapi.Store, timeout ti
 			continue
 		}
 		endpoints[pusher.Name] = observedpkg.Endpoint{
-			Name:   pusher.Name,
-			Client: observedpkg.NewClient(apiURL, pusher.ObservedToken(), timeout),
+			Name:     pusher.Name,
+			Provider: observedpkg.ProviderForName("", pusher.Name),
+			Client:   observedpkg.NewClient(apiURL, pusher.ObservedToken(), timeout),
 		}
+		endpoints[pusher.Name].Client.Provider = endpoints[pusher.Name].Provider
 	}
 	registryStore := registry.New(store)
 	resolver := &observedpkg.RegistryResolver{

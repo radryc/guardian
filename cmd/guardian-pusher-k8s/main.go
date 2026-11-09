@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"regexp"
@@ -15,6 +17,8 @@ import (
 
 	"github.com/radryc/guardian/internal/buildinfo"
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
+	"github.com/radryc/guardian/internal/k8sobserve"
+	"github.com/radryc/guardian/internal/k8sread"
 	"github.com/radryc/guardian/internal/paths"
 	kubernetesdriver "github.com/radryc/guardian/internal/pusher/drivers/kubernetes"
 	"github.com/radryc/guardian/internal/pusher/probes"
@@ -45,6 +49,10 @@ func main() {
 	var maxConcurrency int
 	var shardIndex int
 	var shardCount int
+	var readAddr string
+	var readToken string
+	var readTokenFile string
+	var readDisabled bool
 	flag.StringVar(&pusherName, "pusher-name", "", "pusher name (default: k8s-<cluster>)")
 	flag.StringVar(&cluster, "cluster", "", "target cluster handled by this worker")
 	flag.StringVar(&storeDir, "store-dir", "", "filesystem-backed Guardian store")
@@ -61,6 +69,10 @@ func main() {
 	flag.IntVar(&maxConcurrency, "max-concurrency", 0, "maximum tasks executed concurrently (0 = auto from CPU count)")
 	flag.IntVar(&shardIndex, "shard-index", 0, "shard index for this replica when sharding a shared queue")
 	flag.IntVar(&shardCount, "shard-count", 1, "number of shards sharing the queue; 1 disables sharding")
+	flag.StringVar(&readAddr, "read-addr", os.Getenv("GUARDIAN_K8SREAD_ADDR"), "HTTP listen address for the read-only Kubernetes resource API (empty disables)")
+	flag.StringVar(&readToken, "read-token", os.Getenv("GUARDIAN_K8SREAD_TOKEN"), "bearer token required by the Kubernetes read API")
+	flag.StringVar(&readTokenFile, "read-token-file", os.Getenv("GUARDIAN_K8SREAD_TOKEN_FILE"), "file containing the bearer token; re-read on each request")
+	flag.BoolVar(&readDisabled, "read-disabled", false, "disable the Kubernetes read API")
 	flag.Parse()
 
 	if cluster == "" || (storeDir == "" && monofsRouter == "") || (storeDir != "" && monofsRouter != "") {
@@ -166,17 +178,64 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	var inventoryService *k8sobserve.Service
+	if lister, ok := kubeBackend.(k8sobserve.ResourceLister); ok {
+		inventoryService = k8sobserve.NewService(lister, cluster)
+		go inventoryService.Run(ctx)
+	} else {
+		log.Printf("kubernetes: backend does not support managed resource inventory")
+	}
+
+	observedAPIURL := ""
+	if inventoryService != nil && !readDisabled && strings.TrimSpace(readAddr) != "" {
+		token := strings.TrimSpace(readToken)
+		if token == "" && strings.TrimSpace(readTokenFile) != "" {
+			if content, err := os.ReadFile(readTokenFile); err == nil {
+				token = strings.TrimSpace(string(content))
+			}
+		}
+		if token == "" && !isLoopbackListen(readAddr) {
+			log.Printf("kubernetes: read API is listening on %s without a bearer token; configure --read-token or --read-token-file", readAddr)
+		} else {
+			handler := k8sread.NewHandler(inventoryService, pusherName, cluster, token)
+			if strings.TrimSpace(readTokenFile) != "" {
+				handler = handler.WithTokenFile(readTokenFile)
+			}
+			server := &http.Server{
+				Addr:              readAddr,
+				Handler:           handler,
+				ReadHeaderTimeout: 10 * time.Second,
+				ReadTimeout:       30 * time.Second,
+				WriteTimeout:      2 * time.Minute,
+				IdleTimeout:       2 * time.Minute,
+			}
+			go func() {
+				<-ctx.Done()
+				_ = server.Shutdown(context.Background())
+			}()
+			go func() {
+				log.Printf("kubernetes read API listening on %s", readAddr)
+				if serveErr := server.ListenAndServe(); serveErr != nil && serveErr != http.ErrServerClosed {
+					log.Printf("kubernetes read API stopped: %v", serveErr)
+				}
+			}()
+			observedAPIURL = advertisedReadURL(readAddr)
+		}
+	}
+
 	runtimepkg.StartRegistration(ctx, store, runtimepkg.PusherInfo{
-		Name:         pusherName,
-		Provider:     "kubernetes",
-		Cluster:      cluster,
-		KubeContext:  kubeContext,
-		ShardIndex:   shardIndex,
-		ShardCount:   shardCount,
-		Capabilities: []string{"metrics", "logs", "traces", "probes"},
-		OTLPEndpoint: telemetryCfg.Endpoint,
-		CollectorURL: probes.HTTPEndpoint(telemetryCfg.Endpoint),
-		WorkerID:     workerID,
+		Name:           pusherName,
+		Provider:       "kubernetes",
+		Cluster:        cluster,
+		KubeContext:    kubeContext,
+		ShardIndex:     shardIndex,
+		ShardCount:     shardCount,
+		Capabilities:   []string{"metrics", "logs", "traces", "probes", "observed"},
+		OTLPEndpoint:   telemetryCfg.Endpoint,
+		CollectorURL:   probes.HTTPEndpoint(telemetryCfg.Endpoint),
+		ObservedAPIURL: observedAPIURL,
+		Token:          readToken,
+		WorkerID:       workerID,
 	})
 
 	probeCfg := probes.ConfigFromEnv()
@@ -239,4 +298,34 @@ func defaultPusherNameForCluster(cluster string) string {
 		return name
 	}
 	return "k8s-" + name
+}
+
+func advertisedReadURL(listenAddr string) string {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(listenAddr))
+	if err != nil {
+		return ""
+	}
+	podIP := strings.TrimSpace(os.Getenv("POD_IP"))
+	if podIP != "" {
+		host = podIP
+	} else if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	if port == "" {
+		return ""
+	}
+	return "http://" + net.JoinHostPort(host, port)
+}
+
+func isLoopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		host = strings.TrimSpace(addr)
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

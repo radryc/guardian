@@ -154,7 +154,7 @@ function needsDetailRefresh(): boolean {
 
 async function loadScans(): Promise<void> {
   const response: ScanListResponse = await fetchJSON("/api/scans");
-  pushers = (response.pushers ?? []).filter((pusher) => pusher.includes("aws"));
+  pushers = (response.pushers ?? []).filter((pusher) => /aws|gcp/i.test(pusher));
   scans = response.scans ?? [];
   renderPusherSelect();
   renderScans();
@@ -165,7 +165,7 @@ function renderPusherSelect(): void {
   if (!select) return;
   const current = select.value;
   select.innerHTML = pushers.length === 0
-    ? `<option value="">No AWS pushers configured</option>`
+    ? `<option value="">No scannable pushers configured</option>`
     : pushers.map((pusher) => `<option value="${escapeAttr(pusher)}">${escapeHtml(pusher)}</option>`).join("");
   if (current && pushers.includes(current)) select.value = current;
 }
@@ -217,7 +217,7 @@ function renderScans(): void {
 async function startScan(): Promise<void> {
   const pusher = (document.getElementById("scanPusher") as HTMLSelectElement | null)?.value?.trim() ?? "";
   if (!pusher) {
-    toast("Select an AWS pusher first.", "error");
+    toast("Select a pusher first.", "error");
     return;
   }
   const regions = (document.getElementById("scanRegions") as HTMLInputElement | null)?.value?.trim() ?? "";
@@ -236,7 +236,7 @@ async function startScan(): Promise<void> {
   selectedScanID = created.scanID ?? "";
   scanDetail = null;
   bundleResponse = null;
-  toast("Scan queued. The AWS pusher will pick it up shortly.", "success");
+  toast("Scan queued. The selected pusher will pick it up shortly.", "success");
   await loadScans();
   schedulePolling();
 }

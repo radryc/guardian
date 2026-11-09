@@ -791,6 +791,35 @@ AWS `observed` intents are populated by:
 Observed intents are report-only: the reconciler writes metadata and skips
 queueing; only the collector writes their derived state.
 
+### 10.4 Unattended AWS credentials (Roles Anywhere)
+
+A pusher using a personal SSO profile fails when the SSO refresh token expires
+or is revoked, which shows up as `InvalidGrantException` / 502s from the
+`/v1/aws/observed/*` read API. For unattended pushers use IAM Roles Anywhere
+instead of SSO:
+
+```bash
+guardianctl aws setup -profile strata-demo2-1 -auth-mode rolesanywhere \
+  -output-profile guardian-ra-780603797542
+guardianctl aws setup -profile strata-demo2-3 -auth-mode rolesanywhere \
+  -output-profile guardian-ra-755370915520
+```
+
+This creates/reuses `GuardianCdkDeployRole` in the target account, a local CA
+and client certificate under `~/.guardian/certs`, and a Roles Anywhere trust
+anchor and profile. The generated profile uses `credential_process` and
+refreshes short-lived credentials automatically.
+
+The pusher container needs:
+
+- `aws_signing_helper` (the credential helper) on the mounted path referenced by
+  the profile; the Alpine pusher image includes `gcompat` so the glibc-built
+  helper runs.
+- `~/.aws` and `~/.guardian` mounted into the container at the same absolute
+  paths used by the profile.
+- `AWS_PROFILE=guardian-ra-<account>` and `GUARDIAN_ASSUME_ROLE_NAME=` (empty,
+  because Roles Anywhere already yields the target role).
+
 ---
 
 ## 11. UI and API

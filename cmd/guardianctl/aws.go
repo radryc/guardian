@@ -28,6 +28,7 @@ func awsSetupCommand() *command.Command {
 	roleName := flags.String("role-name", "GuardianCdkDeployRole", "IAM role name for CDK deployments")
 	policy := flags.String("policy", "scoped", "deploy-role authorization: scoped (least privilege), admin (AdministratorAccess), or a managed policy name")
 	authMode := flags.String("auth-mode", "sso", "Authentication mode: sso, accesskey, rolesanywhere")
+	outputProfile := flags.String("output-profile", "guardian-rolesanywhere", "profile name written for the Roles Anywhere credential_process")
 	caCertPath := flags.String("ca-cert", "", "Path to existing CA certificate (for rolesanywhere mode)")
 	certDir := flags.String("cert-dir", "", "Directory for generated certificates (default: ~/.guardian/certs)")
 	dryRun := flags.Bool("dry-run", false, "print actions without executing")
@@ -121,7 +122,7 @@ func awsSetupCommand() *command.Command {
 				}
 
 				raCfg := awssetup.RolesAnywhereConfig{
-					Profile:         "guardian-rolesanywhere",
+					Profile:         *outputProfile,
 					Region:          cfg.Region,
 					RoleARN:         roleARN,
 					RoleName:        cfg.RoleName,

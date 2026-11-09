@@ -457,6 +457,12 @@ capabilities:
 	if service.Type != "NodePort" || len(service.Ports) != 1 || service.Ports[0].Port != 9090 {
 		t.Fatalf("unexpected payload overlay on service: %+v", service)
 	}
+	if service.Selector["guardian.managed"] != "true" ||
+		service.Selector["guardian.partition"] != "demo" ||
+		service.Selector["guardian.intent"] != "stack" ||
+		service.Selector["guardian.asset"] != "app" {
+		t.Fatalf("service selector must be scoped to the partition/intent/asset: %+v", service.Selector)
+	}
 
 	diffInSync := run("k8s-payload-diff-insync", taskdomain.OpDiff)
 	if diffInSync.Status != taskdomain.ResultSucceeded || diffInSync.Drift == nil || diffInSync.Drift.Status != "InSync" {

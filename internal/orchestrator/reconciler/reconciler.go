@@ -417,6 +417,7 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 				activeTask = false
 			}
 		}
+		var base *statedomain.IntentState
 		if current == nil {
 			current = &statedomain.IntentState{
 				APIVersion: "guardian/v1alpha1",
@@ -425,6 +426,10 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 				Intent:     name,
 				Outputs:    map[string]string{},
 			}
+		} else {
+			// Remember the snapshot this pass started from. Writes below merge
+			// onto the latest state so concurrent observation updates survive.
+			base = statedomain.CloneIntentState(current)
 		}
 		current.Locked = compiledIntent.Spec.Spec.Locked
 		current.IntentType = compiledIntent.Spec.Spec.IntentType
@@ -447,7 +452,7 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 		// the Guardian observed collector owns their state transitions. The
 		// reconciler only keeps their metadata in sync with the manifest.
 		if current.IntentType == intentdomain.TypeObserved {
-			if err := r.dispatcher.WriteIntentState(ctx, current); err != nil {
+			if err := r.persistIntentState(ctx, base, current); err != nil {
 				return fail(err)
 			}
 			existingStates[name] = current
@@ -458,7 +463,7 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 			current.Status = statedomain.StatusBlocked
 			message := "generate CDK stack: " + genErr.Error()
 			current.LastError = &message
-			if err := r.dispatcher.WriteIntentState(ctx, current); err != nil {
+			if err := r.persistIntentState(ctx, base, current); err != nil {
 				return fail(err)
 			}
 			existingStates[name] = current
@@ -487,7 +492,7 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 				if current.Status != statedomain.StatusHealthy {
 					current.Status = statedomain.StatusBlocked
 				}
-				if err := r.dispatcher.WriteIntentState(ctx, current); err != nil {
+				if err := r.persistIntentState(ctx, base, current); err != nil {
 					return fail(err)
 				}
 				if current.Status != prevStatus {
@@ -552,9 +557,10 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 					return fail(err)
 				}
 			}
-			// Only write state for non-in-flight intents to avoid racing with
-			// the result-processor which owns state transitions for in-flight tasks.
-			if err := r.dispatcher.WriteIntentState(ctx, current); err != nil {
+			// Only write state for non-in-flight intents. The merged update
+			// preserves fields owned by the result-processor and the observed
+			// collector even if they wrote while this pass was running.
+			if err := r.persistIntentState(ctx, base, current); err != nil {
 				return fail(err)
 			}
 		} else if oldSpecHash != "" && oldSpecHash != compiledIntent.IntentSpecHash {
@@ -578,7 +584,7 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 			if err := r.dispatcher.QueueTask(ctx, next); err != nil {
 				return fail(err)
 			}
-			if err := r.dispatcher.WriteIntentState(ctx, current); err != nil {
+			if err := r.persistIntentState(ctx, base, current); err != nil {
 				return fail(err)
 			}
 		}
@@ -593,6 +599,22 @@ func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName strin
 	telemetry.EmitInfo(ctx, reconcilerScope, fmt.Sprintf("reconciled partition %s", partitionName))
 	r.updateScheduleFromSpec(partitionName, partitionSpec.Spec.Reconciliation.Interval, partitionSpec.Spec.Reconciliation.JitterPercent)
 	return nil
+}
+
+// persistIntentState atomically merges the changes between base and incoming
+// into the latest persisted state. The reconciler loads every intent at the
+// start of a partition pass and may write one tens of seconds later; merging
+// prevents that write from reverting observations (Resources, LastObservedAt)
+// persisted concurrently by the observed collector.
+func (r *Reconciler) persistIntentState(ctx context.Context, base, incoming *statedomain.IntentState) error {
+	if incoming == nil {
+		return nil
+	}
+	_, err := r.dispatcher.UpdateIntentState(ctx, incoming.Partition, incoming.Intent, func(latest *statedomain.IntentState) error {
+		statedomain.MergeIntentState(latest, base, incoming)
+		return nil
+	})
+	return err
 }
 
 // recoverReleaseLog re-emits the authoritative partition release log when the
@@ -729,6 +751,7 @@ func (r *Reconciler) reconcileRemovedIntents(ctx context.Context, partitionName,
 			if err != nil {
 				return err
 			}
+			base := statedomain.CloneIntentState(state)
 			state.Status = statedomain.StatusDestroying
 			state.LastTaskID = next.TaskID
 			state.LastError = nil
@@ -737,7 +760,7 @@ func (r *Reconciler) reconcileRemovedIntents(ctx context.Context, partitionName,
 			if err := r.dispatcher.QueueTask(ctx, next); err != nil {
 				return err
 			}
-			if err := r.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := r.persistIntentState(ctx, base, state); err != nil {
 				return err
 			}
 			existingStates[name] = state
