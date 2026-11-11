@@ -1,18 +1,16 @@
 # Guardian Architecture
 
-Status: regenerated from source, October 2026 (base commit `92ee966`).
+Status: regenerated from source, November 2026.
 Audience: engineers operating, extending, or reviewing Guardian.
 
-> This document replaces the previous `docs/` set. The old documents were moved
-> to [`docs_backup/`](../docs_backup/) and are kept for historical reference
-> only. Everything below was derived by reading the code, not from the old docs.
+> This document is derived from the code, not from earlier prose. Line
+> references are navigation aids, not stable API contracts.
 
 Related documents:
 
 - [Logical flows](logical-flow.md) — step-by-step request, reconcile, and deploy paths.
 - [Security architecture](security-architecture.md) — trust boundaries, identity, secrets, and threat model.
 - [Codebase map](codebase-map.md) — per-file description of every Go/TypeScript file.
-- Internal findings: [missing pieces](internal/missing.md), [duplication](internal/duplication.md), [simplification](internal/simplification.md).
 
 ---
 
@@ -104,9 +102,11 @@ Guardian has **no database of its own**. MonoFS is simultaneously:
 - the access-policy distribution channel (`.access`).
 
 Every write is versioned by MonoFS. Guardian uses those version IDs for
-optimistic concurrency in the task-claim protocol and for cache invalidation,
-but most control-plane state writes are currently last-writer-wins (see
-[missing pieces](internal/missing.md#1-ha-and-distributed-coordination)).
+optimistic concurrency in the task-claim protocol and for cache invalidation.
+The reconciler supports deterministic sharding (`GUARDIAN_SHARD_INDEX` and
+`GUARDIAN_SHARD_COUNT`) so multiple replicas can divide partitions, but result
+processing, alerting, observed collection, and onboarding still rely on
+last-writer-wins when replicas overlap.
 
 ### Non-goals / current boundaries
 
@@ -280,6 +280,7 @@ A partition is the ownership and reconciliation unit. It is a YAML document
 | Field | Meaning |
 |---|---|
 | `metadata.name` | Partition name; must match the directory and name regex `^[a-z][a-z0-9-]*$` |
+| `spec.enabled` | Optional boolean; `false` inventories the definition but never reconciles it and leaves live assets untouched. Omitted or `true` keeps the historical behavior |
 | `spec.deletionPolicy` | `orphan` (keep resources, delete Guardian state) or `destroy` (run DESTROY for every intent before purge) |
 | `spec.reconciliation.mode` | `auto`, `manual`, or `readonly` |
 | `spec.reconciliation.interval` | Go duration or 5-field cron expression |
@@ -351,8 +352,8 @@ The canonical asset types are declared in
 The **UI catalog** (`internal/domain/assets/catalog.go`) supplies default
 templates, editable fields, and hints for the visual builder. The **typed
 specs** (`compute.go`, `network.go`, …) are the validation/serialization
-authority. The two are maintained separately, which is a source of drift
-(see [duplication](internal/duplication.md)).
+authority. The two are maintained separately, so catalog changes must be paired
+with typed-spec changes to avoid drift.
 
 ### 5.4 Runtime state
 
@@ -402,8 +403,8 @@ apply-readiness, asset observations, errors, and logs.
 - **Events** — `.state/events/<id>.json`, pruned to 250 per partition.
 
 There are two overlapping history representations (`ReleaseRecord` and
-`DeploymentRecord`) and two overlapping source paths (release log fast path and
-archive scan). This is documented in [duplication](internal/duplication.md).
+`DeploymentRecord`) and two source paths (release log fast path and archive
+scan); keep them consistent when changing release or archive behavior.
 
 ---
 
@@ -466,6 +467,10 @@ that accept user-supplied names must validate them before constructing paths
 - `ReconcilePartition` reads config and intents, compiles them, writes a
   compiled partition state, handles removed intents, generates CDK payloads,
   and iterates intents in dependency order.
+- A partition with `spec.enabled: false` short-circuits reconciliation: Guardian
+  writes a `Disabled` partition state, removes the partition's schedule, and
+  queues, compiles, or destroys nothing. Re-enabling the partition resumes
+  normal reconciliation on the next discovery or scheduled pass.
 - `ReconcileAll` fans out over all owned partitions on startup and after
   watcher reconnects.
 - `ForceApplyPartition` bypasses the normal DIFF/CHECK path and queues APPLY.
@@ -928,15 +933,14 @@ delete. `secrets/**` is ignored and inline `Secret.value` is rejected.
 `stratatools/deploy/bootstrap` tree, apply them with `kubectl`, build sibling
 repo images, create a kind cluster/registry, and deploy MonoFS, lb-edge,
 Guardian, and a host Docker pusher. This tooling is development-only and
-currently references files outside this repository (see
-[missing pieces](internal/missing.md#11-build-release-and-packaging)).
+expects the sibling `stratatools` checkout for its bootstrap tree.
 
 ### 13.3 Packaging
 
 - `Dockerfile` builds `guardiand` and the entrypoint writes a temporary config.
 - `Dockerfile.pusher-{aws,docker,k8s}` build each pusher.
 - `Makefile` has build/test/dogfood targets; several lifecycle targets are
-  declared but empty (documented in findings).
+  declared but empty.
 - Images run as root and mount the Docker socket for the Docker pusher.
 
 ---
@@ -1048,8 +1052,7 @@ Known deviations (details in the internal docs):
 
 These are not small implementation details; they define the current security
 and reliability posture. The [security architecture](security-architecture.md)
-and [internal findings](internal/missing.md) treat them as first-class work
-items.
+treats them as first-class work items.
 
 ### Recent P0+P1 mitigations
 
