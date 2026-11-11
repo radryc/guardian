@@ -1924,3 +1924,21 @@ func TestDeriveAssetPresentationUsesAssetObservationWhileDiffing(t *testing.T) {
 		t.Fatalf("summary = %q", summary)
 	}
 }
+
+func TestPartitionDataCacheServesStaleWithinWindow(t *testing.T) {
+	t.Parallel()
+
+	cache := newPartitionDataCache(10 * time.Millisecond)
+	now := time.Now().UTC()
+	cache.set("demo|latest=false|events=false", now, &PartitionDetailResponse{}, 10*time.Millisecond)
+
+	if _, fresh, ok := cache.getWithState("demo|latest=false|events=false", now.Add(5*time.Millisecond)); !ok || !fresh {
+		t.Fatalf("fresh entry: ok=%v fresh=%v, want true/true", ok, fresh)
+	}
+	if payload, fresh, ok := cache.getWithState("demo|latest=false|events=false", now.Add(20*time.Millisecond)); !ok || fresh || payload == nil {
+		t.Fatalf("stale entry: ok=%v fresh=%v payload=%v, want true/false/non-nil", ok, fresh, payload)
+	}
+	if _, _, ok := cache.getWithState("demo|latest=false|events=false", now.Add(defaultUIDataStaleTTL+time.Second)); ok {
+		t.Fatal("entry past stale window should be evicted")
+	}
+}

@@ -152,8 +152,15 @@ func HasActiveTask(ctx context.Context, store guardianapi.ReadStore, intentState
 	if intentState == nil {
 		return false, nil
 	}
-	if intentState.LastTaskID == "" || intentState.TargetPusher == "" {
+	if intentState.LastTaskID == "" {
 		return IsInFlight(intentState.Status), nil
+	}
+	if intentState.TargetPusher == "" {
+		// The state references a task but does not say where it lives, so the
+		// task/claim/result cannot be resolved. Treat it as inactive so the
+		// reconciler recompiles and repopulates the missing fields instead of
+		// leaving the intent stuck in an in-flight status forever.
+		return false, nil
 	}
 	if exists, err := pathExists(ctx, store, paths.QueueTask(intentState.TargetPusher, intentState.LastTaskID)); err != nil {
 		return false, err

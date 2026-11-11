@@ -60,6 +60,7 @@ func main() {
 	var cfnExecutionRole string
 	var unclaimedTaskRetryDelay time.Duration
 	var maxConcurrency int
+	var taskTimeout time.Duration
 	var shardIndex int
 	var shardCount int
 	var awsReadAddr string
@@ -96,6 +97,7 @@ func main() {
 	flag.StringVar(&cfnExecutionRole, "cfn-execution-role", envOr("GUARDIAN_CFN_EXECUTION_ROLE", "per-intent"), "CloudFormation execution role: per-intent (role per partition/intent with only the declared template actions) or shared (account bootstrap role)")
 	flag.DurationVar(&unclaimedTaskRetryDelay, "unclaimed-task-retry-delay", 15*time.Second, "minimum delay before retrying a task that could not be claimed; 0 disables backoff")
 	flag.IntVar(&maxConcurrency, "max-concurrency", 0, "maximum tasks executed concurrently (0 = auto from CPU count)")
+	flag.DurationVar(&taskTimeout, "task-timeout", 0, "maximum duration for a single task before it is cancelled; 0 disables (keep below GUARDIAN_STALE_TASK_AFTER)")
 	flag.IntVar(&shardIndex, "shard-index", 0, "shard index for this replica when sharding a shared queue")
 	flag.IntVar(&shardCount, "shard-count", 1, "number of shards sharing the queue; 1 disables sharding")
 	flag.StringVar(&awsReadAddr, "awsread-addr", envOr("GUARDIAN_AWSREAD_ADDR", "127.0.0.1:19090"), "HTTP listen address for the read-only CloudWatch/X-Ray API (empty disables; loopback by default)")
@@ -233,6 +235,7 @@ func main() {
 			PollInterval:            5 * time.Second,
 			UnclaimedTaskRetryDelay: unclaimedTaskRetryDelay,
 			MaxConcurrency:          maxConcurrency,
+			TaskTimeout:             taskTimeout,
 			ShardIndex:              shardIndex,
 			ShardCount:              shardCount,
 			CanHandle: func(task *taskdomain.Task) bool {

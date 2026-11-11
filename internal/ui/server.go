@@ -122,18 +122,32 @@ type Server struct {
 }
 
 const defaultUIDataCacheTTL = 3 * time.Second
+
+// defaultUIOverviewCacheTTL is the soft TTL for the partition overview, which
+// is polled by several components and is expensive to rebuild.
+const defaultUIOverviewCacheTTL = 15 * time.Second
+
+// defaultUIDataStaleTTL is how long an expired overview/partition payload may
+// still be served while a background refresh runs. Overview scans take a few
+// seconds and are polled by several components; serving stale data avoids
+// turning every poll into a full partition-tree scan.
+const defaultUIDataStaleTTL = 2 * time.Minute
+
 const defaultRolloutWindow = 12 * time.Hour
 const defaultRolloutTTL = 1 * time.Minute
 
 type partitionDataCache struct {
-	ttl     time.Duration
-	mu      sync.RWMutex
-	entries map[string]partitionDataCacheEntry
+	ttl         time.Duration
+	overviewTTL time.Duration
+	staleTTL    time.Duration
+	mu          sync.RWMutex
+	entries     map[string]partitionDataCacheEntry
 }
 
 type partitionDataCacheEntry struct {
-	expiresAt time.Time
-	payload   *PartitionDetailResponse
+	expiresAt  time.Time
+	staleUntil time.Time
+	payload    *PartitionDetailResponse
 }
 
 // partitionLoad collapses concurrent cache misses for the same partition into a
@@ -149,38 +163,60 @@ func newPartitionDataCache(ttl time.Duration) *partitionDataCache {
 		return nil
 	}
 	return &partitionDataCache{
-		ttl:     ttl,
-		entries: make(map[string]partitionDataCacheEntry),
+		ttl:         ttl,
+		overviewTTL: defaultUIOverviewCacheTTL,
+		staleTTL:    defaultUIDataStaleTTL,
+		entries:     make(map[string]partitionDataCacheEntry),
 	}
 }
 
-func (c *partitionDataCache) get(key string, now time.Time) (*PartitionDetailResponse, bool) {
+func (c *partitionDataCache) overviewTTLOrDefault() time.Duration {
+	if c == nil || c.overviewTTL <= 0 {
+		return defaultUIOverviewCacheTTL
+	}
+	if c.overviewTTL < c.ttl {
+		return c.ttl
+	}
+	return c.overviewTTL
+}
+
+// getWithState returns a cached payload and whether it is still fresh. When ok
+// is true but fresh is false the payload is stale (within staleTTL) and the
+// caller should trigger a background refresh.
+func (c *partitionDataCache) getWithState(key string, now time.Time) (payload *PartitionDetailResponse, fresh bool, ok bool) {
 	if c == nil {
-		return nil, false
+		return nil, false, false
 	}
 	c.mu.RLock()
-	entry, ok := c.entries[key]
+	entry, found := c.entries[key]
 	c.mu.RUnlock()
-	if !ok {
-		return nil, false
+	if !found {
+		return nil, false, false
 	}
-	if now.After(entry.expiresAt) {
-		c.mu.Lock()
-		delete(c.entries, key)
-		c.mu.Unlock()
-		return nil, false
+	if now.Before(entry.expiresAt) {
+		return entry.payload, true, true
 	}
-	return entry.payload, true
+	if now.Before(entry.staleUntil) {
+		return entry.payload, false, true
+	}
+	c.mu.Lock()
+	delete(c.entries, key)
+	c.mu.Unlock()
+	return nil, false, false
 }
 
-func (c *partitionDataCache) set(key string, now time.Time, payload *PartitionDetailResponse) {
+func (c *partitionDataCache) set(key string, now time.Time, payload *PartitionDetailResponse, ttl time.Duration) {
 	if c == nil || payload == nil {
 		return
 	}
+	if ttl <= 0 {
+		ttl = c.ttl
+	}
 	c.mu.Lock()
 	c.entries[key] = partitionDataCacheEntry{
-		expiresAt: now.Add(c.ttl),
-		payload:   payload,
+		expiresAt:  now.Add(ttl),
+		staleUntil: now.Add(ttl + c.staleTTL),
+		payload:    payload,
 	}
 	c.mu.Unlock()
 }
@@ -597,8 +633,26 @@ func (s *Server) requestCanReadAccessPolicy(r *http.Request) bool {
 	return s.access != nil && s.access.IsAdmin(r.Context())
 }
 
+type m2mTrustedContextKey struct{}
+
+// withM2MTrusted marks a request authorized by the machine-to-machine token.
+// Machine callers (Sentinel, pushers) need the complete partition list; applying
+// the end-user access policy to them filters every partition out whenever the
+// machine token has no user grants, which silently breaks alerting.
+func withM2MTrusted(ctx context.Context) context.Context {
+	return context.WithValue(ctx, m2mTrustedContextKey{}, true)
+}
+
+func isM2MTrusted(ctx context.Context) bool {
+	trusted, _ := ctx.Value(m2mTrustedContextKey{}).(bool)
+	return trusted
+}
+
 // canSeePartition applies the repo-managed access policy to one partition.
 func (s *Server) canSeePartition(ctx context.Context, partition string) bool {
+	if isM2MTrusted(ctx) {
+		return true
+	}
 	if s.access == nil || !s.access.Enabled() {
 		return true
 	}
@@ -626,7 +680,7 @@ func (s *Server) handleM2MOverview(w http.ResponseWriter, r *http.Request) {
 	if !s.requireM2MAccess(w, r) {
 		return
 	}
-	payload, err := s.buildOverview(r.Context())
+	payload, err := s.buildOverview(withM2MTrusted(r.Context()))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -668,7 +722,7 @@ func (s *Server) handleM2MPartitions(w http.ResponseWriter, r *http.Request) {
 	if !s.requireM2MAccess(w, r) {
 		return
 	}
-	cloned := r.Clone(r.Context())
+	cloned := r.Clone(withM2MTrusted(r.Context()))
 	cloned.URL.Path = "/api/partitions"
 	s.handlePartitions(w, cloned)
 }
@@ -683,7 +737,7 @@ func (s *Server) handleM2MPartitionRoute(w http.ResponseWriter, r *http.Request)
 	if !s.requireM2MAccess(w, r) {
 		return
 	}
-	cloned := r.Clone(r.Context())
+	cloned := r.Clone(withM2MTrusted(r.Context()))
 	cloned.URL.Path = "/api/partitions/" + trimmed
 	s.handlePartitionRoute(w, cloned)
 }

@@ -1,6 +1,9 @@
 package partition
 
-import targetdomain "github.com/radryc/guardian/internal/domain/target"
+import (
+	targetdomain "github.com/radryc/guardian/internal/domain/target"
+	policy "github.com/radryc/monofs/pkg/authz/policy"
+)
 
 type Partition struct {
 	APIVersion string   `yaml:"apiVersion" json:"apiVersion"`
@@ -30,6 +33,9 @@ type Spec struct {
 	// PrimarySet is the optional primary set for this partition. It is added to
 	// Sets automatically when set.
 	PrimarySet string `yaml:"primarySet,omitempty" json:"primarySet,omitempty"`
+	// Quota is the partition resource envelope. Profile names refer to
+	// quota_profiles in the repo-managed access policy.
+	Quota *policy.Quota `yaml:"quota,omitempty" json:"quota,omitempty"`
 }
 
 // IsEnabled reports whether Guardian should act on this partition. The zero

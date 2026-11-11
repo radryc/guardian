@@ -55,6 +55,11 @@ type Runtime struct {
 	// MaxConcurrency bounds how many claimed tasks execute at once. Zero selects
 	// a CPU-derived default; values are clamped to [1, 128].
 	MaxConcurrency int
+	// TaskTimeout bounds a single task execution (including driver retries).
+	// Zero disables the timeout. Keep it below the control-plane stale-task
+	// timeout so the pusher can write a failure result before Guardian treats
+	// the task as dead and queues a replacement.
+	TaskTimeout time.Duration
 	// ShardIndex/ShardCount let multiple replicas of the same pusher split a
 	// queue by task-ID hash. ShardCount <= 1 disables sharding.
 	ShardIndex int
@@ -531,8 +536,19 @@ func (r *Runtime) processTaskEntry(ctx context.Context, pusher, taskID string, s
 	r.activeClaims.Add(1)
 	defer r.activeClaims.Add(-1)
 	stopHeartbeat := r.startClaimHeartbeat(ctx, pusher, claim, claimVersionID)
-	result := r.executeTask(ctx, t)
+	taskCtx := ctx
+	cancel := func() {}
+	if r.TaskTimeout > 0 {
+		taskCtx, cancel = context.WithTimeout(ctx, r.TaskTimeout)
+	}
+	result := r.executeTask(taskCtx, t)
+	timedOut := taskCtx.Err() == context.DeadlineExceeded
+	cancel()
 	stopHeartbeat()
+	if timedOut {
+		log.Printf("[Pusher] Task %s exceeded task timeout %s; cancelling", taskID, r.TaskTimeout)
+		result = taskTimeoutResult(t, r.TaskTimeout)
+	}
 	redactTaskResultSecrets(t, result)
 	changed := []string{}
 	if result.Drift != nil {
@@ -542,6 +558,26 @@ func (r *Runtime) processTaskEntry(ctx context.Context, pusher, taskID string, s
 		taskID, t.Op, t.Partition, t.Intent, result.Status, changed)
 	if err := r.writeResult(ctx, result); err != nil {
 		log.Printf("[Pusher] Error writing result for task %s: %v", taskID, err)
+	}
+}
+
+// taskTimeoutResult builds a failed result when a task exceeds TaskTimeout.
+// It replaces whatever the driver returned, so a driver that ignores context
+// cancellation cannot report success after the deadline.
+func taskTimeoutResult(t *taskdomain.Task, timeout time.Duration) *taskdomain.TaskResult {
+	msg := fmt.Sprintf("task exceeded timeout %s", timeout)
+	return &taskdomain.TaskResult{
+		APIVersion: "guardian/v1alpha1",
+		Kind:       "TaskResult",
+		TaskID:     t.TaskID,
+		Op:         t.Op,
+		Partition:  t.Partition,
+		Intent:     t.Intent,
+		Pusher:     t.TargetPusher,
+		Status:     taskdomain.ResultFailed,
+		Error:      &msg,
+		Logs:       []taskdomain.LogEntry{logEntry("error", "", msg)},
+		FinishedAt: time.Now().UTC(),
 	}
 }
 

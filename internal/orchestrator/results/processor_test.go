@@ -1489,3 +1489,68 @@ spec:
 		t.Fatalf("valueHash lost: %v", got.Outputs)
 	}
 }
+
+func TestProcessorDiscardsResultAfterRepeatedFailures(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	dispatch := dispatcher.NewDispatcher(store, "guardiand")
+	processor := NewProcessor(store, dispatch)
+
+	previousWindow := resultFailureWindow
+	resultFailureWindow = 0
+	defer func() { resultFailureWindow = previousWindow }()
+
+	finishedAt := time.Now().UTC()
+	task := taskdomain.Task{
+		APIVersion:   "guardian/v1alpha1",
+		Kind:         "Task",
+		TaskID:       "task-poison-1",
+		Partition:    "payments",
+		Intent:       "api",
+		Op:           taskdomain.OpApply,
+		TargetPusher: "local",
+		Target:       targetdomain.Placement{Cluster: "local"},
+	}
+	writeJSONFile(t, ctx, store, paths.QueueTask("local", task.TaskID), task)
+	writeJSONFile(t, ctx, store, paths.QueueClaim("local", task.TaskID), taskdomain.ClaimFile{
+		TaskID:       task.TaskID,
+		WorkerID:     "worker-1",
+		ClaimedAt:    finishedAt,
+		LeaseSeconds: 300,
+	})
+	result := taskdomain.TaskResult{
+		APIVersion: "guardian/v1alpha1",
+		Kind:       "TaskResult",
+		TaskID:     task.TaskID,
+		Op:         taskdomain.OpApply,
+		Status:     taskdomain.ResultSucceeded,
+		Partition:  "payments",
+		Intent:     "api",
+		Pusher:     "local",
+		FinishedAt: finishedAt,
+	}
+
+	// No intent state exists, so every attempt fails before it can commit.
+	for attempt := 1; attempt <= resultFailureMaxAttempts; attempt++ {
+		err := processor.ProcessResult(ctx, &result)
+		if attempt < resultFailureMaxAttempts {
+			if err == nil {
+				t.Fatalf("attempt %d unexpectedly succeeded", attempt)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("final attempt error = %v, want nil after discard", err)
+		}
+	}
+
+	for _, artifact := range []string{
+		paths.QueueTask("local", task.TaskID),
+		paths.QueueClaim("local", task.TaskID),
+		paths.QueueResult("local", task.TaskID),
+	} {
+		if _, err := store.ReadFile(ctx, artifact); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("queue artifact %s still present (err = %v)", artifact, err)
+		}
+	}
+}

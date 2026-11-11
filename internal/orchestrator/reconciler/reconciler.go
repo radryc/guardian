@@ -34,6 +34,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	metricapi "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/time/rate"
 )
 
 const reconcilerScope = "guardian.reconciler"
@@ -51,7 +52,15 @@ type Reconciler struct {
 	intervalStr    string
 	staleTaskAfter time.Duration // tasks older than this are treated as dead and re-queued
 	parallelism    int
+	rateLimit      float64       // partition reconciles started per second; 0 disables pacing
+	rateBurst      int           // token-bucket burst; 0 = parallelism
+	limiter        *rate.Limiter // guarded by runMu
+	adaptive       bool          // pace from queue backlog instead of a fixed rate
+	backlogTarget  int           // outstanding tasks considered healthy
+	minRateLimit   float64       // adaptive floor in partitions per second
+	currentRate    float64       // current adaptive ceiling applied to the limiter
 	partitionLocks sync.Map
+	reconcileMu    sync.Mutex // serialises full sweeps so paced runs cannot overlap
 
 	// authorize optionally gates externally-triggered partition reconciles
 	// (authz epic E2). nil means allow. It is invoked for ReconcilePartition
@@ -79,6 +88,231 @@ func (r *Reconciler) SetShardConfig(shardIndex, shardCount int) {
 	r.shardIndex = shardIndex
 	r.shardCount = shardCount
 	r.runMu.Unlock()
+}
+
+// SetParallelism caps how many partitions may reconcile concurrently. Values
+// <= 0 restore the CPU-derived default. It should be called before Run because
+// the worker-pool capacity is fixed at startup.
+func (r *Reconciler) SetParallelism(n int) {
+	if n <= 0 {
+		n = defaultParallelism()
+	}
+	r.runMu.Lock()
+	r.parallelism = n
+	r.rebuildLimiterLocked()
+	r.runMu.Unlock()
+}
+
+// SetRateLimit paces partition reconcile starts with a token bucket of
+// perSecond tokens. perSecond <= 0 disables pacing (leaving only parallelism as
+// the bound); burst <= 0 defaults to 1 (strict pacing). Set an explicit burst
+// only if you want to allow an initial batch to start together.
+func (r *Reconciler) SetRateLimit(perSecond float64, burst int) {
+	r.runMu.Lock()
+	r.rateLimit = perSecond
+	r.rateBurst = burst
+	r.currentRate = perSecond
+	r.rebuildLimiterLocked()
+	r.runMu.Unlock()
+}
+
+// SetAdaptiveRateLimit turns the rate limit into an AIMD controller driven by
+// the number of outstanding queue tasks (/.queues/*). It starts at
+// ReconcileMinRateLimit and ramps toward the configured ReconcileRateLimit
+// while the backlog stays at or below the target, shrinking when it grows.
+// minRate <= 0 defaults to rateLimit/10 (floor 0.1); target <= 0 defaults to
+// 100 outstanding tasks.
+func (r *Reconciler) SetAdaptiveRateLimit(enabled bool, target int, minRate float64) {
+	r.runMu.Lock()
+	r.adaptive = enabled
+	if !enabled {
+		r.rebuildLimiterLocked()
+		r.runMu.Unlock()
+		return
+	}
+	if r.rateLimit <= 0 {
+		r.rateLimit = 1
+	}
+	if target <= 0 {
+		target = 100
+	}
+	if minRate <= 0 {
+		minRate = r.rateLimit / 10
+		if minRate < 0.1 {
+			minRate = 0.1
+		}
+	}
+	if minRate > r.rateLimit {
+		minRate = r.rateLimit
+	}
+	r.backlogTarget = target
+	r.minRateLimit = minRate
+	r.currentRate = minRate
+	r.rebuildLimiterLocked()
+	r.runMu.Unlock()
+}
+
+// rebuildLimiterLocked must be called with runMu held.
+func (r *Reconciler) rebuildLimiterLocked() {
+	limit := r.rateLimit
+	if r.adaptive {
+		limit = r.currentRate
+	}
+	burst := r.rateBurst
+	if burst <= 0 {
+		// Strict pacing by default: a burst equal to parallelism would start
+		// every partition at once and defeat the rate limit.
+		burst = 1
+	}
+	if limit <= 0 {
+		r.limiter = nil
+		return
+	}
+	if burst < 1 {
+		burst = 1
+	}
+	r.limiter = rate.NewLimiter(rate.Limit(limit), burst)
+}
+
+// waitRateLimit blocks until the next reconcile slot is available. It is a
+// no-op when pacing is disabled.
+func (r *Reconciler) waitRateLimit(ctx context.Context) error {
+	r.runMu.Lock()
+	limiter := r.limiter
+	r.runMu.Unlock()
+	if limiter == nil {
+		return nil
+	}
+	return limiter.Wait(ctx)
+}
+
+const adaptiveSampleInterval = 10 * time.Second
+
+// runAdaptiveController periodically samples outstanding queue tasks and
+// adjusts the pacing rate between minRateLimit and rateLimit.
+func (r *Reconciler) runAdaptiveController(ctx context.Context) {
+	ticker := time.NewTicker(adaptiveSampleInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.adaptRate(ctx)
+		}
+	}
+}
+
+func (r *Reconciler) adaptRate(ctx context.Context) {
+	backlog, err := r.backlogCount(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("reconciler: adaptive backlog sample failed: %v", err)
+		}
+		return
+	}
+
+	r.runMu.Lock()
+	defer r.runMu.Unlock()
+	if !r.adaptive || r.limiter == nil {
+		return
+	}
+	next := nextAdaptiveRate(r.currentRate, r.minRateLimit, r.rateLimit, backlog, r.backlogTarget)
+	if next == r.currentRate {
+		return
+	}
+	r.currentRate = next
+	r.limiter.SetLimit(rate.Limit(next))
+	log.Printf("reconciler: adaptive rate backlog=%d target=%d rate=%.3f/s", backlog, r.backlogTarget, next)
+}
+
+// nextAdaptiveRate applies an AIMD step: shrink multiplicatively when the
+// backlog exceeds the target, grow additively while it is below the low
+// watermark, otherwise hold steady.
+func nextAdaptiveRate(current, minRate, maxRate float64, backlog, target int) float64 {
+	if maxRate <= 0 {
+		return current
+	}
+	if minRate < 0 {
+		minRate = 0
+	}
+	if minRate > maxRate {
+		minRate = maxRate
+	}
+	if target <= 0 {
+		target = 1
+	}
+	high := float64(target) * 1.25
+	low := float64(target) * 0.75
+	switch {
+	case float64(backlog) > high:
+		current *= 0.7
+		if current < minRate {
+			current = minRate
+		}
+	case float64(backlog) < low:
+		step := (maxRate - minRate) / 10
+		if step <= 0 {
+			step = 0.01
+		}
+		current += step
+		if current > maxRate {
+			current = maxRate
+		}
+	}
+	return current
+}
+
+// backlogCount returns the number of queued tasks that have no result yet
+// across all pushers. Tasks with a result file are finished (or orphaned) and
+// must not throttle reconciliation; otherwise stale queue artifacts left by a
+// past outage keep the adaptive limiter pinned at its floor.
+func (r *Reconciler) backlogCount(ctx context.Context) (int, error) {
+	entries, err := r.store.ListDir(ctx, paths.QueueRoot())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	total := 0
+	for _, entry := range entries {
+		if !entry.IsDir {
+			continue
+		}
+		queueEntries, err := r.store.ListDir(ctx, paths.QueueDir(entry.Name))
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return total, err
+		}
+		completed := make(map[string]struct{})
+		resultEntries, err := r.store.ListDir(ctx, paths.QueueResultsDir(entry.Name))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return total, err
+		}
+		for _, res := range resultEntries {
+			if res.IsDir || !strings.HasSuffix(res.Name, ".json") {
+				continue
+			}
+			completed[strings.TrimSuffix(res.Name, ".json")] = struct{}{}
+		}
+		for _, q := range queueEntries {
+			if q.IsDir || strings.HasPrefix(q.Name, ".") {
+				continue
+			}
+			if !strings.HasSuffix(q.Name, ".json") {
+				continue
+			}
+			taskID := strings.TrimSuffix(q.Name, ".json")
+			if _, done := completed[taskID]; done {
+				continue
+			}
+			total++
+		}
+	}
+	return total, nil
 }
 
 // OwnsPartition reports whether this Reconciler replica owns partitionName
@@ -142,7 +376,11 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("reconciler: create scheduler: %w", err)
 	}
-	pool := newPriorityPool(r.parallelism)
+	r.runMu.Lock()
+	parallelism := r.parallelism
+	limiter := r.limiter
+	r.runMu.Unlock()
+	pool := newPriorityPool(parallelism, limiter)
 	pool.start(ctx)
 
 	r.runMu.Lock()
@@ -162,7 +400,17 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	}()
 
 	sched.Start(ctx)
-	log.Printf("reconciler: starting with default interval=%s parallelism=%d", r.intervalStr, r.parallelism)
+	log.Printf("reconciler: starting with default interval=%s parallelism=%d", r.intervalStr, parallelism)
+
+	r.runMu.Lock()
+	adaptive := r.adaptive
+	startRate := r.currentRate
+	backlogTarget := r.backlogTarget
+	r.runMu.Unlock()
+	if adaptive {
+		go r.runAdaptiveController(ctx)
+		log.Printf("reconciler: adaptive rate enabled (start=%.3f/s, backlog target=%d)", startRate, backlogTarget)
+	}
 
 	// Initial full reconcile (synchronous) so the daemon is current on startup.
 	if err := r.reconcileAll(ctx); err != nil {
@@ -838,6 +1086,12 @@ func (r *Reconciler) loadDeletedIntentManifest(ctx context.Context, partitionNam
 }
 
 func (r *Reconciler) reconcileAll(ctx context.Context) error {
+	// A full sweep is expensive and paces partition starts. Serialise sweeps so
+	// a startup/reconnect sweep cannot overlap the periodic one and produce a
+	// write storm against the state store.
+	r.reconcileMu.Lock()
+	defer r.reconcileMu.Unlock()
+
 	log.Printf("reconciler: starting full reconcile cycle")
 	names, err := r.partitionNames(ctx)
 	if err != nil {
@@ -846,7 +1100,9 @@ func (r *Reconciler) reconcileAll(ctx context.Context) error {
 	if len(names) == 0 {
 		return nil
 	}
+	r.runMu.Lock()
 	workerCount := r.parallelism
+	r.runMu.Unlock()
 	if workerCount <= 0 {
 		workerCount = 1
 	}
@@ -863,6 +1119,12 @@ func (r *Reconciler) reconcileAll(ctx context.Context) error {
 			for name := range partitions {
 				if ctx.Err() != nil {
 					return
+				}
+				if err := r.waitRateLimit(ctx); err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					log.Printf("reconciler: rate limiter error (continuing): %v", err)
 				}
 				if err := r.ReconcilePartition(ctx, name, false); err != nil {
 					log.Printf("reconciler: partition=%s error (continuing): %v", name, err)

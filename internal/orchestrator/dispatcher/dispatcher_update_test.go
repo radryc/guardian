@@ -136,11 +136,19 @@ func TestUpdateIntentStateSerializesConcurrentWriters(t *testing.T) {
 
 type conflictStore struct {
 	guardianapi.Store
-	mu        sync.Mutex
-	conflicts int
+	mu            sync.Mutex
+	conflicts     int
+	readConflicts int
 }
 
 func (s *conflictStore) ReadFileVersioned(ctx context.Context, logicalPath string) ([]byte, guardianapi.FileVersion, bool, error) {
+	s.mu.Lock()
+	if s.readConflicts > 0 {
+		s.readConflicts--
+		s.mu.Unlock()
+		return nil, guardianapi.FileVersion{}, false, guardianapi.ErrConflict
+	}
+	s.mu.Unlock()
 	reader, ok := s.Store.(guardianapi.VersionedReader)
 	if !ok {
 		return nil, guardianapi.FileVersion{}, false, nil
@@ -163,6 +171,31 @@ func TestUpdateIntentStateCASRetriesConflict(t *testing.T) {
 	ctx := context.Background()
 	baseStore := memory.New()
 	store := &conflictStore{Store: baseStore, conflicts: 2}
+	dispatch := NewDispatcher(store, "test")
+
+	state, err := dispatch.UpdateIntentState(ctx, "demo", "app", func(latest *statedomain.IntentState) error {
+		latest.Status = statedomain.StatusHealthy
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("UpdateIntentState: %v", err)
+	}
+	if state.Status != statedomain.StatusHealthy {
+		t.Fatalf("status = %q, want healthy", state.Status)
+	}
+	persisted, err := common.LoadIntentState(ctx, baseStore, "demo", "app")
+	if err != nil {
+		t.Fatalf("LoadIntentState: %v", err)
+	}
+	if persisted.Status != statedomain.StatusHealthy {
+		t.Fatalf("persisted status = %q, want healthy", persisted.Status)
+	}
+}
+
+func TestUpdateIntentStateCASRetriesReadConflict(t *testing.T) {
+	ctx := context.Background()
+	baseStore := memory.New()
+	store := &conflictStore{Store: baseStore, readConflicts: 2}
 	dispatch := NewDispatcher(store, "test")
 
 	state, err := dispatch.UpdateIntentState(ctx, "demo", "app", func(latest *statedomain.IntentState) error {

@@ -35,6 +35,7 @@ func main() {
 	var monofsPrincipalID string
 	var unclaimedTaskRetryDelay time.Duration
 	var maxConcurrency int
+	var taskTimeout time.Duration
 	var shardIndex int
 	var shardCount int
 	flag.StringVar(&pusherName, "pusher-name", "", "pusher name")
@@ -45,6 +46,7 @@ func main() {
 	flag.StringVar(&monofsPrincipalID, "monofs-principal-id", "", "MonoFS guardian principal ID (defaults to guardian-pusher-<pusher-name>)")
 	flag.DurationVar(&unclaimedTaskRetryDelay, "unclaimed-task-retry-delay", 15*time.Second, "minimum delay before retrying a task that could not be claimed; 0 disables backoff")
 	flag.IntVar(&maxConcurrency, "max-concurrency", 0, "maximum tasks executed concurrently (0 = auto from CPU count)")
+	flag.DurationVar(&taskTimeout, "task-timeout", 0, "maximum duration for a single task before it is cancelled; 0 disables (keep below GUARDIAN_STALE_TASK_AFTER)")
 	flag.IntVar(&shardIndex, "shard-index", 0, "shard index for this replica when sharding a shared queue")
 	flag.IntVar(&shardCount, "shard-count", 1, "number of shards sharing the queue; 1 disables sharding")
 	flag.Parse()
@@ -138,6 +140,7 @@ func main() {
 		PollInterval:            5 * time.Second,
 		UnclaimedTaskRetryDelay: unclaimedTaskRetryDelay,
 		MaxConcurrency:          maxConcurrency,
+		TaskTimeout:             taskTimeout,
 		ShardIndex:              shardIndex,
 		ShardCount:              shardCount,
 	}

@@ -32,24 +32,66 @@ import (
 const processorScope = "guardian.results"
 
 var (
-	resultMetricsOnce sync.Once
-	resultCounter     metricapi.Int64Counter
-	resultFailCounter metricapi.Int64Counter
-	resultDuration    metricapi.Float64Histogram
+	resultMetricsOnce    sync.Once
+	resultCounter        metricapi.Int64Counter
+	resultFailCounter    metricapi.Int64Counter
+	resultDiscardCounter metricapi.Int64Counter
+	resultDuration       metricapi.Float64Histogram
 )
 
 type Processor struct {
 	store      guardianapi.Store
 	dispatcher *dispatcher.Dispatcher
+
+	failureMu sync.Mutex
+	failures  map[string]resultFailure
+}
+
+// A result normally finishes in seconds. When the same result keeps failing,
+// its state write can never be committed (for example a permanently unreadable
+// intent-state path), and every scan retries it forever. After this window the
+// result is discarded and the reconciler re-queues the intent from scratch.
+const resultFailureMaxAttempts = 5
+
+// resultFailureWindow is a variable so tests can shorten it.
+var resultFailureWindow = 2 * time.Minute
+
+type resultFailure struct {
+	attempts int
+	first    time.Time
 }
 
 func NewProcessor(store guardianapi.Store, dispatcher *dispatcher.Dispatcher) *Processor {
 	return &Processor{store: store, dispatcher: dispatcher}
 }
 
+// recordResultFailure tracks consecutive failures for one result and reports
+// whether the result should be abandoned.
+func (p *Processor) recordResultFailure(taskID string) bool {
+	now := time.Now()
+	p.failureMu.Lock()
+	defer p.failureMu.Unlock()
+	if p.failures == nil {
+		p.failures = make(map[string]resultFailure)
+	}
+	failure := p.failures[taskID]
+	if failure.attempts == 0 {
+		failure.first = now
+	}
+	failure.attempts++
+	p.failures[taskID] = failure
+	return failure.attempts >= resultFailureMaxAttempts && now.Sub(failure.first) >= resultFailureWindow
+}
+
+func (p *Processor) clearResultFailure(taskID string) {
+	p.failureMu.Lock()
+	delete(p.failures, taskID)
+	p.failureMu.Unlock()
+}
+
 func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskResult) error {
 	attrs := resultAttributes(result)
-	count, failures, duration := resultInstruments()
+	count, failures, discarded, duration := resultInstruments()
 	if count != nil {
 		count.Add(ctx, 1, metricapi.WithAttributes(attrs...))
 	}
@@ -73,6 +115,10 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		telemetry.EmitError(ctx, processorScope, fmt.Sprintf("process result %s failed: %v", result.TaskID, err))
+		if p.recordResultFailure(result.TaskID) {
+			p.abandonResult(ctx, result, err, discarded)
+			return nil
+		}
 		return err
 	}
 
@@ -616,11 +662,43 @@ func (p *Processor) persistIntentState(ctx context.Context, base, state *statedo
 	return err
 }
 
+// DiscardStaleResult removes the queue task/claim/result for a result whose
+// intent no longer tracks it. The live-result scan ignores such results, so
+// without this they accumulate until the queue is full.
+func (p *Processor) DiscardStaleResult(ctx context.Context, pusher, taskID string) {
+	p.cleanupQueueArtifacts(ctx, pusher, taskID)
+}
+
+// abandonResult drops a result that has failed for longer than
+// resultFailureWindow so one poison result cannot be retried on every scan
+// forever. The reconciler recompiles the intent from its manifest and queues a
+// fresh task, which also clears any state the result could not commit.
+func (p *Processor) abandonResult(ctx context.Context, result *taskdomain.TaskResult, cause error, discarded metricapi.Int64Counter) {
+	message := fmt.Sprintf("result %s discarded after repeated failures for %s/%s: %v", result.TaskID, result.Partition, result.Intent, cause)
+	log.Printf("results: %s", message)
+	if discarded != nil {
+		discarded.Add(ctx, 1, metricapi.WithAttributes(resultAttributes(result)...))
+	}
+	_ = p.dispatcher.WriteEvent(ctx, &historydomain.EventRecord{
+		Partition: result.Partition,
+		Intent:    result.Intent,
+		Type:      "task.failed",
+		Message:   message,
+		TaskID:    result.TaskID,
+		Details: map[string]string{
+			"op":    string(result.Op),
+			"error": cause.Error(),
+		},
+	})
+	p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
+}
+
 func (p *Processor) cleanupQueueArtifacts(ctx context.Context, pusher, taskID string) {
 	if err := paths.ValidateQueueIdentity(pusher, taskID); err != nil {
 		telemetry.EmitWarn(ctx, processorScope, fmt.Sprintf("refusing to clean queue artifacts: %v", err))
 		return
 	}
+	p.clearResultFailure(taskID)
 	_, err := p.store.DeletePaths(ctx, guardianapi.DeleteBatch{
 		Deletes: []guardianapi.PathDelete{
 			{LogicalPath: paths.QueueTask(pusher, taskID)},
@@ -868,7 +946,7 @@ func sortStrings(values []string) {
 	sort.Strings(values)
 }
 
-func resultInstruments() (metricapi.Int64Counter, metricapi.Int64Counter, metricapi.Float64Histogram) {
+func resultInstruments() (metricapi.Int64Counter, metricapi.Int64Counter, metricapi.Int64Counter, metricapi.Float64Histogram) {
 	resultMetricsOnce.Do(func() {
 		meter := otel.Meter(processorScope)
 		var err error
@@ -880,12 +958,16 @@ func resultInstruments() (metricapi.Int64Counter, metricapi.Int64Counter, metric
 		if err != nil {
 			telemetry.EmitError(context.Background(), processorScope, fmt.Sprintf("create result fail counter: %v", err))
 		}
+		resultDiscardCounter, err = meter.Int64Counter("guardian.results.discarded")
+		if err != nil {
+			telemetry.EmitError(context.Background(), processorScope, fmt.Sprintf("create result discard counter: %v", err))
+		}
 		resultDuration, err = meter.Float64Histogram("guardian.results.duration.seconds", metricapi.WithUnit("s"))
 		if err != nil {
 			telemetry.EmitError(context.Background(), processorScope, fmt.Sprintf("create result duration histogram: %v", err))
 		}
 	})
-	return resultCounter, resultFailCounter, resultDuration
+	return resultCounter, resultFailCounter, resultDiscardCounter, resultDuration
 }
 
 func resultAttributes(result *taskdomain.TaskResult) []attribute.KeyValue {

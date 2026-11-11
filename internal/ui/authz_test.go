@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -116,6 +117,34 @@ func TestAuthorizeMutationObserveModeIsPermissive(t *testing.T) {
 	srv := newAuthzTestServer(t, false)
 	if !srv.authorizeMutation(authzRequest(identityFor("viewer@example.com"), http.MethodDelete, "/api/partitions/aws-x")) {
 		t.Fatal("observe mode must not enforce mutations")
+	}
+}
+
+func TestM2MPartitionsReturnsAllForInternalToken(t *testing.T) {
+	srv := newAuthzTestServer(t, true)
+	srv.accessPolicyToken = "internal-token"
+
+	req := httptest.NewRequest(http.MethodGet, "/api/m2m/partitions", nil)
+	req.Header.Set("X-Guardian-Internal-Token", "internal-token")
+	rec := httptest.NewRecorder()
+	srv.handleM2MPartitions(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var partitions []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &partitions); err != nil {
+		t.Fatalf("decode partitions: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, partition := range partitions {
+		seen[partition.Name] = true
+	}
+	// The internal token is trusted for machine-to-machine reads, so the
+	// end-user access policy must not filter the feed down to nothing.
+	if !seen["aws-x"] || !seen["k8s-z"] {
+		t.Fatalf("m2m partitions = %v, want aws-x and k8s-z", seen)
 	}
 }
 

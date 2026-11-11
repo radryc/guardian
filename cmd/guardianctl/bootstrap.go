@@ -680,87 +680,194 @@ func findRootFrom(start string) string {
 	return "."
 }
 
+const (
+	// minioRolloutTimeout allows MinIO to start and bind its PVC on a fresh
+	// cluster.
+	minioRolloutTimeout = 5 * time.Minute
+	// fetcherRolloutTimeout allows a fetcher pod to restart and become ready.
+	// A fresh bootstrap can include PVC provisioning and DNS convergence.
+	fetcherRolloutTimeout = 6 * time.Minute
+	// nodeRolloutTimeout allows a MonoFS storage node to restart, replay its
+	// local state and rejoin Raft. The startupProbe permits up to 5 minutes.
+	nodeRolloutTimeout = 6 * time.Minute
+	// routerRolloutTimeout covers router pod replacement.
+	routerRolloutTimeout = 3 * time.Minute
+)
+
 func deployStorageTemplates(ctx context.Context, cfg *bootstrap.Config, env bootstrap.Env, storageDir string, dryRun bool) error {
 	ns := cfg.Storage.Namespace
 	_ = cfg.Storage.NodeNames // used indirectly via ComputeNodeEnv
 	routerSuffixes := cfg.Storage.RouterSuffixes
+	fetcherSuffixes := []string{"a", "b"}
+	nodeSuffixes := []string{"a", "b", "c", "d", "e"}
 
 	fmt.Printf("=== deploying storage to namespace %s ===\n", ns)
 
+	apply := func(name string, extra bootstrap.Env) error {
+		if err := bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, name), env, extra, dryRun); err != nil {
+			return fmt.Errorf("applying %s: %w", name, err)
+		}
+		return nil
+	}
+	applyEach := func(name string, extraFn func(string) bootstrap.Env, suffixes []string) error {
+		if err := bootstrap.ApplyTemplatesForEach(ctx, filepath.Join(storageDir, name), env, extraFn, suffixes, dryRun); err != nil {
+			return fmt.Errorf("applying %s: %w", name, err)
+		}
+		return nil
+	}
+	applyEachWait := func(name string, extraFn func(string) bootstrap.Env, suffixes []string, wait func(context.Context, string) error) error {
+		if err := bootstrap.ApplyTemplatesForEachWait(ctx, filepath.Join(storageDir, name), env, extraFn, suffixes, dryRun, wait); err != nil {
+			return fmt.Errorf("applying %s: %w", name, err)
+		}
+		return nil
+	}
+
 	// Namespace and secrets
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "namespace.yaml"), env, nil, dryRun)
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "secret.yaml"), env, nil, dryRun)
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "rbac-repowatch.yaml"), env, nil, dryRun)
+	if err := apply("namespace.yaml", nil); err != nil {
+		return err
+	}
+	if err := apply("secret.yaml", nil); err != nil {
+		return err
+	}
+	if err := apply("rbac-repowatch.yaml", nil); err != nil {
+		return err
+	}
 
 	// ConfigMaps
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "configmap-fetcher-s3.yaml"), env, nil, dryRun)
+	if err := apply("configmap-fetcher-s3.yaml", nil); err != nil {
+		return err
+	}
 
 	// FUSE device plugin — must be deployed early so nodes expose sretoolhub.com/fuse
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "k8s-fuse-plugin.yaml"), env, nil, dryRun)
+	if err := apply("k8s-fuse-plugin.yaml", nil); err != nil {
+		return err
+	}
 
 	// PVCs
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "pvc-minio.yaml"), env, nil, dryRun)
-	bootstrap.ApplyTemplatesForEach(ctx, filepath.Join(storageDir, "pvc-fetcher.yaml"), env,
-		func(s string) bootstrap.Env { return bootstrap.Env{"SUFFIX": s} },
-		[]string{"a", "b"}, dryRun)
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "pvc-search-index.yaml"), env, nil, dryRun)
-	bootstrap.ApplyTemplatesForEach(ctx, filepath.Join(storageDir, "pvc-node.yaml"), env,
-		func(s string) bootstrap.Env { return bootstrap.Env{"SUFFIX": s} },
-		[]string{"a", "b", "c", "d", "e"}, dryRun)
+	if err := apply("pvc-minio.yaml", nil); err != nil {
+		return err
+	}
+	if err := applyEach("pvc-fetcher.yaml", func(s string) bootstrap.Env { return bootstrap.Env{"SUFFIX": s} }, fetcherSuffixes); err != nil {
+		return err
+	}
+	if err := apply("pvc-search-index.yaml", nil); err != nil {
+		return err
+	}
+	if err := applyEach("pvc-node.yaml", func(s string) bootstrap.Env { return bootstrap.Env{"SUFFIX": s} }, nodeSuffixes); err != nil {
+		return err
+	}
 
-	// Deployments
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "deploy-minio.yaml"), env, nil, dryRun)
+	// The LB-edge namespace must exist before svc-haproxy and the LB workloads.
+	if err := apply("ns-lb-edge.yaml", nil); err != nil {
+		return err
+	}
 
-	// Wait for MinIO to be ready before deploying fetchers
+	// Services must exist before the deployments that reference them. In
+	// particular the fetcher resolves "minio" at startup; creating the Service
+	// first avoids a crash loop on a fresh bootstrap.
+	if err := apply("svc-minio.yaml", nil); err != nil {
+		return err
+	}
+	if err := applyEach("svc-fetcher.yaml", func(s string) bootstrap.Env { return bootstrap.Env{"SUFFIX": s} }, fetcherSuffixes); err != nil {
+		return err
+	}
+	if err := apply("svc-search-index.yaml", nil); err != nil {
+		return err
+	}
+	if err := applyEach("svc-node.yaml", func(s string) bootstrap.Env { return bootstrap.ComputeNodeEnv(cfg, s) }, nodeSuffixes); err != nil {
+		return err
+	}
+	if err := applyEach("svc-router.yaml", func(s string) bootstrap.Env { return bootstrap.Env{"SUFFIX": s} }, routerSuffixes); err != nil {
+		return err
+	}
+	if err := apply("svc-haproxy.yaml", nil); err != nil {
+		return err
+	}
+	if err := apply("svc-registry.yaml", nil); err != nil {
+		return err
+	}
+	if err := apply("svc-registry-external.yaml", nil); err != nil {
+		return err
+	}
+
+	// MinIO must be ready before fetchers and before the bucket bootstrap.
+	if err := apply("deploy-minio.yaml", nil); err != nil {
+		return err
+	}
 	if !dryRun {
-		if err := bootstrap.WaitForDeployment(ctx, ns, "minio", dryRun); err != nil {
+		if err := bootstrap.WaitForDeploymentTimeout(ctx, ns, "minio", minioRolloutTimeout, dryRun); err != nil {
 			return fmt.Errorf("waiting for minio: %w", err)
 		}
 	}
-	bootstrap.ApplyTemplatesForEach(ctx, filepath.Join(storageDir, "deploy-fetcher.yaml"), env,
-		func(s string) bootstrap.Env { return bootstrap.Env{"SUFFIX": s} },
-		[]string{"a", "b"}, dryRun)
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "deploy-search-index.yaml"), env, nil, dryRun)
-	bootstrap.ApplyTemplatesForEach(ctx, filepath.Join(storageDir, "deploy-node.yaml"), env,
-		func(s string) bootstrap.Env {
-			return bootstrap.ComputeNodeEnv(cfg, s)
-		},
-		[]string{"a", "b", "c", "d", "e"}, dryRun)
-	bootstrap.ApplyTemplatesForEach(ctx, filepath.Join(storageDir, "deploy-router.yaml"), env,
-		func(s string) bootstrap.Env {
-			return bootstrap.ComputeRouterEnv(cfg, s, "")
-		},
-		routerSuffixes, dryRun)
+	createMinioBucket(ctx, cfg.Storage.Namespace, dryRun)
 
-	// LB-edge namespace and RBAC
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "ns-lb-edge.yaml"), env, nil, dryRun)
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "rbac-lb-agent.yaml"), env, nil, dryRun)
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "configmap-lb-port-sync.yaml"), env, nil, dryRun)
+	// Fetchers are recreated one at a time so blob reads retain redundancy.
+	if err := applyEachWait("deploy-fetcher.yaml",
+		func(s string) bootstrap.Env { return bootstrap.Env{"SUFFIX": s} },
+		fetcherSuffixes,
+		func(ctx context.Context, s string) error {
+			return bootstrap.WaitForDeploymentTimeout(ctx, ns, "fetcher-"+s, fetcherRolloutTimeout, dryRun)
+		}); err != nil {
+		return err
+	}
+	if err := apply("deploy-search-index.yaml", nil); err != nil {
+		return err
+	}
+
+	// Nodes share a Raft/KVS quorum. Recreating them concurrently drops quorum
+	// and takes the whole MonoFS cluster offline, so wait for each node before
+	// replacing the next one.
+	if err := applyEachWait("deploy-node.yaml",
+		func(s string) bootstrap.Env { return bootstrap.ComputeNodeEnv(cfg, s) },
+		nodeSuffixes,
+		func(ctx context.Context, s string) error {
+			return bootstrap.WaitForDeploymentTimeout(ctx, ns, "node-"+s, nodeRolloutTimeout, dryRun)
+		}); err != nil {
+		return err
+	}
+	if err := applyEachWait("deploy-router.yaml",
+		func(s string) bootstrap.Env { return bootstrap.ComputeRouterEnv(cfg, s, "") },
+		routerSuffixes,
+		func(ctx context.Context, s string) error {
+			return bootstrap.WaitForDeploymentTimeout(ctx, ns, "router-"+s, routerRolloutTimeout, dryRun)
+		}); err != nil {
+		return err
+	}
+
+	// PodDisruptionBudgets keep voluntary disruptions (node drains, upgrades)
+	// from taking more than one MonoFS replica down at a time.
+	if err := apply("pdb-node.yaml", nil); err != nil {
+		return err
+	}
+	if err := apply("pdb-fetcher.yaml", nil); err != nil {
+		return err
+	}
+	if err := apply("pdb-router.yaml", nil); err != nil {
+		return err
+	}
+
+	// LB-edge RBAC and port-sync config
+	if err := apply("rbac-lb-agent.yaml", nil); err != nil {
+		return err
+	}
+	if err := apply("configmap-lb-port-sync.yaml", nil); err != nil {
+		return err
+	}
 
 	// LB-edge deployments
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "deploy-lb-k8s-agent.yaml"), env, nil, dryRun)
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "deploy-lb-port-sync.yaml"), env, nil, dryRun)
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "deploy-haproxy.yaml"), env, nil, dryRun)
+	if err := apply("deploy-lb-k8s-agent.yaml", nil); err != nil {
+		return err
+	}
+	if err := apply("deploy-lb-port-sync.yaml", nil); err != nil {
+		return err
+	}
+	if err := apply("deploy-haproxy.yaml", nil); err != nil {
+		return err
+	}
 
-	// Services
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "svc-minio.yaml"), env, nil, dryRun)
-	createMinioBucket(ctx, cfg.Storage.Namespace, dryRun)
-	bootstrap.ApplyTemplatesForEach(ctx, filepath.Join(storageDir, "svc-fetcher.yaml"), env,
-		func(s string) bootstrap.Env { return bootstrap.Env{"SUFFIX": s} },
-		[]string{"a", "b"}, dryRun)
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "svc-search-index.yaml"), env, nil, dryRun)
-	bootstrap.ApplyTemplatesForEach(ctx, filepath.Join(storageDir, "svc-node.yaml"), env,
-		func(s string) bootstrap.Env {
-			return bootstrap.ComputeNodeEnv(cfg, s)
-		},
-		[]string{"a", "b", "c", "d", "e"}, dryRun)
-	bootstrap.ApplyTemplatesForEach(ctx, filepath.Join(storageDir, "svc-router.yaml"), env,
-		func(s string) bootstrap.Env { return bootstrap.Env{"SUFFIX": s} },
-		routerSuffixes, dryRun)
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "svc-haproxy.yaml"), env, nil, dryRun)
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "deploy-registry.yaml"), env, nil, dryRun)
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "svc-registry.yaml"), env, nil, dryRun)
-	bootstrap.ApplyTemplate(ctx, filepath.Join(storageDir, "svc-registry-external.yaml"), env, nil, dryRun)
+	if err := apply("deploy-registry.yaml", nil); err != nil {
+		return err
+	}
 
 	return nil
 }

@@ -23,6 +23,12 @@ import (
 //	GUARDIAN_REPO_IMPORT_SHARDS     number of import shards
 //	GUARDIAN_REPO_IMPORT_LEASE      use Kubernetes Lease leader election
 //	GUARDIAN_REPO_IMPORT_LEASE_NAME Lease name prefix
+//	GUARDIAN_RECONCILE_PARALLELISM  max concurrent partition reconciles (0 = auto)
+//	GUARDIAN_RECONCILE_RATE_LIMIT   max partition reconciles started per second (0 = off)
+//	GUARDIAN_RECONCILE_BURST        token-bucket burst (0 = strict, 1)
+//	GUARDIAN_RECONCILE_ADAPTIVE     pace by queue backlog instead of a fixed rate
+//	GUARDIAN_RECONCILE_BACKLOG_TARGET  outstanding tasks considered healthy (0 = 100)
+//	GUARDIAN_RECONCILE_MIN_RATE_LIMIT  adaptive floor in partitions per second
 //
 // It is how the multi-account demo wires aws-<account> queues and the observed
 // collector into a guardiand that was started from the default config.
@@ -69,6 +75,36 @@ func applyGuardianEnvConfig(cfg *config.Config) {
 	}
 	if value := strings.TrimSpace(os.Getenv("GUARDIAN_REPO_IMPORT_LEASE_NAME")); value != "" {
 		cfg.Guardian.RepoImportLeaseName = value
+	}
+	if value := strings.TrimSpace(os.Getenv("GUARDIAN_RECONCILE_PARALLELISM")); value != "" {
+		if parallelism, err := strconv.Atoi(value); err == nil && parallelism >= 0 {
+			cfg.Guardian.ReconcileParallelism = parallelism
+		}
+	}
+	if value := strings.TrimSpace(os.Getenv("GUARDIAN_RECONCILE_RATE_LIMIT")); value != "" {
+		if rps, err := strconv.ParseFloat(value, 64); err == nil && rps >= 0 {
+			cfg.Guardian.ReconcileRateLimit = rps
+		}
+	}
+	if value := strings.TrimSpace(os.Getenv("GUARDIAN_RECONCILE_BURST")); value != "" {
+		if burst, err := strconv.Atoi(value); err == nil && burst >= 0 {
+			cfg.Guardian.ReconcileBurst = burst
+		}
+	}
+	if value := strings.TrimSpace(os.Getenv("GUARDIAN_RECONCILE_ADAPTIVE")); value != "" {
+		if enabled, err := strconv.ParseBool(value); err == nil {
+			cfg.Guardian.ReconcileAdaptive = enabled
+		}
+	}
+	if value := strings.TrimSpace(os.Getenv("GUARDIAN_RECONCILE_BACKLOG_TARGET")); value != "" {
+		if target, err := strconv.Atoi(value); err == nil && target >= 0 {
+			cfg.Guardian.ReconcileBacklogTarget = target
+		}
+	}
+	if value := strings.TrimSpace(os.Getenv("GUARDIAN_RECONCILE_MIN_RATE_LIMIT")); value != "" {
+		if rps, err := strconv.ParseFloat(value, 64); err == nil && rps >= 0 {
+			cfg.Guardian.ReconcileMinRateLimit = rps
+		}
 	}
 }
 

@@ -41,7 +41,14 @@ ARG BUILD_TIME=unknown
 
 RUN apk add --no-cache ca-certificates
 RUN addgroup -S guardian && adduser -S -G guardian guardian
-ENV OTEL_GO_DISABLED_INSTRUMENTATIONS=nethttp
+# nethttp: guardiand instruments its own HTTP server with otelhttp.
+# grpc:    guardiand instruments its MonoFS gRPC clients manually
+#          (internal/store/monofs). otelc's gRPC client spans leak long-lived
+#          streaming spans into goroutine-local storage, which makes every later
+#          span inherit the stream's trace and produces one enormous
+#          process-lifetime trace. Keep otelc for log<->trace correlation and
+#          runtime metrics, but not for gRPC.
+ENV OTEL_GO_DISABLED_INSTRUMENTATIONS=nethttp,grpc
 
 LABEL org.opencontainers.image.version=${BUILD_VERSION}
 LABEL org.opencontainers.image.revision=${BUILD_COMMIT}

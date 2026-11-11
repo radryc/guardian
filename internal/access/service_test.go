@@ -5,10 +5,11 @@ import (
 	"testing"
 	"time"
 
-	coreauthz "github.com/radryc/monofs/pkg/authz"
 	"github.com/radryc/guardian/internal/paths"
 	"github.com/radryc/guardian/internal/store/memory"
 	"github.com/radryc/guardian/pkg/guardianapi"
+	coreauthz "github.com/radryc/monofs/pkg/authz"
+	"github.com/radryc/monofs/pkg/authz/policy"
 )
 
 const testPartitionAWS = `
@@ -21,6 +22,8 @@ metadata:
 spec:
   labels:
     team: payments
+  quota:
+    profile: standard
 `
 
 const testPartitionK8s = `
@@ -32,6 +35,13 @@ metadata:
 
 const testRawPolicy = `
 version: 1
+quota_profiles:
+  standard:
+    query:
+      requestsPerSecond: 42
+quota_defaults:
+  query:
+    requestsPerSecond: 5
 defaults:
   partitions: deny
   logs: deny
@@ -213,4 +223,27 @@ func containsString(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestPolicyJSONIncludesPartitionQuota(t *testing.T) {
+	svc := newTestService(t, true, true)
+	data, err := svc.PolicyJSON()
+	if err != nil {
+		t.Fatalf("PolicyJSON: %v", err)
+	}
+	pol, err := policy.ParseBundle(data)
+	if err != nil {
+		t.Fatalf("ParseBundle: %v", err)
+	}
+	quota := pol.QuotaForPartition("aws-x")
+	if quota.Query == nil || quota.Query.RequestsPerSecond != 42 {
+		t.Fatalf("aws-x quota = %#v, want profile rps 42", quota)
+	}
+	if quota.Profile != "standard" {
+		t.Fatalf("profile = %q, want standard", quota.Profile)
+	}
+	defaults := pol.QuotaDefaults()
+	if defaults.Query == nil || defaults.Query.RequestsPerSecond != 5 {
+		t.Fatalf("defaults = %#v, want rps 5", defaults)
+	}
 }

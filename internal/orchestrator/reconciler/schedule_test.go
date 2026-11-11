@@ -10,6 +10,11 @@ import (
 	"time"
 
 	"github.com/reugn/go-quartz/quartz"
+	"golang.org/x/time/rate"
+
+	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/store/memory"
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 // ─── parseTrigger ─────────────────────────────────────────────────────────────
@@ -456,6 +461,144 @@ func TestPriorityPoolContextCancellationStopsDispatch(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("Shutdown() blocked after context cancel")
+	}
+}
+
+func TestPriorityPoolRateLimiterPacesStarts(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	limiter := rate.NewLimiter(rate.Limit(1), 1)
+	// Burn the single burst token so the next start must wait for a refill.
+	if !limiter.Allow() {
+		t.Fatal("expected the initial burst token")
+	}
+	pool := newPriorityPool(2, limiter)
+	pool.start(ctx)
+
+	ran := make(chan struct{}, 1)
+	pool.Submit("p", priorityNormal, func(ctx context.Context) error {
+		ran <- struct{}{}
+		return nil
+	})
+
+	select {
+	case <-ran:
+		t.Fatal("task started despite the token bucket being empty")
+	case <-time.After(50 * time.Millisecond):
+		// Still waiting for a token: correct.
+	}
+
+	cancel() // unblock the paced dispatch goroutine
+	pool.Shutdown()
+}
+
+func TestSetRateLimitRebuildsLimiter(t *testing.T) {
+	r := NewReconciler(nil, nil, time.Minute)
+	r.SetParallelism(3)
+	r.SetRateLimit(2, 0)
+
+	r.runMu.Lock()
+	limiter := r.limiter
+	r.runMu.Unlock()
+	if limiter == nil {
+		t.Fatal("expected a limiter after SetRateLimit")
+	}
+	if got := float64(limiter.Limit()); got != 2 {
+		t.Errorf("limiter rate = %v, want 2", got)
+	}
+	if got := limiter.Burst(); got != 1 {
+		t.Errorf("limiter burst = %d, want strict default 1", got)
+	}
+
+	r.SetRateLimit(0, 0)
+	r.runMu.Lock()
+	disabled := r.limiter
+	r.runMu.Unlock()
+	if disabled != nil {
+		t.Errorf("expected pacing to be disabled, got limiter %v", disabled)
+	}
+}
+
+func TestSetAdaptiveRateLimitStartsAtFloor(t *testing.T) {
+	r := NewReconciler(nil, nil, time.Minute)
+	r.SetParallelism(8)
+	r.SetRateLimit(1, 0)
+	r.SetAdaptiveRateLimit(true, 50, 0.2)
+
+	r.runMu.Lock()
+	limiter := r.limiter
+	rateNow := r.currentRate
+	target := r.backlogTarget
+	r.runMu.Unlock()
+
+	if limiter == nil {
+		t.Fatal("expected adaptive limiter")
+	}
+	if got := float64(limiter.Limit()); got != 0.2 {
+		t.Errorf("initial adaptive rate = %v, want 0.2", got)
+	}
+	if rateNow != 0.2 {
+		t.Errorf("currentRate = %v, want 0.2", rateNow)
+	}
+	if target != 50 {
+		t.Errorf("backlog target = %d, want 50", target)
+	}
+	if got := limiter.Burst(); got != 1 {
+		t.Errorf("adaptive burst = %d, want strict 1", got)
+	}
+}
+
+func TestNextAdaptiveRate(t *testing.T) {
+	tests := []struct {
+		name    string
+		current float64
+		min     float64
+		max     float64
+		backlog int
+		target  int
+		want    float64
+	}{
+		{"backlog high shrinks", 1, 0.1, 1, 200, 100, 0.7},
+		{"backlog high clamps at floor", 0.1, 0.1, 1, 200, 100, 0.1},
+		{"backlog low grows", 0.5, 0.1, 1, 10, 100, 0.59},
+		{"backlog low clamps at ceiling", 0.99, 0.1, 1, 10, 100, 1},
+		{"backlog in band holds", 0.5, 0.1, 1, 100, 100, 0.5},
+		{"max disabled holds", 0.5, 0.1, 0, 200, 100, 0.5},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := nextAdaptiveRate(tc.current, tc.min, tc.max, tc.backlog, tc.target)
+			if diff := got - tc.want; diff > 1e-9 || diff < -1e-9 {
+				t.Errorf("nextAdaptiveRate() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBacklogCount(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	_, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{
+		Writes: []guardianapi.PathWrite{
+			{LogicalPath: paths.QueueTask("local", "t1"), Content: []byte("{}")},
+			{LogicalPath: paths.QueueTask("local", "t2"), Content: []byte("{}")},
+			{LogicalPath: paths.QueueTask("aws-1", "t3"), Content: []byte("{}")},
+			{LogicalPath: paths.QueueClaim("local", "t1"), Content: []byte("{}")},
+			{LogicalPath: paths.QueueResult("local", "t1"), Content: []byte("{\"status\":\"Succeeded\"}")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed queue: %v", err)
+	}
+
+	r := NewReconciler(store, nil, time.Minute)
+	got, err := r.backlogCount(ctx)
+	if err != nil {
+		t.Fatalf("backlogCount: %v", err)
+	}
+	if got != 2 {
+		t.Errorf("backlogCount = %d, want 2 (t1 has a result)", got)
 	}
 }
 

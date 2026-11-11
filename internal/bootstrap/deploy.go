@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // RenderTemplate renders a single template file with envsubst.
@@ -72,10 +73,24 @@ func ApplyTemplate(ctx context.Context, templatePath string, baseEnv Env, extra 
 // ApplyTemplatesForEach applies a template once for each suffix value.
 // E.g., deploy-node.yaml rendered for node-a, node-b, node-c, node-d, node-e.
 func ApplyTemplatesForEach(ctx context.Context, templatePath string, baseEnv Env, extraFn func(suffix string) Env, suffixes []string, dryRun bool) error {
+	return ApplyTemplatesForEachWait(ctx, templatePath, baseEnv, extraFn, suffixes, dryRun, nil)
+}
+
+// ApplyTemplatesForEachWait applies a template once per suffix, invoking
+// afterApply after each render+apply and before moving to the next suffix.
+// It is used for replicated stateful workloads (MonoFS nodes, fetchers) where
+// recreating every replica back-to-back would drop quorum or lose all
+// redundancy. A nil afterApply behaves like ApplyTemplatesForEach.
+func ApplyTemplatesForEachWait(ctx context.Context, templatePath string, baseEnv Env, extraFn func(suffix string) Env, suffixes []string, dryRun bool, afterApply func(ctx context.Context, suffix string) error) error {
 	for _, suffix := range suffixes {
 		extra := extraFn(suffix)
 		if err := ApplyTemplate(ctx, templatePath, baseEnv, extra, dryRun); err != nil {
 			return fmt.Errorf("rendering %s for %s: %w", templatePath, suffix, err)
+		}
+		if afterApply != nil {
+			if err := afterApply(ctx, suffix); err != nil {
+				return fmt.Errorf("waiting for %s after applying %s: %w", suffix, templatePath, err)
+			}
 		}
 	}
 	return nil
@@ -232,11 +247,21 @@ func LoadImagesIntoKind(ctx context.Context, images []string, dryRun bool) error
 
 // WaitForDeployment waits for a deployment rollout to complete.
 func WaitForDeployment(ctx context.Context, namespace, name string, dryRun bool) error {
+	return WaitForDeploymentTimeout(ctx, namespace, name, 120*time.Second, dryRun)
+}
+
+// WaitForDeploymentTimeout waits for a deployment rollout to complete.
+// A non-positive timeout leaves kubectl's default in place.
+func WaitForDeploymentTimeout(ctx context.Context, namespace, name string, timeout time.Duration, dryRun bool) error {
+	args := []string{"-n", namespace, "rollout", "status", "deployment/" + name}
+	if timeout > 0 {
+		args = append(args, fmt.Sprintf("--timeout=%s", timeout))
+	}
 	if dryRun {
-		fmt.Fprintf(os.Stderr, "+ kubectl -n %s rollout status deployment/%s\n", namespace, name)
+		fmt.Fprintf(os.Stderr, "+ kubectl %s\n", strings.Join(args, " "))
 		return nil
 	}
-	return Run(ctx, false, "kubectl", "-n", namespace, "rollout", "status", "deployment/"+name, "--timeout=120s")
+	return Run(ctx, false, "kubectl", args...)
 }
 
 // ScaleDeployments scales all deployments in a namespace to the given replicas.

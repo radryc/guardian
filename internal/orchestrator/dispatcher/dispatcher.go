@@ -390,6 +390,14 @@ func (d *Dispatcher) updateIntentStateCAS(ctx context.Context, reader guardianap
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		content, version, exists, err := reader.ReadFileVersioned(ctx, logicalPath)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			if errors.Is(err, guardianapi.ErrConflict) {
+				guardianCASConflictsTotal.WithLabelValues("intent_state_read").Inc()
+				guardianCASRetriesTotal.WithLabelValues("intent_state_read").Inc()
+				if err := sleepBackoff(ctx, time.Duration(attempt)*10*time.Millisecond); err != nil {
+					return nil, err
+				}
+				continue
+			}
 			return nil, err
 		}
 		if errors.Is(err, os.ErrNotExist) {

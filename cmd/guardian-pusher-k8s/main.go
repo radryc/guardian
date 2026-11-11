@@ -47,6 +47,7 @@ func main() {
 	var backendMode string
 	var unclaimedTaskRetryDelay time.Duration
 	var maxConcurrency int
+	var taskTimeout time.Duration
 	var shardIndex int
 	var shardCount int
 	var readAddr string
@@ -67,6 +68,7 @@ func main() {
 	flag.StringVar(&backendMode, "backend", "auto", "kubernetes backend: auto|client|kubectl (auto prefers client-go and falls back to kubectl)")
 	flag.DurationVar(&unclaimedTaskRetryDelay, "unclaimed-task-retry-delay", 15*time.Second, "minimum delay before retrying a task that could not be claimed; 0 disables backoff")
 	flag.IntVar(&maxConcurrency, "max-concurrency", 0, "maximum tasks executed concurrently (0 = auto from CPU count)")
+	flag.DurationVar(&taskTimeout, "task-timeout", 0, "maximum duration for a single task before it is cancelled; 0 disables (keep below GUARDIAN_STALE_TASK_AFTER)")
 	flag.IntVar(&shardIndex, "shard-index", 0, "shard index for this replica when sharding a shared queue")
 	flag.IntVar(&shardCount, "shard-count", 1, "number of shards sharing the queue; 1 disables sharding")
 	flag.StringVar(&readAddr, "read-addr", os.Getenv("GUARDIAN_K8SREAD_ADDR"), "HTTP listen address for the read-only Kubernetes resource API (empty disables)")
@@ -167,6 +169,7 @@ func main() {
 		PollInterval:            5 * time.Second,
 		UnclaimedTaskRetryDelay: unclaimedTaskRetryDelay,
 		MaxConcurrency:          maxConcurrency,
+		TaskTimeout:             taskTimeout,
 		ShardIndex:              shardIndex,
 		ShardCount:              shardCount,
 		CanHandle: func(t *taskdomain.Task) bool {

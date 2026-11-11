@@ -31,7 +31,12 @@ import (
 	"github.com/radryc/guardian/internal/orchestrator/common"
 	"github.com/radryc/guardian/internal/paths"
 	"github.com/radryc/guardian/pkg/guardianapi"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
+
+const uiDataScope = "guardian.ui.data"
 
 type OverviewResponse struct {
 	GeneratedAt time.Time          `json:"generatedAt"`
@@ -436,8 +441,10 @@ func (s *Server) buildOverview(ctx context.Context) (*OverviewResponse, error) {
 		return nil, err
 	}
 	// Repo-managed access policy: hide partitions the caller cannot see.
-	// Disabled or observe-only services return the list unchanged.
-	if s.access != nil && s.access.Enabled() {
+	// Disabled or observe-only services return the list unchanged. Machine
+	// callers authorized by the internal token must see the full list; the
+	// Sentinel Guardian source uses this feed to resolve partition alerts.
+	if !isM2MTrusted(ctx) && s.access != nil && s.access.Enabled() {
 		names = s.access.FilterPartitions(ctx, names)
 	}
 	response := &OverviewResponse{
@@ -590,29 +597,38 @@ func summarizePartition(detail *PartitionDetailResponse) PartitionSummary {
 }
 
 func (s *Server) loadPartitionDetail(ctx context.Context, partitionName string) (*PartitionDetailResponse, error) {
-	return s.loadPartitionDataCached(ctx, partitionName, false, false)
+	return s.loadPartitionDataCached(ctx, partitionName, false, false, false)
 }
 
 func (s *Server) loadPartitionDetailEnriched(ctx context.Context, partitionName string) (*PartitionDetailResponse, error) {
-	return s.loadPartitionDataCached(ctx, partitionName, true, false)
+	return s.loadPartitionDataCached(ctx, partitionName, true, false, false)
 }
 
 func (s *Server) loadPartitionOverviewDetail(ctx context.Context, partitionName string) (*PartitionDetailResponse, error) {
-	return s.loadPartitionDataCached(ctx, partitionName, false, false)
+	return s.loadPartitionDataCached(ctx, partitionName, false, false, true)
 }
 
-func (s *Server) loadPartitionDataCached(ctx context.Context, partitionName string, includeLatestDeployments, includeRecentEvents bool) (*PartitionDetailResponse, error) {
+func (s *Server) loadPartitionDataCached(ctx context.Context, partitionName string, includeLatestDeployments, includeRecentEvents, allowStale bool) (*PartitionDetailResponse, error) {
 	cacheKey := fmt.Sprintf("%s|latest=%t|events=%t", partitionName, includeLatestDeployments, includeRecentEvents)
-	if cached, ok := s.partitionData.get(cacheKey, time.Now().UTC()); ok {
-		return cached, nil
+	ttl := defaultUIDataCacheTTL
+	if s.partitionData != nil {
+		ttl = s.partitionData.ttl
+	}
+	if allowStale {
+		ttl = s.partitionData.overviewTTLOrDefault()
+	}
+	if cached, fresh, ok := s.partitionData.getWithState(cacheKey, time.Now().UTC()); ok {
+		if fresh {
+			return cached, nil
+		}
+		if allowStale {
+			s.refreshPartitionData(ctx, cacheKey, partitionName, includeLatestDeployments, includeRecentEvents, ttl)
+			return cached, nil
+		}
 	}
 
-	s.partitionLoadMu.Lock()
-	if s.partitionLoads == nil {
-		s.partitionLoads = make(map[string]*partitionLoad)
-	}
-	if flight, ok := s.partitionLoads[cacheKey]; ok {
-		s.partitionLoadMu.Unlock()
+	flight, owner := s.acquirePartitionLoad(cacheKey)
+	if !owner {
 		select {
 		case <-flight.done:
 			return flight.payload, flight.err
@@ -620,17 +636,51 @@ func (s *Server) loadPartitionDataCached(ctx context.Context, partitionName stri
 			return nil, ctx.Err()
 		}
 	}
+	return s.runPartitionLoad(ctx, cacheKey, flight, partitionName, includeLatestDeployments, includeRecentEvents, ttl)
+}
+
+// refreshPartitionData serves a stale payload while rebuilding it off the
+// request path. Only one refresh per cache key runs at a time.
+func (s *Server) refreshPartitionData(_ context.Context, cacheKey, partitionName string, includeLatestDeployments, includeRecentEvents bool, ttl time.Duration) {
+	flight, owner := s.acquirePartitionLoad(cacheKey)
+	if !owner {
+		return
+	}
+	baseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	go func() {
+		defer cancel()
+		// Start a new root so the refresh does not extend the HTTP request's
+		// trace after the response has already been written.
+		ctx, span := otel.Tracer(uiDataScope).Start(baseCtx, "guardian.ui.partition.refresh",
+			trace.WithNewRoot(),
+			trace.WithAttributes(attribute.String("guardian.target.partition", partitionName)),
+		)
+		defer span.End()
+		_, _ = s.runPartitionLoad(ctx, cacheKey, flight, partitionName, includeLatestDeployments, includeRecentEvents, ttl)
+	}()
+}
+
+func (s *Server) acquirePartitionLoad(cacheKey string) (*partitionLoad, bool) {
+	s.partitionLoadMu.Lock()
+	defer s.partitionLoadMu.Unlock()
+	if s.partitionLoads == nil {
+		s.partitionLoads = make(map[string]*partitionLoad)
+	}
+	if flight, ok := s.partitionLoads[cacheKey]; ok {
+		return flight, false
+	}
 	flight := &partitionLoad{done: make(chan struct{})}
 	s.partitionLoads[cacheKey] = flight
-	s.partitionLoadMu.Unlock()
+	return flight, true
+}
 
+func (s *Server) runPartitionLoad(ctx context.Context, cacheKey string, flight *partitionLoad, partitionName string, includeLatestDeployments, includeRecentEvents bool, ttl time.Duration) (*PartitionDetailResponse, error) {
 	data, err := s.loadPartitionData(ctx, partitionName, includeLatestDeployments, includeRecentEvents)
 	if err == nil {
-		s.partitionData.set(cacheKey, time.Now().UTC(), data)
+		s.partitionData.set(cacheKey, time.Now().UTC(), data, ttl)
 	}
-	flight.payload, flight.err = data, err
-
 	s.partitionLoadMu.Lock()
+	flight.payload, flight.err = data, err
 	if s.partitionLoads[cacheKey] == flight {
 		delete(s.partitionLoads, cacheKey)
 	}
