@@ -118,6 +118,7 @@ type GuardianImages struct {
 	Guardiand    string `yaml:"guardiand"`
 	PusherK8s    string `yaml:"pusherK8s"`
 	PusherAws    string `yaml:"pusherAws"`
+	PusherGcp    string `yaml:"pusherGcp"`
 	PusherDocker string `yaml:"pusherDocker"`
 	LB           string `yaml:"lb"`
 	PullPolicy   string `yaml:"pullPolicy"`
@@ -133,6 +134,7 @@ type GuardianPushers struct {
 	K8s    GuardianPusherK8s    `yaml:"k8s"`
 	Docker GuardianPusherDocker `yaml:"docker"`
 	AWS    GuardianPusherAWS    `yaml:"aws"`
+	GCP    GuardianPusherGCP    `yaml:"gcp"`
 }
 
 type GuardianPusherK8s struct {
@@ -149,6 +151,15 @@ type GuardianPusherAWS struct {
 	Account        string `yaml:"account"`
 	Region         string `yaml:"region"`
 	AssumeRoleName string `yaml:"assumeRoleName"`
+}
+
+type GuardianPusherGCP struct {
+	Enabled     bool   `yaml:"enabled"`
+	Project     string `yaml:"project"`
+	Region      string `yaml:"region"`
+	StateBucket string `yaml:"stateBucket"`
+	KMSKey      string `yaml:"kmsKey"`
+	ReadAddr    string `yaml:"readAddr"`
 }
 
 type GuardianImageBuild struct {
@@ -256,6 +267,7 @@ func DefaultConfig() Config {
 				Guardiand:    "guardian:latest",
 				PusherK8s:    "guardian-pusher-k8s:latest",
 				PusherAws:    "guardian-pusher-aws:latest",
+				PusherGcp:    "guardian-pusher-gcp:latest",
 				PusherDocker: "guardian-pusher-docker:latest",
 				LB:           "lb:latest",
 				PullPolicy:   "IfNotPresent",
@@ -273,6 +285,11 @@ func DefaultConfig() Config {
 					Account:        "",
 					Region:         "us-east-1",
 					AssumeRoleName: "GuardianCdkDeployRole",
+				},
+				GCP: GuardianPusherGCP{
+					Enabled:  false,
+					Region:   "europe-west1",
+					ReadAddr: "0.0.0.0:19091",
 				},
 			},
 			ImageBuild: GuardianImageBuild{
@@ -426,6 +443,25 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("GUARDIAN_PUSHER_AWS_IMAGE"); v != "" {
 		cfg.Guardian.Images.PusherAws = v
+	}
+	if v := os.Getenv("GUARDIAN_PUSHER_GCP_IMAGE"); v != "" {
+		cfg.Guardian.Images.PusherGcp = v
+	}
+	if v := os.Getenv("GUARDIAN_GCP_PROJECT"); v != "" {
+		cfg.Guardian.Pushers.GCP.Enabled = true
+		cfg.Guardian.Pushers.GCP.Project = v
+	}
+	if v := os.Getenv("GUARDIAN_GCP_REGION"); v != "" {
+		cfg.Guardian.Pushers.GCP.Region = v
+	}
+	if v := os.Getenv("GUARDIAN_GCP_STATE_BUCKET"); v != "" {
+		cfg.Guardian.Pushers.GCP.StateBucket = v
+	}
+	if v := os.Getenv("GUARDIAN_GCP_KMS_KEY"); v != "" {
+		cfg.Guardian.Pushers.GCP.KMSKey = v
+	}
+	if v := os.Getenv("GUARDIAN_GCPREAD_ADDR"); v != "" {
+		cfg.Guardian.Pushers.GCP.ReadAddr = v
 	}
 	if v := os.Getenv("GUARDIAN_LB_IMAGE"); v != "" {
 		cfg.Guardian.Images.LB = v

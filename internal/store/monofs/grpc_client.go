@@ -16,15 +16,22 @@ import (
 	"github.com/radryc/guardian/pkg/guardianapi"
 	pb "github.com/radryc/monofs/api/proto"
 	"github.com/radryc/monofs/pkg/grpcx"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 )
 
 const defaultClientHeartbeatInterval = 30 * time.Second
 const defaultTopologyRefreshInterval = 30 * time.Second
+
+// nodeFailureCooldown is how long a node is deprioritised after a transport
+// failure. A MonoFS node restart usually takes 20-40s, but reads should keep
+// trying other replicas first and then fall back to the cooling node.
+const nodeFailureCooldown = 10 * time.Second
 
 // defaultGRPCKeepaliveTime is the interval between HTTP/2 PING frames sent by
 // the gRPC client to keep the underlying connection alive. It must be no
@@ -57,6 +64,7 @@ type routerClient interface {
 	DeleteGuardianPaths(ctx context.Context, in *pb.DeleteGuardianPathsRequest, opts ...grpc.CallOption) (*pb.DeleteGuardianPathsResponse, error)
 	ListGuardianVersions(ctx context.Context, in *pb.ListGuardianVersionsRequest, opts ...grpc.CallOption) (*pb.ListGuardianVersionsResponse, error)
 	GetGuardianVersion(ctx context.Context, in *pb.GetGuardianVersionRequest, opts ...grpc.CallOption) (*pb.GetGuardianVersionResponse, error)
+	ReadGuardianPath(ctx context.Context, in *pb.ReadGuardianPathRequest, opts ...grpc.CallOption) (*pb.ReadGuardianPathResponse, error)
 	SubscribeGuardianChanges(ctx context.Context, in *pb.SubscribeGuardianChangesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[pb.GuardianChangeEvent], error)
 	RegisterClient(ctx context.Context, in *pb.RegisterClientRequest, opts ...grpc.CallOption) (*pb.RegisterClientResponse, error)
 	UnregisterClient(ctx context.Context, in *pb.UnregisterClientRequest, opts ...grpc.CallOption) (*pb.UnregisterClientResponse, error)
@@ -102,8 +110,12 @@ type GRPCClient struct {
 	nodeConns   map[string]*grpc.ClientConn
 	nodeClients map[string]pb.MonoFSClient
 	nodeAddrs   map[string]string
-	lastRefresh time.Time
-	refreshTTL  time.Duration
+	// nodeFailedUntil quarantines a node after a transport failure so reads
+	// stop hammering a restarting endpoint. The connection is preserved for
+	// gRPC to reconnect in the background.
+	nodeFailedUntil map[string]time.Time
+	lastRefresh     time.Time
+	refreshTTL      time.Duration
 
 	refreshMu  sync.Mutex
 	refreshing bool
@@ -118,12 +130,35 @@ type nodeTarget struct {
 	client pb.MonoFSClient
 }
 
+// monoFSClientStatsHandler instruments MonoFS gRPC calls manually.
+//
+// guardiand is built with otelc, but otelc's gRPC client instrumentation keeps
+// streaming spans in goroutine-local storage. A long-lived stream (the
+// guardian-change subscription) never ends, so every span started later on
+// that goroutine inherits its trace via SpanFromContext's GLS fallback and the
+// whole process ends up in one ever-growing trace. We therefore disable
+// otelc's gRPC instrumentation (see Dockerfile) and use the upstream handler,
+// which ends spans deterministically. The long-lived change subscription is
+// left uninstrumented on purpose: its span would only end at process shutdown.
+func monoFSClientStatsHandler() stats.Handler {
+	return otelgrpc.NewClientHandler(otelgrpc.WithFilter(shouldInstrumentMonoFSRPC))
+}
+
+// shouldInstrumentMonoFSRPC excludes the guardian-change subscription. Unlike
+// ordinary unary RPCs and short-lived streams, that subscription stays open for
+// the lifetime of the process, so tracing it would leave an end-less span in
+// goroutine-local storage and re-create the process-wide trace.
+func shouldInstrumentMonoFSRPC(info *stats.RPCTagInfo) bool {
+	return info == nil || info.FullMethodName != pb.MonoFSRouter_SubscribeGuardianChanges_FullMethodName
+}
+
 func dialRouter(addr string) (*grpc.ClientConn, error) {
 	return grpc.NewClient(
 		addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpcx.IPv4DialerOption(),
 		grpc.WithPerRPCCredentials(cliBearerCreds{}),
+		grpc.WithStatsHandler(monoFSClientStatsHandler()),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                defaultGRPCKeepaliveTime,
 			Timeout:             10 * time.Second,
@@ -215,6 +250,7 @@ func NewGRPCClient(ctx context.Context, cfg ClientConfig) (*GRPCClient, error) {
 			nodeConns:            map[string]*grpc.ClientConn{},
 			nodeClients:          map[string]pb.MonoFSClient{},
 			nodeAddrs:            map[string]string{},
+			nodeFailedUntil:      map[string]time.Time{},
 			refreshTTL:           defaultTopologyRefreshInterval,
 			stopHeartbeat:        make(chan struct{}),
 		}
@@ -438,36 +474,116 @@ func (c *GRPCClient) LatestVersion(ctx context.Context, token, logicalPath strin
 	return res.version, res.found, err
 }
 
+const (
+	nodeReadMaxAttempts = 3
+)
+
+// nodeReadRetryBase is a variable so tests can shorten the backoff.
+var nodeReadRetryBase = 200 * time.Millisecond
+
+// retryNodeRead runs a node-backed read against the current topology and
+// retries on transport failures. A single node restart therefore does not fail
+// the read as long as another replica (or the restarted node after a short
+// delay) can serve it.
+func retryNodeRead[T any](c *GRPCClient, ctx context.Context, fn func(context.Context, []nodeTarget) (T, error)) (T, error) {
+	var zero T
+	var lastErr error
+	for attempt := 0; attempt < nodeReadMaxAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return zero, ctx.Err()
+			case <-time.After(nodeReadRetryBase * time.Duration(attempt)):
+			}
+			_ = c.refreshNodes(ctx)
+		}
+		nodes, err := c.healthyNodes(ctx)
+		if err != nil {
+			lastErr = err
+			if !isTransportUnavailable(err) {
+				break
+			}
+			continue
+		}
+		result, err := fn(ctx, nodes)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if !isTransportUnavailable(err) {
+			return result, err
+		}
+	}
+	return zero, lastErr
+}
+
 // StatAttr queries file size and mtime using the lightweight GetAttr RPC
 // without streaming the file's content bytes over the network.
 func (c *GRPCClient) StatAttr(ctx context.Context, mountPath string) (int64, time.Time, error) {
-	nodes, err := c.healthyNodes(ctx)
+	type statResult struct {
+		size    int64
+		modTime time.Time
+	}
+	res, err := retryNodeRead(c, ctx, func(ctx context.Context, nodes []nodeTarget) (statResult, error) {
+		var lastErr error
+		for _, node := range nodes {
+			callCtx, cancel := c.withTimeout(ctx)
+			resp, err := node.client.GetAttr(callCtx, &pb.GetAttrRequest{Path: mountPath})
+			cancel()
+			if err != nil {
+				lastErr = err
+				c.invalidateNodeOnTransportError(node.id, err)
+				continue
+			}
+			if resp != nil && resp.GetFound() {
+				var modTime time.Time
+				if resp.GetMtime() > 0 {
+					modTime = time.Unix(resp.GetMtime(), 0).UTC()
+				}
+				return statResult{size: int64(resp.GetSize()), modTime: modTime}, nil
+			}
+		}
+		if lastErr == nil || status.Code(lastErr) == codes.NotFound {
+			return statResult{}, os.ErrNotExist
+		}
+		return statResult{}, wrapDNSHint(lastErr)
+	})
 	if err != nil {
 		return 0, time.Time{}, err
 	}
+	return res.size, res.modTime, nil
+}
 
-	var lastErr error
-	for _, node := range nodes {
+// ReadPathVersioned returns a consistent content+version pair from the router.
+func (c *GRPCClient) ReadPathVersioned(ctx context.Context, token, logicalPath string) ([]byte, guardianapi.FileVersion, bool, error) {
+	type result struct {
+		content []byte
+		version guardianapi.FileVersion
+		found   bool
+	}
+	res, err := retryRouterCall(c, ctx, func() (result, error) {
 		callCtx, cancel := c.withTimeout(ctx)
-		resp, err := node.client.GetAttr(callCtx, &pb.GetAttrRequest{Path: mountPath})
-		cancel()
+		defer cancel()
+		resp, err := c.router.ReadGuardianPath(callCtx, &pb.ReadGuardianPathRequest{
+			GuardianToken: token,
+			LogicalPath:   logicalPath,
+		})
 		if err != nil {
-			lastErr = err
-			c.invalidateNodeOnTransportError(node.id, err)
-			continue
+			return result{}, mapRPCError(err)
 		}
-		if resp != nil && resp.GetFound() {
-			var modTime time.Time
-			if resp.GetMtime() > 0 {
-				modTime = time.Unix(resp.GetMtime(), 0).UTC()
-			}
-			return int64(resp.GetSize()), modTime, nil
+		if !resp.GetFound() {
+			return result{}, nil
 		}
+		return result{
+			content: append([]byte(nil), resp.GetContent()...),
+			version: convertFileVersion(resp.GetVersion()),
+			found:   true,
+		}, nil
+	})
+	if err != nil {
+		return nil, guardianapi.FileVersion{}, false, err
 	}
-	if lastErr == nil || status.Code(lastErr) == codes.NotFound {
-		return 0, time.Time{}, os.ErrNotExist
-	}
-	return 0, time.Time{}, wrapDNSHint(lastErr)
+	return res.content, res.version, res.found, nil
 }
 
 func (c *GRPCClient) GetVersion(ctx context.Context, token, logicalPath, versionID string) (guardianapi.VersionedFile, error) {
@@ -490,45 +606,43 @@ func (c *GRPCClient) GetVersion(ctx context.Context, token, logicalPath, version
 }
 
 func (c *GRPCClient) ReadFile(ctx context.Context, mountPath string) ([]byte, error) {
-	nodes, err := c.healthyNodes(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var lastErr error
-	for _, node := range nodes {
-		callCtx, cancel := c.withTimeout(ctx)
-		stream, err := node.client.Read(callCtx, &pb.ReadRequest{
-			Path:   mountPath,
-			Offset: 0,
-			Size:   0,
-		})
-		if err != nil {
+	return retryNodeRead(c, ctx, func(ctx context.Context, nodes []nodeTarget) ([]byte, error) {
+		var lastErr error
+		for _, node := range nodes {
+			callCtx, cancel := c.withTimeout(ctx)
+			stream, err := node.client.Read(callCtx, &pb.ReadRequest{
+				Path:   mountPath,
+				Offset: 0,
+				Size:   0,
+			})
+			if err != nil {
+				cancel()
+				lastErr = err
+				c.invalidateNodeOnTransportError(node.id, err)
+				continue
+			}
+			content, readErr := readAll(stream)
 			cancel()
-			lastErr = err
-			c.invalidateNodeOnTransportError(node.id, err)
-			continue
+			if readErr == nil {
+				return content, nil
+			}
+			lastErr = readErr
+			c.invalidateNodeOnTransportError(node.id, readErr)
 		}
-		content, readErr := readAll(stream)
-		cancel()
-		if readErr == nil {
-			return content, nil
+		if lastErr == nil || status.Code(lastErr) == codes.NotFound {
+			return nil, os.ErrNotExist
 		}
-		lastErr = readErr
-		c.invalidateNodeOnTransportError(node.id, readErr)
-	}
-	if lastErr == nil || status.Code(lastErr) == codes.NotFound {
-		return nil, os.ErrNotExist
-	}
-	return nil, wrapDNSHint(lastErr)
+		return nil, wrapDNSHint(lastErr)
+	})
 }
 
 func (c *GRPCClient) ListDir(ctx context.Context, mountPath string) ([]guardianapi.DirEntry, error) {
-	nodes, err := c.healthyNodes(ctx)
-	if err != nil {
-		return nil, err
-	}
+	return retryNodeRead(c, ctx, func(ctx context.Context, nodes []nodeTarget) ([]guardianapi.DirEntry, error) {
+		return c.listDirFromNodes(ctx, nodes, mountPath)
+	})
+}
 
+func (c *GRPCClient) listDirFromNodes(ctx context.Context, nodes []nodeTarget, mountPath string) ([]guardianapi.DirEntry, error) {
 	type nodeDirResult struct {
 		entries []guardianapi.DirEntry
 		err     error
@@ -818,13 +932,13 @@ func (c *GRPCClient) healthyNodes(ctx context.Context) ([]nodeTarget, error) {
 				return nil, err
 			}
 			lastErr = err
-			nodes := c.snapshotNodeTargets()
+			nodes := c.preferAvailableNodes(c.snapshotNodeTargets())
 			if len(nodes) > 0 {
 				return nodes, nil
 			}
 			continue
 		}
-		nodes := c.snapshotNodeTargets()
+		nodes := c.preferAvailableNodes(c.snapshotNodeTargets())
 		if len(nodes) == 0 {
 			lastErr = fmt.Errorf("no healthy monofs nodes available")
 			continue
@@ -847,10 +961,34 @@ func (c *GRPCClient) cachedHealthyNodes() ([]nodeTarget, bool) {
 	}
 	nodes := c.snapshotNodeTargetsLocked()
 	c.mu.Unlock()
+	nodes = c.preferAvailableNodes(nodes)
 	if len(nodes) == 0 {
 		return nil, false
 	}
 	return nodes, true
+}
+
+// preferAvailableNodes returns nodes that are not in post-failure cooldown.
+// If every node is cooling down, it returns the full list: trying a node is
+// better than declaring the cluster unavailable.
+func (c *GRPCClient) preferAvailableNodes(nodes []nodeTarget) []nodeTarget {
+	if len(nodes) == 0 {
+		return nil
+	}
+	now := time.Now()
+	c.mu.Lock()
+	out := make([]nodeTarget, 0, len(nodes))
+	for _, node := range nodes {
+		if until, ok := c.nodeFailedUntil[node.id]; ok && now.Before(until) {
+			continue
+		}
+		out = append(out, node)
+	}
+	c.mu.Unlock()
+	if len(out) == 0 {
+		return nodes
+	}
+	return out
 }
 
 func (c *GRPCClient) snapshotNodeTargets() []nodeTarget {
@@ -958,12 +1096,14 @@ func (c *GRPCClient) refreshNodes(ctx context.Context) error {
 			delete(c.nodeConns, nodeID)
 			delete(c.nodeClients, nodeID)
 			delete(c.nodeAddrs, nodeID)
+			delete(c.nodeFailedUntil, nodeID)
 			c.mu.Unlock()
 		}
 		nodeConn, dialErr := grpc.NewClient(
 			nodeAddr,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			grpcx.IPv4DialerOption(),
+			grpc.WithStatsHandler(monoFSClientStatsHandler()),
 			grpc.WithKeepaliveParams(keepalive.ClientParameters{
 				Time:                defaultGRPCKeepaliveTime,
 				Timeout:             10 * time.Second,
@@ -982,6 +1122,7 @@ func (c *GRPCClient) refreshNodes(ctx context.Context) error {
 		c.nodeConns[nodeID] = nodeConn
 		c.nodeClients[nodeID] = pb.NewMonoFSClient(nodeConn)
 		c.nodeAddrs[nodeID] = nodeAddr
+		delete(c.nodeFailedUntil, nodeID)
 		connected++
 		c.mu.Unlock()
 	}
@@ -995,6 +1136,7 @@ func (c *GRPCClient) refreshNodes(ctx context.Context) error {
 		delete(c.nodeConns, nodeID)
 		delete(c.nodeClients, nodeID)
 		delete(c.nodeAddrs, nodeID)
+		delete(c.nodeFailedUntil, nodeID)
 	}
 	c.lastRefresh = time.Now()
 	c.mu.Unlock()
@@ -1019,13 +1161,12 @@ func (c *GRPCClient) invalidateNodeOnTransportError(nodeID string, err error) {
 		return
 	}
 	c.mu.Lock()
-	if conn := c.nodeConns[nodeID]; conn != nil {
-		_ = conn.Close()
+	// Keep the connection: gRPC reconnects with its own backoff, while the
+	// cooldown stops reads from selecting this node first.
+	if c.nodeFailedUntil == nil {
+		c.nodeFailedUntil = map[string]time.Time{}
 	}
-	delete(c.nodeConns, nodeID)
-	delete(c.nodeClients, nodeID)
-	delete(c.nodeAddrs, nodeID)
-	c.lastRefresh = time.Time{}
+	c.nodeFailedUntil[nodeID] = time.Now().Add(nodeFailureCooldown)
 	c.mu.Unlock()
 	go c.tryBackgroundRefresh()
 }
@@ -1097,8 +1238,10 @@ func (c *GRPCClient) reconnectRouter(ctx context.Context) error {
 	return nil
 }
 
-const retryMaxAttempts = 3
-const retryBackoff = 500 * time.Millisecond
+const retryMaxAttempts = 6
+
+// retryBackoff is a variable so tests can shorten the retry loop.
+var retryBackoff = 250 * time.Millisecond
 
 func retryRouterCall[T any](c *GRPCClient, ctx context.Context, fn func() (T, error)) (T, error) {
 	var lastErr error
@@ -1108,15 +1251,23 @@ func retryRouterCall[T any](c *GRPCClient, ctx context.Context, fn func() (T, er
 				var zero T
 				return zero, ctx.Err()
 			}
+			delay := retryBackoff * time.Duration(1<<min(attempt-1, 4))
+			if delay > 5*time.Second {
+				delay = 5 * time.Second
+			}
+			// Spread retry storms across concurrent reconciliation workers.
+			delay += time.Duration(time.Now().UnixNano() % int64(delay/2+1))
 			select {
 			case <-ctx.Done():
 				var zero T
 				return zero, ctx.Err()
-			case <-time.After(retryBackoff * time.Duration(attempt)):
+			case <-time.After(delay):
 			}
-			if reconnectErr := c.reconnectRouter(ctx); reconnectErr != nil {
-				lastErr = reconnectErr
-				continue
+			if isTransportUnavailable(lastErr) && !isNodeTransportError(lastErr) {
+				if reconnectErr := c.reconnectRouter(ctx); reconnectErr != nil {
+					lastErr = reconnectErr
+					continue
+				}
 			}
 		}
 		result, err := fn()
@@ -1137,17 +1288,38 @@ func isTransportUnavailable(err error) bool {
 		return false
 	}
 	code := status.Code(err)
-	if code == codes.Unavailable {
+	if code == codes.Unavailable || code == codes.DeadlineExceeded {
 		return true
 	}
 	message := strings.ToLower(err.Error())
 	if code == codes.Canceled && strings.Contains(message, "client connection is closing") {
 		return true
 	}
+	// Node failures are often wrapped by the router as Internal ("upsert
+	// guardian paths: node ..."). Treat the transport-shaped messages as
+	// retryable regardless of the status code so a router-side dial failure
+	// does not surface as a permanent reconciliation error.
 	return strings.Contains(message, "error reading server preface") ||
 		strings.Contains(message, "connection reset by peer") ||
+		strings.Contains(message, "connection refused") ||
+		strings.Contains(message, "no route to host") ||
+		strings.Contains(message, "i/o timeout") ||
+		strings.Contains(message, "dial tcp") ||
 		strings.Contains(message, "transport is closing") ||
 		strings.Contains(message, "unexpected eof")
+}
+
+// isNodeTransportError reports whether a failed router call actually failed
+// while the router was dialing a storage node. Reconnecting the router itself
+// would not help in that case.
+func isNodeTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "upsert guardian paths: node ") ||
+		strings.Contains(message, "node node-") ||
+		strings.Contains(message, "ingest guardian")
 }
 
 func (c *GRPCClient) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -1224,6 +1396,14 @@ func mapRPCError(err error) error {
 	case codes.NotFound:
 		return os.ErrNotExist
 	case codes.Unavailable:
+		// The router returns Unavailable when its version record and the
+		// content on the healthy replicas disagree. That is a transient
+		// consistency condition (a concurrent write applied content before
+		// committing its version), not a transport failure: treat it as a CAS
+		// conflict so callers retry the read instead of wedging the state.
+		if strings.Contains(err.Error(), "does not match version") {
+			return guardianapi.ErrConflict
+		}
 		return wrapDNSHint(err)
 	default:
 		return err
@@ -1246,8 +1426,9 @@ func wrapDNSHint(err error) error {
 			"    - Run guardianctl from inside the cluster", err)
 	}
 	if strings.Contains(msg, "connection refused") || strings.Contains(msg, "\"TRANSIENT_FAILURE\"") {
-		return fmt.Errorf("%w\n\n  Connection to a MonoFS node was refused.\n"+
-			"  Verify the node's gRPC port is reachable from this host", err)
+		return fmt.Errorf("%w\n\n  A MonoFS node is temporarily unavailable (connection refused).\n"+
+			"  This usually means the node pod is restarting; the client will retry\n"+
+			"  other replicas and recover automatically.", err)
 	}
 	return err
 }

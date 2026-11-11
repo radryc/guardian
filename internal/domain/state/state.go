@@ -1,6 +1,7 @@
 package state
 
 import (
+	"reflect"
 	"time"
 
 	targetdomain "github.com/radryc/guardian/internal/domain/target"
@@ -91,15 +92,25 @@ type IntentState struct {
 }
 
 // ResourceObservation is one logical resource derived from an observed
-// CloudFormation stack template. AssetName is the synthetic Guardian asset
-// name shown in the UI; it is stable for a given logical ID.
+// provider inventory (CloudFormation, Cloud Asset Inventory, or Kubernetes).
+// AssetName is the synthetic Guardian asset name shown in the UI; it is stable
+// for a given logical ID. CfnType holds the provider resource type.
 type ResourceObservation struct {
 	LogicalID string   `json:"logicalId"`
 	CfnType   string   `json:"cfnType"`
 	AssetName string   `json:"assetName"`
+	Name      string   `json:"name,omitempty"`
 	Status    string   `json:"status"`
 	DependsOn []string `json:"dependsOn,omitempty"`
 	Condition string   `json:"condition,omitempty"`
+	// Provider identifies the inventory source: aws, gcp, or kubernetes.
+	Provider string `json:"provider,omitempty"`
+	// Location is the provider region, zone, or namespace.
+	Location string `json:"location,omitempty"`
+	// Ephemeral marks live artifacts that are not topology components
+	// (Cloud Run revisions, Kubernetes pods). They remain in the inventory for
+	// deployment history but are hidden from the default topology.
+	Ephemeral bool `json:"ephemeral,omitempty"`
 
 	// Live CloudFormation identity and status from ListStackResources.
 	PhysicalID       string    `json:"physicalId,omitempty"`
@@ -130,10 +141,11 @@ const (
 )
 
 type StateTimestamps struct {
-	LastQueuedAt time.Time `json:"lastQueuedAt"`
-	LastCheckAt  time.Time `json:"lastCheckAt"`
-	LastDiffAt   time.Time `json:"lastDiffAt"`
-	LastApplyAt  time.Time `json:"lastApplyAt"`
+	LastQueuedAt   time.Time `json:"lastQueuedAt"`
+	LastCheckAt    time.Time `json:"lastCheckAt"`
+	LastDiffAt     time.Time `json:"lastDiffAt"`
+	LastApplyAt    time.Time `json:"lastApplyAt"`
+	LastObservedAt time.Time `json:"lastObservedAt,omitempty"`
 }
 
 func NewPartitionRuntime(partition string) *PartitionRuntime {
@@ -172,6 +184,198 @@ func CloneIntentState(in *IntentState) *IntentState {
 	out.Resources = CloneResourceObservations(in.Resources)
 	out.LastError = cloneStringPtr(in.LastError)
 	return &out
+}
+
+// MergeIntentState applies the changes made between base and incoming to dst.
+//
+// It is a three-way merge, not a plain assignment: a field that did not change
+// between base and incoming keeps the value already present in dst. This lets
+// concurrent writers own independent fields without clobbering each other. The
+// main case is the observed collector refreshing Resources/LastObservedAt while
+// the reconciler or result processor persists status/health/task fields from a
+// snapshot loaded earlier in its pass.
+//
+// Timestamps are additionally monotonic: a merge never moves a timestamp
+// backwards. A nil base means "no previous state": fields the incoming state
+// sets are applied, while fields it leaves zero keep whatever another writer
+// created concurrently.
+func MergeIntentState(dst, base, incoming *IntentState) {
+	if dst == nil || incoming == nil {
+		return
+	}
+	if base == nil {
+		// Treat a missing snapshot as the zero state: apply every field the
+		// incoming state actually set, but do not clear fields another writer
+		// may have created between our load and the atomic update.
+		base = &IntentState{}
+	}
+
+	if incoming.APIVersion != base.APIVersion {
+		dst.APIVersion = incoming.APIVersion
+	}
+	if incoming.Kind != base.Kind {
+		dst.Kind = incoming.Kind
+	}
+	if incoming.Partition != base.Partition {
+		dst.Partition = incoming.Partition
+	}
+	if incoming.Intent != base.Intent {
+		dst.Intent = incoming.Intent
+	}
+	if incoming.Status != base.Status {
+		dst.Status = incoming.Status
+	}
+	if incoming.IntentType != base.IntentType {
+		dst.IntentType = incoming.IntentType
+	}
+	if incoming.Locked != base.Locked {
+		dst.Locked = incoming.Locked
+	}
+	if incoming.IntentVersionID != base.IntentVersionID {
+		dst.IntentVersionID = incoming.IntentVersionID
+	}
+	if incoming.IntentSpecHash != base.IntentSpecHash {
+		dst.IntentSpecHash = incoming.IntentSpecHash
+	}
+	if incoming.LastAppliedSpecHash != base.LastAppliedSpecHash {
+		dst.LastAppliedSpecHash = incoming.LastAppliedSpecHash
+	}
+	if incoming.PartitionRevision != base.PartitionRevision {
+		dst.PartitionRevision = incoming.PartitionRevision
+	}
+	if incoming.DeploymentRevision != base.DeploymentRevision {
+		dst.DeploymentRevision = incoming.DeploymentRevision
+	}
+	if incoming.TargetPusher != base.TargetPusher {
+		dst.TargetPusher = incoming.TargetPusher
+	}
+	if incoming.Target != base.Target {
+		dst.Target = incoming.Target
+	}
+	if !stringsEqual(incoming.Joins, base.Joins) {
+		dst.Joins = append([]string(nil), incoming.Joins...)
+	}
+	if !mapsEqual(incoming.AssetVersionIDs, base.AssetVersionIDs) {
+		dst.AssetVersionIDs = mergeStringMap(dst.AssetVersionIDs, base.AssetVersionIDs, incoming.AssetVersionIDs)
+	}
+	if !mapsEqual(incoming.AssetVersions, base.AssetVersions) {
+		dst.AssetVersions = mergeStringMap(dst.AssetVersions, base.AssetVersions, incoming.AssetVersions)
+	}
+	if !mapsEqual(incoming.Outputs, base.Outputs) {
+		dst.Outputs = mergeStringMap(dst.Outputs, base.Outputs, incoming.Outputs)
+	}
+	if !reflect.DeepEqual(incoming.Drift, base.Drift) {
+		dst.Drift = CloneDriftReport(incoming.Drift)
+	}
+	if !reflect.DeepEqual(incoming.Health, base.Health) {
+		dst.Health = CloneHealthObservation(incoming.Health)
+	}
+	if !reflect.DeepEqual(incoming.ApplyReadiness, base.ApplyReadiness) {
+		dst.ApplyReadiness = CloneApplyReadiness(incoming.ApplyReadiness)
+	}
+	if !reflect.DeepEqual(incoming.AssetObservations, base.AssetObservations) {
+		dst.AssetObservations = mergeAssetObservations(dst.AssetObservations, base.AssetObservations, incoming.AssetObservations)
+	}
+	if !reflect.DeepEqual(incoming.Resources, base.Resources) {
+		dst.Resources = CloneResourceObservations(incoming.Resources)
+	}
+	if incoming.LastTaskID != base.LastTaskID {
+		dst.LastTaskID = incoming.LastTaskID
+	}
+	if !reflect.DeepEqual(incoming.LastError, base.LastError) {
+		dst.LastError = cloneStringPtr(incoming.LastError)
+	}
+	if incoming.PartitionMode != base.PartitionMode {
+		dst.PartitionMode = incoming.PartitionMode
+	}
+	if incoming.RollbackTo != base.RollbackTo {
+		dst.RollbackTo = incoming.RollbackTo
+	}
+	if incoming.RollbackReason != base.RollbackReason {
+		dst.RollbackReason = incoming.RollbackReason
+	}
+
+	dst.Timestamps.LastQueuedAt = mergeTime(dst.Timestamps.LastQueuedAt, base.Timestamps.LastQueuedAt, incoming.Timestamps.LastQueuedAt)
+	dst.Timestamps.LastCheckAt = mergeTime(dst.Timestamps.LastCheckAt, base.Timestamps.LastCheckAt, incoming.Timestamps.LastCheckAt)
+	dst.Timestamps.LastDiffAt = mergeTime(dst.Timestamps.LastDiffAt, base.Timestamps.LastDiffAt, incoming.Timestamps.LastDiffAt)
+	dst.Timestamps.LastApplyAt = mergeTime(dst.Timestamps.LastApplyAt, base.Timestamps.LastApplyAt, incoming.Timestamps.LastApplyAt)
+	dst.Timestamps.LastObservedAt = mergeTime(dst.Timestamps.LastObservedAt, base.Timestamps.LastObservedAt, incoming.Timestamps.LastObservedAt)
+}
+
+// mergeTime applies an incoming timestamp change without moving dst backwards.
+// An unchanged base/incoming pair keeps the (possibly newer) dst value.
+func mergeTime(dst, base, incoming time.Time) time.Time {
+	if incoming.Equal(base) {
+		return dst
+	}
+	if incoming.After(dst) {
+		return incoming
+	}
+	return dst
+}
+
+func mapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, value := range a {
+		if b[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func stringsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// mergeStringMap applies the base→incoming delta to dst instead of replacing
+// the whole map. Two writers that add different keys concurrently both survive.
+func mergeStringMap(dst, base, incoming map[string]string) map[string]string {
+	out := CloneStringMap(dst)
+	if out == nil {
+		out = map[string]string{}
+	}
+	for key := range base {
+		if _, ok := incoming[key]; !ok {
+			delete(out, key)
+		}
+	}
+	for key, value := range incoming {
+		previous, existed := base[key]
+		if !existed || previous != value {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func mergeAssetObservations(dst, base, incoming map[string]*taskdomain.AssetObservation) map[string]*taskdomain.AssetObservation {
+	out := CloneAssetObservationMap(dst)
+	if out == nil {
+		out = map[string]*taskdomain.AssetObservation{}
+	}
+	for key := range base {
+		if _, ok := incoming[key]; !ok {
+			delete(out, key)
+		}
+	}
+	for key, value := range incoming {
+		previous, existed := base[key]
+		if !existed || !reflect.DeepEqual(previous, value) {
+			out[key] = CloneAssetObservation(value)
+		}
+	}
+	return out
 }
 
 // CloneResourceObservations deep-copies the observed resource inventory.

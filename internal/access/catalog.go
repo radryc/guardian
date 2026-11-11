@@ -10,10 +10,10 @@ import (
 	"os"
 	"sort"
 
-	"github.com/radryc/monofs/pkg/authz/policy"
 	partitiondomain "github.com/radryc/guardian/internal/domain/partition"
 	"github.com/radryc/guardian/internal/paths"
 	"github.com/radryc/guardian/pkg/guardianapi"
+	"github.com/radryc/monofs/pkg/authz/policy"
 	"gopkg.in/yaml.v3"
 )
 
@@ -55,7 +55,11 @@ func LoadCatalog(ctx context.Context, store guardianapi.ReadStore) (*policy.Cata
 		if len(labels) == 0 {
 			labels = nil
 		}
-		catalog.Partitions = append(catalog.Partitions, policy.Partition{Name: name, Labels: labels})
+		catalog.Partitions = append(catalog.Partitions, policy.Partition{
+			Name:   name,
+			Labels: labels,
+			Quota:  manifest.Spec.Quota,
+		})
 	}
 	sort.Slice(catalog.Partitions, func(i, j int) bool {
 		return catalog.Partitions[i].Name < catalog.Partitions[j].Name

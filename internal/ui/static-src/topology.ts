@@ -43,15 +43,42 @@ function nh(node: any): number {
   return node.kind === "partition" ? 76 : 72;
 }
 function resourceFamily(node: any): string {
-  const cfn = String(node.meta?.cfnType ?? "");
-  if (cfn.startsWith("AWS::ECS::")) return "ecs";
-  if (cfn.startsWith("AWS::ElasticLoadBalancingV2::")) return "elb";
-  if (cfn.startsWith("AWS::Lambda::")) return "lambda";
-  if (cfn.startsWith("AWS::SQS::") || cfn.startsWith("AWS::SNS::") || cfn.startsWith("AWS::Events::")) return "messaging";
-  if (cfn.startsWith("AWS::DynamoDB::") || cfn.startsWith("AWS::S3::")) return "storage";
-  if (cfn.startsWith("AWS::Logs::")) return "logs";
-  if (cfn.startsWith("AWS::EC2::") || cfn.startsWith("AWS::IAM::")) return "infra";
+  const provider = String(node.meta?.provider ?? "");
+  const resourceType = String(node.meta?.resourceType ?? node.meta?.cfnType ?? "");
+  if (provider === "gcp") {
+    if (resourceType.startsWith("run.googleapis.com/")) return "runtime";
+    if (resourceType.startsWith("storage.googleapis.com/") || resourceType.startsWith("file.googleapis.com/")) return "storage";
+    if (resourceType.startsWith("secretmanager.googleapis.com/")) return "config";
+    if (resourceType.startsWith("sqladmin.googleapis.com/")) return "traffic";
+    if (resourceType.startsWith("logging.googleapis.com/") || resourceType.startsWith("monitoring.googleapis.com/")) return "logs";
+    if (resourceType.startsWith("compute.googleapis.com/") || resourceType.startsWith("servicenetworking.googleapis.com/")) return "infra";
+    return "";
+  }
+  if (provider === "kubernetes") {
+    switch (resourceType.toLowerCase()) {
+      case "deployment": return "ecs";
+      case "service", "ingress": return "elb";
+      case "configmap", "secret", "serviceaccount": return "config";
+      case "persistentvolumeclaim": return "storage";
+      case "networkpolicy": return "infra";
+      default: return "";
+    }
+  }
+  if (resourceType.startsWith("AWS::ECS::")) return "ecs";
+  if (resourceType.startsWith("AWS::ElasticLoadBalancingV2::")) return "elb";
+  if (resourceType.startsWith("AWS::Lambda::")) return "lambda";
+  if (resourceType.startsWith("AWS::SQS::") || resourceType.startsWith("AWS::SNS::") || resourceType.startsWith("AWS::Events::")) return "messaging";
+  if (resourceType.startsWith("AWS::DynamoDB::") || resourceType.startsWith("AWS::S3::")) return "storage";
+  if (resourceType.startsWith("AWS::Logs::")) return "logs";
+  if (resourceType.startsWith("AWS::EC2::") || resourceType.startsWith("AWS::IAM::")) return "infra";
   return "";
+}
+function gcpShortType(resourceType: string): string {
+  const raw = String(resourceType ?? "");
+  const slash = raw.indexOf("/");
+  if (slash < 0) return raw;
+  const service = raw.slice(0, slash).replace(/\.googleapis\.com$/, "");
+  return `${service} / ${raw.slice(slash + 1)}`;
 }
 function nAccent(node: any): string {
   if (node.kind === "partition") return NODE_COLORS.partition;
@@ -92,10 +119,21 @@ function nSubtitle(node: any): string {
     return `${node.meta?.reconciliation ?? "manual"} reconcile · ${node.meta?.deletionPolicy ?? "orphan"} delete`;
   if (node.kind === "intent")
     return node.meta?.target ?? node.displayStatus ?? "Intent";
-  const cfn = String(node.meta?.cfnType ?? "");
-  if (cfn) {
-    const short = cfn.replace(/^AWS::/, "").replace(/::/g, " / ");
-    const physical = String(node.meta?.physicalId ?? "");
+  const provider = String(node.meta?.provider ?? "");
+  const resourceType = String(node.meta?.resourceType ?? node.meta?.cfnType ?? "");
+  const physical = String(node.meta?.physicalId ?? node.meta?.resourceName ?? "");
+  if (provider === "gcp") {
+    const label = gcpShortType(resourceType);
+    const resourceName = String(node.meta?.resourceName ?? physical ?? "");
+    const shortName = resourceName.split("/").filter(Boolean).pop() ?? "";
+    return shortName ? `${label} · ${truncate(shortName, 30)}` : label;
+  }
+  if (provider === "kubernetes") {
+    const namespace = String(node.meta?.location ?? "");
+    return namespace ? `${resourceType} · ${namespace}` : resourceType;
+  }
+  if (resourceType) {
+    const short = resourceType.replace(/^AWS::/, "").replace(/::/g, " / ");
     return physical ? `${short} · ${truncate(physical, 38)}` : short;
   }
   return `${node.assetType ?? "Asset"} · ${node.displayStatus ?? "Asset"}`;
@@ -187,10 +225,11 @@ function computePositions(
     const groupY = y - 30;
     const groupWidth = right - groupX + 14;
     const groupHeight = childY - groupY - 24 + 14;
+    const groupType = String(node.meta?.resourceType ?? node.meta?.cfnType ?? "");
     groups.push({
       id: node.id,
-      label: node.meta?.cfnType
-        ? String(node.meta.cfnType).replace(/^AWS::/, "").replace(/::/g, " ")
+      label: groupType
+        ? groupType.replace(/^AWS::/, "").replace(/::/g, " ")
         : node.label,
       x: groupX,
       y: groupY,

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/reugn/go-quartz/quartz"
+	"golang.org/x/time/rate"
 )
 
 // ─── Priority ─────────────────────────────────────────────────────────────────
@@ -92,11 +93,13 @@ type priorityPool struct {
 	pendingItems map[string]*reconcileItem // partition → queued-but-not-running
 	running      map[string]bool           // partitions currently executing
 	sem          chan struct{}
+	limiter      *rate.Limiter // optional pacing; nil disables it
+	cancel       context.CancelFunc
 	closed       bool
 	wg           sync.WaitGroup
 }
 
-func newPriorityPool(parallelism int) *priorityPool {
+func newPriorityPool(parallelism int, limiter ...*rate.Limiter) *priorityPool {
 	if parallelism <= 0 {
 		parallelism = 1
 	}
@@ -105,14 +108,21 @@ func newPriorityPool(parallelism int) *priorityPool {
 		running:      make(map[string]bool),
 		sem:          make(chan struct{}, parallelism),
 	}
+	if len(limiter) > 0 {
+		p.limiter = limiter[0]
+	}
 	p.cond = sync.NewCond(&p.mu)
 	heap.Init(&p.h)
 	return p
 }
 
 func (p *priorityPool) start(ctx context.Context) {
+	poolCtx, cancel := context.WithCancel(ctx)
+	p.mu.Lock()
+	p.cancel = cancel
+	p.mu.Unlock()
 	p.wg.Add(1)
-	go p.dispatch(ctx)
+	go p.dispatch(poolCtx)
 }
 
 // Submit enqueues a partition reconcile. If the partition is already queued
@@ -182,6 +192,19 @@ func (p *priorityPool) dispatch(ctx context.Context) {
 		p.running[item.partition] = true
 		p.mu.Unlock()
 
+		// Pace partition starts when a rate limit is configured. The slot is
+		// held while waiting so at most `parallelism` items are ever in flight,
+		// including one about to start.
+		if p.limiter != nil {
+			if err := p.limiter.Wait(ctx); err != nil {
+				<-p.sem
+				p.mu.Lock()
+				delete(p.running, item.partition)
+				p.mu.Unlock()
+				return
+			}
+		}
+
 		// Phase 4: run in a dedicated goroutine so dispatch picks up the next
 		// highest-priority item immediately without waiting.
 		p.wg.Add(1)
@@ -205,6 +228,9 @@ func (p *priorityPool) dispatch(ctx context.Context) {
 func (p *priorityPool) Shutdown() {
 	p.mu.Lock()
 	p.closed = true
+	if p.cancel != nil {
+		p.cancel()
+	}
 	p.cond.Broadcast()
 	p.mu.Unlock()
 	p.wg.Wait()

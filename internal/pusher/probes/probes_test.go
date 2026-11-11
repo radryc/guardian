@@ -122,6 +122,16 @@ func TestProbeTelemetryUsesTargetService(t *testing.T) {
 	if !strings.Contains(bodies["/v1/metrics"], `"name":"guardian.probe.up"`) {
 		t.Fatalf("probe metric name is not canonical: %s", bodies["/v1/metrics"])
 	}
+	for _, want := range []string{
+		`"name":"guardian.probe.runs"`,
+		`"isMonotonic":true`,
+		`"name":"guardian.probe.duration.histogram.seconds"`,
+		`"explicitBounds"`,
+	} {
+		if !strings.Contains(bodies["/v1/metrics"], want) {
+			t.Fatalf("missing %s in probe metrics: %s", want, bodies["/v1/metrics"])
+		}
+	}
 	if strings.Contains(bodies["/v1/metrics"], `"key":"partition"`) {
 		t.Fatalf("probe metric repeats identity as a point label: %s", bodies["/v1/metrics"])
 	}

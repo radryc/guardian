@@ -47,6 +47,40 @@ func (s *Store) ReadFile(ctx context.Context, logicalPath string) ([]byte, error
 	return os.ReadFile(s.logicalToPhysical(logicalPath))
 }
 
+// ReadFileVersioned returns the current content and its version atomically.
+func (s *Store) ReadFileVersioned(ctx context.Context, logicalPath string) ([]byte, guardianapi.FileVersion, bool, error) {
+	select {
+	case <-ctx.Done():
+		return nil, guardianapi.FileVersion{}, false, ctx.Err()
+	default:
+	}
+	logicalPath = normalizeLogicalPath(logicalPath)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	meta, err := s.loadMeta(logicalPath)
+	if err != nil {
+		return nil, guardianapi.FileVersion{}, false, err
+	}
+	if meta == nil || meta.Current == "" {
+		return nil, guardianapi.FileVersion{}, false, nil
+	}
+	var current *guardianapi.FileVersion
+	for i := range meta.History {
+		if meta.History[i].VersionID == meta.Current {
+			current = &meta.History[i]
+			break
+		}
+	}
+	if current == nil || current.Tombstone {
+		return nil, guardianapi.FileVersion{}, false, nil
+	}
+	content, err := os.ReadFile(filepath.Join(s.versionDataDir(logicalPath), meta.Current))
+	if err != nil {
+		return nil, guardianapi.FileVersion{}, false, err
+	}
+	return content, *current, true, nil
+}
+
 func (s *Store) ListDir(ctx context.Context, logicalDir string) ([]guardianapi.DirEntry, error) {
 	select {
 	case <-ctx.Done():

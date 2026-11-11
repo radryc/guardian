@@ -1,7 +1,10 @@
 package common
 
 import (
+	"context"
 	"testing"
+
+	"github.com/radryc/guardian/internal/store/memory"
 
 	statedomain "github.com/radryc/guardian/internal/domain/state"
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
@@ -39,5 +42,19 @@ func TestQueuedStatusTransitionsOutOfFailureStates(t *testing.T) {
 				t.Fatalf("QueuedStatus(%q, %q) = %q, want %q", tt.current, tt.op, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestHasActiveTaskWithMissingTargetPusherIsInactive(t *testing.T) {
+	state := &statedomain.IntentState{
+		Status:     statedomain.StatusApplying,
+		LastTaskID: "task_1",
+	}
+	active, err := HasActiveTask(context.Background(), memory.New(), state)
+	if err != nil {
+		t.Fatalf("HasActiveTask() error = %v", err)
+	}
+	if active {
+		t.Fatal("expected a state without targetPusher to be treated as inactive")
 	}
 }

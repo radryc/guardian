@@ -19,6 +19,12 @@ type Runner struct {
 	history        map[string][]Result
 	snapshotHashes map[string]string
 
+	runCounts       map[string]uint64
+	failureCounts   map[string]uint64
+	durationBuckets map[string][]uint64
+	durationCounts  map[string]uint64
+	durationSums    map[string]float64
+
 	httpOnce     sync.Once
 	httpSecure   *http.Client
 	httpInsecure *http.Client
@@ -26,12 +32,17 @@ type Runner struct {
 
 func New(cfg Config) *Runner {
 	return &Runner{
-		cfg:            cfg,
-		otel:           newOTELExporter(cfg.OTLPEndpoint),
-		lastRun:        map[string]time.Time{},
-		previous:       map[string]Result{},
-		history:        map[string][]Result{},
-		snapshotHashes: map[string]string{},
+		cfg:             cfg,
+		otel:            newOTELExporter(cfg.OTLPEndpoint),
+		lastRun:         map[string]time.Time{},
+		previous:        map[string]Result{},
+		history:         map[string][]Result{},
+		snapshotHashes:  map[string]string{},
+		runCounts:       map[string]uint64{},
+		failureCounts:   map[string]uint64{},
+		durationBuckets: map[string][]uint64{},
+		durationCounts:  map[string]uint64{},
+		durationSums:    map[string]float64{},
 	}
 }
 

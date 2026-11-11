@@ -12,8 +12,11 @@ import (
 	pb "github.com/radryc/monofs/api/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 func TestRegisterUsesRouterSuccessResponse(t *testing.T) {
@@ -274,7 +277,7 @@ func TestRefreshNodesReplacesConnectionWhenAddressChanges(t *testing.T) {
 	}
 }
 
-func TestInvalidateNodeOnTransportErrorClearsStaleCache(t *testing.T) {
+func TestInvalidateNodeOnTransportErrorQuarantinesNode(t *testing.T) {
 	t.Parallel()
 
 	client := &GRPCClient{
@@ -286,14 +289,40 @@ func TestInvalidateNodeOnTransportErrorClearsStaleCache(t *testing.T) {
 
 	client.invalidateNodeOnTransportError("node-a", status.Error(codes.Unavailable, "error reading server preface: EOF"))
 
-	if _, ok := client.nodeClients["node-a"]; ok {
-		t.Fatal("expected node client cache to be cleared")
+	if _, ok := client.nodeClients["node-a"]; !ok {
+		t.Fatal("expected node client cache to be preserved for gRPC reconnect")
 	}
-	if _, ok := client.nodeAddrs["node-a"]; ok {
-		t.Fatal("expected node address cache to be cleared")
+	if _, ok := client.nodeAddrs["node-a"]; !ok {
+		t.Fatal("expected node address cache to be preserved")
 	}
-	if !client.lastRefresh.IsZero() {
-		t.Fatal("expected lastRefresh to be reset after transport error")
+	until, ok := client.nodeFailedUntil["node-a"]
+	if !ok || !until.After(time.Now()) {
+		t.Fatal("expected node-a to be in cooldown")
+	}
+	if client.lastRefresh.IsZero() {
+		t.Fatal("expected topology cache timestamp to be preserved")
+	}
+}
+
+func TestPreferAvailableNodesSkipsCoolingNode(t *testing.T) {
+	t.Parallel()
+
+	client := &GRPCClient{
+		nodeFailedUntil: map[string]time.Time{
+			"node-a": time.Now().Add(time.Minute),
+		},
+	}
+	nodes := []nodeTarget{{id: "node-a"}, {id: "node-b"}}
+
+	got := client.preferAvailableNodes(nodes)
+	if len(got) != 1 || got[0].id != "node-b" {
+		t.Fatalf("preferAvailableNodes() = %+v, want only node-b", got)
+	}
+
+	client.nodeFailedUntil["node-b"] = time.Now().Add(time.Minute)
+	got = client.preferAvailableNodes(nodes)
+	if len(got) != 2 {
+		t.Fatalf("preferAvailableNodes() with all nodes cooling = %d nodes, want fallback to both", len(got))
 	}
 }
 
@@ -305,6 +334,9 @@ func TestIsTransportUnavailable(t *testing.T) {
 	}
 	if !isTransportUnavailable(errors.New("error reading server preface: read tcp ...")) {
 		t.Fatal("expected preface read error to be treated as transport unavailable")
+	}
+	if !isTransportUnavailable(status.Error(codes.Internal, "upsert guardian paths: node node-a ingest guardian/x: ... dial tcp 10.96.0.1:9000: connect: connection refused")) {
+		t.Fatal("expected node connection refused wrapped as Internal to be retryable")
 	}
 	if isTransportUnavailable(status.Error(codes.InvalidArgument, "bad request")) {
 		t.Fatal("did not expect invalid argument to be treated as transport unavailable")
@@ -351,6 +383,10 @@ func (f *fakeRouterClient) ListGuardianVersions(context.Context, *pb.ListGuardia
 }
 
 func (f *fakeRouterClient) GetGuardianVersion(context.Context, *pb.GetGuardianVersionRequest, ...grpc.CallOption) (*pb.GetGuardianVersionResponse, error) {
+	return nil, nil
+}
+
+func (f *fakeRouterClient) ReadGuardianPath(context.Context, *pb.ReadGuardianPathRequest, ...grpc.CallOption) (*pb.ReadGuardianPathResponse, error) {
 	return nil, nil
 }
 
@@ -485,5 +521,34 @@ func TestNewGRPCClientRetriesTransientRouterStartup(t *testing.T) {
 	}
 	if registerCalls != 1 {
 		t.Fatalf("RegisterClient call count = %d, want 1", registerCalls)
+	}
+}
+
+func TestMapRPCErrorTreatsVersionMismatchAsConflict(t *testing.T) {
+	t.Parallel()
+
+	mismatch := status.Error(codes.Unavailable,
+		`guardian content for "/partitions/demo/.state/intents/app.json" does not match version ver_1`)
+	if !errors.Is(mapRPCError(mismatch), guardianapi.ErrConflict) {
+		t.Fatalf("mapRPCError(version mismatch) = %v, want ErrConflict", mapRPCError(mismatch))
+	}
+
+	transport := status.Error(codes.Unavailable, "connection refused")
+	if errors.Is(mapRPCError(transport), guardianapi.ErrConflict) {
+		t.Fatalf("mapRPCError(transport) = %v, should not be ErrConflict", mapRPCError(transport))
+	}
+}
+
+func TestShouldInstrumentMonoFSRPC(t *testing.T) {
+	t.Parallel()
+
+	if shouldInstrumentMonoFSRPC(nil) != true {
+		t.Fatal("nil RPCTagInfo should be instrumented")
+	}
+	if shouldInstrumentMonoFSRPC(&stats.RPCTagInfo{FullMethodName: pb.MonoFSRouter_SubscribeGuardianChanges_FullMethodName}) {
+		t.Fatal("long-lived guardian change subscription must not be instrumented")
+	}
+	if !shouldInstrumentMonoFSRPC(&stats.RPCTagInfo{FullMethodName: pb.MonoFS_Read_FullMethodName}) {
+		t.Fatal("unary MonoFS read should be instrumented")
 	}
 }

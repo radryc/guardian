@@ -517,7 +517,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 			Type:        firstNonEmpty(payload.ServiceType, "ClusterIP"),
 			Labels:      driverutil.Labels("kubernetes", in, hash),
 			Annotations: payload.ServiceAnnotations,
-			Selector:    map[string]string{"guardian.asset": in.Asset.Name},
+			Selector:    selectorForLabels(deployment.Labels),
 			Ports:       ports,
 		}); err != nil {
 			return registry.AssetResult{}, err
@@ -697,7 +697,7 @@ func (d *LoadBalancerDriver) Apply(ctx context.Context, in registry.AssetInput) 
 		Type:        serviceType,
 		Labels:      driverutil.Labels("kubernetes", in, hash),
 		Annotations: payload.ServiceAnnotations,
-		Selector:    map[string]string{"guardian.asset": in.Asset.Name},
+		Selector:    selectorForLabels(deployment.Labels),
 		Ports:       ports,
 	}); err != nil {
 		return registry.AssetResult{}, err
@@ -809,7 +809,7 @@ func (d *ObjectStoreDriver) Apply(ctx context.Context, in registry.AssetInput) (
 		Hash:      hash,
 		Type:      firstNonEmpty(payload.ServiceType, "ClusterIP"),
 		Labels:    driverutil.Labels("kubernetes", in, hash),
-		Selector:  map[string]string{"guardian.asset": in.Asset.Name},
+		Selector:  selectorForLabels(deployment.Labels),
 		Ports:     servicePorts,
 	}); err != nil {
 		return registry.AssetResult{}, err
@@ -898,7 +898,7 @@ func (d *SQLDatabaseDriver) Apply(ctx context.Context, in registry.AssetInput) (
 		Hash:      hash,
 		Type:      firstNonEmpty(payload.ServiceType, "ClusterIP"),
 		Labels:    driverutil.Labels("kubernetes", in, hash),
-		Selector:  map[string]string{"guardian.asset": in.Asset.Name},
+		Selector:  selectorForLabels(deployment.Labels),
 		Ports:     servicePorts,
 	}); err != nil {
 		return registry.AssetResult{}, err
@@ -1019,7 +1019,7 @@ func (d *ObservabilityDriver) Apply(ctx context.Context, in registry.AssetInput)
 		Hash:      hash,
 		Type:      firstNonEmpty(payload.ServiceType, "ClusterIP"),
 		Labels:    driverutil.Labels("kubernetes", in, hash),
-		Selector:  map[string]string{"guardian.asset": in.Asset.Name},
+		Selector:  selectorForLabels(deployment.Labels),
 		Ports:     servicePorts,
 	}); err != nil {
 		return registry.AssetResult{}, err

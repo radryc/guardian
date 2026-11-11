@@ -32,24 +32,66 @@ import (
 const processorScope = "guardian.results"
 
 var (
-	resultMetricsOnce sync.Once
-	resultCounter     metricapi.Int64Counter
-	resultFailCounter metricapi.Int64Counter
-	resultDuration    metricapi.Float64Histogram
+	resultMetricsOnce    sync.Once
+	resultCounter        metricapi.Int64Counter
+	resultFailCounter    metricapi.Int64Counter
+	resultDiscardCounter metricapi.Int64Counter
+	resultDuration       metricapi.Float64Histogram
 )
 
 type Processor struct {
 	store      guardianapi.Store
 	dispatcher *dispatcher.Dispatcher
+
+	failureMu sync.Mutex
+	failures  map[string]resultFailure
+}
+
+// A result normally finishes in seconds. When the same result keeps failing,
+// its state write can never be committed (for example a permanently unreadable
+// intent-state path), and every scan retries it forever. After this window the
+// result is discarded and the reconciler re-queues the intent from scratch.
+const resultFailureMaxAttempts = 5
+
+// resultFailureWindow is a variable so tests can shorten it.
+var resultFailureWindow = 2 * time.Minute
+
+type resultFailure struct {
+	attempts int
+	first    time.Time
 }
 
 func NewProcessor(store guardianapi.Store, dispatcher *dispatcher.Dispatcher) *Processor {
 	return &Processor{store: store, dispatcher: dispatcher}
 }
 
+// recordResultFailure tracks consecutive failures for one result and reports
+// whether the result should be abandoned.
+func (p *Processor) recordResultFailure(taskID string) bool {
+	now := time.Now()
+	p.failureMu.Lock()
+	defer p.failureMu.Unlock()
+	if p.failures == nil {
+		p.failures = make(map[string]resultFailure)
+	}
+	failure := p.failures[taskID]
+	if failure.attempts == 0 {
+		failure.first = now
+	}
+	failure.attempts++
+	p.failures[taskID] = failure
+	return failure.attempts >= resultFailureMaxAttempts && now.Sub(failure.first) >= resultFailureWindow
+}
+
+func (p *Processor) clearResultFailure(taskID string) {
+	p.failureMu.Lock()
+	delete(p.failures, taskID)
+	p.failureMu.Unlock()
+}
+
 func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskResult) error {
 	attrs := resultAttributes(result)
-	count, failures, duration := resultInstruments()
+	count, failures, discarded, duration := resultInstruments()
 	if count != nil {
 		count.Add(ctx, 1, metricapi.WithAttributes(attrs...))
 	}
@@ -73,6 +115,10 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		telemetry.EmitError(ctx, processorScope, fmt.Sprintf("process result %s failed: %v", result.TaskID, err))
+		if p.recordResultFailure(result.TaskID) {
+			p.abandonResult(ctx, result, err, discarded)
+			return nil
+		}
 		return err
 	}
 
@@ -83,6 +129,9 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 	if err != nil {
 		return fail(err)
 	}
+	// Capture the snapshot this result started from. Writes below merge their
+	// changes onto the latest state so concurrent observation updates survive.
+	base := statedomain.CloneIntentState(state)
 	// Skip stale results: if the intent's last task ID no longer matches this
 	// result (e.g. a newer task was already queued), this result is outdated.
 	// An empty LastTaskID is still verified against the queued task below.
@@ -114,7 +163,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			state.Status = statedomain.StatusCheckFailed
 			state.ApplyReadiness = &taskdomain.ApplyReadiness{Status: taskdomain.ApplyReadinessBlocked, Summary: derefErr(result.Error)}
 			state.LastError = result.Error
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			errMsg := derefErr(result.Error)
@@ -138,7 +187,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			// Report-only: never queue APPLY after a successful CHECK.
 			state.Status = statedomain.StatusObserved
 			state.LastError = nil
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
@@ -159,7 +208,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			return fail(err)
 		}
 		log.Printf("results: queued apply task=%s from check task=%s partition=%s intent=%s pusher=%s", next.TaskID, result.TaskID, state.Partition, state.Intent, state.TargetPusher)
-		if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+		if err := p.persistIntentState(ctx, base, state); err != nil {
 			return fail(err)
 		}
 		p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
@@ -175,7 +224,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			state.ApplyReadiness = nil
 			state.AssetObservations = nil
 			state.LastError = result.Error
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			errMsg := derefErr(result.Error)
@@ -211,7 +260,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 				state.Status = statedomain.StatusObservedDrifted
 			}
 			state.LastError = nil
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			if driftSettled {
@@ -239,7 +288,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		}
 		if driftSettled && applyResultSettled(result) {
 			state.Status = statedomain.StatusHealthy
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			if err := p.queueDependents(ctx, state.Partition); err != nil {
@@ -267,7 +316,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			if err := p.dispatcher.QueueTask(ctx, next); err != nil {
 				return fail(err)
 			}
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
@@ -277,7 +326,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		}
 		if state.Locked || state.PartitionMode == "readonly" {
 			state.Status = statedomain.StatusDriftedLocked
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
@@ -300,7 +349,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		if err := p.dispatcher.QueueTask(ctx, next); err != nil {
 			return fail(err)
 		}
-		if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+		if err := p.persistIntentState(ctx, base, state); err != nil {
 			return fail(err)
 		}
 		p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
@@ -329,7 +378,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		if result.Status == taskdomain.ResultFailed {
 			state.Status = statedomain.StatusApplyFailed
 			state.LastError = result.Error
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			errMsg := derefErr(result.Error)
@@ -372,7 +421,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 			if err := p.dispatcher.QueueTask(ctx, next); err != nil {
 				return fail(err)
 			}
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
@@ -389,7 +438,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		state.RollbackTo = ""
 		state.Drift = &taskdomain.DriftReport{Status: "InSync", Summary: "apply completed"}
 		state.DeploymentRevision = revisions.DeploymentRevisionID(state.PartitionRevision, state.IntentVersionID, result.FinishedAt)
-		if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+		if err := p.persistIntentState(ctx, base, state); err != nil {
 			return fail(err)
 		}
 		rec := &historydomain.DeploymentRecord{
@@ -481,7 +530,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		if result.Status == taskdomain.ResultFailed {
 			state.Status = statedomain.StatusApplyFailed
 			state.LastError = result.Error
-			if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+			if err := p.persistIntentState(ctx, base, state); err != nil {
 				return fail(err)
 			}
 			errMsg := derefErr(result.Error)
@@ -503,7 +552,7 @@ func (p *Processor) ProcessResult(ctx context.Context, result *taskdomain.TaskRe
 		state.ApplyReadiness = nil
 		state.AssetObservations = nil
 		state.Outputs = map[string]string{}
-		if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+		if err := p.persistIntentState(ctx, base, state); err != nil {
 			return fail(err)
 		}
 		p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
@@ -598,11 +647,58 @@ func (p *Processor) loadTask(ctx context.Context, pusher, taskID string) (*taskd
 	return &task, nil
 }
 
+// persistIntentState merges the changes between base and state into the latest
+// persisted intent state. State is loaded once per result, so writing it back
+// verbatim would clobber observations (Resources, LastObservedAt) persisted by
+// the observed collector while the task was being processed.
+func (p *Processor) persistIntentState(ctx context.Context, base, state *statedomain.IntentState) error {
+	if state == nil {
+		return nil
+	}
+	_, err := p.dispatcher.UpdateIntentState(ctx, state.Partition, state.Intent, func(latest *statedomain.IntentState) error {
+		statedomain.MergeIntentState(latest, base, state)
+		return nil
+	})
+	return err
+}
+
+// DiscardStaleResult removes the queue task/claim/result for a result whose
+// intent no longer tracks it. The live-result scan ignores such results, so
+// without this they accumulate until the queue is full.
+func (p *Processor) DiscardStaleResult(ctx context.Context, pusher, taskID string) {
+	p.cleanupQueueArtifacts(ctx, pusher, taskID)
+}
+
+// abandonResult drops a result that has failed for longer than
+// resultFailureWindow so one poison result cannot be retried on every scan
+// forever. The reconciler recompiles the intent from its manifest and queues a
+// fresh task, which also clears any state the result could not commit.
+func (p *Processor) abandonResult(ctx context.Context, result *taskdomain.TaskResult, cause error, discarded metricapi.Int64Counter) {
+	message := fmt.Sprintf("result %s discarded after repeated failures for %s/%s: %v", result.TaskID, result.Partition, result.Intent, cause)
+	log.Printf("results: %s", message)
+	if discarded != nil {
+		discarded.Add(ctx, 1, metricapi.WithAttributes(resultAttributes(result)...))
+	}
+	_ = p.dispatcher.WriteEvent(ctx, &historydomain.EventRecord{
+		Partition: result.Partition,
+		Intent:    result.Intent,
+		Type:      "task.failed",
+		Message:   message,
+		TaskID:    result.TaskID,
+		Details: map[string]string{
+			"op":    string(result.Op),
+			"error": cause.Error(),
+		},
+	})
+	p.cleanupQueueArtifacts(ctx, result.Pusher, result.TaskID)
+}
+
 func (p *Processor) cleanupQueueArtifacts(ctx context.Context, pusher, taskID string) {
 	if err := paths.ValidateQueueIdentity(pusher, taskID); err != nil {
 		telemetry.EmitWarn(ctx, processorScope, fmt.Sprintf("refusing to clean queue artifacts: %v", err))
 		return
 	}
+	p.clearResultFailure(taskID)
 	_, err := p.store.DeletePaths(ctx, guardianapi.DeleteBatch{
 		Deletes: []guardianapi.PathDelete{
 			{LogicalPath: paths.QueueTask(pusher, taskID)},
@@ -702,6 +798,7 @@ func (p *Processor) queueDependents(ctx context.Context, partition string) error
 			continue
 		}
 		prevStatus := state.Status
+		base := statedomain.CloneIntentState(state)
 		next, err := common.BuildTask(ctx, p.store, state, taskdomain.OpDiff, outputs, false)
 		if err != nil {
 			return err
@@ -714,7 +811,7 @@ func (p *Processor) queueDependents(ctx context.Context, partition string) error
 		if err := p.dispatcher.QueueTask(ctx, next); err != nil {
 			return err
 		}
-		if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+		if err := p.persistIntentState(ctx, base, state); err != nil {
 			return err
 		}
 		if prevStatus == statedomain.StatusBlocked {
@@ -743,6 +840,7 @@ func (p *Processor) recordRollback(ctx context.Context, state *statedomain.Inten
 	if state.DeploymentRevision == "" {
 		return fmt.Errorf("cannot rollback %s/%s: no previous deployment revision", state.Partition, state.Intent)
 	}
+	base := statedomain.CloneIntentState(state)
 	rollbackReason := derefErr(result.Error)
 	state.RollbackTo = state.DeploymentRevision
 	state.RollbackReason = rollbackReason
@@ -753,7 +851,7 @@ func (p *Processor) recordRollback(ctx context.Context, state *statedomain.Inten
 	state.Health = nil
 	state.ApplyReadiness = nil
 	state.AssetObservations = nil
-	if err := p.dispatcher.WriteIntentState(ctx, state); err != nil {
+	if err := p.persistIntentState(ctx, base, state); err != nil {
 		return err
 	}
 	correlationID := revisions.NewCorrelationID()
@@ -848,7 +946,7 @@ func sortStrings(values []string) {
 	sort.Strings(values)
 }
 
-func resultInstruments() (metricapi.Int64Counter, metricapi.Int64Counter, metricapi.Float64Histogram) {
+func resultInstruments() (metricapi.Int64Counter, metricapi.Int64Counter, metricapi.Int64Counter, metricapi.Float64Histogram) {
 	resultMetricsOnce.Do(func() {
 		meter := otel.Meter(processorScope)
 		var err error
@@ -860,12 +958,16 @@ func resultInstruments() (metricapi.Int64Counter, metricapi.Int64Counter, metric
 		if err != nil {
 			telemetry.EmitError(context.Background(), processorScope, fmt.Sprintf("create result fail counter: %v", err))
 		}
+		resultDiscardCounter, err = meter.Int64Counter("guardian.results.discarded")
+		if err != nil {
+			telemetry.EmitError(context.Background(), processorScope, fmt.Sprintf("create result discard counter: %v", err))
+		}
 		resultDuration, err = meter.Float64Histogram("guardian.results.duration.seconds", metricapi.WithUnit("s"))
 		if err != nil {
 			telemetry.EmitError(context.Background(), processorScope, fmt.Sprintf("create result duration histogram: %v", err))
 		}
 	})
-	return resultCounter, resultFailCounter, resultDuration
+	return resultCounter, resultFailCounter, resultDiscardCounter, resultDuration
 }
 
 func resultAttributes(result *taskdomain.TaskResult) []attribute.KeyValue {

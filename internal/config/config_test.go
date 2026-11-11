@@ -19,3 +19,10 @@ func TestMonoFSConfigDiscoveryUseExternalAddressesUsesClientOverride(t *testing.
 		t.Fatalf("expected discovery override to win over store useExternalAddresses")
 	}
 }
+
+func TestDefaultEnablesAdaptiveReconcilePacing(t *testing.T) {
+	cfg := Default()
+	if !cfg.Guardian.ReconcileAdaptive {
+		t.Fatal("adaptive reconcile pacing should be enabled by default")
+	}
+}

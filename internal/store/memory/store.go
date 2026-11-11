@@ -81,6 +81,23 @@ func (s *Store) ReadFile(ctx context.Context, logicalPath string) ([]byte, error
 	return copyBytes(rec.current.content), nil
 }
 
+// ReadFileVersioned returns the current content and its version atomically.
+func (s *Store) ReadFileVersioned(ctx context.Context, logicalPath string) ([]byte, guardianapi.FileVersion, bool, error) {
+	select {
+	case <-ctx.Done():
+		return nil, guardianapi.FileVersion{}, false, ctx.Err()
+	default:
+	}
+	logicalPath = normalizeLogicalPath(logicalPath)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rec, ok := s.files[logicalPath]
+	if !ok || rec.current == nil || rec.current.version.Tombstone {
+		return nil, guardianapi.FileVersion{}, false, nil
+	}
+	return copyBytes(rec.current.content), rec.current.version, true, nil
+}
+
 func (s *Store) Stat(ctx context.Context, logicalPath string) (guardianapi.FileInfo, error) {
 	select {
 	case <-ctx.Done():

@@ -330,6 +330,18 @@ func main() {
 	}
 	processor := results.NewProcessor(store, dispatcher)
 	recon := reconciler.NewReconcilerWithOptions(store, dispatcher, cfg.Guardian.ReconcileInterval, staleTaskDuration)
+	if cfg.Guardian.ReconcileParallelism > 0 {
+		recon.SetParallelism(cfg.Guardian.ReconcileParallelism)
+	}
+	if cfg.Guardian.ReconcileRateLimit > 0 {
+		recon.SetRateLimit(cfg.Guardian.ReconcileRateLimit, cfg.Guardian.ReconcileBurst)
+	}
+	if cfg.Guardian.ReconcileAdaptive {
+		recon.SetAdaptiveRateLimit(true, cfg.Guardian.ReconcileBacklogTarget, cfg.Guardian.ReconcileMinRateLimit)
+		log.Printf("guardian reconciler adaptive pacing enabled")
+	} else if cfg.Guardian.ReconcileRateLimit > 0 {
+		log.Printf("guardian reconciler rate limit: %.3f partitions/sec", cfg.Guardian.ReconcileRateLimit)
+	}
 	shardIndex, shardCount := 0, 1
 	if raw := strings.TrimSpace(os.Getenv("GUARDIAN_SHARD_INDEX")); raw != "" {
 		parsed, parseErr := strconv.Atoi(raw)
@@ -789,9 +801,18 @@ func processLiveResultFiles(ctx context.Context, store guardianapi.Store, proces
 				liveMu.Unlock()
 				continue
 			}
-			// Not tracked by its intent. If the task file is gone this is an
-			// orphan from an interrupted run; otherwise leave it for a later scan
-			// in case the pusher is still mid-flight.
+			// Not tracked by its intent. A finished result older than a short
+			// grace period can never become live again, so remove the whole
+			// queue artifact set. Using the (usually 30m) control-plane stale
+			// window here leaves the intent "in progress" for far too long
+			// after a failed state write.
+			const staleResultGrace = 2 * time.Minute
+			if result.FinishedAt.IsZero() || time.Since(result.FinishedAt) > staleResultGrace {
+				processor.DiscardStaleResult(ctx, pn, taskID)
+				continue
+			}
+			// Recent result and the task file is gone: an interrupted run left
+			// only the result behind.
 			if _, statErr := store.Stat(ctx, paths.QueueTask(pn, taskID)); os.IsNotExist(statErr) {
 				if _, delErr := store.DeletePaths(ctx, guardianapi.DeleteBatch{
 					Deletes: []guardianapi.PathDelete{{LogicalPath: resultPath}},
@@ -1047,9 +1068,11 @@ func newObservedResolver(cfg *config.Config, store guardianapi.Store, timeout ti
 			continue
 		}
 		endpoints[pusher.Name] = observedpkg.Endpoint{
-			Name:   pusher.Name,
-			Client: observedpkg.NewClient(apiURL, pusher.ObservedToken(), timeout),
+			Name:     pusher.Name,
+			Provider: observedpkg.ProviderForName("", pusher.Name),
+			Client:   observedpkg.NewClient(apiURL, pusher.ObservedToken(), timeout),
 		}
+		endpoints[pusher.Name].Client.Provider = endpoints[pusher.Name].Provider
 	}
 	registryStore := registry.New(store)
 	resolver := &observedpkg.RegistryResolver{

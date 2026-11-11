@@ -404,6 +404,10 @@ func loadAWSRolesAnywhereConfig(ctx context.Context, profile, region string) (aw
 func PrintRolesAnywhereSummary(cfg RolesAnywhereConfig) {
 	home, _ := os.UserHomeDir()
 	configTarget := filepath.Join(home, ".aws", "config")
+	profileName := strings.TrimSpace(cfg.Profile)
+	if profileName == "" {
+		profileName = "guardian-rolesanywhere"
+	}
 
 	fmt.Println()
 	fmt.Println("=== IAM Roles Anywhere configured ===")
@@ -414,41 +418,44 @@ func PrintRolesAnywhereSummary(cfg RolesAnywhereConfig) {
 	fmt.Println()
 
 	profileBlock := fmt.Sprintf(`
-[profile guardian-rolesanywhere]
-credential_process = aws_signing_helper credential-process --certificate %s --private-key %s --trust-anchor-arn %s --profile-arn %s --role-arn %s
+[profile %s]
+credential_process = aws_signing_helper credential-process --certificate %s --private-key %s --trust-anchor-arn %s --profile-arn %s --role-arn %s --region %s
 region = %s
 `,
+		profileName,
 		cfg.CertificatePath,
 		cfg.PrivateKeyPath,
 		cfg.TrustAnchorARN,
 		cfg.ProfileARN,
 		cfg.RoleARN,
 		cfg.Region,
+		cfg.Region,
 	)
 
 	fmt.Println("Adding to ~/.aws/config:")
 	fmt.Println(profileBlock)
 
-	if err := appendAWSConfig(configTarget, profileBlock); err != nil {
+	if err := appendAWSConfig(configTarget, profileName, profileBlock); err != nil {
 		fmt.Printf("  warning: could not write config: %v\n", err)
 	} else {
 		fmt.Printf("  written to %s\n", configTarget)
 	}
 
 	fmt.Println("  Verify credential process:")
-	fmt.Printf("    AWS_PROFILE=guardian-rolesanywhere aws sts get-caller-identity\n")
+	fmt.Printf("    AWS_PROFILE=%s aws sts get-caller-identity\n", profileName)
 }
 
-func appendAWSConfig(path, block string) error {
+func appendAWSConfig(path, profileName, block string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 
 	existing, _ := os.ReadFile(path)
 	content := string(existing)
+	header := "[profile " + profileName + "]"
 
-	if strings.Contains(content, "[profile guardian-rolesanywhere]") {
-		start := strings.Index(content, "[profile guardian-rolesanywhere]")
+	if strings.Contains(content, header) {
+		start := strings.Index(content, header)
 		end := strings.Index(content[start:], "\n[")
 		if end == -1 {
 			end = len(content) - start

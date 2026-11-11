@@ -61,6 +61,8 @@ type Dispatcher struct {
 	partitionWriteLocks map[string]*sync.Mutex
 
 	archiveMu       sync.Mutex
+	archiveLocks    map[string]*sync.Mutex
+	retentionMu     sync.RWMutex
 	taskArchiveKeep int
 	taskArchiveAge  time.Duration
 }
@@ -70,10 +72,16 @@ const maxEventsPerPartition = 250
 // SetTaskArchiveRetention bounds the immutable task-spec archive. keep <= 0
 // disables count-based retention; maxAge <= 0 disables age-based retention.
 func (d *Dispatcher) SetTaskArchiveRetention(keep int, maxAge time.Duration) {
-	d.archiveMu.Lock()
+	d.retentionMu.Lock()
 	d.taskArchiveKeep = keep
 	d.taskArchiveAge = maxAge
-	d.archiveMu.Unlock()
+	d.retentionMu.Unlock()
+}
+
+func (d *Dispatcher) taskArchiveRetention() (int, time.Duration) {
+	d.retentionMu.RLock()
+	defer d.retentionMu.RUnlock()
+	return d.taskArchiveKeep, d.taskArchiveAge
 }
 
 func NewDispatcher(store guardianapi.Store, principalID string) *Dispatcher {
@@ -86,6 +94,7 @@ func NewDispatcher(store guardianapi.Store, principalID string) *Dispatcher {
 		eventHistory:        make(map[string][]string),
 		generatedPayloads:   make(map[string]map[string]bool),
 		partitionWriteLocks: make(map[string]*sync.Mutex),
+		archiveLocks:        make(map[string]*sync.Mutex),
 	}
 }
 
@@ -164,9 +173,10 @@ func (d *Dispatcher) QueueTask(ctx context.Context, t *taskdomain.Task) error {
 	archiveEnabled := paths.ValidatePartitionName(t.Partition) == nil && strings.TrimSpace(t.TaskID) != "" &&
 		paths.ValidateTaskID(t.TaskID) == nil
 	if archiveEnabled {
-		d.archiveMu.Lock()
-		defer d.archiveMu.Unlock()
-		archiveWrites, deletes, archiveErr := d.buildTaskArchive(ctx, t.Partition, t.TaskID, content)
+		keep, maxAge := d.taskArchiveRetention()
+		unlockArchive := d.lockTaskArchive(t.Partition)
+		archiveWrites, deletes, archiveErr := d.buildTaskArchive(ctx, t.Partition, t.TaskID, content, keep, maxAge)
+		unlockArchive()
 		if archiveErr != nil {
 			return archiveErr
 		}
@@ -209,69 +219,75 @@ type taskArchiveChain struct {
 }
 
 // buildTaskArchive returns the task-spec write, the updated hash chain, and
-// deletes for entries that fall outside the configured retention window. The
-// caller must hold d.archiveMu.
-func (d *Dispatcher) buildTaskArchive(ctx context.Context, partition, taskID string, content []byte) ([]guardianapi.PathWrite, []guardianapi.PathDelete, error) {
+// deletes for entries that fall outside the configured retention window.
+func (d *Dispatcher) buildTaskArchive(ctx context.Context, partition, taskID string, content []byte, keep int, maxAge time.Duration) ([]guardianapi.PathWrite, []guardianapi.PathDelete, error) {
 	chain, err := d.loadTaskArchiveChain(ctx, partition)
 	if err != nil {
 		return nil, nil, err
 	}
 	now := time.Now().UTC()
 	cutoff := time.Time{}
-	if d.taskArchiveAge > 0 {
-		cutoff = now.Add(-d.taskArchiveAge)
+	if maxAge > 0 {
+		cutoff = now.Add(-maxAge)
 	}
-	entries, err := d.store.ListDir(ctx, paths.TaskSpecDir(partition))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, nil, err
-	}
-	type candidate struct {
-		id      string
-		modTime time.Time
-	}
-	candidates := make([]candidate, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir || !strings.HasSuffix(entry.Name, ".json") || entry.Name == ".chain.json" {
-			continue
-		}
-		id := strings.TrimSuffix(entry.Name, ".json")
-		if id == taskID {
-			continue
-		}
-		info, statErr := d.store.Stat(ctx, paths.TaskSpec(partition, id))
-		if statErr != nil {
-			continue
-		}
-		candidates = append(candidates, candidate{id: id, modTime: info.ModTime})
-	}
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].id < candidates[j].id })
-
-	pruned := make(map[string]struct{})
 	deletes := make([]guardianapi.PathDelete, 0)
-	for idx, candidate := range candidates {
-		tooMany := d.taskArchiveKeep > 0 && idx < len(candidates)+1-d.taskArchiveKeep
-		tooOld := !cutoff.IsZero() && !candidate.modTime.IsZero() && candidate.modTime.Before(cutoff)
-		if !tooMany && !tooOld {
-			continue
+	pruned := make(map[string]struct{})
+	if keep > 0 || !cutoff.IsZero() {
+		entries, err := d.store.ListDir(ctx, paths.TaskSpecDir(partition))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, nil, err
 		}
-		pruned[candidate.id] = struct{}{}
-		deletes = append(deletes, guardianapi.PathDelete{LogicalPath: paths.TaskSpec(partition, candidate.id)})
+		type candidate struct {
+			id      string
+			modTime time.Time
+		}
+		candidates := make([]candidate, 0, len(entries))
+		for _, entry := range entries {
+			if entry.IsDir || !strings.HasSuffix(entry.Name, ".json") || entry.Name == ".chain.json" {
+				continue
+			}
+			id := strings.TrimSuffix(entry.Name, ".json")
+			if id == taskID {
+				continue
+			}
+			info, statErr := d.store.Stat(ctx, paths.TaskSpec(partition, id))
+			if statErr != nil {
+				continue
+			}
+			candidates = append(candidates, candidate{id: id, modTime: info.ModTime})
+		}
+		sort.Slice(candidates, func(i, j int) bool { return candidates[i].id < candidates[j].id })
+
+		for idx, candidate := range candidates {
+			tooMany := keep > 0 && idx < len(candidates)+1-keep
+			tooOld := !cutoff.IsZero() && !candidate.modTime.IsZero() && candidate.modTime.Before(cutoff)
+			if !tooMany && !tooOld {
+				continue
+			}
+			pruned[candidate.id] = struct{}{}
+			deletes = append(deletes, guardianapi.PathDelete{LogicalPath: paths.TaskSpec(partition, candidate.id)})
+		}
 	}
 
 	kept := chain.Entries[:0]
 	for _, entry := range chain.Entries {
-		if _, remove := pruned[entry.TaskID]; remove || entry.TaskID == taskID {
+		if entry.TaskID == taskID {
+			continue
+		}
+		if _, remove := pruned[entry.TaskID]; remove {
 			continue
 		}
 		kept = append(kept, entry)
 	}
+	chain.Entries = kept
+
 	prevHash := ""
-	if len(kept) > 0 {
-		prevHash = kept[len(kept)-1].SHA256
+	if len(chain.Entries) > 0 {
+		prevHash = chain.Entries[len(chain.Entries)-1].SHA256
 	}
 	sum := sha256.Sum256(append([]byte(prevHash), content...))
 	chain.Version = 1
-	chain.Entries = append(kept, taskArchiveEntry{
+	chain.Entries = append(chain.Entries, taskArchiveEntry{
 		TaskID:     taskID,
 		SHA256:     hex.EncodeToString(sum[:]),
 		PrevSHA256: prevHash,
@@ -306,7 +322,167 @@ func (d *Dispatcher) loadTaskArchiveChain(ctx context.Context, partition string)
 func (d *Dispatcher) WriteIntentState(ctx context.Context, s *statedomain.IntentState) error {
 	unlock := d.lockPartitionWrites(s.Partition)
 	defer unlock()
+	return d.writeIntentStateLocked(ctx, s)
+}
 
+// UpdateIntentState atomically loads the latest intent state, applies mutate,
+// and writes it back while holding the per-partition write lock.
+//
+// This is the race-free primitive for intent transitions. Callers that compute
+// a new state from a snapshot loaded earlier in their pass should use
+// statedomain.MergeIntentState inside mutate so fields written concurrently by
+// another owner (for example the observed collector refreshing Resources and
+// LastObservedAt) are preserved.
+func (d *Dispatcher) UpdateIntentState(ctx context.Context, partition, intent string, mutate func(*statedomain.IntentState) error) (*statedomain.IntentState, error) {
+	unlock := d.lockPartitionWrites(partition)
+	defer unlock()
+
+	// Prefer a store that can return content and its authoritative version
+	// atomically. This is what makes the update safe across guardiand
+	// replicas; the in-process partition lock only protects one process.
+	if reader, ok := d.store.(guardianapi.VersionedReader); ok {
+		return d.updateIntentStateCAS(ctx, reader, partition, intent, mutate)
+	}
+
+	state, err := common.LoadIntentState(ctx, d.store, partition, intent)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		state = newIntentState(partition, intent)
+	}
+	if state.Outputs == nil {
+		state.Outputs = map[string]string{}
+	}
+	if mutate != nil {
+		if err := mutate(state); err != nil {
+			return nil, err
+		}
+	}
+	if err := d.writeIntentStateLocked(ctx, state); err != nil {
+		return nil, err
+	}
+	return state, nil
+}
+
+func newIntentState(partition, intent string) *statedomain.IntentState {
+	return &statedomain.IntentState{
+		APIVersion: "guardian/v1alpha1",
+		Kind:       "IntentState",
+		Partition:  partition,
+		Intent:     intent,
+		Outputs:    map[string]string{},
+	}
+}
+
+func intentStateCASMissingVersionMode() string {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("GUARDIAN_INTENT_STATE_CAS_MISSING_VERSION")))
+	if mode == "error" {
+		return "error"
+	}
+	return "fallback"
+}
+
+func (d *Dispatcher) updateIntentStateCAS(ctx context.Context, reader guardianapi.VersionedReader, partition, intent string, mutate func(*statedomain.IntentState) error) (*statedomain.IntentState, error) {
+	const maxAttempts = 5
+	logicalPath := paths.IntentState(partition, intent)
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		content, version, exists, err := reader.ReadFileVersioned(ctx, logicalPath)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			if errors.Is(err, guardianapi.ErrConflict) {
+				guardianCASConflictsTotal.WithLabelValues("intent_state_read").Inc()
+				guardianCASRetriesTotal.WithLabelValues("intent_state_read").Inc()
+				if err := sleepBackoff(ctx, time.Duration(attempt)*10*time.Millisecond); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			return nil, err
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			exists = false
+		}
+
+		var state *statedomain.IntentState
+		if exists {
+			state = &statedomain.IntentState{}
+			if err := json.Unmarshal(content, state); err != nil {
+				return nil, fmt.Errorf("decode intent state %s: %w", logicalPath, err)
+			}
+		} else {
+			state = newIntentState(partition, intent)
+		}
+		if state.Outputs == nil {
+			state.Outputs = map[string]string{}
+		}
+		if mutate != nil {
+			if err := mutate(state); err != nil {
+				return nil, err
+			}
+		}
+
+		newContent, err := json.MarshalIndent(state, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+		expected := "absent"
+		if exists {
+			if version.VersionID == "" {
+				guardianCASVersionMissingTotal.Inc()
+				if intentStateCASMissingVersionMode() == "error" {
+					return nil, fmt.Errorf("%w: intent state %s has content but no authoritative version", guardianapi.ErrConflict, logicalPath)
+				}
+				expected = ""
+			} else {
+				expected = version.VersionID
+			}
+		}
+
+		if exists && bytes.Equal(content, newContent) {
+			d.recordHash(logicalPath, newContent)
+			guardianSkippedWritesTotal.WithLabelValues("write_intent_state").Inc()
+			if err := d.applyIntentStateAfterWrite(ctx, state); err != nil {
+				return nil, err
+			}
+			return state, nil
+		}
+
+		_, err = d.store.UpsertFiles(ctx, guardianapi.MutationBatch{
+			Writes: []guardianapi.PathWrite{{
+				LogicalPath:       logicalPath,
+				Content:           newContent,
+				ExpectedVersionID: expected,
+			}},
+			Context: guardianapi.MutationContext{PrincipalID: d.principalID, Reason: "write intent state"},
+		})
+		if err != nil {
+			if errors.Is(err, guardianapi.ErrConflict) {
+				guardianCASConflictsTotal.WithLabelValues("intent_state").Inc()
+				guardianCASRetriesTotal.WithLabelValues("intent_state").Inc()
+				if err := sleepBackoff(ctx, time.Duration(attempt)*10*time.Millisecond); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			return nil, err
+		}
+
+		d.recordHash(logicalPath, newContent)
+		guardianWritesTotal.WithLabelValues("write_intent_state").Inc()
+		guardianWriteBytesTotal.WithLabelValues("write_intent_state").Add(float64(len(newContent)))
+		d.publish(logicalPath, newContent, contentTypeJSON)
+		if err := d.applyIntentStateAfterWrite(ctx, state); err != nil {
+			return nil, err
+		}
+		return state, nil
+	}
+
+	guardianCASExhaustedTotal.WithLabelValues("intent_state").Inc()
+	return nil, fmt.Errorf("%w: intent state CAS retries exhausted for %s", guardianapi.ErrConflict, logicalPath)
+}
+
+func (d *Dispatcher) writeIntentStateLocked(ctx context.Context, s *statedomain.IntentState) error {
 	content, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
@@ -314,6 +490,10 @@ func (d *Dispatcher) WriteIntentState(ctx context.Context, s *statedomain.Intent
 	if _, err := d.writeFile(ctx, paths.IntentState(s.Partition, s.Intent), content, "write intent state", "write_intent_state"); err != nil {
 		return err
 	}
+	return d.applyIntentStateAfterWrite(ctx, s)
+}
+
+func (d *Dispatcher) applyIntentStateAfterWrite(ctx context.Context, s *statedomain.IntentState) error {
 	delta, err := d.applyIntentDelta(ctx, s.Partition, s.Intent, s, false)
 	if err != nil {
 		return err
@@ -354,11 +534,44 @@ func (d *Dispatcher) DeleteIntentState(ctx context.Context, partition, intent, c
 		correlationID = revisions.NewCorrelationID()
 	}
 	intentPath := paths.IntentState(partition, intent)
-	if _, err := d.store.DeletePaths(ctx, guardianapi.DeleteBatch{
-		Deletes: []guardianapi.PathDelete{{LogicalPath: intentPath}},
-		Context: guardianapi.MutationContext{PrincipalID: d.principalID, Reason: reason, CorrelationID: correlationID},
-	}); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	const maxDeleteAttempts = 5
+	deleteApplied := false
+	for attempt := 1; attempt <= maxDeleteAttempts; attempt++ {
+		info, statErr := d.store.Stat(ctx, intentPath)
+		if statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				deleteApplied = true
+				break
+			}
+			return statErr
+		}
+		expected := info.VersionID
+		if expected == "" {
+			guardianCASVersionMissingTotal.Inc()
+			if intentStateCASMissingVersionMode() == "error" {
+				return fmt.Errorf("%w: intent state %s has no authoritative version", guardianapi.ErrConflict, intentPath)
+			}
+		}
+		_, err := d.store.DeletePaths(ctx, guardianapi.DeleteBatch{
+			Deletes: []guardianapi.PathDelete{{LogicalPath: intentPath, ExpectedVersionID: expected}},
+			Context: guardianapi.MutationContext{PrincipalID: d.principalID, Reason: reason, CorrelationID: correlationID},
+		})
+		if err == nil {
+			deleteApplied = true
+			break
+		}
+		if !errors.Is(err, guardianapi.ErrConflict) {
+			return err
+		}
+		guardianCASConflictsTotal.WithLabelValues("delete_intent_state").Inc()
+		guardianCASRetriesTotal.WithLabelValues("delete_intent_state").Inc()
+		if err := sleepBackoff(ctx, time.Duration(attempt)*10*time.Millisecond); err != nil {
+			return err
+		}
+	}
+	if !deleteApplied {
+		guardianCASExhaustedTotal.WithLabelValues("delete_intent_state").Inc()
+		return fmt.Errorf("%w: delete intent state CAS retries exhausted for %s", guardianapi.ErrConflict, intentPath)
 	}
 	guardianDeletesTotal.WithLabelValues("delete_intent_state").Inc()
 	// Evict cached hash so a future write to this path is not skipped.
@@ -646,6 +859,17 @@ func nowUTC() time.Time {
 	return time.Now().UTC()
 }
 
+func sleepBackoff(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 func (d *Dispatcher) lockPartitionWrites(partition string) func() {
 	if partition == "" {
 		return func() {}
@@ -657,6 +881,24 @@ func (d *Dispatcher) lockPartitionWrites(partition string) func() {
 		d.partitionWriteLocks[partition] = lock
 	}
 	d.partitionWriteMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
+}
+
+// lockTaskArchive serialises task-archive chain updates for one partition only.
+// A single global mutex made every QueueTask across the fleet wait on the same
+// read-modify-write chain update.
+func (d *Dispatcher) lockTaskArchive(partition string) func() {
+	if partition == "" {
+		return func() {}
+	}
+	d.archiveMu.Lock()
+	lock, ok := d.archiveLocks[partition]
+	if !ok {
+		lock = &sync.Mutex{}
+		d.archiveLocks[partition] = lock
+	}
+	d.archiveMu.Unlock()
 	lock.Lock()
 	return lock.Unlock
 }

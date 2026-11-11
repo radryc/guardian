@@ -57,4 +57,31 @@ var (
 		Name:      "intent_status_current",
 		Help:      "Current number of desired intents in each status across partition runtime snapshots.",
 	}, []string{"status"})
+	guardianCASConflictsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "guardian",
+		Subsystem: "dispatcher",
+		Name:      "cas_conflicts_total",
+		Help:      "Compare-and-swap conflicts observed by the Guardian dispatcher.",
+	}, []string{"operation"})
+
+	guardianCASRetriesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "guardian",
+		Subsystem: "dispatcher",
+		Name:      "cas_retries_total",
+		Help:      "Compare-and-swap retries performed by the Guardian dispatcher.",
+	}, []string{"operation"})
+
+	guardianCASExhaustedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "guardian",
+		Subsystem: "dispatcher",
+		Name:      "cas_exhausted_total",
+		Help:      "Compare-and-swap retry budgets exhausted by the Guardian dispatcher.",
+	}, []string{"operation"})
+
+	guardianCASVersionMissingTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "guardian",
+		Subsystem: "dispatcher",
+		Name:      "cas_version_missing_total",
+		Help:      "Intent state writes where content existed but no authoritative version was available.",
+	})
 )

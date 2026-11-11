@@ -22,6 +22,9 @@ type Config struct {
 	Insecure           bool
 	MetricInterval     time.Duration
 	ResourceAttributes map[string]string
+	// ExponentialHistogramInstruments selects histogram instruments that the
+	// SDK exports as OTLP exponential histograms instead of explicit buckets.
+	ExponentialHistogramInstruments []string
 }
 
 func LoadConfig(component, instanceID string) (Config, error) {
@@ -62,6 +65,15 @@ func LoadConfig(component, instanceID string) (Config, error) {
 			return Config{}, fmt.Errorf("parse GUARDIAN_OTEL_METRIC_INTERVAL: %w", err)
 		}
 		cfg.MetricInterval = value
+	}
+	expHistograms := envFirst("GUARDIAN_OTEL_EXPONENTIAL_HISTOGRAMS")
+	if expHistograms == "" {
+		expHistograms = "guardian.pusher.task.duration.seconds"
+	}
+	for _, name := range strings.Split(expHistograms, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			cfg.ExponentialHistogramInstruments = append(cfg.ExponentialHistogramInstruments, name)
+		}
 	}
 	return cfg, nil
 }

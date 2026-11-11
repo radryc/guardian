@@ -33,7 +33,7 @@ The intended properties are:
 
 The current implementation satisfies (6) partially (principal/correlation
 metadata is attached) and (1)–(5), (7) only conditionally. The gaps are listed
-in §9 and cross-referenced to the internal findings.
+in §9.
 
 ---
 
@@ -422,9 +422,9 @@ namespaces, which limits but does not eliminate the impact.
 
 ## 10. Security invariants to restore
 
-These are the invariants a hardened Guardian should enforce. They are also the
-acceptance criteria for the work items in
-[missing pieces](internal/missing.md).
+These are the invariants a hardened Guardian should enforce. The
+[security architecture](security-architecture.md) risk register maps them to
+concrete controls.
 
 1. **Authenticate at the edge, authorize per route.** No UI mutation may
    execute without an authenticated identity and an explicit role check on the
@@ -486,4 +486,3 @@ Minimum hardening for a non-development deployment:
       changes.
 
 These steps reduce exposure but do not fix the application-level gaps in §9.
-The durable fixes are tracked in the internal findings.

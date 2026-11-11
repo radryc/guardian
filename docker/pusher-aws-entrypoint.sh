@@ -97,4 +97,12 @@ if [ -n "${GUARDIAN_AWSREAD_TOKEN:-}" ]; then
   set -- "$@" --awsread-token "$GUARDIAN_AWSREAD_TOKEN"
 fi
 
+if [ -n "${GUARDIAN_AWSREAD_SCOPES:-}" ]; then
+  set -- "$@" --awsread-scopes "$GUARDIAN_AWSREAD_SCOPES"
+fi
+
+if [ "${GUARDIAN_AWSREAD_ALLOW_PLAINTEXT:-false}" = "true" ]; then
+  set -- "$@" --awsread-allow-plaintext
+fi
+
 exec /usr/local/bin/guardian-pusher-aws "$@"

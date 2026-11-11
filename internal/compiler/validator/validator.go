@@ -11,6 +11,7 @@ import (
 	intentdomain "github.com/radryc/guardian/internal/domain/intent"
 	partitiondomain "github.com/radryc/guardian/internal/domain/partition"
 	targetdomain "github.com/radryc/guardian/internal/domain/target"
+	policy "github.com/radryc/monofs/pkg/authz/policy"
 	"github.com/reugn/go-quartz/quartz"
 )
 
@@ -74,6 +75,11 @@ func ValidatePartition(p *partitiondomain.Partition) error {
 	for _, port := range p.Spec.Defaults.Probes.TCPPorts {
 		if port <= 0 || port > 65535 {
 			return fmt.Errorf("invalid probe TCP port %d", port)
+		}
+	}
+	if p.Spec.Quota != nil {
+		if err := policy.ValidateQuota(*p.Spec.Quota); err != nil {
+			return fmt.Errorf("invalid quota: %w", err)
 		}
 	}
 	return nil

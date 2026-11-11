@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	intentdomain "github.com/radryc/guardian/internal/domain/intent"
@@ -30,11 +31,17 @@ import (
 
 const runtimeScope = "guardian.pusher.runtime"
 
+type runtimeInstrumentSet struct {
+	taskCounter  metricapi.Int64Counter
+	failCounter  metricapi.Int64Counter
+	inFlight     metricapi.Int64UpDownCounter
+	duration     metricapi.Float64Histogram
+	pollDuration metricapi.Float64Histogram
+}
+
 var (
-	runtimeMetricsOnce sync.Once
-	runtimeTaskCounter metricapi.Int64Counter
-	runtimeFailCounter metricapi.Int64Counter
-	runtimeDuration    metricapi.Float64Histogram
+	runtimeMetricsOnce     sync.Once
+	runtimeInstrumentCache runtimeInstrumentSet
 )
 
 type Runtime struct {
@@ -48,6 +55,11 @@ type Runtime struct {
 	// MaxConcurrency bounds how many claimed tasks execute at once. Zero selects
 	// a CPU-derived default; values are clamped to [1, 128].
 	MaxConcurrency int
+	// TaskTimeout bounds a single task execution (including driver retries).
+	// Zero disables the timeout. Keep it below the control-plane stale-task
+	// timeout so the pusher can write a failure result before Guardian treats
+	// the task as dead and queues a replacement.
+	TaskTimeout time.Duration
 	// ShardIndex/ShardCount let multiple replicas of the same pusher split a
 	// queue by task-ID hash. ShardCount <= 1 disables sharding.
 	ShardIndex int
@@ -56,6 +68,13 @@ type Runtime struct {
 
 	retryMu          sync.Mutex
 	nextClaimAttempt map[string]time.Time
+
+	observableOnce     sync.Once
+	observableReg      metricapi.Registration
+	observedQueueDepth atomic.Int64
+	observedRetry      atomic.Int64
+	observedDiscovered atomic.Int64
+	activeClaims       atomic.Int64
 }
 
 func (r *Runtime) Run(ctx context.Context) error {
@@ -68,6 +87,8 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if r.PollInterval <= 0 {
 		r.PollInterval = 5 * time.Second
 	}
+	r.registerObservableMetrics()
+	defer r.shutdownObservableMetrics()
 
 	if err := r.processPending(ctx); err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -336,6 +357,10 @@ func (r *Runtime) writeResult(ctx context.Context, result *taskdomain.TaskResult
 }
 
 func (r *Runtime) processPending(ctx context.Context) error {
+	started := time.Now()
+	defer func() {
+		runtimeInstruments().pollDuration.Record(ctx, time.Since(started).Seconds(), metricapi.WithAttributes(r.runtimeObservableAttributes()...))
+	}()
 	entries, err := r.Store.ListDir(ctx, r.QueuePath)
 	if err != nil {
 		return err
@@ -362,7 +387,95 @@ func (r *Runtime) processPending(ctx context.Context) error {
 		r.runTaskWorkers(ctx, pusher, pending, scanAt)
 	}
 	r.pruneClaimRetry(activeTaskIDs)
+	r.refreshObservableMetrics(len(pending), len(entries))
 	return nil
+}
+
+// refreshObservableMetrics publishes the latest queue state to the async
+// instrument callbacks. The queue/retry values are gauges, so replacing them
+// prevents double counting when a poll re-observes the same tasks.
+func (r *Runtime) refreshObservableMetrics(pending, scanned int) {
+	r.observedQueueDepth.Store(int64(pending))
+	r.observedDiscovered.Add(int64(scanned))
+	r.retryMu.Lock()
+	r.observedRetry.Store(int64(len(r.nextClaimAttempt)))
+	r.retryMu.Unlock()
+}
+
+// runtimeObservableAttributes is the bounded label set shared by queue and
+// worker instruments.
+func (r *Runtime) runtimeObservableAttributes() []attribute.KeyValue {
+	attrs := []attribute.KeyValue{attribute.String("guardian.worker.id", r.WorkerID)}
+	if r.ShardCount > 1 {
+		attrs = append(attrs,
+			attribute.Int("guardian.shard.index", r.ShardIndex),
+			attribute.Int("guardian.shard.count", r.ShardCount),
+		)
+	}
+	return attrs
+}
+
+// registerObservableMetrics creates async instruments backed by Runtime state.
+// The SDK invokes the callback whenever metrics are collected.
+func (r *Runtime) registerObservableMetrics() {
+	r.observableOnce.Do(func() {
+		meter := otel.Meter(runtimeScope)
+		attrs := metricapi.WithAttributes(r.runtimeObservableAttributes()...)
+		queueDepth, err := meter.Int64ObservableGauge(
+			"guardian.pusher.queue.depth",
+			metricapi.WithDescription("Tasks currently eligible for this worker."),
+		)
+		if err != nil {
+			return
+		}
+		retryBacklog, err := meter.Int64ObservableGauge(
+			"guardian.pusher.claim.retry_backlog",
+			metricapi.WithDescription("Claim attempts waiting for a retry delay."),
+		)
+		if err != nil {
+			return
+		}
+		scanned, err := meter.Int64ObservableCounter(
+			"guardian.pusher.tasks.scanned",
+			metricapi.WithDescription("Total queue entries scanned by this worker."),
+		)
+		if err != nil {
+			return
+		}
+		concurrency, err := meter.Int64ObservableGauge(
+			"guardian.pusher.worker.concurrency",
+			metricapi.WithDescription("Maximum task workers for this runtime."),
+		)
+		if err != nil {
+			return
+		}
+		activeClaims, err := meter.Int64ObservableUpDownCounter(
+			"guardian.pusher.active_claims",
+			metricapi.WithDescription("Task claims currently held by this worker."),
+		)
+		if err != nil {
+			return
+		}
+		registration, err := meter.RegisterCallback(func(_ context.Context, observer metricapi.Observer) error {
+			observer.ObserveInt64(queueDepth, r.observedQueueDepth.Load(), attrs)
+			observer.ObserveInt64(retryBacklog, r.observedRetry.Load(), attrs)
+			observer.ObserveInt64(scanned, r.observedDiscovered.Load(), attrs)
+			observer.ObserveInt64(concurrency, int64(r.concurrency()), attrs)
+			observer.ObserveInt64(activeClaims, r.activeClaims.Load(), attrs)
+			return nil
+		}, queueDepth, retryBacklog, scanned, concurrency, activeClaims)
+		if err != nil {
+			return
+		}
+		r.observableReg = registration
+	})
+}
+
+func (r *Runtime) shutdownObservableMetrics() {
+	if r.observableReg != nil {
+		_ = r.observableReg.Unregister()
+		r.observableReg = nil
+	}
 }
 
 // runTaskWorkers claims and executes the given tasks on a bounded worker pool so
@@ -420,9 +533,22 @@ func (r *Runtime) processTaskEntry(ctx context.Context, pusher, taskID string, s
 	r.forgetClaimRetry(taskID)
 	log.Printf("[Pusher] Successfully claimed task %s! op=%s partition=%s intent=%s assets=%d Executing...",
 		taskID, t.Op, t.Partition, t.Intent, len(t.Assets))
+	r.activeClaims.Add(1)
+	defer r.activeClaims.Add(-1)
 	stopHeartbeat := r.startClaimHeartbeat(ctx, pusher, claim, claimVersionID)
-	result := r.executeTask(ctx, t)
+	taskCtx := ctx
+	cancel := func() {}
+	if r.TaskTimeout > 0 {
+		taskCtx, cancel = context.WithTimeout(ctx, r.TaskTimeout)
+	}
+	result := r.executeTask(taskCtx, t)
+	timedOut := taskCtx.Err() == context.DeadlineExceeded
+	cancel()
 	stopHeartbeat()
+	if timedOut {
+		log.Printf("[Pusher] Task %s exceeded task timeout %s; cancelling", taskID, r.TaskTimeout)
+		result = taskTimeoutResult(t, r.TaskTimeout)
+	}
 	redactTaskResultSecrets(t, result)
 	changed := []string{}
 	if result.Drift != nil {
@@ -432,6 +558,26 @@ func (r *Runtime) processTaskEntry(ctx context.Context, pusher, taskID string, s
 		taskID, t.Op, t.Partition, t.Intent, result.Status, changed)
 	if err := r.writeResult(ctx, result); err != nil {
 		log.Printf("[Pusher] Error writing result for task %s: %v", taskID, err)
+	}
+}
+
+// taskTimeoutResult builds a failed result when a task exceeds TaskTimeout.
+// It replaces whatever the driver returned, so a driver that ignores context
+// cancellation cannot report success after the deadline.
+func taskTimeoutResult(t *taskdomain.Task, timeout time.Duration) *taskdomain.TaskResult {
+	msg := fmt.Sprintf("task exceeded timeout %s", timeout)
+	return &taskdomain.TaskResult{
+		APIVersion: "guardian/v1alpha1",
+		Kind:       "TaskResult",
+		TaskID:     t.TaskID,
+		Op:         t.Op,
+		Partition:  t.Partition,
+		Intent:     t.Intent,
+		Pusher:     t.TargetPusher,
+		Status:     taskdomain.ResultFailed,
+		Error:      &msg,
+		Logs:       []taskdomain.LogEntry{logEntry("error", "", msg)},
+		FinishedAt: time.Now().UTC(),
 	}
 }
 
@@ -554,8 +700,9 @@ func (r *Runtime) pruneClaimRetry(activeTaskIDs map[string]struct{}) {
 
 func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdomain.TaskResult {
 	attrs := runtimeTaskAttributes(t, r.WorkerID)
-	taskCounter, failCounter, duration := runtimeInstruments()
-	taskCounter.Add(ctx, 1, metricapi.WithAttributes(attrs...))
+	instruments := runtimeInstruments()
+	instruments.taskCounter.Add(ctx, 1, metricapi.WithAttributes(attrs...))
+	instruments.inFlight.Add(ctx, 1, metricapi.WithAttributes(attrs...))
 	ctx, span := otel.Tracer(runtimeScope).Start(ctx, "guardian.pusher.task.execute", trace.WithAttributes(attrs...))
 	span.AddEvent("guardian.task.input", trace.WithAttributes(
 		attribute.String("guardian.task.input_json", runtimeTaskTraceJSON(t, r.WorkerID)),
@@ -563,7 +710,8 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 	startedAt := time.Now()
 	telemetry.EmitInfo(ctx, runtimeScope, fmt.Sprintf("executing %s task %s for %s/%s", strings.ToLower(string(t.Op)), t.TaskID, t.Partition, t.Intent))
 	defer func() {
-		duration.Record(ctx, time.Since(startedAt).Seconds(), metricapi.WithAttributes(attrs...))
+		instruments.duration.Record(ctx, time.Since(startedAt).Seconds(), metricapi.WithAttributes(attrs...))
+		instruments.inFlight.Add(ctx, -1, metricapi.WithAttributes(attrs...))
 		span.End()
 	}()
 
@@ -580,7 +728,7 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 	result.Logs = append(result.Logs, logEntry("info", "", "starting "+string(t.Op)+" task"))
 
 	fail := func(err error) *taskdomain.TaskResult {
-		failCounter.Add(ctx, 1, metricapi.WithAttributes(attrs...))
+		instruments.failCounter.Add(ctx, 1, metricapi.WithAttributes(attrs...))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		telemetry.EmitError(ctx, runtimeScope, fmt.Sprintf("task %s failed: %v", t.TaskID, err))
@@ -792,14 +940,16 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 	return result
 }
 
-func runtimeInstruments() (metricapi.Int64Counter, metricapi.Int64Counter, metricapi.Float64Histogram) {
+func runtimeInstruments() runtimeInstrumentSet {
 	runtimeMetricsOnce.Do(func() {
 		meter := otel.Meter(runtimeScope)
-		runtimeTaskCounter, _ = meter.Int64Counter("guardian.pusher.task.executions")
-		runtimeFailCounter, _ = meter.Int64Counter("guardian.pusher.task.failures")
-		runtimeDuration, _ = meter.Float64Histogram("guardian.pusher.task.duration.seconds", metricapi.WithUnit("s"))
+		runtimeInstrumentCache.taskCounter, _ = meter.Int64Counter("guardian.pusher.task.executions")
+		runtimeInstrumentCache.failCounter, _ = meter.Int64Counter("guardian.pusher.task.failures")
+		runtimeInstrumentCache.inFlight, _ = meter.Int64UpDownCounter("guardian.pusher.tasks.in_flight")
+		runtimeInstrumentCache.duration, _ = meter.Float64Histogram("guardian.pusher.task.duration.seconds", metricapi.WithUnit("s"))
+		runtimeInstrumentCache.pollDuration, _ = meter.Float64Histogram("guardian.pusher.poll.duration.seconds", metricapi.WithUnit("s"))
 	})
-	return runtimeTaskCounter, runtimeFailCounter, runtimeDuration
+	return runtimeInstrumentCache
 }
 
 func runtimeTaskAttributes(t *taskdomain.Task, workerID string) []attribute.KeyValue {

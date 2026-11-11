@@ -58,7 +58,27 @@ func ComputeEnv(cfg *Config) (Env, error) {
 		clientDiscoveryToken = tok
 	}
 
+	gcpReadToken := os.Getenv("GCP_READ_TOKEN")
+	if gcpReadToken == "" {
+		tok, err := generateToken(32)
+		if err != nil {
+			return nil, fmt.Errorf("generating gcp read token: %w", err)
+		}
+		gcpReadToken = tok
+	}
+
+	k8sReadToken := os.Getenv("K8S_READ_TOKEN")
+	if k8sReadToken == "" {
+		tok, err := generateToken(32)
+		if err != nil {
+			return nil, fmt.Errorf("generating kubernetes read token: %w", err)
+		}
+		k8sReadToken = tok
+	}
+
 	env["MONOFS_TOKEN_B64"] = b64(monofsToken)
+	env["GCP_READ_TOKEN_B64"] = b64(gcpReadToken)
+	env["K8S_READ_TOKEN_B64"] = b64(k8sReadToken)
 	env["MONOFS_ENCRYPTION_KEY_B64"] = b64(encKey)
 	env["MINIO_ACCESS_KEY_B64"] = b64(minioAK)
 	env["MINIO_SECRET_KEY_B64"] = b64(minioSK)
@@ -148,6 +168,7 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["GUARDIAN_IMAGE_PULL_POLICY"] = cfg.Guardian.Images.PullPolicy
 	env["GUARDIAN_PUSHER_IMAGE"] = cfg.Guardian.Images.PusherK8s
 	env["GUARDIAN_PUSHER_AWS_IMAGE"] = cfg.Guardian.Images.PusherAws
+	env["GUARDIAN_PUSHER_GCP_IMAGE"] = cfg.Guardian.Images.PusherGcp
 	env["GUARDIAN_LB_IMAGE"] = cfg.Guardian.Images.LB
 	env["GUARDIAN_MONOFS_ROUTER"] = cfg.Guardian.Monofs.Router
 	env["GUARDIAN_MONOFS_CLIENT_API_ENDPOINT"] = cfg.Guardian.Monofs.Router
@@ -236,6 +257,19 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["GUARDIAN_AWS_REGION"] = cfg.Guardian.Pushers.AWS.Region
 	env["GUARDIAN_AWS_PUSHER_NAME"] = awsPusherName(cfg)
 	env["GUARDIAN_AWS_ASSUME_ROLE_NAME"] = cfg.Guardian.Pushers.AWS.AssumeRoleName
+
+	// --- GCP pusher ---
+	env["GUARDIAN_GCP_PROJECT"] = cfg.Guardian.Pushers.GCP.Project
+	env["GUARDIAN_GCP_REGION"] = cfg.Guardian.Pushers.GCP.Region
+	env["GUARDIAN_GCP_STATE_BUCKET"] = cfg.Guardian.Pushers.GCP.StateBucket
+	env["GUARDIAN_GCP_KMS_KEY"] = cfg.Guardian.Pushers.GCP.KMSKey
+	env["GUARDIAN_GCPREAD_ADDR"] = cfg.Guardian.Pushers.GCP.ReadAddr
+	env["GUARDIAN_GCP_PUSHER_NAME"] = gcpPusherName(cfg)
+	env["GUARDIAN_GCPREAD_TOKEN"] = gcpReadToken
+
+	// --- Kubernetes pusher read API ---
+	env["GUARDIAN_K8SREAD_ADDR"] = envOrDefault("GUARDIAN_K8SREAD_ADDR", "0.0.0.0:19092")
+	env["GUARDIAN_K8SREAD_TOKEN"] = k8sReadToken
 
 	return env, nil
 }
@@ -512,6 +546,13 @@ func routerPeerName(suffix string) string {
 	return routerName("a")
 }
 
+func gcpPusherName(cfg *Config) string {
+	if cfg.Guardian.Pushers.GCP.Project != "" {
+		return "gcp-" + cfg.Guardian.Pushers.GCP.Project
+	}
+	return ""
+}
+
 func awsPusherName(cfg *Config) string {
 	if cfg.Guardian.Pushers.AWS.Account != "" {
 		return "aws-" + cfg.Guardian.Pushers.AWS.Account
@@ -526,6 +567,10 @@ func computeGuardianPushers(cfg *Config) string {
 	}
 	if cfg.Guardian.Pushers.AWS.Enabled && cfg.Guardian.Pushers.AWS.Account != "" {
 		name := awsPusherName(cfg)
+		parts = append(parts, fmt.Sprintf("%s:/.queues/%s", name, name))
+	}
+	if cfg.Guardian.Pushers.GCP.Enabled && cfg.Guardian.Pushers.GCP.Project != "" {
+		name := gcpPusherName(cfg)
 		parts = append(parts, fmt.Sprintf("%s:/.queues/%s", name, name))
 	}
 	return strings.Join(parts, ",")

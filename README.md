@@ -103,6 +103,40 @@ export GUARDIAN_MONOFS_PRINCIPAL=guardiand
 
 or in Docker: `make deploy-s3` (starts MonoFS and Guardian).
 
+### Reconcile concurrency and rate limiting
+
+The reconciler runs partitions on a bounded worker pool. By default it allows
+`GOMAXPROCS*4` partitions at once (minimum 4, maximum 128), which on a large
+node is effectively every partition. To avoid a startup/interval burst that
+floods the store and pusher queues, cap it or enable backlog-aware pacing:
+
+| Env | Config | Meaning |
+| --- | --- | --- |
+| `GUARDIAN_RECONCILE_PARALLELISM` | `guardian.reconcileParallelism` | max concurrent partition reconciles (0 = CPU default) |
+| `GUARDIAN_RECONCILE_RATE_LIMIT` | `guardian.reconcileRateLimit` | fixed starts/sec (0 = off) |
+| `GUARDIAN_RECONCILE_BURST` | `guardian.reconcileBurst` | token-bucket burst (0 = strict 1) |
+| `GUARDIAN_RECONCILE_ADAPTIVE` | `guardian.reconcileAdaptive` | AIMD pace from queue backlog |
+| `GUARDIAN_RECONCILE_BACKLOG_TARGET` | `guardian.reconcileBacklogTarget` | healthy outstanding task count (0 = 100) |
+| `GUARDIAN_RECONCILE_MIN_RATE_LIMIT` | `guardian.reconcileMinRateLimit` | adaptive floor starts/sec (0 = max/10, min 0.1) |
+
+Adaptive mode is enabled by default: it samples `/.queues/<pusher>/*.json`
+every 10s and shrinks the rate when the outstanding-task backlog exceeds the
+target, ramping back up when it drains. With no explicit rate configured it
+caps at 1 start/sec and floors at 0.1 start/sec. Set
+`guardian.reconcileAdaptive: false` (or `GUARDIAN_RECONCILE_ADAPTIVE=false`)
+to opt out.
+
+To size a fixed rate, divide the number of partitions by the sweep window:
+50 partitions over 5 minutes = `50/300 = 0.17` starts/sec.
+
+The pusher's own `--max-concurrency` still bounds how many tasks execute at
+once; lower it too if your registry limits concurrent pushes.
+
+Each pusher also accepts `--task-timeout` (default `0` = disabled) to cancel a
+single task after a fixed duration and write a failed result. Set it below
+`GUARDIAN_STALE_TASK_AFTER` so the pusher reports the timeout before Guardian
+treats the task as dead and queues a replacement.
+
 ## guardianctl
 
 `guardianctl` can connect three ways:
@@ -158,8 +192,7 @@ Repositories declare their deployment surface in `.guardian/config.yaml`
 ```
 
 `guardian/partitions/<name>/{config.yaml,intents/*.yaml,payloads/**}` in the
-repo maps to `/partitions/<name>/...` in the store. Legacy CI templates for
-GitHub Actions and GitLab are kept in `docs_backup/ci/`.
+repo maps to `/partitions/<name>/...` in the store.
 
 ## AWS
 
@@ -180,13 +213,7 @@ Logs Insights, X-Ray, CloudWatch PromQL, observed stacks).
 - [Logical flows](docs/logical-flow.md)
 - [Security architecture](docs/security-architecture.md)
 - [Codebase map](docs/codebase-map.md)
-- Internal findings: [missing pieces](docs/internal/missing.md),
-  [duplication](docs/internal/duplication.md),
-  [simplification](docs/internal/simplification.md)
-- [Remaining work / TODO](TODO.md)
-
-The previous documentation set was moved to
-[`docs_backup/`](docs_backup/) and is kept for historical reference only.
+- [GCP pusher ADR](docs/design/gcp-pusher.md)
 
 ## Troubleshooting
 

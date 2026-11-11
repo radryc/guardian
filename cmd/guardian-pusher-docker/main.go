@@ -39,6 +39,7 @@ func main() {
 	var dockerStateDir string
 	var dockerAddHosts string
 	var unclaimedTaskRetryDelay time.Duration
+	var taskTimeout time.Duration
 	flag.StringVar(&pusherName, "pusher-name", "", "pusher name")
 	flag.StringVar(&cluster, "cluster", "", "target cluster handled by this worker")
 	flag.StringVar(&storeDir, "store-dir", "", "filesystem-backed Guardian store")
@@ -51,6 +52,7 @@ func main() {
 	flag.StringVar(&dockerStateDir, "docker-state-dir", "/var/lib/guardian/pusher-docker", "host-visible directory for staged docker config and inline files")
 	flag.StringVar(&dockerAddHosts, "docker-add-hosts", "", "comma-separated docker add-host mappings (host:address)")
 	flag.DurationVar(&unclaimedTaskRetryDelay, "unclaimed-task-retry-delay", 15*time.Second, "minimum delay before retrying a task that could not be claimed; 0 disables backoff")
+	flag.DurationVar(&taskTimeout, "task-timeout", 0, "maximum duration for a single task before it is cancelled; 0 disables (keep below GUARDIAN_STALE_TASK_AFTER)")
 	flag.Parse()
 
 	if pusherName == "" || cluster == "" || (storeDir == "" && monofsRouter == "") || (storeDir != "" && monofsRouter != "") {
@@ -143,6 +145,7 @@ func main() {
 		Registry:                reg,
 		PollInterval:            5 * time.Second,
 		UnclaimedTaskRetryDelay: unclaimedTaskRetryDelay,
+		TaskTimeout:             taskTimeout,
 		CanHandle: func(t *taskdomain.Task) bool {
 			return strings.EqualFold(strings.TrimSpace(t.Target.Cluster), cluster) &&
 				strings.EqualFold(strings.TrimSpace(t.TargetPusher), pusherName)

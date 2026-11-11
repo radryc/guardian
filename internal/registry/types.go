@@ -217,6 +217,9 @@ func (p *Pusher) Normalize() {
 	if p.Provider == "" && (p.Account != "" || strings.HasPrefix(p.Name, "aws-")) {
 		p.Provider = "aws"
 	}
+	if p.Provider == "" && strings.HasPrefix(p.Name, "gcp-") {
+		p.Provider = "gcp"
+	}
 	p.Region = strings.TrimSpace(p.Region)
 	p.Cluster = strings.TrimSpace(p.Cluster)
 	p.KubeContext = strings.TrimSpace(p.KubeContext)
@@ -240,7 +243,7 @@ func (p *Pusher) Validate() error {
 		return fmt.Errorf("invalid pusher name %q", p.Name)
 	}
 	switch p.Provider {
-	case "", "aws", "kubernetes", "docker", "local":
+	case "", "aws", "gcp", "kubernetes", "docker", "local":
 	default:
 		return fmt.Errorf("invalid pusher provider %q", p.Provider)
 	}

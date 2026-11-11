@@ -19,9 +19,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/radryc/guardian/pkg/guardianapi"
 	coreauthz "github.com/radryc/monofs/pkg/authz"
 	"github.com/radryc/monofs/pkg/authz/policy"
-	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 // DefaultInterval is the raw policy/catalog refresh interval.

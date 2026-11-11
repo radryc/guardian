@@ -1788,7 +1788,7 @@ func TestDeriveAssetPresentationMarksStaleObservedResource(t *testing.T) {
 		Resources: []statedomain.ResourceObservation{
 			{LogicalID: "Cluster", AssetName: "res-cluster"},
 		},
-		Timestamps: statedomain.StateTimestamps{LastDiffAt: time.Now().UTC().Add(-10 * time.Minute)},
+		Timestamps: statedomain.StateTimestamps{LastDiffAt: time.Now().UTC().Add(-20 * time.Minute)},
 	}
 	_, displayStatus, health, summary := deriveAssetPresentation(state, "res-cluster", intentTaskRuntime{})
 	if displayStatus != "Stale" || health != "attention" {
@@ -1811,7 +1811,7 @@ func TestDeriveIntentPresentationMarksStaleObservedSnapshot(t *testing.T) {
 		Resources: []statedomain.ResourceObservation{
 			{LogicalID: "Cluster", AssetName: "res-cluster"},
 		},
-		Timestamps: statedomain.StateTimestamps{LastDiffAt: time.Now().UTC().Add(-10 * time.Minute)},
+		Timestamps: statedomain.StateTimestamps{LastDiffAt: time.Now().UTC().Add(-20 * time.Minute)},
 	}
 	_, displayStatus, health, summary := deriveIntentPresentation(state, intentTaskRuntime{})
 	if displayStatus != "Stale" || health != "attention" {
@@ -1819,6 +1819,67 @@ func TestDeriveIntentPresentationMarksStaleObservedSnapshot(t *testing.T) {
 	}
 	if !strings.Contains(summary, "No fresh observed snapshot") {
 		t.Fatalf("summary = %q, want stale snapshot", summary)
+	}
+}
+
+func TestDeriveAssetPresentationStaleWithoutStackHealth(t *testing.T) {
+	t.Parallel()
+
+	// A failed diff can clear Health while resources remain. Rendering the
+	// stale card must not dereference a nil Health.
+	state := &statedomain.IntentState{
+		Status: statedomain.StatusDiffFailed,
+		Resources: []statedomain.ResourceObservation{
+			{LogicalID: "Cluster", AssetName: "res-cluster"},
+		},
+		Timestamps: statedomain.StateTimestamps{LastDiffAt: time.Now().UTC().Add(-20 * time.Minute)},
+	}
+	_, displayStatus, health, summary := deriveAssetPresentation(state, "res-cluster", intentTaskRuntime{})
+	if displayStatus != "Stale" || health != "attention" {
+		t.Fatalf("presentation = (%q, %q), want (Stale, attention)", displayStatus, health)
+	}
+	if !strings.Contains(summary, "No fresh observed snapshot") {
+		t.Fatalf("summary = %q, want stale snapshot", summary)
+	}
+}
+
+func TestDeriveAssetPresentationUsesNewestObservationSignal(t *testing.T) {
+	t.Parallel()
+
+	// LastObservedAt is old because the collector write raced with a reconcile
+	// write, but the intent is diffing successfully, so it is not stale.
+	state := &statedomain.IntentState{
+		Status: statedomain.StatusHealthy,
+		Resources: []statedomain.ResourceObservation{
+			{LogicalID: "Cluster", AssetName: "res-cluster", LiveUpdatedAt: time.Now().UTC().Add(-30 * time.Minute)},
+		},
+		Timestamps: statedomain.StateTimestamps{
+			LastObservedAt: time.Now().UTC().Add(-30 * time.Minute),
+			LastDiffAt:     time.Now().UTC(),
+		},
+	}
+	if _, displayStatus, health, summary := deriveAssetPresentation(state, "res-cluster", intentTaskRuntime{}); displayStatus == "Stale" || health == "attention" {
+		t.Fatalf("presentation = (%q, %q, %q), want fresh from LastDiffAt", displayStatus, health, summary)
+	}
+}
+
+func TestDeriveAssetPresentationUsesFreshResourceTimestamp(t *testing.T) {
+	t.Parallel()
+
+	// Both intent-level timestamps are old, but the provider inventory itself
+	// reported a fresh resource timestamp.
+	state := &statedomain.IntentState{
+		Status: statedomain.StatusHealthy,
+		Resources: []statedomain.ResourceObservation{
+			{LogicalID: "Cluster", AssetName: "res-cluster", LiveUpdatedAt: time.Now().UTC()},
+		},
+		Timestamps: statedomain.StateTimestamps{
+			LastObservedAt: time.Now().UTC().Add(-30 * time.Minute),
+			LastDiffAt:     time.Now().UTC().Add(-30 * time.Minute),
+		},
+	}
+	if _, displayStatus, health, summary := deriveAssetPresentation(state, "res-cluster", intentTaskRuntime{}); displayStatus == "Stale" || health == "attention" {
+		t.Fatalf("presentation = (%q, %q, %q), want fresh from resource timestamp", displayStatus, health, summary)
 	}
 }
 
@@ -1861,5 +1922,23 @@ func TestDeriveAssetPresentationUsesAssetObservationWhileDiffing(t *testing.T) {
 	}
 	if summary != "postgres:17 ImagePullBackOff" {
 		t.Fatalf("summary = %q", summary)
+	}
+}
+
+func TestPartitionDataCacheServesStaleWithinWindow(t *testing.T) {
+	t.Parallel()
+
+	cache := newPartitionDataCache(10 * time.Millisecond)
+	now := time.Now().UTC()
+	cache.set("demo|latest=false|events=false", now, &PartitionDetailResponse{}, 10*time.Millisecond)
+
+	if _, fresh, ok := cache.getWithState("demo|latest=false|events=false", now.Add(5*time.Millisecond)); !ok || !fresh {
+		t.Fatalf("fresh entry: ok=%v fresh=%v, want true/true", ok, fresh)
+	}
+	if payload, fresh, ok := cache.getWithState("demo|latest=false|events=false", now.Add(20*time.Millisecond)); !ok || fresh || payload == nil {
+		t.Fatalf("stale entry: ok=%v fresh=%v payload=%v, want true/false/non-nil", ok, fresh, payload)
+	}
+	if _, _, ok := cache.getWithState("demo|latest=false|events=false", now.Add(defaultUIDataStaleTTL+time.Second)); ok {
+		t.Fatal("entry past stale window should be evicted")
 	}
 }

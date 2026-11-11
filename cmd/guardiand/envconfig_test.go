@@ -49,6 +49,37 @@ func TestApplyGuardianEnvConfigPushers(t *testing.T) {
 	}
 }
 
+func TestApplyGuardianEnvConfigReconcileTuning(t *testing.T) {
+	t.Setenv("GUARDIAN_RECONCILE_PARALLELISM", "3")
+	t.Setenv("GUARDIAN_RECONCILE_RATE_LIMIT", "0.5")
+	t.Setenv("GUARDIAN_RECONCILE_BURST", "2")
+	t.Setenv("GUARDIAN_RECONCILE_ADAPTIVE", "true")
+	t.Setenv("GUARDIAN_RECONCILE_BACKLOG_TARGET", "40")
+	t.Setenv("GUARDIAN_RECONCILE_MIN_RATE_LIMIT", "0.1")
+
+	cfg := config.Default()
+	applyGuardianEnvConfig(cfg)
+
+	if cfg.Guardian.ReconcileParallelism != 3 {
+		t.Errorf("parallelism = %d, want 3", cfg.Guardian.ReconcileParallelism)
+	}
+	if cfg.Guardian.ReconcileRateLimit != 0.5 {
+		t.Errorf("rate limit = %v, want 0.5", cfg.Guardian.ReconcileRateLimit)
+	}
+	if cfg.Guardian.ReconcileBurst != 2 {
+		t.Errorf("burst = %d, want 2", cfg.Guardian.ReconcileBurst)
+	}
+	if !cfg.Guardian.ReconcileAdaptive {
+		t.Error("adaptive should be enabled")
+	}
+	if cfg.Guardian.ReconcileBacklogTarget != 40 {
+		t.Errorf("backlog target = %d, want 40", cfg.Guardian.ReconcileBacklogTarget)
+	}
+	if cfg.Guardian.ReconcileMinRateLimit != 0.1 {
+		t.Errorf("min rate = %v, want 0.1", cfg.Guardian.ReconcileMinRateLimit)
+	}
+}
+
 func TestApplyGuardianEnvConfigDefaultsUntouched(t *testing.T) {
 	t.Setenv("GUARDIAN_PUSHERS", "")
 	t.Setenv("GUARDIAN_OBSERVED_INTERVAL", "")

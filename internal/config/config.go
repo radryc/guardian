@@ -123,6 +123,31 @@ type GuardianConfig struct {
 	// TaskArchiveMaxAge is a Go duration such as "720h". Zero disables age-based
 	// pruning.
 	TaskArchiveMaxAge string `yaml:"taskArchiveMaxAge"`
+	// ReconcileParallelism caps how many partitions may reconcile at the same
+	// time. Zero keeps the CPU-derived default (GOMAXPROCS*4, clamped to
+	// [4,128]). Tune this down on large clusters to avoid a store/pusher burst.
+	ReconcileParallelism int `yaml:"reconcileParallelism"`
+	// ReconcileRateLimit is the maximum number of partition reconciles started
+	// per second. Zero disables pacing and leaves only ReconcileParallelism as
+	// the bound. Use this to keep a full sweep within a target window, e.g. 50
+	// partitions over 5m => 50/300 = 0.1667.
+	ReconcileRateLimit float64 `yaml:"reconcileRateLimit"`
+	// ReconcileBurst is the token-bucket burst for ReconcileRateLimit. Zero
+	// uses strict pacing (burst of 1); set it explicitly only if you want an
+	// initial batch of partition starts to go together.
+	ReconcileBurst int `yaml:"reconcileBurst"`
+	// ReconcileAdaptive turns the rate limit into an AIMD controller driven by
+	// the number of outstanding queue tasks (/.queues/*). It starts at
+	// ReconcileMinRateLimit and ramps toward ReconcileRateLimit while the
+	// backlog is below target, shrinking when the backlog grows. Enabled by
+	// default; set false to use a fixed rate (or no pacing when rateLimit is 0).
+	ReconcileAdaptive bool `yaml:"reconcileAdaptive"`
+	// ReconcileBacklogTarget is the outstanding-task count considered healthy.
+	// Zero defaults to 100 when adaptive mode is enabled.
+	ReconcileBacklogTarget int `yaml:"reconcileBacklogTarget"`
+	// ReconcileMinRateLimit is the adaptive floor in partitions per second.
+	// Zero defaults to ReconcileRateLimit/10 (minimum 0.1).
+	ReconcileMinRateLimit float64 `yaml:"reconcileMinRateLimit"`
 }
 
 type ComplianceConfig struct {
@@ -206,6 +231,7 @@ func Default() *Config {
 			RepoImportShards:     2,
 			RepoImportLease:      true,
 			RepoImportLeaseName:  "guardian-repo-import",
+			ReconcileAdaptive:    true,
 		},
 		Compliance: ComplianceConfig{},
 		Pushers: []PusherConfig{{

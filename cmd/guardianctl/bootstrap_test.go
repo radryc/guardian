@@ -210,6 +210,28 @@ func TestBootstrapDeployDryRun(t *testing.T) {
 	os.WriteFile(filepath.Join(tmpDir, "deploy", "bootstrap", "guardian", "namespace.yaml"),
 		[]byte("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: ${GUARDIAN_NAMESPACE}\n"), 0644)
 
+	// The storage deploy now propagates template errors, so every template it
+	// applies must exist in the fixture. Dry-run only renders the content, so a
+	// minimal object is enough.
+	storageTemplates := []string{
+		"rbac-repowatch.yaml", "configmap-fetcher-s3.yaml", "k8s-fuse-plugin.yaml",
+		"pvc-minio.yaml", "pvc-fetcher.yaml", "pvc-search-index.yaml", "pvc-node.yaml",
+		"svc-minio.yaml", "svc-fetcher.yaml", "svc-search-index.yaml", "svc-node.yaml",
+		"svc-router.yaml", "svc-haproxy.yaml", "svc-registry.yaml", "svc-registry-external.yaml",
+		"deploy-minio.yaml", "deploy-fetcher.yaml", "deploy-search-index.yaml",
+		"deploy-node.yaml", "deploy-router.yaml",
+		"pdb-node.yaml", "pdb-fetcher.yaml", "pdb-router.yaml",
+		"rbac-lb-agent.yaml", "configmap-lb-port-sync.yaml",
+		"deploy-lb-k8s-agent.yaml", "deploy-lb-port-sync.yaml", "deploy-haproxy.yaml",
+		"deploy-registry.yaml",
+	}
+	for _, name := range storageTemplates {
+		content := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: test\n  namespace: ${STORAGE_NAMESPACE}\n"
+		if err := os.WriteFile(filepath.Join(tmpDir, "deploy", "bootstrap", "storage", name), []byte(content), 0644); err != nil {
+			t.Fatalf("write template %s: %v", name, err)
+		}
+	}
+
 	t.Setenv("ST_ROOT", tmpDir)
 	t.Setenv("MONOFS_ENCRYPTION_KEY", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 

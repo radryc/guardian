@@ -19,6 +19,8 @@ import (
 	"github.com/radryc/guardian/pkg/guardianapi"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -935,4 +937,164 @@ func (s *readCountingStore) ReadFile(ctx context.Context, logicalPath string) ([
 		s.readCount++
 	}
 	return s.Store.ReadFile(ctx, logicalPath)
+}
+
+func TestRuntimeRegistersObservableInstruments(t *testing.T) {
+	previous := otel.GetMeterProvider()
+	defer otel.SetMeterProvider(previous)
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	otel.SetMeterProvider(provider)
+
+	r := &Runtime{WorkerID: "worker-metrics", MaxConcurrency: 3}
+	r.observedQueueDepth.Store(4)
+	r.observedRetry.Store(2)
+	r.observedDiscovered.Store(11)
+	r.registerObservableMetrics()
+	defer r.shutdownObservableMetrics()
+
+	var collected metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &collected); err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	names := map[string]bool{}
+	for _, scope := range collected.ScopeMetrics {
+		for _, metric := range scope.Metrics {
+			names[metric.Name] = true
+		}
+	}
+	for _, want := range []string{
+		"guardian.pusher.queue.depth",
+		"guardian.pusher.claim.retry_backlog",
+		"guardian.pusher.tasks.scanned",
+		"guardian.pusher.worker.concurrency",
+		"guardian.pusher.active_claims",
+	} {
+		if !names[want] {
+			t.Fatalf("missing observable metric %q in %#v", want, names)
+		}
+	}
+}
+
+// slowDriver blocks until its context is cancelled, simulating a long image
+// push. ignoreCtx models a driver that fails to honour cancellation.
+type slowDriver struct {
+	ignoreCtx bool
+}
+
+func (d *slowDriver) Type() string                                     { return "Slow" }
+func (d *slowDriver) Validate(map[string]any) error                    { return nil }
+func (d *slowDriver) Check(context.Context, registry.AssetInput) error { return nil }
+func (d *slowDriver) Diff(context.Context, registry.AssetInput) (taskdomain.DriftReport, error) {
+	return taskdomain.DriftReport{Status: "InSync"}, nil
+}
+func (d *slowDriver) Apply(ctx context.Context, _ registry.AssetInput) (registry.AssetResult, error) {
+	if d.ignoreCtx {
+		time.Sleep(100 * time.Millisecond)
+		return registry.AssetResult{}, nil
+	}
+	<-ctx.Done()
+	return registry.AssetResult{}, ctx.Err()
+}
+func (d *slowDriver) Destroy(ctx context.Context, _ registry.AssetInput) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func seedTimeoutTask(t *testing.T, ctx context.Context, store *memory.Store, taskID string) {
+	t.Helper()
+	content, err := json.Marshal(taskdomain.Task{
+		APIVersion:   "guardian/v1alpha1",
+		Kind:         "Task",
+		TaskID:       taskID,
+		Partition:    "demo",
+		Intent:       "slow",
+		Op:           taskdomain.OpApply,
+		TargetPusher: "local",
+		Target:       targetdomain.Placement{Cluster: "local"},
+		Assets:       []taskdomain.AbstractAsset{{Type: "Slow", Name: "slow"}},
+	})
+	if err != nil {
+		t.Fatalf("Marshal(task) error = %v", err)
+	}
+	if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{
+		Writes: []guardianapi.PathWrite{{
+			LogicalPath: paths.QueueTask("local", taskID),
+			Content:     content,
+		}},
+		Context: guardianapi.MutationContext{PrincipalID: "guardiand", Reason: "seed task"},
+	}); err != nil {
+		t.Fatalf("UpsertFiles(task) error = %v", err)
+	}
+}
+
+func readTimeoutResult(t *testing.T, ctx context.Context, store *memory.Store, taskID string) taskdomain.TaskResult {
+	t.Helper()
+	content, err := store.ReadFile(ctx, paths.QueueResult("local", taskID))
+	if err != nil {
+		t.Fatalf("ReadFile(result) error = %v", err)
+	}
+	var result taskdomain.TaskResult
+	if err := json.Unmarshal(content, &result); err != nil {
+		t.Fatalf("Unmarshal(result) error = %v", err)
+	}
+	return result
+}
+
+func TestRuntimeTaskTimeoutWritesFailedResult(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	reg := registry.New()
+	reg.Register(&slowDriver{})
+	seedTimeoutTask(t, ctx, store, "task-slow")
+
+	r := &Runtime{
+		QueuePath:   paths.QueueDir("local"),
+		WorkerID:    "w1",
+		Store:       store,
+		Registry:    reg,
+		TaskTimeout: 50 * time.Millisecond,
+	}
+
+	started := time.Now()
+	if err := r.processPending(ctx); err != nil {
+		t.Fatalf("processPending() error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("processPending() took %v, expected the task timeout to cancel it", elapsed)
+	}
+
+	result := readTimeoutResult(t, ctx, store, "task-slow")
+	if result.Status != taskdomain.ResultFailed {
+		t.Fatalf("result status = %q, want %q", result.Status, taskdomain.ResultFailed)
+	}
+	if result.Error == nil || !strings.Contains(*result.Error, "exceeded timeout") {
+		t.Fatalf("result error = %v, want timeout message", result.Error)
+	}
+}
+
+func TestRuntimeTaskTimeoutOverridesIgnoredContext(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	reg := registry.New()
+	reg.Register(&slowDriver{ignoreCtx: true})
+	seedTimeoutTask(t, ctx, store, "task-stubborn")
+
+	r := &Runtime{
+		QueuePath:   paths.QueueDir("local"),
+		WorkerID:    "w1",
+		Store:       store,
+		Registry:    reg,
+		TaskTimeout: 20 * time.Millisecond,
+	}
+
+	if err := r.processPending(ctx); err != nil {
+		t.Fatalf("processPending() error = %v", err)
+	}
+
+	result := readTimeoutResult(t, ctx, store, "task-stubborn")
+	if result.Status != taskdomain.ResultFailed {
+		t.Fatalf("result status = %q, want timeout failure even when the driver ignored cancellation", result.Status)
+	}
 }

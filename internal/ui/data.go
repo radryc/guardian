@@ -31,7 +31,12 @@ import (
 	"github.com/radryc/guardian/internal/orchestrator/common"
 	"github.com/radryc/guardian/internal/paths"
 	"github.com/radryc/guardian/pkg/guardianapi"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
+
+const uiDataScope = "guardian.ui.data"
 
 type OverviewResponse struct {
 	GeneratedAt time.Time          `json:"generatedAt"`
@@ -377,9 +382,13 @@ type intentTaskRuntime struct {
 const defaultStaleTaskAfter = 5 * time.Minute
 
 // observedSnapshotStaleAfter is the age after which a per-resource card should
-// stop claiming healthy/observed. The observed collector refreshes every few
-// seconds; five minutes of silence means the pusher or collector is gone.
-const observedSnapshotStaleAfter = 5 * time.Minute
+// stop claiming healthy/observed. It must be comfortably larger than both the
+// observed collector interval (default 5m) and the reconcile interval (default
+// 10m): the UI uses the newest of LastObservedAt, LastDiffAt, and the resource
+// LiveUpdatedAt, so a healthy intent must not be declared stale simply because
+// it is between collection/diff passes. Fifteen minutes tolerates two missed
+// collector passes and one slow reconcile cycle.
+const observedSnapshotStaleAfter = 15 * time.Minute
 
 type CatalogResponse struct {
 	Pushers    []string                    `json:"pushers"`
@@ -432,8 +441,10 @@ func (s *Server) buildOverview(ctx context.Context) (*OverviewResponse, error) {
 		return nil, err
 	}
 	// Repo-managed access policy: hide partitions the caller cannot see.
-	// Disabled or observe-only services return the list unchanged.
-	if s.access != nil && s.access.Enabled() {
+	// Disabled or observe-only services return the list unchanged. Machine
+	// callers authorized by the internal token must see the full list; the
+	// Sentinel Guardian source uses this feed to resolve partition alerts.
+	if !isM2MTrusted(ctx) && s.access != nil && s.access.Enabled() {
 		names = s.access.FilterPartitions(ctx, names)
 	}
 	response := &OverviewResponse{
@@ -452,29 +463,39 @@ func (s *Server) buildOverview(ctx context.Context) (*OverviewResponse, error) {
 	if parallelism < 1 {
 		parallelism = 1
 	}
-	sem := make(chan struct{}, parallelism)
+	jobs := make(chan int)
 	var wg sync.WaitGroup
-	for idx, name := range names {
+	for worker := 0; worker < parallelism; worker++ {
 		wg.Add(1)
-		go func(index int, partitionName string) {
+		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			detail, err := s.loadPartitionOverviewDetail(ctx, partitionName)
-			if err != nil {
-				results[index] = overviewResult{summary: PartitionSummary{
-					Name:          partitionName,
-					Status:        "Error",
-					DisplayStatus: "Unavailable",
-					Health:        "failing",
-					Errors:        []string{err.Error()},
-				}}
-				return
+			for index := range jobs {
+				partitionName := names[index]
+				detail, err := s.loadPartitionOverviewDetail(ctx, partitionName)
+				if err != nil {
+					results[index] = overviewResult{summary: PartitionSummary{
+						Name:          partitionName,
+						Status:        "Error",
+						DisplayStatus: "Unavailable",
+						Health:        "failing",
+						Errors:        []string{err.Error()},
+					}}
+					continue
+				}
+				results[index] = overviewResult{summary: summarizePartition(detail), loaded: true}
 			}
-			results[index] = overviewResult{summary: summarizePartition(detail), loaded: true}
-		}(idx, name)
+		}()
 	}
+	for index := range names {
+		select {
+		case jobs <- index:
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return nil, ctx.Err()
+		}
+	}
+	close(jobs)
 	wg.Wait()
 	for _, result := range results {
 		response.Partitions = append(response.Partitions, result.summary)
@@ -576,28 +597,96 @@ func summarizePartition(detail *PartitionDetailResponse) PartitionSummary {
 }
 
 func (s *Server) loadPartitionDetail(ctx context.Context, partitionName string) (*PartitionDetailResponse, error) {
-	return s.loadPartitionDataCached(ctx, partitionName, false, false)
+	return s.loadPartitionDataCached(ctx, partitionName, false, false, false)
 }
 
 func (s *Server) loadPartitionDetailEnriched(ctx context.Context, partitionName string) (*PartitionDetailResponse, error) {
-	return s.loadPartitionDataCached(ctx, partitionName, true, false)
+	return s.loadPartitionDataCached(ctx, partitionName, true, false, false)
 }
 
 func (s *Server) loadPartitionOverviewDetail(ctx context.Context, partitionName string) (*PartitionDetailResponse, error) {
-	return s.loadPartitionDataCached(ctx, partitionName, false, false)
+	return s.loadPartitionDataCached(ctx, partitionName, false, false, true)
 }
 
-func (s *Server) loadPartitionDataCached(ctx context.Context, partitionName string, includeLatestDeployments, includeRecentEvents bool) (*PartitionDetailResponse, error) {
+func (s *Server) loadPartitionDataCached(ctx context.Context, partitionName string, includeLatestDeployments, includeRecentEvents, allowStale bool) (*PartitionDetailResponse, error) {
 	cacheKey := fmt.Sprintf("%s|latest=%t|events=%t", partitionName, includeLatestDeployments, includeRecentEvents)
-	if cached, ok := s.partitionData.get(cacheKey, time.Now().UTC()); ok {
-		return cached, nil
+	ttl := defaultUIDataCacheTTL
+	if s.partitionData != nil {
+		ttl = s.partitionData.ttl
 	}
+	if allowStale {
+		ttl = s.partitionData.overviewTTLOrDefault()
+	}
+	if cached, fresh, ok := s.partitionData.getWithState(cacheKey, time.Now().UTC()); ok {
+		if fresh {
+			return cached, nil
+		}
+		if allowStale {
+			s.refreshPartitionData(ctx, cacheKey, partitionName, includeLatestDeployments, includeRecentEvents, ttl)
+			return cached, nil
+		}
+	}
+
+	flight, owner := s.acquirePartitionLoad(cacheKey)
+	if !owner {
+		select {
+		case <-flight.done:
+			return flight.payload, flight.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return s.runPartitionLoad(ctx, cacheKey, flight, partitionName, includeLatestDeployments, includeRecentEvents, ttl)
+}
+
+// refreshPartitionData serves a stale payload while rebuilding it off the
+// request path. Only one refresh per cache key runs at a time.
+func (s *Server) refreshPartitionData(_ context.Context, cacheKey, partitionName string, includeLatestDeployments, includeRecentEvents bool, ttl time.Duration) {
+	flight, owner := s.acquirePartitionLoad(cacheKey)
+	if !owner {
+		return
+	}
+	baseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	go func() {
+		defer cancel()
+		// Start a new root so the refresh does not extend the HTTP request's
+		// trace after the response has already been written.
+		ctx, span := otel.Tracer(uiDataScope).Start(baseCtx, "guardian.ui.partition.refresh",
+			trace.WithNewRoot(),
+			trace.WithAttributes(attribute.String("guardian.target.partition", partitionName)),
+		)
+		defer span.End()
+		_, _ = s.runPartitionLoad(ctx, cacheKey, flight, partitionName, includeLatestDeployments, includeRecentEvents, ttl)
+	}()
+}
+
+func (s *Server) acquirePartitionLoad(cacheKey string) (*partitionLoad, bool) {
+	s.partitionLoadMu.Lock()
+	defer s.partitionLoadMu.Unlock()
+	if s.partitionLoads == nil {
+		s.partitionLoads = make(map[string]*partitionLoad)
+	}
+	if flight, ok := s.partitionLoads[cacheKey]; ok {
+		return flight, false
+	}
+	flight := &partitionLoad{done: make(chan struct{})}
+	s.partitionLoads[cacheKey] = flight
+	return flight, true
+}
+
+func (s *Server) runPartitionLoad(ctx context.Context, cacheKey string, flight *partitionLoad, partitionName string, includeLatestDeployments, includeRecentEvents bool, ttl time.Duration) (*PartitionDetailResponse, error) {
 	data, err := s.loadPartitionData(ctx, partitionName, includeLatestDeployments, includeRecentEvents)
-	if err != nil {
-		return nil, err
+	if err == nil {
+		s.partitionData.set(cacheKey, time.Now().UTC(), data, ttl)
 	}
-	s.partitionData.set(cacheKey, time.Now().UTC(), data)
-	return data, nil
+	s.partitionLoadMu.Lock()
+	flight.payload, flight.err = data, err
+	if s.partitionLoads[cacheKey] == flight {
+		delete(s.partitionLoads, cacheKey)
+	}
+	s.partitionLoadMu.Unlock()
+	close(flight.done)
+	return data, err
 }
 
 func (s *Server) loadPartitionData(ctx context.Context, partitionName string, includeLatestDeployments, includeRecentEvents bool) (*PartitionDetailResponse, error) {
@@ -1041,14 +1130,23 @@ func adoptedOriginInfo(labels map[string]string) (originInfo, bool) {
 }
 
 func intentOrigin(ctx context.Context, store guardianapi.Store, partition string, manifest intentdomain.Intent, partitionLabels map[string]string) originInfo {
+	var payload *cdkgen.PayloadManifest
+	hasPayload := false
+	if isCDKIntent(manifest) {
+		payload, hasPayload = generatedPayloadManifestForIntent(ctx, store, partition, manifest)
+	}
+	return intentOriginResolved(manifest, partitionLabels, payload, hasPayload)
+}
+
+func intentOriginResolved(manifest intentdomain.Intent, partitionLabels map[string]string, payload *cdkgen.PayloadManifest, hasPayload bool) originInfo {
 	if isObservedIntent(manifest) {
 		if adopted, ok := adoptedOriginInfo(partitionLabels); ok {
 			return adopted
 		}
 		return originInfo{Origin: originObserved, Label: "Observe only", Detail: "Snapshot only; Guardian never applies changes"}
 	}
-	if strings.EqualFold(strings.TrimSpace(manifest.Spec.Implementation), intentdomain.ImplementationCDK) {
-		if payload, ok := readGeneratedPayloadManifest(ctx, store, partition, manifest.Metadata.Name); ok {
+	if isCDKIntent(manifest) {
+		if hasPayload && payload != nil {
 			catalog := strings.TrimSpace(payload.CatalogVersion)
 			if catalog == "" {
 				catalog = "unknown"
@@ -1074,6 +1172,21 @@ func hasCDKStackAsset(manifest intentdomain.Intent) bool {
 		}
 	}
 	return false
+}
+
+func isCDKIntent(manifest intentdomain.Intent) bool {
+	return strings.EqualFold(strings.TrimSpace(manifest.Spec.Implementation), intentdomain.ImplementationCDK)
+}
+
+// generatedPayloadManifestForIntent returns the generated CDK payload manifest
+// for an intent. Only intents compiled by Guardian's CDK generator can have
+// one; probing for every native intent turns a normal "not generated" case
+// into a failed read on each overview refresh.
+func generatedPayloadManifestForIntent(ctx context.Context, store guardianapi.Store, partition string, manifest intentdomain.Intent) (*cdkgen.PayloadManifest, bool) {
+	if !isCDKIntent(manifest) {
+		return nil, false
+	}
+	return readGeneratedPayloadManifest(ctx, store, partition, manifest.Metadata.Name)
 }
 
 func readGeneratedPayloadManifest(ctx context.Context, store guardianapi.Store, partition, intent string) (*cdkgen.PayloadManifest, bool) {
@@ -1224,16 +1337,17 @@ func buildIntentDocument(ctx context.Context, store guardianapi.Store, manifest 
 		specByName[asset.Name] = asset
 	}
 	orderedAssets := append([]string(nil), assetOrder...)
+	idx := indexObservedState(state)
 	synthetic := map[string]bool{}
-	origin := intentOrigin(ctx, store, partitionName, manifest, partitionLabels)
+	payloadManifest, hasPayload := generatedPayloadManifestForIntent(ctx, store, partitionName, manifest)
+	origin := intentOriginResolved(manifest, partitionLabels, payloadManifest, hasPayload)
 	doc.Origin = origin.Origin
 	doc.OriginLabel = origin.Label
 	doc.OriginDetail = origin.Detail
-	payloadManifest, _ := readGeneratedPayloadManifest(ctx, store, partitionName, manifest.Metadata.Name)
 	origins := assetOrigins(manifest, payloadManifest)
 	logicalAssets := map[string]string{}
 	observedResources := map[string]statedomain.ResourceObservation{}
-	if isObservedIntent(manifest) && state != nil && len(state.Resources) > 0 {
+	if state != nil && len(state.Resources) > 0 {
 		existing := make(map[string]struct{}, len(specByName)+len(orderedAssets))
 		for name := range specByName {
 			existing[name] = struct{}{}
@@ -1247,30 +1361,61 @@ func buildIntentDocument(ctx context.Context, store guardianapi.Store, manifest 
 				logicalAssets[resource.LogicalID] = resource.AssetName
 			}
 		}
+		latestRevision := map[string]statedomain.ResourceObservation{}
+		for _, resource := range state.Resources {
+			if !resource.Ephemeral || strings.TrimSpace(resource.Parent) == "" {
+				continue
+			}
+			current, ok := latestRevision[resource.Parent]
+			if !ok || resource.LiveUpdatedAt.After(current.LiveUpdatedAt) {
+				latestRevision[resource.Parent] = resource
+			}
+		}
 		for _, resource := range state.Resources {
 			name := strings.TrimSpace(resource.AssetName)
-			if name == "" {
+			if name == "" || resource.Ephemeral {
 				continue
 			}
 			if _, exists := existing[name]; exists {
 				continue
 			}
-			properties := map[string]any{
-				"cfnType":   resource.CfnType,
-				"logicalId": resource.LogicalID,
-				"existing":  true,
-			}
-			if resource.Condition != "" {
-				properties["condition"] = resource.Condition
+			var properties map[string]any
+			specType := assetdomain.TypeAWSResource
+			switch strings.ToLower(strings.TrimSpace(resource.Provider)) {
+			case "gcp", "kubernetes":
+				specType = assetdomain.TypeObservedResource
+				properties = map[string]any{
+					"provider":     strings.ToLower(strings.TrimSpace(resource.Provider)),
+					"resourceType": resource.CfnType,
+					"resourceName": firstNonEmpty(resource.PhysicalID, resource.Name, resource.LogicalID),
+					"state":        resource.LiveStatus,
+					"existing":     true,
+				}
+				if resource.Location != "" {
+					properties["location"] = resource.Location
+					properties["namespace"] = resource.Location
+				}
+				if revision, ok := latestRevision[resource.LogicalID]; ok {
+					properties["latestRevision"] = firstNonEmpty(revision.Name, revision.PhysicalID, revision.LogicalID)
+				}
+			default:
+				properties = map[string]any{
+					"cfnType":   resource.CfnType,
+					"logicalId": resource.LogicalID,
+					"existing":  true,
+				}
+				if resource.Condition != "" {
+					properties["condition"] = resource.Condition
+				}
+				if resource.DriftStatus != "" {
+					properties["driftStatus"] = resource.DriftStatus
+				}
 			}
 			if resource.PhysicalID != "" {
 				properties["physicalId"] = resource.PhysicalID
 			}
 			if resource.LiveStatus != "" {
 				properties["liveStatus"] = resource.LiveStatus
-			}
-			if resource.DriftStatus != "" {
-				properties["driftStatus"] = resource.DriftStatus
 			}
 			dependsOn := make([]string, 0, len(resource.DependsOn))
 			for _, logicalID := range resource.DependsOn {
@@ -1279,7 +1424,7 @@ func buildIntentDocument(ctx context.Context, store guardianapi.Store, manifest 
 				}
 			}
 			specByName[name] = assetdomain.Spec{
-				Type:       assetdomain.TypeAWSResource,
+				Type:       specType,
 				Name:       name,
 				DependsOn:  dependsOn,
 				Properties: properties,
@@ -1296,7 +1441,7 @@ func buildIntentDocument(ctx context.Context, store guardianapi.Store, manifest 
 		if !ok {
 			continue
 		}
-		assetDoc := buildAssetDocument(ctx, partitionName, manifest.Metadata.Name, spec, origins[spec.Name], manifest.Spec.Hints, state, runtime, latest, deps, enableFlowTopology, evaluator)
+		assetDoc := buildAssetDocument(ctx, partitionName, manifest.Metadata.Name, spec, origins[spec.Name], manifest.Spec.Hints, state, runtime, latest, deps, enableFlowTopology, evaluator, idx)
 		assetDoc.Synthetic = synthetic[spec.Name]
 		if resource, ok := observedResources[spec.Name]; ok {
 			if parent := strings.TrimSpace(logicalAssets[resource.Parent]); parent != "" {
@@ -1319,8 +1464,8 @@ func buildIntentDocument(ctx context.Context, store guardianapi.Store, manifest 
 	return doc
 }
 
-func buildAssetDocument(ctx context.Context, partitionName, intentName string, spec assetdomain.Spec, origin assetOrigin, intentHints []assetdomain.Hint, state *statedomain.IntentState, runtime intentTaskRuntime, latest *DeploymentView, deps map[string]*statedomain.IntentState, enableFlowTopology bool, evaluator FlowStateEvaluator) AssetDocument {
-	status, displayStatus, health, summary := deriveAssetPresentation(state, spec.Name, runtime)
+func buildAssetDocument(ctx context.Context, partitionName, intentName string, spec assetdomain.Spec, origin assetOrigin, intentHints []assetdomain.Hint, state *statedomain.IntentState, runtime intentTaskRuntime, latest *DeploymentView, deps map[string]*statedomain.IntentState, enableFlowTopology bool, evaluator FlowStateEvaluator, idx *observedStateIndex) AssetDocument {
+	status, displayStatus, health, summary := deriveAssetPresentation(state, spec.Name, runtime, idx)
 	if status == string(statedomain.StatusBlocked) {
 		if s := blockedSummary(state, deps); s != "" {
 			summary = s
@@ -1512,14 +1657,41 @@ func formatCountSummary(count int, noun, singularVerb, pluralVerb, phrase string
 	return fmt.Sprintf("%d %ss %s %s.", count, noun, pluralVerb, phrase)
 }
 
-func topologyTier(cfnType string) string {
+func topologyTier(provider, resourceType string) string {
+	resourceType = strings.TrimSpace(resourceType)
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "gcp":
+		switch {
+		case strings.HasPrefix(resourceType, "run.googleapis.com/"),
+			strings.HasPrefix(resourceType, "storage.googleapis.com/"),
+			strings.HasPrefix(resourceType, "secretmanager.googleapis.com/"),
+			strings.HasPrefix(resourceType, "sqladmin.googleapis.com/"):
+			return "application"
+		case strings.HasPrefix(resourceType, "logging.googleapis.com/"),
+			strings.HasPrefix(resourceType, "monitoring.googleapis.com/"):
+			return "observability"
+		default:
+			return "infrastructure"
+		}
+	case "kubernetes":
+		switch {
+		case strings.EqualFold(resourceType, "ConfigMap"),
+			strings.EqualFold(resourceType, "Secret"),
+			strings.EqualFold(resourceType, "NetworkPolicy"),
+			strings.EqualFold(resourceType, "PersistentVolumeClaim"),
+			strings.EqualFold(resourceType, "ServiceAccount"):
+			return "infrastructure"
+		default:
+			return "application"
+		}
+	}
 	switch {
-	case strings.HasPrefix(cfnType, "AWS::EC2::"),
-		strings.HasPrefix(cfnType, "AWS::IAM::"),
-		strings.HasPrefix(cfnType, "AWS::SSM::"),
-		strings.HasPrefix(cfnType, "AWS::CloudFormation::"):
+	case strings.HasPrefix(resourceType, "AWS::EC2::"),
+		strings.HasPrefix(resourceType, "AWS::IAM::"),
+		strings.HasPrefix(resourceType, "AWS::SSM::"),
+		strings.HasPrefix(resourceType, "AWS::CloudFormation::"):
 		return "infrastructure"
-	case strings.HasPrefix(cfnType, "AWS::Logs::"):
+	case strings.HasPrefix(resourceType, "AWS::Logs::"):
 		return "observability"
 	default:
 		return "application"
@@ -1610,13 +1782,17 @@ func buildTopology(partition partitiondomain.Partition, intents []IntentDocument
 			assetMeta := map[string]string{
 				"type": asset.Type,
 			}
-			for _, key := range []string{"cfnType", "logicalId", "physicalId", "liveStatus", "driftStatus"} {
+			for _, key := range []string{
+				"cfnType", "logicalId", "physicalId", "liveStatus", "driftStatus",
+				"provider", "resourceType", "resourceName", "location", "latestRevision", "state",
+			} {
 				if value, ok := asset.Properties[key].(string); ok && strings.TrimSpace(value) != "" {
 					assetMeta[key] = value
 				}
 			}
-			if cfnType := assetMeta["cfnType"]; cfnType != "" {
-				assetMeta["tier"] = topologyTier(cfnType)
+			resourceType := firstNonEmpty(assetMeta["resourceType"], assetMeta["cfnType"])
+			if resourceType != "" {
+				assetMeta["tier"] = topologyTier(assetMeta["provider"], resourceType)
 			}
 			if asset.FlowSummary != "" {
 				assetMeta["flowSummary"] = asset.FlowSummary
@@ -2113,27 +2289,28 @@ func deriveIntentPresentation(state *statedomain.IntentState, runtime intentTask
 	if state == nil {
 		return "Unknown", "Waiting", "pending", "Waiting for first reconcile"
 	}
+	idx := indexObservedState(state)
 	if runtime.TimedOut {
 		return "TimedOut", "Attention", "attention", "The latest reconcile task exceeded the worker lease window"
 	}
 	switch state.Status {
 	case statedomain.StatusHealthy:
-		if displayStatus, health, summary, ok := observedIntentHealthPresentation(state); ok {
+		if displayStatus, health, summary, ok := observedIntentHealthPresentation(state, idx); ok {
 			return string(state.Status), displayStatus, health, summary
 		}
 		return string(state.Status), "No diff", "healthy", "Desired and live state match"
 	case statedomain.StatusChecking:
-		if displayStatus, health, summary, ok := observedIntentHealthPresentation(state); ok {
+		if displayStatus, health, summary, ok := observedIntentHealthPresentation(state, idx); ok {
 			return string(state.Status), displayStatus, health, summary
 		}
 		return string(state.Status), "Checking", "pending", "Validating that drift can be applied safely"
 	case statedomain.StatusDiffing:
-		if displayStatus, health, summary, ok := observedIntentHealthPresentation(state); ok {
+		if displayStatus, health, summary, ok := observedIntentHealthPresentation(state, idx); ok {
 			return string(state.Status), displayStatus, health, summary
 		}
 		return string(state.Status), "Comparing", "pending", "Comparing desired and live state"
 	case statedomain.StatusApplying:
-		if displayStatus, health, summary, ok := observedIntentHealthPresentation(state); ok {
+		if displayStatus, health, summary, ok := observedIntentHealthPresentation(state, idx); ok {
 			return string(state.Status), displayStatus, health, summary
 		}
 		return string(state.Status), "Pushing", "pending", "Applying the latest blueprint"
@@ -2141,7 +2318,7 @@ func deriveIntentPresentation(state *statedomain.IntentState, runtime intentTask
 		return string(state.Status), "Error", "failing", valueOrDefault(observedFailureSummary(state), valueOrDefault(pointerString(state.LastError), "The last task failed"))
 	case statedomain.StatusDrifted:
 		detail := driftDetail(state.Drift)
-		if _, _, observedSummary, ok := observedIntentHealthPresentation(state); ok {
+		if _, _, observedSummary, ok := observedIntentHealthPresentation(state, idx); ok {
 			return string(state.Status), "Diff found", "drifted", combineDriftSummary(combineDriftSummary("Drift detected and waiting for push", detail), observedSummary)
 		}
 		if detail != "" {
@@ -2150,7 +2327,7 @@ func deriveIntentPresentation(state *statedomain.IntentState, runtime intentTask
 		return string(state.Status), "Diff found", "drifted", "Drift detected and waiting for push"
 	case statedomain.StatusDriftedLocked:
 		detail := driftDetail(state.Drift)
-		if _, _, observedSummary, ok := observedIntentHealthPresentation(state); ok {
+		if _, _, observedSummary, ok := observedIntentHealthPresentation(state, idx); ok {
 			return string(state.Status), "Locked drift", "drifted-locked", combineDriftSummary(combineDriftSummary("Drift detected but the intent is locked", detail), observedSummary)
 		}
 		if detail != "" {
@@ -2158,13 +2335,13 @@ func deriveIntentPresentation(state *statedomain.IntentState, runtime intentTask
 		}
 		return string(state.Status), "Locked drift", "drifted-locked", "Drift detected but the intent is locked"
 	case statedomain.StatusObserved:
-		if displayStatus, health, summary, ok := observedIntentHealthPresentation(state); ok {
+		if displayStatus, health, summary, ok := observedIntentHealthPresentation(state, idx); ok {
 			return string(state.Status), displayStatus, health, summary
 		}
 		return string(state.Status), "Observed", "healthy", "Live state matches the desired CDK app"
 	case statedomain.StatusObservedDrifted:
 		detail := driftDetail(state.Drift)
-		if _, _, observedSummary, ok := observedIntentHealthPresentation(state); ok {
+		if _, _, observedSummary, ok := observedIntentHealthPresentation(state, idx); ok {
 			return string(state.Status), "Observed drift", "attention", combineDriftSummary(combineDriftSummary("Live state differs from the desired CDK app", detail), observedSummary)
 		}
 		if detail != "" {
@@ -2182,7 +2359,65 @@ func deriveIntentPresentation(state *statedomain.IntentState, runtime intentTask
 	}
 }
 
-func observedIntentHealthPresentation(state *statedomain.IntentState) (string, string, string, bool) {
+// observedStateIndex precomputes the expensive parts of observed-health
+// presentation once per intent. deriveAssetPresentation is called for every
+// asset and used to rescan every resource on each call (O(assets × resources)).
+type observedStateIndex struct {
+	age         time.Duration
+	stale       bool
+	hasObserved bool
+	assets      map[string]struct{}
+}
+
+func indexObservedState(state *statedomain.IntentState) *observedStateIndex {
+	idx := &observedStateIndex{}
+	if state == nil {
+		return idx
+	}
+	observedAt := state.Timestamps.LastObservedAt
+	if state.Timestamps.LastDiffAt.After(observedAt) {
+		observedAt = state.Timestamps.LastDiffAt
+	}
+	idx.assets = make(map[string]struct{}, len(state.Resources))
+	for _, resource := range state.Resources {
+		if resource.LiveUpdatedAt.After(observedAt) {
+			observedAt = resource.LiveUpdatedAt
+		}
+		if name := strings.TrimSpace(resource.AssetName); name != "" {
+			idx.assets[strings.ToLower(name)] = struct{}{}
+		}
+	}
+	if !observedAt.IsZero() {
+		idx.hasObserved = true
+		idx.age = time.Since(observedAt)
+		idx.stale = idx.age > observedSnapshotStaleAfter
+	}
+	return idx
+}
+
+func (i *observedStateIndex) isObservedAsset(name string) bool {
+	if i == nil || name == "" {
+		return false
+	}
+	_, ok := i.assets[strings.ToLower(strings.TrimSpace(name))]
+	return ok
+}
+
+func (i *observedStateIndex) snapshotAge() (time.Duration, bool) {
+	if i == nil || !i.hasObserved {
+		return 0, false
+	}
+	return i.age, i.stale
+}
+
+func observedIndex(state *statedomain.IntentState, indexes []*observedStateIndex) *observedStateIndex {
+	if len(indexes) > 0 && indexes[0] != nil {
+		return indexes[0]
+	}
+	return indexObservedState(state)
+}
+
+func observedIntentHealthPresentation(state *statedomain.IntentState, indexes ...*observedStateIndex) (string, string, string, bool) {
 	if state == nil {
 		return "", "", "", false
 	}
@@ -2196,10 +2431,12 @@ func observedIntentHealthPresentation(state *statedomain.IntentState) (string, s
 		}
 	}
 	if len(state.Resources) > 0 {
-		if age, stale := observedSnapshotAge(state); stale {
+		if age, stale := observedIndex(state, indexes).snapshotAge(); stale {
 			summary := fmt.Sprintf("No fresh observed snapshot for %s", humanizeDuration(age))
-			if parent := strings.TrimSpace(state.Health.Summary); parent != "" {
-				summary += "; " + parent
+			if state.Health != nil {
+				if parent := strings.TrimSpace(state.Health.Summary); parent != "" {
+					summary += "; " + parent
+				}
 			}
 			return "Stale", "attention", summary, true
 		}
@@ -2207,7 +2444,7 @@ func observedIntentHealthPresentation(state *statedomain.IntentState) (string, s
 	return "", "", "", false
 }
 
-func observedAssetHealthPresentation(state *statedomain.IntentState, assetName string) (string, string, string, bool) {
+func observedAssetHealthPresentation(state *statedomain.IntentState, assetName string, indexes ...*observedStateIndex) (string, string, string, bool) {
 	observation := stateAssetObservation(state, assetName)
 	if observation != nil {
 		if observation.Health != nil {
@@ -2223,10 +2460,11 @@ func observedAssetHealthPresentation(state *statedomain.IntentState, assetName s
 			return "Blocked", "attention", valueOrDefault(strings.TrimSpace(observation.ApplyReadiness.Summary), "Asset dependencies are not ready"), true
 		}
 	}
+	idx := observedIndex(state, indexes)
 	// Synthetic observed resources do not have their own AssetObservation. They
 	// must inherit the stack health, otherwise a stack in DELETE_IN_PROGRESS or
 	// DELETE_FAILED still renders every resource as healthy/observed.
-	if !isObservedResourceAsset(state, assetName) {
+	if !idx.isObservedAsset(assetName) {
 		return "", "", "", false
 	}
 	if state.Health != nil {
@@ -2238,34 +2476,16 @@ func observedAssetHealthPresentation(state *statedomain.IntentState, assetName s
 			return "Attention", "attention", summary + " (inherited from parent stack)", true
 		}
 	}
-	if age, stale := observedSnapshotAge(state); stale {
+	if age, stale := idx.snapshotAge(); stale {
 		summary := fmt.Sprintf("No fresh observed snapshot for %s", humanizeDuration(age))
-		if parent := strings.TrimSpace(state.Health.Summary); parent != "" {
-			summary += "; " + parent
+		if state.Health != nil {
+			if parent := strings.TrimSpace(state.Health.Summary); parent != "" {
+				summary += "; " + parent
+			}
 		}
 		return "Stale", "attention", summary, true
 	}
 	return "", "", "", false
-}
-
-func isObservedResourceAsset(state *statedomain.IntentState, assetName string) bool {
-	if state == nil || assetName == "" {
-		return false
-	}
-	for _, resource := range state.Resources {
-		if strings.EqualFold(resource.AssetName, assetName) {
-			return true
-		}
-	}
-	return false
-}
-
-func observedSnapshotAge(state *statedomain.IntentState) (time.Duration, bool) {
-	if state == nil || state.Timestamps.LastDiffAt.IsZero() {
-		return 0, false
-	}
-	age := time.Since(state.Timestamps.LastDiffAt)
-	return age, age > observedSnapshotStaleAfter
 }
 
 func humanizeDuration(value time.Duration) string {
@@ -2328,7 +2548,8 @@ func stateApplyReadiness(state *statedomain.IntentState) *taskdomain.ApplyReadin
 	return state.ApplyReadiness
 }
 
-func deriveAssetPresentation(state *statedomain.IntentState, assetName string, runtime intentTaskRuntime) (string, string, string, string) {
+func deriveAssetPresentation(state *statedomain.IntentState, assetName string, runtime intentTaskRuntime, indexes ...*observedStateIndex) (string, string, string, string) {
+	idx := observedIndex(state, indexes)
 	if state == nil {
 		return "Unknown", "Planned", "pending", "No reconcile state yet"
 	}
@@ -2338,34 +2559,34 @@ func deriveAssetPresentation(state *statedomain.IntentState, assetName string, r
 	changed := state.Drift != nil && containsString(state.Drift.ChangedAssets, assetName)
 	switch state.Status {
 	case statedomain.StatusHealthy:
-		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
+		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName, idx); ok {
 			return string(state.Status), displayStatus, health, summary
 		}
 		return string(state.Status), "No diff", "healthy", "Matches desired state"
 	case statedomain.StatusChecking:
-		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
+		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName, idx); ok {
 			return string(state.Status), displayStatus, health, summary
 		}
 		return string(state.Status), "Checking", "pending", "Validating that drift can be applied safely"
 	case statedomain.StatusDiffing:
-		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
+		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName, idx); ok {
 			return string(state.Status), displayStatus, health, summary
 		}
 		return string(state.Status), "Comparing", "pending", "Inspecting live drift"
 	case statedomain.StatusApplying:
-		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
+		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName, idx); ok {
 			return string(state.Status), displayStatus, health, summary
 		}
 		return string(state.Status), "Pushing", "pending", "Applying the asset"
 	case statedomain.StatusDiffFailed, statedomain.StatusCheckFailed, statedomain.StatusApplyFailed:
-		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
+		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName, idx); ok {
 			return string(state.Status), displayStatus, health, summary
 		}
 		return string(state.Status), "Error", "failing", valueOrDefault(pointerString(state.LastError), "Last task failed")
 	case statedomain.StatusDrifted:
 		if changed {
 			detail := driftDetail(state.Drift)
-			if _, _, observedSummary, ok := observedAssetHealthPresentation(state, assetName); ok {
+			if _, _, observedSummary, ok := observedAssetHealthPresentation(state, assetName, idx); ok {
 				return string(state.Status), "Diff found", "drifted", combineDriftSummary(combineDriftSummary("Live state differs from blueprint", detail), observedSummary)
 			}
 			if detail != "" {
@@ -2373,14 +2594,14 @@ func deriveAssetPresentation(state *statedomain.IntentState, assetName string, r
 			}
 			return string(state.Status), "Diff found", "drifted", "Live state differs from blueprint"
 		}
-		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
+		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName, idx); ok {
 			return string(state.Status), displayStatus, health, summary
 		}
 		return string(state.Status), "No diff", "healthy", "No current drift on this asset"
 	case statedomain.StatusDriftedLocked:
 		if changed {
 			detail := driftDetail(state.Drift)
-			if _, _, observedSummary, ok := observedAssetHealthPresentation(state, assetName); ok {
+			if _, _, observedSummary, ok := observedAssetHealthPresentation(state, assetName, idx); ok {
 				return string(state.Status), "Locked drift", "drifted-locked", combineDriftSummary(combineDriftSummary("Drift exists but push is locked", detail), observedSummary)
 			}
 			if detail != "" {
@@ -2388,19 +2609,19 @@ func deriveAssetPresentation(state *statedomain.IntentState, assetName string, r
 			}
 			return string(state.Status), "Locked drift", "drifted-locked", "Drift exists but push is locked"
 		}
-		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
+		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName, idx); ok {
 			return string(state.Status), displayStatus, health, summary
 		}
 		return string(state.Status), "No diff", "healthy", "No current drift on this asset"
 	case statedomain.StatusObserved:
-		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
+		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName, idx); ok {
 			return string(state.Status), displayStatus, health, summary
 		}
 		return string(state.Status), "Observed", "healthy", "Live state matches the desired CDK app"
 	case statedomain.StatusObservedDrifted:
 		if changed {
 			detail := driftDetail(state.Drift)
-			if _, _, observedSummary, ok := observedAssetHealthPresentation(state, assetName); ok {
+			if _, _, observedSummary, ok := observedAssetHealthPresentation(state, assetName, idx); ok {
 				return string(state.Status), "Observed drift", "attention", combineDriftSummary(combineDriftSummary("Live state differs from the desired CDK app", detail), observedSummary)
 			}
 			if detail != "" {
@@ -2408,7 +2629,7 @@ func deriveAssetPresentation(state *statedomain.IntentState, assetName string, r
 			}
 			return string(state.Status), "Observed drift", "attention", "Live state differs from the desired CDK app"
 		}
-		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
+		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName, idx); ok {
 			return string(state.Status), displayStatus, health, summary
 		}
 		return string(state.Status), "Observed", "healthy", "Live state matches the desired CDK app"
@@ -2417,7 +2638,7 @@ func deriveAssetPresentation(state *statedomain.IntentState, assetName string, r
 	case statedomain.StatusDestroyed:
 		return string(state.Status), "Removed", "pending", "Asset was destroyed"
 	case statedomain.StatusBlocked:
-		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName); ok {
+		if displayStatus, health, summary, ok := observedAssetHealthPresentation(state, assetName, idx); ok {
 			return string(state.Status), displayStatus, health, summary
 		}
 		return string(state.Status), "Blocked", "attention", "Waiting for intent dependencies"
@@ -2639,6 +2860,46 @@ func assetFacts(spec assetdomain.Spec, outputs map[string]string) (string, []Fac
 			facts = append(facts, Fact{Label: "Mode", Value: "Observed"})
 		}
 		return "CloudFormation resource", facts, false, nil, 0
+	case *assetdefs.ObservedResourceSpec:
+		facts := []Fact{}
+		switch strings.ToLower(strings.TrimSpace(value.Provider)) {
+		case "gcp":
+			if value.ResourceType != "" {
+				facts = append(facts, Fact{Label: "GCP type", Value: value.ResourceType})
+			}
+			if value.ResourceName != "" {
+				facts = append(facts, Fact{Label: "Resource", Value: value.ResourceName})
+			}
+			if value.Location != "" {
+				facts = append(facts, Fact{Label: "Location", Value: value.Location})
+			}
+			if value.State != "" {
+				facts = append(facts, Fact{Label: "State", Value: value.State})
+			}
+			if value.LatestRevision != "" {
+				facts = append(facts, Fact{Label: "Latest revision", Value: value.LatestRevision})
+			}
+			return "Google Cloud resource", facts, false, nil, 0
+		case "kubernetes":
+			if value.ResourceType != "" {
+				facts = append(facts, Fact{Label: "Kind", Value: value.ResourceType})
+			}
+			if value.ResourceName != "" {
+				facts = append(facts, Fact{Label: "Resource", Value: value.ResourceName})
+			}
+			if value.Namespace != "" {
+				facts = append(facts, Fact{Label: "Namespace", Value: value.Namespace})
+			}
+			if value.State != "" {
+				facts = append(facts, Fact{Label: "State", Value: value.State})
+			}
+			return "Kubernetes resource", facts, false, nil, 0
+		default:
+			if value.ResourceType != "" {
+				facts = append(facts, Fact{Label: "Type", Value: value.ResourceType})
+			}
+			return "Observed resource", facts, false, nil, 0
+		}
 	default:
 		return strings.ToLower(spec.Type) + " asset", nil, false, nil, 0
 	}

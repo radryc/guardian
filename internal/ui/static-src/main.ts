@@ -41,6 +41,12 @@ import { initSetsPanel, renderSets, selectedSetName } from "./sets";
 
 // ── Bootstrap ────────────────────────────────────────
 const state: AppState = createState();
+
+// Monotonic request tokens discard responses from a partition the user has
+// already navigated away from (out-of-order fetch completion).
+let partitionRequestSeq = 0;
+let historyRequestSeq = 0;
+let rolloutsRequestSeq = 0;
 const builder = initBuilderPanel({
   getSelectedPartition: () => state.selectedPartition,
   onOpenPartition: (name: string) => { selectPartition(name).catch(handleError); },
@@ -532,6 +538,7 @@ async function refreshOverview(loadSelected = true): Promise<void> {
 
 async function selectPartition(name: string, announce = true): Promise<void> {
   if (!name) return;
+  const requestSeq = ++partitionRequestSeq;
   armFastRefreshBurst();
   const samePartition = state.selectedPartition === name;
   state.selectedPartition = name;
@@ -549,7 +556,11 @@ async function selectPartition(name: string, announce = true): Promise<void> {
   }
   syncLocationState();
   renderPartitionBrowser();
-  state.detail = await fetchJSON(`/api/partitions/${encodeURIComponent(name)}`);
+  const detail = await fetchJSON(`/api/partitions/${encodeURIComponent(name)}`);
+  if (requestSeq !== partitionRequestSeq || state.selectedPartition !== name) {
+    return;
+  }
+  state.detail = detail;
   renderPartitionDetail();
   renderHistory();
   renderRollouts();
@@ -736,20 +747,31 @@ async function ensureHistoryLoaded(force = false): Promise<void> {
     return;
   }
 
+  const partition = state.selectedPartition;
+  const requestSeq = ++historyRequestSeq;
   state.historyLoading = true;
   state.historyError = "";
   renderHistory();
   renderPageChrome();
   try {
-    state.history = await fetchPartitionHistory(state.selectedPartition);
+    const history = await fetchPartitionHistory(partition);
+    if (requestSeq !== historyRequestSeq || state.selectedPartition !== partition) {
+      return;
+    }
+    state.history = history;
   } catch (error: any) {
+    if (requestSeq !== historyRequestSeq || state.selectedPartition !== partition) {
+      return;
+    }
     state.history = null;
     state.historyError = error?.message ?? "Failed to load history.";
     throw error;
   } finally {
-    state.historyLoading = false;
-    renderHistory();
-    renderPageChrome();
+    if (requestSeq === historyRequestSeq) {
+      state.historyLoading = false;
+      renderHistory();
+      renderPageChrome();
+    }
   }
 }
 
@@ -771,20 +793,31 @@ async function ensureRolloutsLoaded(force = false): Promise<void> {
     return;
   }
 
+  const partition = state.selectedPartition;
+  const requestSeq = ++rolloutsRequestSeq;
   state.rolloutsLoading = true;
   state.rolloutsError = "";
   renderRollouts();
   renderPageChrome();
   try {
-    state.rollouts = await fetchPartitionRollouts(state.selectedPartition);
+    const rollouts = await fetchPartitionRollouts(partition);
+    if (requestSeq !== rolloutsRequestSeq || state.selectedPartition !== partition) {
+      return;
+    }
+    state.rollouts = rollouts;
   } catch (error: any) {
+    if (requestSeq !== rolloutsRequestSeq || state.selectedPartition !== partition) {
+      return;
+    }
     state.rollouts = null;
     state.rolloutsError = error?.message ?? "Failed to load rollouts.";
     throw error;
   } finally {
-    state.rolloutsLoading = false;
-    renderRollouts();
-    renderPageChrome();
+    if (requestSeq === rolloutsRequestSeq) {
+      state.rolloutsLoading = false;
+      renderRollouts();
+      renderPageChrome();
+    }
   }
 }
 
@@ -2857,17 +2890,67 @@ const ACCESSIBLE_NODE_COLORS = {
 function topologyNodeAccent(node: any): string {
   if (node.kind === "partition") return ACCESSIBLE_NODE_COLORS.partition;
   if (node.kind === "intent") return ACCESSIBLE_NODE_COLORS.intent;
+  const family = topologyObservedFamily(node);
+  if (family === "runtime") return ACCESSIBLE_NODE_COLORS.runtime;
+  if (family === "traffic") return ACCESSIBLE_NODE_COLORS.traffic;
+  if (family === "storage") return ACCESSIBLE_NODE_COLORS.storage;
+  if (family === "config") return ACCESSIBLE_NODE_COLORS.config;
+  if (family === "infra") return ACCESSIBLE_NODE_COLORS.muted;
   return assetAccent(node.assetType ?? node.kind);
 }
 function topologyNodeIcon(node: any): string {
   if (node.kind === "partition") return "◫";
   if (node.kind === "intent") return "⊞";
+  const family = topologyObservedFamily(node);
+  if (family === "runtime") return "▣";
+  if (family === "traffic") return "⇄";
+  if (family === "storage") return "⛁";
+  if (family === "config") return "≡";
+  if (family === "infra") return "⬡";
   return assetIcon(node.assetType ?? node.kind);
 }
 function topologyNodeSubtitle(node: any): string {
   if (node.kind === "partition") return `${node.meta?.reconciliation ?? "manual"} reconcile · ${node.meta?.deletionPolicy ?? "orphan"} delete`;
   if (node.kind === "intent") return node.meta?.target ?? node.displayStatus ?? "Intent";
+  const provider = String(node.meta?.provider ?? "");
+  const resourceType = String(node.meta?.resourceType ?? node.meta?.cfnType ?? "");
+  if (provider === "gcp") return gcpTopologySubtitle(resourceType);
+  if (provider === "kubernetes") {
+    const namespace = String(node.meta?.location ?? "");
+    return namespace ? `${resourceType} · ${namespace}` : resourceType;
+  }
   return `${assetTitle(node.assetType ?? node.kind)} · ${node.displayStatus ?? "Asset"}`;
+}
+function gcpTopologySubtitle(resourceType: string): string {
+  const raw = String(resourceType ?? "");
+  const slash = raw.indexOf("/");
+  if (slash < 0) return raw;
+  const service = raw.slice(0, slash).replace(/\.googleapis\.com$/, "");
+  return `${service} / ${raw.slice(slash + 1)}`;
+}
+function topologyObservedFamily(node: any): string {
+  const provider = String(node.meta?.provider ?? "");
+  const resourceType = String(node.meta?.resourceType ?? node.meta?.cfnType ?? "");
+  if (provider === "gcp") {
+    if (resourceType.startsWith("run.googleapis.com/")) return "runtime";
+    if (resourceType.startsWith("storage.googleapis.com/") || resourceType.startsWith("file.googleapis.com/")) return "storage";
+    if (resourceType.startsWith("secretmanager.googleapis.com/")) return "config";
+    if (resourceType.startsWith("sqladmin.googleapis.com/")) return "traffic";
+    if (resourceType.startsWith("logging.googleapis.com/") || resourceType.startsWith("monitoring.googleapis.com/")) return "config";
+    if (resourceType.startsWith("compute.googleapis.com/") || resourceType.startsWith("servicenetworking.googleapis.com/")) return "infra";
+    return "";
+  }
+  if (provider === "kubernetes") {
+    switch (resourceType.toLowerCase()) {
+      case "deployment": return "runtime";
+      case "service", "ingress": return "traffic";
+      case "configmap", "secret", "serviceaccount": return "config";
+      case "persistentvolumeclaim": return "storage";
+      case "networkpolicy": return "infra";
+      default: return "";
+    }
+  }
+  return "";
 }
 
 // ── Asset helpers ─────────────────────────────────────
