@@ -231,6 +231,24 @@ func AccessCompiledPath() string {
 	return normalize(AccessRoot(), "compiled", "policy.json")
 }
 
+// AccessPartitionsDir holds repo-owned, partition-scoped ACLs imported from
+// guardian/partitions/<partition>/access.yaml. The platform policy remains the
+// authority for defaults and cross-partition grants.
+func AccessPartitionsDir() string {
+	return normalize(AccessRoot(), "partitions")
+}
+
+// AccessPartitionPolicy is the imported ACL for one partition.
+func AccessPartitionPolicy(partition string) string {
+	return normalize(AccessPartitionsDir(), partition+".yaml")
+}
+
+// AccessPartitionMeta records where an imported partition ACL came from so the
+// compiler can scope monofs patterns to the owning repository.
+func AccessPartitionMeta(partition string) string {
+	return normalize(AccessPartitionsDir(), partition+".json")
+}
+
 func ArchiveRoot() string { return "/.archive" }
 
 func ArchiveIntentRoot(partition, intent string) string {

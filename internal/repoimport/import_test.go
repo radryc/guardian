@@ -242,6 +242,113 @@ func TestImportMissingPartitionsDir(t *testing.T) {
 	}
 }
 
+const partitionAccessYAML = `version: 1
+users:
+  radryc@example.com:
+    partitions: [prod]
+    logs: [prod]
+    traces: [prod]
+    monofs:
+      - github.com/*/memebank
+    role: admin
+`
+
+func TestImportPartitionAccessPolicy(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	root := seedRepo(t)
+	writeRepoFile(t, root, "guardian/partitions/prod/access.yaml", partitionAccessYAML)
+	opts := Options{
+		RepoName:  "memebank",
+		Source:    "https://github.com/radryc/memebank",
+		Principal: "tester",
+		Prune:     true,
+	}
+
+	if _, err := Import(ctx, NewLocalSource(root), store, opts); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	raw, err := store.ReadFile(ctx, paths.AccessPartitionPolicy("prod"))
+	if err != nil {
+		t.Fatalf("read imported access policy: %v", err)
+	}
+	if string(raw) != partitionAccessYAML {
+		t.Fatalf("access policy content = %q", raw)
+	}
+	meta, err := store.ReadFile(ctx, paths.AccessPartitionMeta("prod"))
+	if err != nil {
+		t.Fatalf("read partition access metadata: %v", err)
+	}
+	if !strings.Contains(string(meta), `"displayPath": "github.com/radryc/memebank"`) {
+		t.Fatalf("metadata = %s", meta)
+	}
+	manifest, err := store.ReadFile(ctx, paths.RepoImportManifest("prod"))
+	if err != nil {
+		t.Fatalf("read ownership manifest: %v", err)
+	}
+	if !strings.Contains(string(manifest), paths.AccessPartitionPolicy("prod")) {
+		t.Fatalf("manifest does not own the imported access policy: %s", manifest)
+	}
+
+	if err := os.Remove(filepath.Join(root, "guardian/partitions/prod/access.yaml")); err != nil {
+		t.Fatalf("remove access.yaml: %v", err)
+	}
+	result, err := Import(ctx, NewLocalSource(root), store, opts)
+	if err != nil {
+		t.Fatalf("second import: %v", err)
+	}
+	if result.FilesDeleted != 2 {
+		t.Fatalf("FilesDeleted = %d, want 2 (policy + metadata)", result.FilesDeleted)
+	}
+	if _, err := store.ReadFile(ctx, paths.AccessPartitionPolicy("prod")); err == nil {
+		t.Fatal("removed access policy was not pruned")
+	}
+	if _, err := store.ReadFile(ctx, paths.AccessPartitionMeta("prod")); err == nil {
+		t.Fatal("removed access metadata was not pruned")
+	}
+}
+
+func TestImportRejectsOutOfScopePartitionAccess(t *testing.T) {
+	cases := map[string]string{
+		"other partition": `version: 1
+users:
+  a@example.com:
+    partitions: [staging]
+`,
+		"other repo": `version: 1
+users:
+  a@example.com:
+    partitions: [prod]
+    monofs: [github.com/*/other]
+`,
+		"clients": `version: 1
+clients:
+  guardiand:
+    partitions: ["*"]
+    role: admin
+`,
+	}
+	for name, yaml := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := memory.New()
+			root := seedRepo(t)
+			writeRepoFile(t, root, "guardian/partitions/prod/access.yaml", yaml)
+			_, err := Import(ctx, NewLocalSource(root), store, Options{
+				RepoName: "memebank",
+				Source:   "https://github.com/radryc/memebank",
+				Prune:    true,
+			})
+			if err == nil {
+				t.Fatal("expected out-of-scope access.yaml to be rejected")
+			}
+			if _, readErr := store.ReadFile(ctx, paths.PartitionConfig("prod")); readErr == nil {
+				t.Fatal("a rejected import must not write the partition")
+			}
+		})
+	}
+}
+
 func TestImportStoreSource(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()

@@ -56,6 +56,7 @@ type Service struct {
 	policy        *policy.Policy
 	rawDigest     string
 	catalogDigest string
+	partDigest    string
 	lastErr       error
 }
 
@@ -82,6 +83,12 @@ func NewService(opts Options) *Service {
 // Enabled reports whether a raw policy path is configured.
 func (s *Service) Enabled() bool {
 	return s != nil && s.rawPath != ""
+}
+
+// Enforcing reports whether decisions are actually applied. When false the
+// service is either disabled or in observe-only mode.
+func (s *Service) Enforcing() bool {
+	return s != nil && s.rawPath != "" && s.enforce
 }
 
 // Ready reports whether a policy has been compiled and loaded successfully.
@@ -155,11 +162,16 @@ func (s *Service) Refresh(ctx context.Context) error {
 	if err != nil {
 		return s.fail(err)
 	}
+	partitionPolicies, partitionProblems := LoadPartitionPolicies(ctx, s.store, catalog)
+	for _, problem := range partitionProblems {
+		s.logf("access policy: %s", problem)
+	}
 	rawDigest := digestBytes(raw)
 	catalogDigest := catalogDigest(catalog)
+	partDigest := PartitionPoliciesDigest(partitionPolicies)
 
 	s.mu.RLock()
-	unchanged := s.policy != nil && rawDigest == s.rawDigest && catalogDigest == s.catalogDigest
+	unchanged := s.policy != nil && rawDigest == s.rawDigest && catalogDigest == s.catalogDigest && partDigest == s.partDigest
 	s.mu.RUnlock()
 	if unchanged {
 		s.setLastError(nil)
@@ -176,14 +188,13 @@ func (s *Service) Refresh(ctx context.Context) error {
 	for _, warning := range warnings {
 		s.logf("access policy: %s", warning)
 	}
-	bundle, issues, err := policy.Compile(file, catalog, time.Now())
+	compiled, issues, err := CompileWithPartitions(file, catalog, partitionPolicies, time.Now())
 	for _, issue := range issues {
 		s.logf("access policy: %s: %s", issue.Severity, issue.Message)
 	}
 	if err != nil {
 		return s.fail(err)
 	}
-	compiled := policy.New(*bundle)
 
 	s.mu.Lock()
 	oldVersion := ""
@@ -193,6 +204,7 @@ func (s *Service) Refresh(ctx context.Context) error {
 	s.policy = compiled
 	s.rawDigest = rawDigest
 	s.catalogDigest = catalogDigest
+	s.partDigest = partDigest
 	s.lastErr = nil
 	s.mu.Unlock()
 
@@ -234,7 +246,7 @@ func (s *Service) IsAdmin(ctx context.Context) bool {
 
 // CanModify reports whether the request identity may modify the partition
 // (maintainer/admin role). It is permissive when the feature is disabled or in
-// observe mode; the existing control-plane authz Guard still applies.
+// observe mode.
 func (s *Service) CanModify(ctx context.Context, partition string) bool {
 	if s == nil || !s.Enabled() || !s.enforce {
 		return true
@@ -248,6 +260,27 @@ func (s *Service) CanModify(ctx context.Context, partition string) bool {
 		return true
 	}
 	return p.Role(id, partition).Allows(coreauthz.ActionModify)
+}
+
+// AuthorizeModify is the error-returning form used by the reconciler. It
+// distinguishes "policy not loaded" from "insufficient role" so an operator
+// can tell a broken deployment from a real denial.
+func (s *Service) AuthorizeModify(ctx context.Context, partition string) error {
+	if s == nil || !s.Enabled() || !s.enforce {
+		return nil
+	}
+	p := s.current()
+	if p == nil {
+		return fmt.Errorf("access policy: enforcement is on but no policy is loaded")
+	}
+	id := identityFromContext(ctx)
+	if id.IsAnonymous() {
+		return fmt.Errorf("access policy: authentication is required to modify partition %q", partition)
+	}
+	if !s.CanModify(ctx, partition) {
+		return fmt.Errorf("access policy: principal %q lacks the maintainer/admin role on partition %q", principalLabel(id), partition)
+	}
+	return nil
 }
 
 // Explain describes the grants matching a subject, mirroring the /api/access/

@@ -354,12 +354,16 @@ func accessPublishCommand(store guardianapi.Store, printer *output.Printer) *com
 		if err != nil {
 			return fmt.Errorf("load partition catalog: %w", err)
 		}
-		bundle, issues, err := policy.Compile(parsed, catalog, time.Now())
+		partitionPolicies, partitionProblems := access.LoadPartitionPolicies(ctx, store, catalog)
+		for _, problem := range partitionProblems {
+			printer.PrintText("warning: %s\n", problem)
+		}
+		compiledPolicy, issues, err := access.CompileWithPartitions(parsed, catalog, partitionPolicies, time.Now())
 		printIssues(printer, issues)
 		if err != nil {
 			return err
 		}
-		compiled, err := policy.MarshalBundle(*bundle)
+		compiled, err := policy.MarshalPolicy(compiledPolicy)
 		if err != nil {
 			return err
 		}
@@ -386,7 +390,7 @@ func accessPublishCommand(store guardianapi.Store, printer *output.Printer) *com
 			return err
 		}
 		printer.PrintText("published env=%s raw=%s compiled=%s version=%s\n",
-			envName, paths.AccessPolicyPath(envName), paths.AccessCompiledPath(), bundle.Version)
+			envName, paths.AccessPolicyPath(envName), paths.AccessCompiledPath(), compiledPolicy.Version())
 		return nil
 	}}
 }

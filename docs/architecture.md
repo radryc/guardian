@@ -584,6 +584,17 @@ do not enforce), and enforce (filter reads, fail closed for non-admins when no
 policy is loaded). The UI currently applies it to partition GETs only; mutation
 authorization is not wired.
 
+Partition bundles may also ship `guardian/partitions/<partition>/access.yaml`.
+The repo importer validates it and stores it at
+`/.access/partitions/<partition>.yaml` plus a small `…​.json` provenance sidecar;
+the policy service and `guardianctl access publish` append its grants to the
+compiled bundle. Repo-owned files are deliberately narrow: they may only grant
+the named partition in `partitions`, `logs`, and `traces`, and `monofs` patterns
+must resolve to the owning repository. Imports, defaults, selectors, quotas,
+`aws_bindings`, clients, deny rules, wildcards, cross-partition scopes, and
+subtree `monofs` patterns are rejected. The platform ACL remains the authority
+for defaults and cross-partition grants.
+
 ---
 
 ## 8. Compiler
@@ -913,7 +924,10 @@ supported sources are:
 
 `guardianctl repo add/seed/sync/apply/ingest/notify` registers and imports
 repos. `guardiand` also runs a sharded, optionally leased repo-import loop.
-Import maps:
+The loop discovers repo-authored bundles directly under
+`/.repos/**/guardian/partitions` even when no `repo add` entry exists, so
+`monofs-admin ingest` (or MonoFS git auto-refresh) is enough to create and
+deploy a partition. Changed bundles are auto-deployed. Import maps:
 
 ```text
 guardian/partitions/<p>/partition.yaml|config.yaml -> /partitions/<p>/config.yaml
