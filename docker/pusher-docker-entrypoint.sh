@@ -25,7 +25,14 @@ fi
 : "${GUARDIAN_PUSHER_NAME:=${pusher_name}}"
 : "${GUARDIAN_CLUSTER:=${cluster}}"
 : "${GUARDIAN_MONOFS_ROUTER:=${monofs_router:-localhost:9090}}"
-: "${GUARDIAN_MONOFS_TOKEN:=guardian-dev-token}"
+if [ -z "${GUARDIAN_MONOFS_TOKEN:-}" ]; then
+  if [ "${GUARDIAN_ALLOW_DEV_TOKEN:-false}" = "true" ]; then
+    GUARDIAN_MONOFS_TOKEN="guardian-dev-token"
+  else
+    echo "GUARDIAN_MONOFS_TOKEN is required; set GUARDIAN_ALLOW_DEV_TOKEN=true only for isolated local development" >&2
+    exit 1
+  fi
+fi
 : "${GUARDIAN_MONOFS_USE_EXTERNAL_ADDRESSES:=true}"
 : "${GUARDIAN_STATE_DIR:=${state_dir:-/var/lib/guardian/pusher-docker}}"
 : "${GUARDIAN_ADD_HOSTS:=${add_hosts_raw}}"

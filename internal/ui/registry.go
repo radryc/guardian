@@ -64,7 +64,7 @@ func (s *Server) handlePushers(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, err)
 				return
 			}
-			all = s.filterPushers(all, pa)
+			all = s.filterPushers(r.Context(), all, pa)
 			summary := registry.ComputePusherFleetSummary(all, time.Now().UTC())
 			writeJSON(w, http.StatusOK, summary)
 			return
@@ -94,7 +94,7 @@ func (s *Server) handlePushers(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		all = s.filterPushers(all, pa)
+		all = s.filterPushers(r.Context(), all, pa)
 		page := registry.FilterAndPaginatePushers(all, opts, time.Now().UTC())
 		resp := pusherListResponse{
 			Pushers:    page.Pushers,
@@ -137,7 +137,7 @@ func (s *Server) handlePusherRoute(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		all = s.filterPushers(all, pa)
+		all = s.filterPushers(r.Context(), all, pa)
 		writeJSON(w, http.StatusOK, registry.ComputePusherFleetSummary(all, time.Now().UTC()))
 		return
 	}
@@ -175,7 +175,7 @@ func (s *Server) handlePusherRoute(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		if pa.redactsToken() {
+		if !s.mayViewPusherTokens(r.Context()) {
 			pusher.Token = ""
 		}
 		writeJSON(w, http.StatusOK, pusher)

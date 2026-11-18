@@ -105,8 +105,13 @@ principal ID:
 
 - `guardiand`: `monofs.token`, principal `guardian` / configured ID, role
   `control-plane`.
-- `guardianctl`: `--monofs-token`, principal `guardianctl`.
-- Pushers: `--monofs-token`, principal `guardian-pusher-<name>`.
+- `guardianctl`: `GUARDIAN_MONOFS_TOKEN` (preferred; keeps the token out of
+  argv) or `--monofs-token`, principal `guardianctl`. The well-known
+  `guardian-dev-token` fallback requires `--allow-dev-token`.
+- Pushers: `GUARDIAN_MONOFS_TOKEN`, principal `guardian-pusher-<name>`. Container
+  entrypoints require the variable and exit when it is unset; there is no
+  implicit development token unless `GUARDIAN_ALLOW_DEV_TOKEN=true` is set
+  explicitly.
 - `guardian-pusher-aws --observed-only`: memory store, no MonoFS.
 
 The gRPC client (`internal/store/monofs`) refuses plaintext while the token is
@@ -212,7 +217,9 @@ Implemented decisions:
   mutation (bundle save, delete, reconcile, validate, activity) and for set
   membership changes (add/remove partitions).
 - `IsAdmin` — used for registry/repo/scan/unmanaged mutations and set metadata
-  (create/rename/move/delete).
+  (create/rename/move/delete). It also gates raw pusher bearer tokens: they are
+  redacted for every non-admin caller, including when the policy is disabled or
+  observe-only; authenticated admins may still read them.
 - `FilterPartitions` — read filtering.
 
 Still not implemented:

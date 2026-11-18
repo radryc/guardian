@@ -9,6 +9,7 @@ import (
 	"github.com/radryc/guardian/internal/registry"
 	setstore "github.com/radryc/guardian/internal/sets"
 	"github.com/radryc/guardian/internal/unmanaged"
+	coreauthz "github.com/radryc/monofs/pkg/authz"
 )
 
 // readFilterActive reports whether partition-scoped reads must be filtered for
@@ -103,8 +104,19 @@ func (pa *pusherAccess) allows(name string) bool {
 	return pa.visible[name]
 }
 
-func (pa *pusherAccess) redactsToken() bool {
-	return pa != nil && pa.restricted
+// mayViewPusherTokens reports whether the caller may see raw pusher bearer
+// tokens. Tokens are only exposed to authenticated admins: non-admin callers,
+// anonymous callers, trusted machine callers, and every caller while the
+// access policy is disabled or unloaded get redacted values.
+func (s *Server) mayViewPusherTokens(ctx context.Context) bool {
+	if s == nil || s.access == nil {
+		return false
+	}
+	identity, ok := coreauthz.IdentityFromContext(ctx)
+	if !ok || identity.IsAnonymous() {
+		return false
+	}
+	return s.access.IsAdmin(ctx)
 }
 
 // filterScanPushers narrows the configured scan pushers to the ones the caller
@@ -123,17 +135,23 @@ func (s *Server) filterScanPushers(pushers []string, pa *pusherAccess) []string 
 }
 
 // filterPushers removes pushers used exclusively by invisible partitions and
-// redacts their bearer tokens for restricted callers.
-func (s *Server) filterPushers(pushers []registry.Pusher, pa *pusherAccess) []registry.Pusher {
-	if pa == nil || !pa.restricted {
+// redacts their bearer tokens unless the caller is an authenticated admin.
+// Redaction applies regardless of whether the access policy is enforcing, so a
+// disabled/observe deployment no longer discloses tokens to ordinary callers.
+func (s *Server) filterPushers(ctx context.Context, pushers []registry.Pusher, pa *pusherAccess) []registry.Pusher {
+	restricted := pa != nil && pa.restricted
+	redact := !s.mayViewPusherTokens(ctx)
+	if !restricted && !redact {
 		return pushers
 	}
 	out := make([]registry.Pusher, 0, len(pushers))
 	for _, pusher := range pushers {
-		if !pa.allows(pusher.Name) {
+		if restricted && !pa.allows(pusher.Name) {
 			continue
 		}
-		pusher.Token = ""
+		if redact {
+			pusher.Token = ""
+		}
 		out = append(out, pusher)
 	}
 	return out

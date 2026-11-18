@@ -1045,8 +1045,15 @@ func deployDockerPusher(ctx context.Context, cfg *bootstrap.Config, dryRun bool)
 		"-e", fmt.Sprintf("GUARDIAN_PUSHER_NAME=%s", cfg.Guardian.Pushers.Docker.Name),
 		"-e", "GUARDIAN_CLUSTER=docker-main",
 		"-e", fmt.Sprintf("GUARDIAN_MONOFS_ROUTER=%s", router),
-		"-e", fmt.Sprintf("GUARDIAN_MONOFS_TOKEN=%s", token),
 		"-e", "GUARDIAN_MONOFS_USE_EXTERNAL_ADDRESSES=true",
+	}
+	// Pass the MonoFS token through the Docker client environment rather than
+	// `-e NAME=value`, which would expose it in argv and in the command trace.
+	if token != "" {
+		if err := os.Setenv("GUARDIAN_MONOFS_TOKEN", token); err != nil {
+			return fmt.Errorf("set GUARDIAN_MONOFS_TOKEN: %w", err)
+		}
+		args = append(args, "-e", "GUARDIAN_MONOFS_TOKEN")
 	}
 	// The pusher runs as the image's non-root guardian user, so grant it the
 	// socket's and state directory's owning groups.

@@ -391,3 +391,37 @@ func TestRegistryAPINativeSourceIsBuiltIn(t *testing.T) {
 		t.Fatalf("native delete = %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestRegistryAPIAlwaysRedactsPusherTokens(t *testing.T) {
+	srv, _ := newRegistryTestServer(t)
+
+	const secret = "observed-secret-token"
+	rec := registryRequest(t, srv, http.MethodPost, "/api/pushers", map[string]any{
+		"name":           "aws-redact",
+		"account":        "123456789012",
+		"region":         "eu-west-1",
+		"observedApiUrl": "http://guardian-awsread:19090",
+		"token":          secret,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST pusher status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	// No access policy is configured (disabled), so even a mutating caller must
+	// not receive the raw token back from the read endpoints.
+	rec = registryRequest(t, srv, http.MethodGet, "/api/pushers", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET pushers status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), secret) {
+		t.Fatalf("GET pushers leaked token: %s", rec.Body.String())
+	}
+
+	rec = registryRequest(t, srv, http.MethodGet, "/api/pushers/aws-redact", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET pusher status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), secret) {
+		t.Fatalf("GET pusher leaked token: %s", rec.Body.String())
+	}
+}

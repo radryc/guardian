@@ -346,7 +346,7 @@ func TestFilterPushersHidesExclusivePushersAndRedactsTokens(t *testing.T) {
 		{Name: "aws-hidden", Token: "hidden-secret"},
 		{Name: "k8s-main", Token: "global-secret"},
 	}
-	got := srv.filterPushers(pushers, pa)
+	got := srv.filterPushers(identityFor("viewer@example.com"), pushers, pa)
 	if len(got) != 2 {
 		t.Fatalf("pushers = %+v, want aws-visible and k8s-main", got)
 	}
@@ -359,9 +359,38 @@ func TestFilterPushersHidesExclusivePushersAndRedactsTokens(t *testing.T) {
 		t.Fatalf("pushers = %v, want [aws-visible k8s-main]", []string{got[0].Name, got[1].Name})
 	}
 
-	unrestricted := srv.filterPushers(pushers, &pusherAccess{})
-	if len(unrestricted) != 3 || unrestricted[0].Token != "visible-secret" {
-		t.Fatalf("unrestricted pushers = %+v, want all with tokens", unrestricted)
+	anonymous := srv.filterPushers(context.Background(), pushers, &pusherAccess{})
+	if len(anonymous) != 3 || anonymous[0].Token != "" {
+		t.Fatalf("anonymous pushers = %+v, want all tokens redacted", anonymous)
+	}
+
+	admin := srv.filterPushers(identityFor("admin@example.com"), pushers, &pusherAccess{})
+	if len(admin) != 3 || admin[0].Token != "visible-secret" {
+		t.Fatalf("admin pushers = %+v, want all with tokens", admin)
+	}
+}
+
+func TestPusherTokensRedactedWhenPolicyDisabledOrObserving(t *testing.T) {
+	pushers := []registry.Pusher{{Name: "aws-visible", Token: "secret"}}
+
+	// Observe mode: a non-admin still gets redacted tokens, while an
+	// authenticated admin may see them.
+	observe := newAuthzTestServer(t, false)
+	if got := observe.filterPushers(identityFor("viewer@example.com"), pushers, &pusherAccess{}); got[0].Token != "" {
+		t.Fatal("observe-mode non-admin must not see pusher tokens")
+	}
+	if got := observe.filterPushers(identityFor("admin@example.com"), pushers, &pusherAccess{}); got[0].Token != "secret" {
+		t.Fatal("authenticated admin should see tokens in observe mode")
+	}
+
+	// Disabled policy: no admin role can be established, so tokens are always
+	// redacted even for an otherwise authenticated caller.
+	disabled := &Server{}
+	if got := disabled.filterPushers(identityFor("admin@example.com"), pushers, &pusherAccess{}); got[0].Token != "" {
+		t.Fatal("disabled policy must redact pusher tokens")
+	}
+	if got := disabled.filterPushers(context.Background(), pushers, &pusherAccess{}); got[0].Token != "" {
+		t.Fatal("anonymous caller must not see pusher tokens")
 	}
 }
 

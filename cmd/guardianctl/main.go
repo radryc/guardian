@@ -62,6 +62,7 @@ type autoStoreRequest struct {
 	monofsUseExternalAddressesSet bool
 	guardianURL                   string
 	guardianDiscoveryToken        string
+	allowDevToken                 bool
 }
 
 type resolvedStoreConfig struct {
@@ -102,6 +103,7 @@ func main() {
 	monofsToken := rootFlags.String("monofs-token", "", "MonoFS guardian token")
 	monofsPrincipalID := rootFlags.String("monofs-principal-id", "guardianctl", "MonoFS guardian principal ID")
 	monofsUseExternalAddresses := rootFlags.Bool("monofs-use-external-addresses", false, "prefer MonoFS external addresses when refreshing cluster info")
+	allowDevToken := rootFlags.Bool("allow-dev-token", false, "fall back to the well-known local development MonoFS token when no token is configured (isolated local development only)")
 	guardianURL := rootFlags.String("guardian-url", firstNonEmptyEnv("GUARDIAN_URL", "GUARDIAN_API_URL"), "Guardian UI/API base URL used to auto-discover MonoFS access for local port-forwards, load balancers, or ingress")
 	guardianDiscoveryToken := rootFlags.String("guardian-discovery-token", firstNonEmptyEnv("GUARDIAN_DISCOVERY_TOKEN", "GUARDIAN_CLIENT_DISCOVERY_TOKEN"), "token for authenticated Guardian discovery when the UI is exposed beyond loopback")
 	formatFlag := rootFlags.String("format", string(cliformat.FormatText), "output format: text|json")
@@ -126,6 +128,7 @@ func main() {
 		monofsUseExternalAddressesSet: flagWasProvided(rootFlags, "monofs-use-external-addresses"),
 		guardianURL:                   *guardianURL,
 		guardianDiscoveryToken:        *guardianDiscoveryToken,
+		allowDevToken:                 *allowDevToken,
 	})
 	if store != nil {
 		defer func() {
@@ -271,6 +274,9 @@ func resolveStoreConfig(ctx context.Context, req autoStoreRequest) (resolvedStor
 		resolved.monofsRouter = defaultLocalMonoFSRouter
 	}
 	if resolved.monofsToken == "" {
+		if !req.allowDevToken {
+			return resolvedStoreConfig{}, fmt.Errorf("no MonoFS token configured: set GUARDIAN_MONOFS_TOKEN or --monofs-token (pass --allow-dev-token only for isolated local development)")
+		}
 		resolved.monofsToken = defaultLocalMonoFSToken
 	}
 	if !envUseExternalSet {
@@ -345,8 +351,11 @@ func configureRootUsage(flags *flag.FlagSet) {
 		fmt.Fprintln(out, "Connection modes:")
 		fmt.Fprintln(out, "  --store-dir DIR")
 		fmt.Fprintln(out, "      Use a filesystem-backed Guardian store directly.")
-		fmt.Fprintln(out, "  --monofs-router HOST:PORT --monofs-token TOKEN")
-		fmt.Fprintln(out, "      Connect to MonoFS directly over gRPC.")
+		fmt.Fprintln(out, "  --monofs-router HOST:PORT [--monofs-token TOKEN | GUARDIAN_MONOFS_TOKEN]")
+		fmt.Fprintln(out, "      Connect to MonoFS directly over gRPC. Prefer the environment variable")
+		fmt.Fprintln(out, "      so the token does not appear in process listings.")
+		fmt.Fprintln(out, "      --allow-dev-token enables the legacy guardian-dev-token fallback for")
+		fmt.Fprintln(out, "      isolated local development when no token is configured.")
 		fmt.Fprintln(out, "  --guardian-url URL [--guardian-discovery-token TOKEN]")
 		fmt.Fprintln(out, "      Ask Guardian UI/API for MonoFS client settings, then connect to MonoFS.")
 		fmt.Fprintln(out, "      Env aliases: GUARDIAN_URL or GUARDIAN_API_URL, and GUARDIAN_DISCOVERY_TOKEN or GUARDIAN_CLIENT_DISCOVERY_TOKEN.")
