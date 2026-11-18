@@ -52,7 +52,6 @@ set -- \
   --pusher-name "$GUARDIAN_PUSHER_NAME" \
   --cluster "$GUARDIAN_CLUSTER" \
   --monofs-router "$GUARDIAN_MONOFS_ROUTER" \
-  --monofs-token "$GUARDIAN_MONOFS_TOKEN" \
   --monofs-use-external-addresses="$GUARDIAN_MONOFS_USE_EXTERNAL_ADDRESSES" \
   --docker-state-dir "$GUARDIAN_STATE_DIR"
 

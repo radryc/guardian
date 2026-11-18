@@ -75,7 +75,6 @@ fi
 if [ -n "$GUARDIAN_MONOFS_ROUTER" ]; then
   set -- "$@" \
     --monofs-router "$GUARDIAN_MONOFS_ROUTER" \
-    --monofs-token "$GUARDIAN_MONOFS_TOKEN" \
     --monofs-use-external-addresses="$GUARDIAN_MONOFS_USE_EXTERNAL_ADDRESSES"
 fi
 

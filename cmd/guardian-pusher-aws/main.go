@@ -118,6 +118,9 @@ func main() {
 	flag.BoolVar(&observedOnly, "observed-only", false, "run only the observed-state API and event consumer (no MonoFS task queue)")
 	flag.StringVar(&onboardingSSMPrefix, "onboarding-ssm-prefix", "", "SSM parameter prefix containing customer onboarding descriptors (empty disables)")
 	flag.Parse()
+	if monofsToken == "" {
+		monofsToken = strings.TrimSpace(os.Getenv("GUARDIAN_MONOFS_TOKEN"))
+	}
 
 	if account == "" {
 		flag.Usage()

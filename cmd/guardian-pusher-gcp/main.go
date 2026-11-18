@@ -90,6 +90,9 @@ func main() {
 	flag.BoolVar(&readDisabled, "read-disabled", false, "disable the GCP read API")
 	flag.BoolVar(&readAllowPlaintext, "read-allow-plaintext", false, "allow the read API to listen on a non-loopback address without TLS")
 	flag.Parse()
+	if monofsToken == "" {
+		monofsToken = strings.TrimSpace(os.Getenv("GUARDIAN_MONOFS_TOKEN"))
+	}
 
 	if project == "" || (storeDir == "") == (monofsRouter == "") {
 		flag.Usage()

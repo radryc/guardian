@@ -77,7 +77,6 @@ if [ "$GUARDIAN_OBSERVED_ONLY" = "true" ]; then
 else
   set -- "$@" \
     --monofs-router "$GUARDIAN_MONOFS_ROUTER" \
-    --monofs-token "$GUARDIAN_MONOFS_TOKEN" \
     --monofs-use-external-addresses="$GUARDIAN_MONOFS_USE_EXTERNAL_ADDRESSES" \
     --cdk-binary "$GUARDIAN_CDK_BINARY" \
     --bootstrap-stack-name "$GUARDIAN_BOOTSTRAP_STACK_NAME" \

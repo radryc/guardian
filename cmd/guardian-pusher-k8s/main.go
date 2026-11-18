@@ -76,6 +76,9 @@ func main() {
 	flag.StringVar(&readTokenFile, "read-token-file", os.Getenv("GUARDIAN_K8SREAD_TOKEN_FILE"), "file containing the bearer token; re-read on each request")
 	flag.BoolVar(&readDisabled, "read-disabled", false, "disable the Kubernetes read API")
 	flag.Parse()
+	if monofsToken == "" {
+		monofsToken = strings.TrimSpace(os.Getenv("GUARDIAN_MONOFS_TOKEN"))
+	}
 
 	if cluster == "" || (storeDir == "" && monofsRouter == "") || (storeDir != "" && monofsRouter != "") {
 		flag.Usage()
