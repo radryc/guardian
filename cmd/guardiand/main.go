@@ -270,9 +270,16 @@ func main() {
 		taskArchiveAge = parsed
 	}
 	dispatcher.SetTaskArchiveRetention(taskArchiveKeep, taskArchiveAge)
-	compliancePublisher := compliance.NewNoop()
-	if cfg.Compliance.S3Bucket != "" {
-		complianceFailClosed, failClosedErr := envBool("GUARDIAN_COMPLIANCE_FAIL_CLOSED", false)
+	complianceDisabled, complianceSetupErr := resolveCompliancePublisherMode(cfg.Compliance.S3Bucket)
+	if complianceSetupErr != nil {
+		log.Fatalf("%v", complianceSetupErr)
+	}
+	var compliancePublisher compliance.Publisher
+	if complianceDisabled {
+		log.Printf("compliance: ALERT compliance publisher disabled by GUARDIAN_COMPLIANCE_DISABLED=true; audit evidence will not be exported")
+		compliancePublisher = compliance.NewNoop()
+	} else {
+		complianceFailClosed, failClosedErr := resolveComplianceFailClosed()
 		if failClosedErr != nil {
 			log.Fatalf("%v", failClosedErr)
 		}
@@ -751,6 +758,30 @@ func envBool(key string, fallback bool) (bool, error) {
 		return false, fmt.Errorf("invalid %s value %q: %w", key, raw, err)
 	}
 	return parsed, nil
+}
+
+// resolveCompliancePublisherMode decides whether the compliance publisher is
+// explicitly disabled. A deployment that neither configures an S3 bucket nor
+// opts into disabling compliance fails closed instead of silently dropping
+// audit evidence through a no-op publisher.
+func resolveCompliancePublisherMode(bucket string) (bool, error) {
+	disabled, err := envBool("GUARDIAN_COMPLIANCE_DISABLED", false)
+	if err != nil {
+		return false, err
+	}
+	if disabled {
+		return true, nil
+	}
+	if strings.TrimSpace(bucket) == "" {
+		return false, fmt.Errorf("compliance: ALERT no compliance publisher configured (compliance.s3Bucket is empty); set it or explicitly disable with GUARDIAN_COMPLIANCE_DISABLED=true")
+	}
+	return false, nil
+}
+
+// resolveComplianceFailClosed defaults to fail-closed: a delivery failure must
+// surface rather than be dropped, unless the operator explicitly opts out.
+func resolveComplianceFailClosed() (bool, error) {
+	return envBool("GUARDIAN_COMPLIANCE_FAIL_CLOSED", true)
 }
 
 func resolveUIAuthSettings(requireFlagSet, requireFlagVal, allowLoopbackFlagSet, allowLoopbackFlagVal bool) (bool, bool, error) {

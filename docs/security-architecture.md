@@ -326,6 +326,9 @@ and prevents self-service registry changes unless the policy says otherwise.
 - The compliance publisher copies state/archive objects to S3 with
   exponential-backoff retries, `OnError` reporting, optional SSE-KMS
   (`SSEKMSKeyID`), and optional Object Lock (`GOVERNANCE`/`COMPLIANCE`).
+  Delivery is fail-closed by default (`GUARDIAN_COMPLIANCE_FAIL_CLOSED=true`).
+  Deployments without `compliance.s3Bucket` refuse to start unless compliance
+  is explicitly disabled with `GUARDIAN_COMPLIANCE_DISABLED=true`.
 - The local FS store writes files `0644` and keeps every version forever.
 - Bootstrap-generated token files are `0644`; shared encryption keys are
   `0644`.
@@ -339,8 +342,12 @@ and prevents self-service registry changes unless the policy says otherwise.
 - Task results and state include task IDs and timestamps.
 - Task specs are archived under `/partitions/<p>/.state/tasks/<taskID>.json`
   with configurable retention (`GUARDIAN_TASK_ARCHIVE_RETENTION` /
-  `GUARDIAN_TASK_ARCHIVE_MAX_AGE`) and a SHA-256 hash chain; queue files are
-  deleted after processing.
+  `GUARDIAN_TASK_ARCHIVE_MAX_AGE`) and an HMAC-SHA256 hash chain keyed by
+  `GUARDIAN_ARCHIVE_HMAC_KEY`; queue files are deleted after processing.
+  Unkeyed SHA-256 requires the explicit `GUARDIAN_ALLOW_UNKEYED_ARCHIVE=true`
+  escape hatch and archive writes fail closed when neither is configured.
+  S3 Object Lock/WORM anchoring and an externally verified manifest chain are
+  not implemented yet.
 - The UI exposes events and deployments, but there is no tamper-evident audit
   log and no guaranteed retention.
 

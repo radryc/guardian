@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -273,11 +274,14 @@ func (d *Dispatcher) buildTaskArchive(ctx context.Context, partition, taskID str
 	if len(chain.Entries) > 0 {
 		prevHash = chain.Entries[len(chain.Entries)-1].SHA256
 	}
-	sum := sha256.Sum256(append([]byte(prevHash), content...))
+	hash, err := taskArchiveHash(prevHash, content)
+	if err != nil {
+		return nil, nil, err
+	}
 	chain.Version = 1
 	chain.Entries = append(chain.Entries, taskArchiveEntry{
 		TaskID:     taskID,
-		SHA256:     hex.EncodeToString(sum[:]),
+		SHA256:     hash,
 		PrevSHA256: prevHash,
 		ArchivedAt: now,
 	})
@@ -290,6 +294,33 @@ func (d *Dispatcher) buildTaskArchive(ctx context.Context, partition, taskID str
 		{LogicalPath: paths.TaskArchiveChain(partition), Content: chainContent},
 	}
 	return writes, deletes, nil
+}
+
+// taskArchiveHash keys the task-spec archive chain. A keyed HMAC-SHA256 is
+// required whenever GUARDIAN_ARCHIVE_HMAC_KEY is configured; unkeyed SHA-256
+// is only used when the operator explicitly accepts an unkeyed chain with
+// GUARDIAN_ALLOW_UNKEYED_ARCHIVE=true. Without either, archive writes fail
+// closed rather than producing an unauthenticated chain.
+func taskArchiveHash(prevHash string, content []byte) (string, error) {
+	if key := strings.TrimSpace(os.Getenv("GUARDIAN_ARCHIVE_HMAC_KEY")); key != "" {
+		mac := hmac.New(sha256.New, []byte(key))
+		_, _ = mac.Write([]byte(prevHash))
+		_, _ = mac.Write(content)
+		return hex.EncodeToString(mac.Sum(nil)), nil
+	}
+	allowUnkeyed := false
+	if raw := strings.TrimSpace(os.Getenv("GUARDIAN_ALLOW_UNKEYED_ARCHIVE")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			return "", fmt.Errorf("invalid GUARDIAN_ALLOW_UNKEYED_ARCHIVE value %q: %w", raw, err)
+		}
+		allowUnkeyed = parsed
+	}
+	if !allowUnkeyed {
+		return "", fmt.Errorf("task archive hash chain requires GUARDIAN_ARCHIVE_HMAC_KEY; set GUARDIAN_ALLOW_UNKEYED_ARCHIVE=true to permit an unkeyed SHA-256 chain")
+	}
+	sum := sha256.Sum256(append([]byte(prevHash), content...))
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func (d *Dispatcher) loadTaskArchiveChain(ctx context.Context, partition string) (taskArchiveChain, error) {

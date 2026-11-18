@@ -552,3 +552,38 @@ func TestResolveComplianceRetention(t *testing.T) {
 		t.Fatal("expected error for non-positive retention duration")
 	}
 }
+
+func TestResolveCompliancePublisherMode(t *testing.T) {
+	t.Setenv("GUARDIAN_COMPLIANCE_DISABLED", "")
+	if _, err := resolveCompliancePublisherMode(""); err == nil {
+		t.Fatal("missing bucket without explicit disable must fail closed")
+	}
+	if disabled, err := resolveCompliancePublisherMode("compliance-bucket"); err != nil || disabled {
+		t.Fatalf("configured bucket = disabled %v, err %v", disabled, err)
+	}
+
+	t.Setenv("GUARDIAN_COMPLIANCE_DISABLED", "true")
+	if disabled, err := resolveCompliancePublisherMode(""); err != nil || !disabled {
+		t.Fatalf("explicit disable = disabled %v, err %v", disabled, err)
+	}
+}
+
+func TestResolveComplianceFailClosedDefaultsTrue(t *testing.T) {
+	t.Setenv("GUARDIAN_COMPLIANCE_FAIL_CLOSED", "")
+	got, err := resolveComplianceFailClosed()
+	if err != nil {
+		t.Fatalf("resolveComplianceFailClosed() error = %v", err)
+	}
+	if !got {
+		t.Fatal("compliance publisher must default to fail-closed")
+	}
+
+	t.Setenv("GUARDIAN_COMPLIANCE_FAIL_CLOSED", "false")
+	got, err = resolveComplianceFailClosed()
+	if err != nil {
+		t.Fatalf("resolveComplianceFailClosed() error = %v", err)
+	}
+	if got {
+		t.Fatal("explicit false must disable fail-closed delivery")
+	}
+}
