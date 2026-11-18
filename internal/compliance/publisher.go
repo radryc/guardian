@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -39,10 +40,15 @@ type Config struct {
 	RetryBaseDelay time.Duration
 	// OnError receives terminal upload failures. When nil, failures are logged.
 	OnError func(error)
+	// FailClosed makes Publish synchronous and surfaces delivery errors via
+	// SyncPublish, OnError, and Close.
+	FailClosed bool
 }
 
 type Publisher interface {
 	Publish(logicalPath string, content []byte, contentType string)
+	SyncPublish(ctx context.Context, logicalPath string, content []byte, contentType string) error
+	Stats() (published int64, failed int64)
 	Close(ctx context.Context) error
 }
 
@@ -51,6 +57,10 @@ func NewNoop() Publisher { return noopPublisher{} }
 type noopPublisher struct{}
 
 func (noopPublisher) Publish(string, []byte, string) {}
+
+func (noopPublisher) SyncPublish(context.Context, string, []byte, string) error { return nil }
+
+func (noopPublisher) Stats() (int64, int64) { return 0, 0 }
 
 func (noopPublisher) Close(context.Context) error { return nil }
 
@@ -101,6 +111,7 @@ func newS3Publisher(client putObjectAPI, cfg Config) *s3Publisher {
 		objectLockTill:           cfg.ObjectLockRetainUntil,
 		now:                      func() time.Time { return time.Now().UTC() },
 		onError:                  cfg.OnError,
+		failClosed:               cfg.FailClosed,
 	}
 	pub.wg.Add(1)
 	go pub.run()
@@ -133,6 +144,10 @@ type s3Publisher struct {
 	objectLockTill           time.Time
 	now                      func() time.Time
 	onError                  func(error)
+	failClosed               bool
+
+	published atomic.Int64
+	failed    atomic.Int64
 
 	errMu    sync.Mutex
 	firstErr error
@@ -152,10 +167,44 @@ func (p *s3Publisher) Publish(logicalPath string, content []byte, contentType st
 	if p.closed {
 		return
 	}
+	if p.failClosed {
+		if err := p.uploadWithContext(context.Background(), req); err != nil {
+			p.recordError(err)
+		}
+		return
+	}
 	select {
 	case p.queue <- req:
 	case <-p.stop:
 	}
+}
+
+func (p *s3Publisher) SyncPublish(ctx context.Context, logicalPath string, content []byte, contentType string) error {
+	if logicalPath == "" {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req := uploadRequest{
+		key:         p.objectKey(logicalPath),
+		content:     append([]byte(nil), content...),
+		contentType: contentType,
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return errors.New("compliance publisher closed")
+	}
+	if err := p.uploadWithContext(ctx, req); err != nil {
+		p.recordError(err)
+		return err
+	}
+	return nil
+}
+
+func (p *s3Publisher) Stats() (published int64, failed int64) {
+	return p.published.Load(), p.failed.Load()
 }
 
 func (p *s3Publisher) Close(ctx context.Context) error {
@@ -183,19 +232,23 @@ func (p *s3Publisher) Close(ctx context.Context) error {
 func (p *s3Publisher) run() {
 	defer p.wg.Done()
 	for req := range p.queue {
-		if err := p.upload(req); err != nil {
+		if err := p.uploadWithContext(context.Background(), req); err != nil {
 			p.recordError(err)
 		}
 	}
 }
 
-func (p *s3Publisher) upload(req uploadRequest) error {
+func (p *s3Publisher) uploadWithContext(ctx context.Context, req uploadRequest) error {
 	var lastErr error
 	for attempt := 0; attempt <= p.maxRetries; attempt++ {
-		attemptCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		_, err := p.client.PutObject(attemptCtx, p.input(req), func(*s3.Options) {})
 		cancel()
 		if err == nil {
+			p.published.Add(1)
 			return nil
 		}
 		lastErr = err
@@ -205,6 +258,9 @@ func (p *s3Publisher) upload(req uploadRequest) error {
 		delay := p.retryBaseDelay * time.Duration(1<<attempt)
 		timer := time.NewTimer(delay)
 		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
 		case <-timer.C:
 		}
 	}
@@ -246,6 +302,7 @@ func (p *s3Publisher) recordError(err error) {
 	if err == nil {
 		return
 	}
+	p.failed.Add(1)
 	p.errMu.Lock()
 	if p.firstErr == nil {
 		p.firstErr = err

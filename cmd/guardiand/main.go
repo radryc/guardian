@@ -260,6 +260,10 @@ func main() {
 	dispatcher.SetTaskArchiveRetention(taskArchiveKeep, taskArchiveAge)
 	compliancePublisher := compliance.NewNoop()
 	if cfg.Compliance.S3Bucket != "" {
+		complianceFailClosed, failClosedErr := envBool("GUARDIAN_COMPLIANCE_FAIL_CLOSED", false)
+		if failClosedErr != nil {
+			log.Fatalf("%v", failClosedErr)
+		}
 		complianceConfig := compliance.Config{
 			S3Bucket:             cfg.Compliance.S3Bucket,
 			S3Region:             cfg.Compliance.S3Region,
@@ -270,6 +274,11 @@ func main() {
 			SSEKMSKeyID:          cfg.Compliance.SSEKMSKeyID,
 			ObjectLockMode:       cfg.Compliance.ObjectLockMode,
 			MaxRetries:           cfg.Compliance.MaxRetries,
+			FailClosed:           complianceFailClosed,
+			OnError: func(err error) {
+				log.Printf("compliance: delivery failed bucket=%s prefix=%s fail_closed=%t err=%v",
+					cfg.Compliance.S3Bucket, cfg.Compliance.S3Prefix, complianceFailClosed, err)
+			},
 		}
 		if raw := strings.TrimSpace(cfg.Compliance.ObjectLockRetainUntil); raw != "" {
 			retainUntil, parseErr := time.Parse(time.RFC3339, raw)
