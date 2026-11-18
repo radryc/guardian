@@ -34,7 +34,7 @@ func TestServerSaveBundleAndReadBack(t *testing.T) {
 
 	ctx := context.Background()
 	store := memory.New()
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:              store,
 		PrincipalID:        "test-ui",
 		Pushers:            []string{"local"},
@@ -146,7 +146,7 @@ func TestServerSaveBundleRemovesMissingIntents(t *testing.T) {
 
 	ctx := context.Background()
 	store := memory.New()
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:       store,
 		PrincipalID: "test-ui",
 		Pushers:     []string{"local"},
@@ -193,7 +193,7 @@ func TestServerSaveBundleRemovesMissingIntents(t *testing.T) {
 func TestServerIndexIncludesTopologyZoomControls(t *testing.T) {
 	t.Parallel()
 
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:       memory.New(),
 		PrincipalID: "test-ui",
 		Pushers:     []string{"local"},
@@ -220,7 +220,7 @@ func TestServerIndexIncludesTopologyZoomControls(t *testing.T) {
 func TestServerClientConfigReturnsMonoFSDiscovery(t *testing.T) {
 	t.Parallel()
 
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:       memory.New(),
 		PrincipalID: "test-ui",
 		Pushers:     []string{"local"},
@@ -250,7 +250,7 @@ func TestServerClientConfigReturnsMonoFSDiscovery(t *testing.T) {
 func TestServerClientConfigIncludesTokenOnlyWhenEnabled(t *testing.T) {
 	t.Parallel()
 
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:       memory.New(),
 		PrincipalID: "test-ui",
 		Pushers:     []string{"local"},
@@ -281,7 +281,7 @@ func TestServerClientConfigIncludesTokenOnlyWhenEnabled(t *testing.T) {
 func TestServerClientConfigRejectsNonLoopback(t *testing.T) {
 	t.Parallel()
 
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:       memory.New(),
 		PrincipalID: "test-ui",
 		Pushers:     []string{"local"},
@@ -452,7 +452,7 @@ func TestBuildDeploymentViewRedactsSensitiveValueOutputs(t *testing.T) {
 func TestServerClientConfigAllowsMatchingDiscoveryToken(t *testing.T) {
 	t.Parallel()
 
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:       memory.New(),
 		PrincipalID: "test-ui",
 		Pushers:     []string{"local"},
@@ -494,7 +494,7 @@ func TestServerBuildInfoReturnsStampedRelease(t *testing.T) {
 		buildinfo.BuildTime = oldBuildTime
 	})
 
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:       memory.New(),
 		PrincipalID: "test-ui",
 		Pushers:     []string{"local"},
@@ -645,7 +645,7 @@ func TestServerOverviewCountsPrefixedYMLIntents(t *testing.T) {
 		guardianapi.PathWrite{LogicalPath: "/partitions/demo/intents/20-jobs.yml", Content: mustMarshalYAML(t, newConfigIntent("jobs", "jobs-config", "jobs"))},
 	)
 
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:       store,
 		PrincipalID: "test-ui",
 		Pushers:     []string{"local"},
@@ -704,7 +704,7 @@ func TestServerOverviewUsesHealthyAssetCountsForConfigOnlyPartitions(t *testing.
 		})},
 	)
 
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:       store,
 		PrincipalID: "test-ui",
 		Pushers:     []string{"local"},
@@ -765,7 +765,7 @@ func TestServerOverviewIgnoresBrokenArchiveReads(t *testing.T) {
 		guardianapi.PathWrite{LogicalPath: paths.ArchiveState("demo", "web", "dep-bad"), Content: []byte("{not-json")},
 	)
 
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:       store,
 		PrincipalID: "test-ui",
 		Pushers:     []string{"local"},
@@ -824,7 +824,7 @@ func TestServerExposesAssetReleaseVersionsInDetailAndHistory(t *testing.T) {
 		guardianapi.PathWrite{LogicalPath: paths.ArchiveLogs("demo", "web", deploymentRevision), Content: []byte("")},
 	)
 
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:       store,
 		PrincipalID: "test-ui",
 		Pushers:     []string{"local"},
@@ -901,7 +901,7 @@ func TestServerHistoryAppliesLimitAndTimeframe(t *testing.T) {
 		})},
 	)
 
-	srv, err := New(Options{Store: store, PrincipalID: "test-ui", Pushers: []string{"local"}})
+	srv, err := New(Options{AllowUnpolicedMutations: true, Store: store, PrincipalID: "test-ui", Pushers: []string{"local"}})
 	if err != nil {
 		t.Fatalf("create server: %v", err)
 	}
@@ -974,7 +974,7 @@ func TestServerRolloutsExposeNewIntentAndChangedAssets(t *testing.T) {
 		guardianapi.PathWrite{LogicalPath: paths.ArchiveManifest("demo", "jobs", jobsInitial.DeploymentRevision), Content: mustMarshalYAML(t, intentdomain.Intent{Metadata: intentdomain.Metadata{Name: "jobs"}, Spec: intentdomain.IntentSpec{TargetPusher: "local", Assets: []intentdomain.AssetSpec{{Type: assetdomain.TypeConfig, Name: "jobs-config", Version: "jobs-config-v1"}}}})},
 	)
 
-	srv, err := New(Options{Store: store, PrincipalID: "test-ui", Pushers: []string{"local"}})
+	srv, err := New(Options{AllowUnpolicedMutations: true, Store: store, PrincipalID: "test-ui", Pushers: []string{"local"}})
 	if err != nil {
 		t.Fatalf("create server: %v", err)
 	}
@@ -1036,7 +1036,7 @@ func TestServerRolloutsMarkCurrentHealthyRolloutAsGreen(t *testing.T) {
 		})},
 	)
 
-	srv, err := New(Options{Store: store, PrincipalID: "test-ui", Pushers: []string{"local"}})
+	srv, err := New(Options{AllowUnpolicedMutations: true, Store: store, PrincipalID: "test-ui", Pushers: []string{"local"}})
 	if err != nil {
 		t.Fatalf("create server: %v", err)
 	}
@@ -1083,7 +1083,7 @@ func TestServerDetailLeavesRecentEventsToHistoryEndpoint(t *testing.T) {
 		})},
 	)
 
-	srv, err := New(Options{Store: store, PrincipalID: "test-ui", Pushers: []string{"local"}})
+	srv, err := New(Options{AllowUnpolicedMutations: true, Store: store, PrincipalID: "test-ui", Pushers: []string{"local"}})
 	if err != nil {
 		t.Fatalf("create server: %v", err)
 	}
@@ -1118,7 +1118,7 @@ func TestServerPartitionDetailCacheExpires(t *testing.T) {
 	)
 	store := newCountingStore(backingStore)
 
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:        store,
 		PrincipalID:  "test-ui",
 		Pushers:      []string{"local"},
@@ -1174,7 +1174,7 @@ func TestServerPartitionHealthIncludesNonServiceDrift(t *testing.T) {
 		})},
 	)
 
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:       store,
 		PrincipalID: "test-ui",
 		Pushers:     []string{"local"},
@@ -1232,7 +1232,7 @@ func TestServerMarksStaleActiveTaskAsAttention(t *testing.T) {
 		})},
 	)
 
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:       store,
 		PrincipalID: "test-ui",
 		Pushers:     []string{"local"},
@@ -1314,7 +1314,7 @@ func TestServerHonorsConfiguredStaleTaskAfter(t *testing.T) {
 		})},
 	)
 
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:          store,
 		PrincipalID:    "test-ui",
 		Pushers:        []string{"local"},
@@ -1351,7 +1351,7 @@ func TestServerSaveBundlePreservesExistingPrefixedYMLIntentPaths(t *testing.T) {
 		guardianapi.PathWrite{LogicalPath: "/partitions/demo/intents/02-jobs.yml", Content: mustMarshalYAML(t, newConfigIntent("jobs", "jobs-config", "jobs"))},
 	)
 
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:       store,
 		PrincipalID: "test-ui",
 		Pushers:     []string{"local"},
@@ -1400,7 +1400,7 @@ func TestServerSaveBundlePreservesExistingPrefixedYMLIntentPaths(t *testing.T) {
 func TestServerServesStaticAssets(t *testing.T) {
 	t.Parallel()
 
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:       memory.New(),
 		PrincipalID: "test-ui",
 		Pushers:     []string{"local"},
@@ -1460,7 +1460,7 @@ func TestServerServesStaticAssets(t *testing.T) {
 func TestServerServesIndex(t *testing.T) {
 	t.Parallel()
 
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:       memory.New(),
 		PrincipalID: "test-ui",
 		Pushers:     []string{"local"},
@@ -1505,7 +1505,7 @@ func TestServerValidateBundle(t *testing.T) {
 	t.Parallel()
 
 	store := memory.New()
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:       store,
 		PrincipalID: "test-ui",
 		Pushers:     []string{"local"},

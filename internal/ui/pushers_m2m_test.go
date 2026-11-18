@@ -13,7 +13,7 @@ import (
 
 func TestM2MPusherDetailRequiresInternalToken(t *testing.T) {
 	store := memory.New()
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:             store,
 		PrincipalID:       "test-ui",
 		AccessPolicyToken: "internal-token",
@@ -79,7 +79,7 @@ func TestM2MPusherDetailRequiresInternalToken(t *testing.T) {
 
 func TestM2MPusherListPaginates(t *testing.T) {
 	store := memory.New()
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:             store,
 		PrincipalID:       "test-ui",
 		AccessPolicyToken: "internal-token",
@@ -120,7 +120,7 @@ func TestM2MPusherListPaginates(t *testing.T) {
 }
 
 func TestM2MOverviewRequiresInternalToken(t *testing.T) {
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:             memory.New(),
 		PrincipalID:       "test-ui",
 		AccessPolicyToken: "internal-token",

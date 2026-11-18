@@ -125,10 +125,34 @@ func TestAuthorizeMutationRegistryRequiresAdmin(t *testing.T) {
 	}
 }
 
-func TestAuthorizeMutationObserveModeIsPermissive(t *testing.T) {
+func TestAuthorizeMutationObserveModeFailsClosedByDefault(t *testing.T) {
 	srv := newAuthzTestServer(t, false)
-	if !srv.authorizeMutation(authzRequest(identityFor("viewer@example.com"), http.MethodDelete, "/api/partitions/aws-x")) {
-		t.Fatal("observe mode must not enforce mutations")
+	if srv.authorizeMutation(authzRequest(identityFor("viewer@example.com"), http.MethodDelete, "/api/partitions/aws-x")) {
+		t.Fatal("observe mode without an enforcing policy must deny mutations by default")
+	}
+	if !srv.authorizeMutation(authzRequest(identityFor("viewer@example.com"), http.MethodGet, "/api/partitions/aws-x")) {
+		t.Fatal("GET must remain unaffected by the mutation guard")
+	}
+
+	optIn := newAuthzTestServer(t, false)
+	optIn.allowUnpolicedMutations = true
+	if !optIn.authorizeMutation(authzRequest(identityFor("viewer@example.com"), http.MethodDelete, "/api/partitions/aws-x")) {
+		t.Fatal("explicit opt-in must preserve permissive observe-mode mutations")
+	}
+}
+
+func TestAuthorizeMutationWithoutPolicyFailsClosed(t *testing.T) {
+	srv := &Server{}
+	if srv.authorizeMutation(authzRequest(context.Background(), http.MethodPost, "/api/pushers")) {
+		t.Fatal("missing access policy must deny mutations by default")
+	}
+	if !srv.authorizeMutation(authzRequest(context.Background(), http.MethodGet, "/api/partitions")) {
+		t.Fatal("missing access policy must not block reads")
+	}
+
+	srv.allowUnpolicedMutations = true
+	if !srv.authorizeMutation(authzRequest(context.Background(), http.MethodPost, "/api/pushers")) {
+		t.Fatal("explicit opt-in must allow unpoliced mutations")
 	}
 }
 
@@ -184,18 +208,27 @@ func TestAuthorizeMutationSetCreateRequiresPartitionMaintainer(t *testing.T) {
 	}
 }
 
-func TestAuthorizeMutationSetCreateObserveModeIsPermissive(t *testing.T) {
+func TestAuthorizeMutationSetCreateObserveModeFailsClosedByDefault(t *testing.T) {
 	srv := newAuthzTestServer(t, false)
+	if srv.authorizeMutation(authzRequest(identityFor("viewer@example.com"), http.MethodPost, "/api/sets")) {
+		t.Fatal("observe mode without an enforcing policy must deny set creation by default")
+	}
+	srv.allowUnpolicedMutations = true
 	if !srv.authorizeMutation(authzRequest(identityFor("viewer@example.com"), http.MethodPost, "/api/sets")) {
-		t.Fatal("observe mode must not enforce set creation")
+		t.Fatal("explicit opt-in must preserve permissive set creation")
 	}
 }
 
-func TestAuthorizeMutationSetMembershipObserveModeIsPermissive(t *testing.T) {
+func TestAuthorizeMutationSetMembershipObserveModeFailsClosedByDefault(t *testing.T) {
 	srv := newAuthzTestServer(t, false)
 	req := authzJSONRequest(identityFor("viewer@example.com"), http.MethodPost, "/api/sets/core-sre/partitions", `{"add":["k8s-z"]}`)
+	if srv.authorizeMutation(req) {
+		t.Fatal("observe mode without an enforcing policy must deny set membership by default")
+	}
+	srv.allowUnpolicedMutations = true
+	req = authzJSONRequest(identityFor("viewer@example.com"), http.MethodPost, "/api/sets/core-sre/partitions", `{"add":["k8s-z"]}`)
 	if !srv.authorizeMutation(req) {
-		t.Fatal("observe mode must not enforce set membership")
+		t.Fatal("explicit opt-in must preserve permissive set membership")
 	}
 }
 

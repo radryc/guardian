@@ -13,6 +13,7 @@ import (
 
 func newSecurityTestServer(t *testing.T, opts Options) *Server {
 	t.Helper()
+	opts.AllowUnpolicedMutations = true
 	opts.Store = memory.New()
 	opts.PrincipalID = "security-test"
 	srv, err := New(opts)

@@ -81,7 +81,7 @@ Trust boundaries:
 
 | Boundary | What crosses it | Current control |
 |---|---|---|
-| Browser → `guardiand` | Bearer/session identity, mutations | OIDC verification in observe mode; optional login wall (`--require-ui-auth`); `authorizeMutation` (`CanModify`/`IsAdmin`) when access policy enabled; CSP and `Origin`/`Referer` checks |
+| Browser → `guardiand` | Bearer/session identity, mutations | OIDC verification in observe mode; optional login wall (`--require-ui-auth`); `authorizeMutation` (`CanModify`/`IsAdmin`) when access policy enabled; mutations fail closed while no enforcing policy is loaded unless `--allow-unpoliced-mutations` (`GUARDIAN_ALLOW_UNPOLICED_MUTATIONS`, default false) is set; CSP and `Origin`/`Referer` checks |
 | CI/repo → MonoFS | Desired-state YAML, access policy | MonoFS token/principal; no signature on `repo notify` |
 | `guardianctl` → MonoFS | Desired state, registry, tasks | MonoFS bearer token; no Guardian-side authorization |
 | `guardiand` → MonoFS | All runtime state, queues | MonoFS token; writable control-plane role |
@@ -191,9 +191,15 @@ Deny rules override allows; metrics are always visible.
 
 | Mode | Raw path | Enforce | Behaviour |
 |---|---|---|---|
-| Disabled | empty | any | Everything visible/modifiable |
-| Observe | set | false | Denials logged; nothing filtered |
-| Enforce | set | true | Reads filtered; no policy -> non-admin reads denied |
+| Disabled | empty | any | Everything visible; mutations denied unless `AllowUnpoliced` is opted in |
+| Observe | set | false | Denials logged; reads unfiltered; mutations denied unless opted in |
+| Enforce | set | true | Reads filtered; no policy -> non-admin reads denied; mutations deny |
+
+`AllowUnpoliced` is controlled by `--allow-unpoliced-mutations` /
+`GUARDIAN_ALLOW_UNPOLICED_MUTATIONS` (default false). Local and bootstrap
+installs that intentionally run without an enforcing access policy must opt in
+explicitly; deployments should leave it false so a missing or broken policy
+fails closed instead of silently permitting every mutation.
 
 Implemented decisions:
 
@@ -216,8 +222,10 @@ Still not implemented:
 
 ### 4.3 Authorization matrix (current)
 
-`authorizeMutation` runs before the UI mux. It is permissive when the access
-policy is disabled, and permissive in observe mode.
+`authorizeMutation` runs before the UI mux. Reads (GET/HEAD/OPTIONS) are never
+blocked by it. Mutations fail closed while no enforcing access policy is
+loaded; the historical permissive behaviour is available only with the explicit
+`--allow-unpoliced-mutations` opt-in.
 
 | Operation | UI auth | access.CanSee | access.CanModify/IsAdmin | Control-plane guard | MonoFS token |
 |---|---|---|---|---|---|

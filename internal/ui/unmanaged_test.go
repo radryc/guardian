@@ -34,7 +34,7 @@ func (f *fakeUnmanagedService) Associate(_ context.Context, opts unmanaged.Assoc
 
 func newUnmanagedTestServer(t *testing.T, service UnmanagedService) *Server {
 	t.Helper()
-	srv, err := New(Options{Store: memory.New(), PrincipalID: "test-ui", Unmanaged: service})
+	srv, err := New(Options{AllowUnpolicedMutations: true, Store: memory.New(), PrincipalID: "test-ui", Unmanaged: service})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

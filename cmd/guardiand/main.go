@@ -68,6 +68,7 @@ func main() {
 	var authzOIDCJWKSURL string
 	var requireUIAuth bool
 	var allowLoopbackAnonymous bool
+	var allowUnpolicedMutations bool
 	var trustedOrigins string
 	var enableHSTS bool
 	flag.StringVar(&configPath, "config", "", "path to guardian config file")
@@ -78,6 +79,7 @@ func main() {
 	flag.StringVar(&authzOIDCJWKSURL, "oidc-jwks-url", "", "OIDC JWKS URL (discovered from issuer when empty)")
 	flag.BoolVar(&requireUIAuth, "require-ui-auth", true, "Reject anonymous Guardian UI/API mutations")
 	flag.BoolVar(&allowLoopbackAnonymous, "allow-loopback-anonymous", false, "Allow anonymous loopback mutations for local development")
+	flag.BoolVar(&allowUnpolicedMutations, "allow-unpoliced-mutations", false, "Allow mutations while no enforcing access policy is loaded (local/bootstrap only)")
 	flag.StringVar(&trustedOrigins, "trusted-origins", "", "Comma-separated extra origins allowed to submit browser mutations")
 	flag.BoolVar(&enableHSTS, "enable-hsts", false, "Emit Strict-Transport-Security even when TLS terminates upstream")
 	flag.Parse()
@@ -111,6 +113,16 @@ func main() {
 		} else {
 			log.Printf("guardian ui: authentication is required (fail-closed) and no OIDC/access policy is configured; anonymous mutations are rejected")
 		}
+	}
+	if !flagProvided("allow-unpoliced-mutations") {
+		var allowErr error
+		allowUnpolicedMutations, allowErr = envBool("GUARDIAN_ALLOW_UNPOLICED_MUTATIONS", false)
+		if allowErr != nil {
+			log.Fatalf("%v", allowErr)
+		}
+	}
+	if allowUnpolicedMutations {
+		log.Printf("guardian ui: WARNING unpoliced mutations are enabled; mutations are allowed without an enforcing access policy (local/bootstrap only)")
 	}
 	if !flagProvided("trusted-origins") {
 		trustedOrigins = strings.TrimSpace(os.Getenv("GUARDIAN_TRUSTED_ORIGINS"))
@@ -365,10 +377,11 @@ func main() {
 	// reconciler's partition-modify guard. Disabled unless
 	// GUARDIAN_ACCESS_POLICY_PATH is set.
 	accessService := access.NewService(access.Options{
-		Store:    store,
-		RawPath:  strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_POLICY_PATH")),
-		Enforce:  strings.EqualFold(strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_ENFORCE")), "true"),
-		Interval: guardianAccessInterval(),
+		Store:          store,
+		RawPath:        strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_POLICY_PATH")),
+		Enforce:        strings.EqualFold(strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_ENFORCE")), "true"),
+		AllowUnpoliced: allowUnpolicedMutations,
+		Interval:       guardianAccessInterval(),
 		Logf: func(format string, args ...any) {
 			log.Printf(format, args...)
 		},
@@ -421,22 +434,23 @@ func main() {
 			Publisher: publisher,
 		}
 		uiServer, err := uiuipkg.New(uiuipkg.Options{
-			Store:                  store,
-			Dispatcher:             dispatcher,
-			PrincipalID:            cfg.Guardian.PrincipalID,
-			Pushers:                pusherNames(cfg.Pushers),
-			StaleTaskAfter:         staleTaskDuration,
-			EnableFlowTopology:     cfg.Guardian.EnableFlowTopology,
-			FlowEvaluator:          flowEvaluator,
-			ClientConfig:           clientConfig,
-			ClientConfigToken:      cfg.Guardian.ClientDiscoveryToken,
-			Unmanaged:              unmanagedService,
-			Access:                 accessService,
-			AccessPolicyToken:      strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_POLICY_TOKEN")),
-			RequireAuthentication:  requireUIAuth,
-			AllowLoopbackAnonymous: allowLoopbackAnonymous,
-			TrustedOrigins:         trustedOriginList,
-			EnableHSTS:             enableHSTS,
+			Store:                   store,
+			Dispatcher:              dispatcher,
+			PrincipalID:             cfg.Guardian.PrincipalID,
+			Pushers:                 pusherNames(cfg.Pushers),
+			StaleTaskAfter:          staleTaskDuration,
+			EnableFlowTopology:      cfg.Guardian.EnableFlowTopology,
+			FlowEvaluator:           flowEvaluator,
+			ClientConfig:            clientConfig,
+			ClientConfigToken:       cfg.Guardian.ClientDiscoveryToken,
+			Unmanaged:               unmanagedService,
+			Access:                  accessService,
+			AllowUnpolicedMutations: allowUnpolicedMutations,
+			AccessPolicyToken:       strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_POLICY_TOKEN")),
+			RequireAuthentication:   requireUIAuth,
+			AllowLoopbackAnonymous:  allowLoopbackAnonymous,
+			TrustedOrigins:          trustedOriginList,
+			EnableHSTS:              enableHSTS,
 			// Auto-deploy is on by default; guardian.autoDeployOnIngest=false
 			// keeps merges manual.
 			DisableAutoDeployOnIngest: !cfg.Guardian.AutoDeployOnIngest,

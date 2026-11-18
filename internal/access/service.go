@@ -37,6 +37,11 @@ type Options struct {
 	RawPath string
 	// Enforce turns filtering on. When false the service only observes.
 	Enforce bool
+	// AllowUnpoliced controls whether mutations are permitted while no
+	// enforcing policy is loaded (feature disabled, observe-only, or a load
+	// failure). It defaults to false so deployments fail closed instead of
+	// silently allowing every mutation. Local/bootstrap installs must opt in.
+	AllowUnpoliced bool
 	// Interval is the refresh period; <=0 falls back to DefaultInterval.
 	Interval time.Duration
 	// Logf receives refresh/observe messages; nil discards them.
@@ -46,11 +51,12 @@ type Options struct {
 // Service keeps the latest successfully compiled policy and the catalog it was
 // compiled against. It is safe for concurrent use.
 type Service struct {
-	store    guardianapi.ReadStore
-	rawPath  string
-	enforce  bool
-	interval time.Duration
-	logf     func(string, ...any)
+	store          guardianapi.ReadStore
+	rawPath        string
+	enforce        bool
+	allowUnpoliced bool
+	interval       time.Duration
+	logf           func(string, ...any)
 
 	mu            sync.RWMutex
 	policy        *policy.Policy
@@ -72,11 +78,12 @@ func NewService(opts Options) *Service {
 		logf = func(string, ...any) {}
 	}
 	return &Service{
-		store:    opts.Store,
-		rawPath:  strings.TrimSpace(opts.RawPath),
-		enforce:  opts.Enforce,
-		interval: interval,
-		logf:     logf,
+		store:          opts.Store,
+		rawPath:        strings.TrimSpace(opts.RawPath),
+		enforce:        opts.Enforce,
+		allowUnpoliced: opts.AllowUnpoliced,
+		interval:       interval,
+		logf:           logf,
 	}
 }
 
@@ -245,11 +252,15 @@ func (s *Service) IsAdmin(ctx context.Context) bool {
 }
 
 // CanModify reports whether the request identity may modify the partition
-// (maintainer/admin role). It is permissive when the feature is disabled or in
-// observe mode.
+// (maintainer/admin role). It fails closed while no enforcing policy is loaded
+// (feature disabled, observe-only, or a load failure) unless the deployment
+// explicitly opted into unpoliced mutations.
 func (s *Service) CanModify(ctx context.Context, partition string) bool {
-	if s == nil || !s.Enabled() || !s.enforce {
-		return true
+	if s == nil {
+		return false
+	}
+	if !s.Enforcing() {
+		return s.allowUnpoliced
 	}
 	p := s.current()
 	if p == nil {
@@ -267,8 +278,11 @@ func (s *Service) CanModify(ctx context.Context, partition string) bool {
 // to a specific partition, such as creating an empty virtual set. Membership
 // changes are still checked per partition by CanModify.
 func (s *Service) CanModifyAny(ctx context.Context) bool {
-	if s == nil || !s.Enabled() || !s.enforce {
-		return true
+	if s == nil {
+		return false
+	}
+	if !s.Enforcing() {
+		return s.allowUnpoliced
 	}
 	p := s.current()
 	if p == nil {
@@ -294,8 +308,14 @@ func (s *Service) CanModifyAny(ctx context.Context) bool {
 // distinguishes "policy not loaded" from "insufficient role" so an operator
 // can tell a broken deployment from a real denial.
 func (s *Service) AuthorizeModify(ctx context.Context, partition string) error {
-	if s == nil || !s.Enabled() || !s.enforce {
-		return nil
+	if s == nil {
+		return fmt.Errorf("access policy: no policy service configured; mutations require an enforcing policy")
+	}
+	if !s.Enforcing() {
+		if s.allowUnpoliced {
+			return nil
+		}
+		return fmt.Errorf("access policy: no enforcing policy is loaded; mutations are disabled (set --allow-unpoliced-mutations for local/bootstrap installs)")
 	}
 	p := s.current()
 	if p == nil {

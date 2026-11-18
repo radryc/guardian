@@ -16,7 +16,7 @@ import (
 func newRegistryTestServer(t *testing.T) (*Server, guardianapi.Store) {
 	t.Helper()
 	store := memory.New()
-	srv, err := New(Options{Store: store, PrincipalID: "test-ui"})
+	srv, err := New(Options{AllowUnpolicedMutations: true, Store: store, PrincipalID: "test-ui"})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

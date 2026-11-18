@@ -19,7 +19,7 @@ func TestM2MFederationPartitionsPaginatesAndDerivesAWSPlacement(t *testing.T) {
 	seedFederationPartition(t, ctx, files, "div-a-orders", "222222222222", "us-east-1", "aws-div-222222222222")
 	seedFederationPartition(t, ctx, files, "div-b-inventory", "444455556666", "us-west-2", "aws-div-444455556666")
 
-	srv, err := New(Options{Store: files, PrincipalID: "test-ui"})
+	srv, err := New(Options{AllowUnpolicedMutations: true, Store: files, PrincipalID: "test-ui"})
 	if err != nil {
 		t.Fatalf("create server: %v", err)
 	}
