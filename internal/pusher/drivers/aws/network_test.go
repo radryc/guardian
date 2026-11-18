@@ -2,16 +2,12 @@ package awsdriver
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
-	statedomain "github.com/radryc/guardian/internal/domain/state"
 	targetdomain "github.com/radryc/guardian/internal/domain/target"
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
-	"github.com/radryc/guardian/internal/paths"
 	"github.com/radryc/guardian/internal/pusher/registry"
 	"github.com/radryc/guardian/internal/store/memory"
-	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 func TestAWSNetworkDriverApplyDiffDestroy(t *testing.T) {
@@ -42,17 +38,9 @@ func TestAWSNetworkDriverApplyDiffDestroy(t *testing.T) {
 		t.Fatalf("outputs = %+v", result.Outputs)
 	}
 
-	// Persist outputs so Diff can resolve the VPC, mirroring the runtime.
-	state := statedomain.IntentState{Outputs: map[string]string{"backend.vpcId": "vpc-test"}}
-	raw, err := json.Marshal(state)
-	if err != nil {
-		t.Fatalf("marshal state: %v", err)
-	}
-	if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{
-		Writes: []guardianapi.PathWrite{{LogicalPath: paths.IntentState("demo", "stack"), Content: raw}},
-	}); err != nil {
-		t.Fatalf("seed state: %v", err)
-	}
+	// The control plane snapshots prior outputs into the task; Diff/Destroy
+	// consume that snapshot instead of re-reading live runtime state.
+	in.Outputs = map[string]string{"backend.vpcId": "vpc-test"}
 
 	report, err := driver.Diff(ctx, in)
 	if err != nil {

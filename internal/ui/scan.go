@@ -181,7 +181,12 @@ func (s *Server) handleScanCreate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleScanList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	pushers := s.scanPushers()
+	pa, err := s.pusherAccessFor(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	pushers := s.filterScanPushers(s.scanPushers(), pa)
 	entries := make([]ScanListEntry, 0)
 	seen := make(map[string]struct{})
 	for _, pusher := range pushers {
@@ -317,8 +322,8 @@ func (s *Server) readScanClaim(ctx context.Context, pusher, scanID string) (*aws
 	return &claim, true, nil
 }
 
-func (s *Server) locateScan(ctx context.Context, scanID string) (*awsscan.ScanResult, string, bool) {
-	for _, pusher := range s.scanPushers() {
+func (s *Server) locateScan(ctx context.Context, scanID string, pushers []string) (*awsscan.ScanResult, string, bool) {
+	for _, pusher := range pushers {
 		if result, ok, err := s.readScanResult(ctx, pusher, scanID); err == nil && ok {
 			return result, pusher, true
 		}
@@ -327,9 +332,15 @@ func (s *Server) locateScan(ctx context.Context, scanID string) (*awsscan.ScanRe
 }
 
 func (s *Server) handleScanGet(w http.ResponseWriter, r *http.Request, scanID string) {
-	result, _, ok := s.locateScan(r.Context(), scanID)
+	pa, err := s.pusherAccessFor(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	pushers := s.filterScanPushers(s.scanPushers(), pa)
+	result, _, ok := s.locateScan(r.Context(), scanID, pushers)
 	if !ok {
-		for _, pusher := range s.scanPushers() {
+		for _, pusher := range pushers {
 			if _, claimOK, _ := s.readScanClaim(r.Context(), pusher, scanID); claimOK {
 				writeJSON(w, http.StatusOK, map[string]any{
 					"scanID": scanID,
@@ -360,6 +371,10 @@ func (s *Server) handleScanBundle(w http.ResponseWriter, r *http.Request, scanID
 		writeError(w, http.StatusBadRequest, fmt.Errorf("partition query parameter is required"))
 		return
 	}
+	if !s.canSeePartition(r.Context(), partition) {
+		writeError(w, http.StatusNotFound, fmt.Errorf("scan result %q not found", scanID))
+		return
+	}
 	grouping := strings.TrimSpace(query.Get("grouping"))
 	opts := awsgen.Options{
 		PartitionName: partition,
@@ -388,7 +403,13 @@ func (s *Server) handleScanBundle(w http.ResponseWriter, r *http.Request, scanID
 		}
 	}
 
-	result, _, ok := s.locateScan(r.Context(), scanID)
+	pa, err := s.pusherAccessFor(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	pushers := s.filterScanPushers(s.scanPushers(), pa)
+	result, _, ok := s.locateScan(r.Context(), scanID, pushers)
 	if !ok {
 		writeError(w, http.StatusNotFound, fmt.Errorf("scan result %q not found", scanID))
 		return

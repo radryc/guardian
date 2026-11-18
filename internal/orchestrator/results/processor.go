@@ -741,6 +741,10 @@ func (p *Processor) nextTask(ctx context.Context, currentTask *taskdomain.Task, 
 	// pinned to the previous task's assets.
 	if currentTask != nil && state.IntentSpecHash == currentTask.IntentSpecHash {
 		if next := common.BuildTaskFromExisting(currentTask, op); next != nil {
+			next.PriorOutputs = copyStringMap(state.Outputs)
+			if next.PriorOutputs == nil {
+				next.PriorOutputs = map[string]string{}
+			}
 			return next, nil
 		}
 	}

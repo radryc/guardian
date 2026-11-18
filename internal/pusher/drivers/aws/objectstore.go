@@ -42,7 +42,7 @@ func (d *ObjectStoreDriver) Diff(ctx context.Context, in registry.AssetInput) (t
 	bucketName, adopted := objectStoreTarget(spec, in)
 	hash := driverutil.CompositeHash(in)
 
-	bucket, ok, err := d.backend.GetBucket(ctx, bucketName)
+	bucket, ok, err := d.bucketBackend().GetBucket(ctx, bucketName)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -89,7 +89,7 @@ func (d *ObjectStoreDriver) Apply(ctx context.Context, in registry.AssetInput) (
 		region = name
 	}
 
-	if err := d.backend.UpsertBucket(ctx, BucketSpec{
+	if err := d.bucketBackend().UpsertBucket(ctx, BucketSpec{
 		Name:       bucketName,
 		Hash:       hash,
 		Tags:       tags,
@@ -119,7 +119,7 @@ func (d *ObjectStoreDriver) Destroy(ctx context.Context, in registry.AssetInput)
 		return nil
 	}
 	bucketName, _ := objectStoreTarget(spec, in)
-	return d.backend.DeleteBucket(ctx, bucketName)
+	return d.bucketBackend().DeleteBucket(ctx, bucketName)
 }
 
 func decodeObjectStore(in registry.AssetInput) (*assetdefs.ObjectStoreSpec, error) {

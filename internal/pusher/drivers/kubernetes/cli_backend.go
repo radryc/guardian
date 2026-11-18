@@ -1,9 +1,12 @@
 package kubernetesdriver
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
+	"log"
+	"os"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -29,15 +32,15 @@ func NewCLIBackend(kubectlBinary, kubeconfig, contextName string) (*CLIBackend, 
 	return &CLIBackend{kubectl: resolved, kubeconfig: kubeconfig, contextName: contextName}, nil
 }
 
-func (b *CLIBackend) UpsertConfigMap(cm ConfigMap) error {
-	if err := b.ensureNamespace(cm.Namespace); err != nil {
+func (b *CLIBackend) UpsertConfigMap(ctx context.Context, cm ConfigMap) error {
+	if err := b.ensureNamespace(ctx, cm.Namespace); err != nil {
 		return err
 	}
-	return b.applyManifest(cm.Namespace, configMapManifest(cm))
+	return b.applyManifest(ctx, cm.Namespace, configMapManifest(cm))
 }
 
-func (b *CLIBackend) GetConfigMap(namespace, name string) (ConfigMap, bool, error) {
-	raw, ok, err := b.getResource(namespace, "configmap", name)
+func (b *CLIBackend) GetConfigMap(ctx context.Context, namespace, name string) (ConfigMap, bool, error) {
+	raw, ok, err := b.getResource(ctx, namespace, "configmap", name)
 	if err != nil || !ok {
 		return ConfigMap{}, ok, err
 	}
@@ -48,19 +51,19 @@ func (b *CLIBackend) GetConfigMap(namespace, name string) (ConfigMap, bool, erro
 	return cm, true, nil
 }
 
-func (b *CLIBackend) DeleteConfigMap(namespace, name string) error {
-	return b.deleteResource(namespace, "configmap", name)
+func (b *CLIBackend) DeleteConfigMap(ctx context.Context, namespace, name string) error {
+	return b.deleteResource(ctx, namespace, "configmap", name)
 }
 
-func (b *CLIBackend) UpsertClaim(claim PersistentVolumeClaim) error {
-	if err := b.ensureNamespace(claim.Namespace); err != nil {
+func (b *CLIBackend) UpsertClaim(ctx context.Context, claim PersistentVolumeClaim) error {
+	if err := b.ensureNamespace(ctx, claim.Namespace); err != nil {
 		return err
 	}
-	return b.applyManifest(claim.Namespace, claimManifest(claim))
+	return b.applyManifest(ctx, claim.Namespace, claimManifest(claim))
 }
 
-func (b *CLIBackend) GetClaim(namespace, name string) (PersistentVolumeClaim, bool, error) {
-	raw, ok, err := b.getResource(namespace, "persistentvolumeclaim", name)
+func (b *CLIBackend) GetClaim(ctx context.Context, namespace, name string) (PersistentVolumeClaim, bool, error) {
+	raw, ok, err := b.getResource(ctx, namespace, "persistentvolumeclaim", name)
 	if err != nil || !ok {
 		return PersistentVolumeClaim{}, ok, err
 	}
@@ -71,19 +74,85 @@ func (b *CLIBackend) GetClaim(namespace, name string) (PersistentVolumeClaim, bo
 	return claim, true, nil
 }
 
-func (b *CLIBackend) DeleteClaim(namespace, name string) error {
-	return b.deleteResource(namespace, "persistentvolumeclaim", name)
+func (b *CLIBackend) DeleteClaim(ctx context.Context, namespace, name string) error {
+	return b.deleteResource(ctx, namespace, "persistentvolumeclaim", name)
 }
 
-func (b *CLIBackend) UpsertDeployment(deployment Deployment) error {
-	if err := b.ensureNamespace(deployment.Namespace); err != nil {
+func (b *CLIBackend) UpsertDeployment(ctx context.Context, deployment Deployment) error {
+	if err := b.ensureNamespace(ctx, deployment.Namespace); err != nil {
 		return err
 	}
-	return b.applyManifest(deployment.Namespace, listManifest(deploymentManifestItems(deployment)))
+	items := deploymentManifestItems(deployment)
+	for _, item := range items {
+		if kind, _ := item["kind"].(string); kind == "Deployment" {
+			if err := b.clearDeploymentEnvConflicts(ctx, deployment.Namespace, item); err != nil {
+				return err
+			}
+		}
+	}
+	return b.applyManifest(ctx, deployment.Namespace, listManifest(items))
 }
 
-func (b *CLIBackend) GetDeployment(namespace, name string) (Deployment, bool, error) {
-	raw, ok, err := b.getResource(namespace, "deployment", name)
+// clearDeploymentEnvConflicts mirrors the client-go backend: stale valueFrom
+// fields on live env vars are replaced with Guardian's literal value before
+// apply, since kubectl apply also preserves fields it does not set.
+func (b *CLIBackend) clearDeploymentEnvConflicts(ctx context.Context, namespace string, desired map[string]any) error {
+	metadata, _ := desired["metadata"].(map[string]any)
+	name, _ := metadata["name"].(string)
+	if name == "" {
+		return nil
+	}
+	raw, ok, err := b.getResource(ctx, namespace, "deployment", name)
+	if err != nil || !ok {
+		return err
+	}
+	var live map[string]any
+	if err := json.Unmarshal(raw, &live); err != nil {
+		return fmt.Errorf("decode live Deployment/%s: %w", name, err)
+	}
+	desiredNormalized, err := normalizeManifest(desired)
+	if err != nil {
+		return err
+	}
+	patch, err := deploymentEnvConflictPatch(desiredNormalized, live)
+	if err != nil {
+		return err
+	}
+	if len(patch) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("encode env conflict patch for Deployment/%s: %w", name, err)
+	}
+	file, err := os.CreateTemp("", "guardian-env-patch-*.json")
+	if err != nil {
+		return fmt.Errorf("create env conflict patch for Deployment/%s: %w", name, err)
+	}
+	path := file.Name()
+	defer os.Remove(path)
+	if err := file.Chmod(0o600); err != nil {
+		file.Close()
+		return fmt.Errorf("protect env conflict patch for Deployment/%s: %w", name, err)
+	}
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		return fmt.Errorf("write env conflict patch for Deployment/%s: %w", name, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("write env conflict patch for Deployment/%s: %w", name, err)
+	}
+	args := b.baseArgs()
+	args = append(args, "-n", namespace, "patch", "deployment", name, "--type=json", "--patch-file", path)
+	if _, err := b.run(ctx, args...); err != nil {
+		return fmt.Errorf("clear env conflicts on Deployment/%s: %w", name, err)
+	}
+	log.Printf("[Kubernetes] cleared %d stale env valueFrom field(s) on Deployment %s/%s", len(patch), namespace, name)
+	return nil
+}
+
+func (b *CLIBackend) GetDeployment(ctx context.Context, namespace, name string) (Deployment, bool, error) {
+	raw, ok, err := b.getResource(ctx, namespace, "deployment", name)
 	if err != nil || !ok {
 		return Deployment{}, ok, err
 	}
@@ -92,7 +161,7 @@ func (b *CLIBackend) GetDeployment(namespace, name string) (Deployment, bool, er
 		return Deployment{}, false, err
 	}
 	if deployment.ReadyReplicas < deployment.Replicas {
-		reason, message, podName := b.podsTerminalFailure(namespace, deployment.Labels)
+		reason, message, podName := b.podsTerminalFailure(ctx, namespace, deployment.Labels)
 		deployment.CrashLoopBackOff = reason != ""
 		deployment.PodFailureReason = reason
 		deployment.PodFailureMessage = message
@@ -117,7 +186,7 @@ var transientPodWaitingReasons = map[string]bool{
 // non-transient waiting state. Any waiting reason that is not in the known
 // transient allowlist is considered a terminal failure.
 // Returns an empty string when all pods are healthy or transiently starting.
-func (b *CLIBackend) podsTerminalFailure(namespace string, labels map[string]string) (reason, message, podName string) {
+func (b *CLIBackend) podsTerminalFailure(ctx context.Context, namespace string, labels map[string]string) (reason, message, podName string) {
 	sel := selectorForLabels(labels)
 	parts := make([]string, 0, len(sel))
 	for k, v := range sel {
@@ -130,7 +199,7 @@ func (b *CLIBackend) podsTerminalFailure(namespace string, labels map[string]str
 	selector := strings.Join(parts, ",")
 	args := b.baseArgs()
 	args = append(args, "-n", namespace, "get", "pods", "-l", selector, "-o", "json")
-	raw, err := b.run(args...)
+	raw, err := b.run(ctx, args...)
 	if err != nil {
 		return "", "", ""
 	}
@@ -204,13 +273,13 @@ func (b *CLIBackend) containerWaitingFailure(statuses []struct {
 	return "", "", false
 }
 
-func (b *CLIBackend) GetPodEvents(namespace, podName string) ([]string, error) {
+func (b *CLIBackend) GetPodEvents(ctx context.Context, namespace, podName string) ([]string, error) {
 	if podName == "" {
 		return nil, nil
 	}
 	args := b.baseArgs()
 	args = append(args, "-n", namespace, "get", "events", "--field-selector", "involvedObject.name="+podName, "-o", "json")
-	raw, err := b.run(args...)
+	raw, err := b.run(ctx, args...)
 	if err != nil {
 		return nil, nil
 	}
@@ -248,22 +317,22 @@ func (b *CLIBackend) GetPodEvents(namespace, podName string) ([]string, error) {
 	return entries, nil
 }
 
-func (b *CLIBackend) DeleteDeployment(namespace, name string) error {
-	if err := b.deleteResource(namespace, "deployment", name); err != nil {
+func (b *CLIBackend) DeleteDeployment(ctx context.Context, namespace, name string) error {
+	if err := b.deleteResource(ctx, namespace, "deployment", name); err != nil {
 		return err
 	}
-	return b.deleteResource(namespace, "configmap", inlineConfigMapName(name))
+	return b.deleteResource(ctx, namespace, "configmap", inlineConfigMapName(name))
 }
 
-func (b *CLIBackend) UpsertService(service Service) error {
-	if err := b.ensureNamespace(service.Namespace); err != nil {
+func (b *CLIBackend) UpsertService(ctx context.Context, service Service) error {
+	if err := b.ensureNamespace(ctx, service.Namespace); err != nil {
 		return err
 	}
-	return b.applyManifest(service.Namespace, serviceManifest(service))
+	return b.applyManifest(ctx, service.Namespace, serviceManifest(service))
 }
 
-func (b *CLIBackend) GetService(namespace, name string) (Service, bool, error) {
-	raw, ok, err := b.getResource(namespace, "service", name)
+func (b *CLIBackend) GetService(ctx context.Context, namespace, name string) (Service, bool, error) {
+	raw, ok, err := b.getResource(ctx, namespace, "service", name)
 	if err != nil || !ok {
 		return Service{}, ok, err
 	}
@@ -274,19 +343,19 @@ func (b *CLIBackend) GetService(namespace, name string) (Service, bool, error) {
 	return service, true, nil
 }
 
-func (b *CLIBackend) DeleteService(namespace, name string) error {
-	return b.deleteResource(namespace, "service", name)
+func (b *CLIBackend) DeleteService(ctx context.Context, namespace, name string) error {
+	return b.deleteResource(ctx, namespace, "service", name)
 }
 
-func (b *CLIBackend) UpsertNetworkPolicy(policy NetworkPolicy) error {
-	if err := b.ensureNamespace(policy.Namespace); err != nil {
+func (b *CLIBackend) UpsertNetworkPolicy(ctx context.Context, policy NetworkPolicy) error {
+	if err := b.ensureNamespace(ctx, policy.Namespace); err != nil {
 		return err
 	}
-	return b.applyManifest(policy.Namespace, networkPolicyManifest(policy))
+	return b.applyManifest(ctx, policy.Namespace, networkPolicyManifest(policy))
 }
 
-func (b *CLIBackend) GetNetworkPolicy(namespace, name string) (NetworkPolicy, bool, error) {
-	raw, ok, err := b.getResource(namespace, "networkpolicy", name)
+func (b *CLIBackend) GetNetworkPolicy(ctx context.Context, namespace, name string) (NetworkPolicy, bool, error) {
+	raw, ok, err := b.getResource(ctx, namespace, "networkpolicy", name)
 	if err != nil || !ok {
 		return NetworkPolicy{}, ok, err
 	}
@@ -297,36 +366,36 @@ func (b *CLIBackend) GetNetworkPolicy(namespace, name string) (NetworkPolicy, bo
 	return policy, true, nil
 }
 
-func (b *CLIBackend) DeleteNetworkPolicy(namespace, name string) error {
-	return b.deleteResource(namespace, "networkpolicy", name)
+func (b *CLIBackend) DeleteNetworkPolicy(ctx context.Context, namespace, name string) error {
+	return b.deleteResource(ctx, namespace, "networkpolicy", name)
 }
 
 // ApplyManifest applies a raw (possibly multi-document) Kubernetes manifest
 // supplied as YAML bytes. When namespace is non-empty it is passed to kubectl,
 // otherwise each document's own namespace is honoured.
-func (b *CLIBackend) ApplyManifest(namespace string, manifest []byte) error {
+func (b *CLIBackend) ApplyManifest(ctx context.Context, namespace string, manifest []byte) error {
 	args := b.baseArgs()
 	if strings.TrimSpace(namespace) != "" {
 		args = append(args, "-n", namespace)
 	}
 	args = append(args, "apply", "-f", "-")
-	_, err := b.runWithInput(manifest, args...)
+	_, err := b.runWithInput(ctx, manifest, args...)
 	return err
 }
 
-func (b *CLIBackend) applyManifest(namespace string, manifest any) error {
+func (b *CLIBackend) applyManifest(ctx context.Context, namespace string, manifest any) error {
 	data, err := json.Marshal(manifest)
 	if err != nil {
 		return fmt.Errorf("encode kubernetes manifest for namespace %q: %w", namespace, err)
 	}
-	_, err = b.runWithInput(data, append(b.baseArgs(), "apply", "-f", "-")...)
+	_, err = b.runWithInput(ctx, data, append(b.baseArgs(), "apply", "-f", "-")...)
 	return err
 }
 
-func (b *CLIBackend) getResource(namespace, resourceType, name string) ([]byte, bool, error) {
+func (b *CLIBackend) getResource(ctx context.Context, namespace, resourceType, name string) ([]byte, bool, error) {
 	args := b.baseArgs()
 	args = append(args, "-n", namespace, "get", resourceType, name, "-o", "json")
-	out, err := b.run(args...)
+	out, err := b.run(ctx, args...)
 	if err != nil {
 		if kubectlNotFound(err.Error()) {
 			return nil, false, nil
@@ -336,35 +405,35 @@ func (b *CLIBackend) getResource(namespace, resourceType, name string) ([]byte, 
 	return out, true, nil
 }
 
-func (b *CLIBackend) deleteResource(namespace, resourceType, name string) error {
+func (b *CLIBackend) deleteResource(ctx context.Context, namespace, resourceType, name string) error {
 	args := b.baseArgs()
 	args = append(args, "-n", namespace, "delete", resourceType, name, "--ignore-not-found=true")
-	_, err := b.run(args...)
+	_, err := b.run(ctx, args...)
 	return err
 }
 
-func (b *CLIBackend) ensureNamespace(namespace string) error {
+func (b *CLIBackend) ensureNamespace(ctx context.Context, namespace string) error {
 	if namespace == "" || namespace == "default" {
 		return nil
 	}
 	args := b.baseArgs()
 	args = append(args, "get", "namespace", namespace, "-o", "json")
-	if _, err := b.run(args...); err == nil {
+	if _, err := b.run(ctx, args...); err == nil {
 		return nil
 	} else if !kubectlNotFound(err.Error()) {
 		return err
 	}
 	createArgs := b.baseArgs()
 	createArgs = append(createArgs, "create", "namespace", namespace)
-	_, err := b.run(createArgs...)
+	_, err := b.run(ctx, createArgs...)
 	if err != nil && !strings.Contains(err.Error(), "AlreadyExists") {
 		return err
 	}
 	return nil
 }
 
-func (b *CLIBackend) run(args ...string) ([]byte, error) {
-	cmd := exec.Command(b.kubectl, args...)
+func (b *CLIBackend) run(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, b.kubectl, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("kubectl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
@@ -372,8 +441,8 @@ func (b *CLIBackend) run(args ...string) ([]byte, error) {
 	return out, nil
 }
 
-func (b *CLIBackend) runWithInput(input []byte, args ...string) ([]byte, error) {
-	cmd := exec.Command(b.kubectl, args...)
+func (b *CLIBackend) runWithInput(ctx context.Context, input []byte, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, b.kubectl, args...)
 	cmd.Stdin = strings.NewReader(string(input))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -553,3 +622,5 @@ func inlineConfigMapName(name string) string {
 func kubectlNotFound(message string) bool {
 	return strings.Contains(message, "NotFound") || strings.Contains(message, "not found")
 }
+
+var _ BackendAPI = (*CLIBackend)(nil)

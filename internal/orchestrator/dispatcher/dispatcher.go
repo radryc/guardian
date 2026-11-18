@@ -22,6 +22,7 @@ import (
 	releasedomain "github.com/radryc/guardian/internal/domain/release"
 	statedomain "github.com/radryc/guardian/internal/domain/state"
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
+	"github.com/radryc/guardian/internal/keyedmutex"
 	"github.com/radryc/guardian/internal/orchestrator/common"
 	"github.com/radryc/guardian/internal/paths"
 	"github.com/radryc/guardian/internal/versioning/revisions"
@@ -39,17 +40,10 @@ type Dispatcher struct {
 	complianceMu sync.RWMutex
 	compliance   compliancePublisher
 
-	// lastHashMu guards lastWriteHash, which is used to skip redundant
-	// WriteIntentState / WritePartitionState calls when the serialised content
-	// is identical to what was last written.
-	lastHashMu    sync.RWMutex
-	lastWriteHash map[string]uint64 // logical path → FNV-64 of last written bytes
+	writes *writeTracker
 
-	runtimeMu    sync.RWMutex
-	runtimeCache map[string]*statedomain.PartitionRuntime
-
-	releaseMu    sync.RWMutex
-	releaseCache map[string]*releasedomain.PartitionReleaseLog
+	runtimeCache *runtimeCache
+	releases     *releaseLogCache
 
 	eventMu      sync.Mutex
 	eventHistory map[string][]string
@@ -57,11 +51,9 @@ type Dispatcher struct {
 	payloadFilesMu    sync.RWMutex
 	generatedPayloads map[string]map[string]bool // dir -> set of logicalPaths
 
-	partitionWriteMu    sync.Mutex
-	partitionWriteLocks map[string]*sync.Mutex
+	partitionLocks *keyedmutex.Locks
+	archiveLocks   *keyedmutex.Locks
 
-	archiveMu       sync.Mutex
-	archiveLocks    map[string]*sync.Mutex
 	retentionMu     sync.RWMutex
 	taskArchiveKeep int
 	taskArchiveAge  time.Duration
@@ -86,15 +78,15 @@ func (d *Dispatcher) taskArchiveRetention() (int, time.Duration) {
 
 func NewDispatcher(store guardianapi.Store, principalID string) *Dispatcher {
 	return &Dispatcher{
-		store:               store,
-		principalID:         principalID,
-		lastWriteHash:       make(map[string]uint64),
-		runtimeCache:        make(map[string]*statedomain.PartitionRuntime),
-		releaseCache:        make(map[string]*releasedomain.PartitionReleaseLog),
-		eventHistory:        make(map[string][]string),
-		generatedPayloads:   make(map[string]map[string]bool),
-		partitionWriteLocks: make(map[string]*sync.Mutex),
-		archiveLocks:        make(map[string]*sync.Mutex),
+		store:             store,
+		principalID:       principalID,
+		writes:            newWriteTracker(),
+		runtimeCache:      newRuntimeCache(),
+		releases:          newReleaseLogCache(),
+		eventHistory:      make(map[string][]string),
+		generatedPayloads: make(map[string]map[string]bool),
+		partitionLocks:    keyedmutex.New(),
+		archiveLocks:      keyedmutex.New(),
 	}
 }
 
@@ -140,18 +132,14 @@ func contentHash(b []byte) uint64 {
 // the last value written to logicalPath.
 func (d *Dispatcher) contentUnchanged(logicalPath string, content []byte) bool {
 	h := contentHash(content)
-	d.lastHashMu.RLock()
-	prev, ok := d.lastWriteHash[logicalPath]
-	d.lastHashMu.RUnlock()
+	prev, ok := d.writes.get(logicalPath)
 	return ok && prev == h
 }
 
 // recordHash records the hash of content that was just written to logicalPath.
 func (d *Dispatcher) recordHash(logicalPath string, content []byte) {
 	h := contentHash(content)
-	d.lastHashMu.Lock()
-	d.lastWriteHash[logicalPath] = h
-	d.lastHashMu.Unlock()
+	d.writes.set(logicalPath, h)
 }
 
 func (d *Dispatcher) QueueTask(ctx context.Context, t *taskdomain.Task) error {
@@ -337,32 +325,10 @@ func (d *Dispatcher) UpdateIntentState(ctx context.Context, partition, intent st
 	unlock := d.lockPartitionWrites(partition)
 	defer unlock()
 
-	// Prefer a store that can return content and its authoritative version
-	// atomically. This is what makes the update safe across guardiand
-	// replicas; the in-process partition lock only protects one process.
-	if reader, ok := d.store.(guardianapi.VersionedReader); ok {
-		return d.updateIntentStateCAS(ctx, reader, partition, intent, mutate)
-	}
-
-	state, err := common.LoadIntentState(ctx, d.store, partition, intent)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
-		state = newIntentState(partition, intent)
-	}
-	if state.Outputs == nil {
-		state.Outputs = map[string]string{}
-	}
-	if mutate != nil {
-		if err := mutate(state); err != nil {
-			return nil, err
-		}
-	}
-	if err := d.writeIntentStateLocked(ctx, state); err != nil {
-		return nil, err
-	}
-	return state, nil
+	// The store contract guarantees an atomic content+version read, which is
+	// what makes the update safe across guardiand replicas; the in-process
+	// partition lock only protects one process.
+	return d.updateIntentStateCAS(ctx, d.store, partition, intent, mutate)
 }
 
 func newIntentState(partition, intent string) *statedomain.IntentState {
@@ -383,7 +349,7 @@ func intentStateCASMissingVersionMode() string {
 	return "fallback"
 }
 
-func (d *Dispatcher) updateIntentStateCAS(ctx context.Context, reader guardianapi.VersionedReader, partition, intent string, mutate func(*statedomain.IntentState) error) (*statedomain.IntentState, error) {
+func (d *Dispatcher) updateIntentStateCAS(ctx context.Context, reader guardianapi.Store, partition, intent string, mutate func(*statedomain.IntentState) error) (*statedomain.IntentState, error) {
 	const maxAttempts = 5
 	logicalPath := paths.IntentState(partition, intent)
 
@@ -575,9 +541,7 @@ func (d *Dispatcher) DeleteIntentState(ctx context.Context, partition, intent, c
 	}
 	guardianDeletesTotal.WithLabelValues("delete_intent_state").Inc()
 	// Evict cached hash so a future write to this path is not skipped.
-	d.lastHashMu.Lock()
-	delete(d.lastWriteHash, intentPath)
-	d.lastHashMu.Unlock()
+	d.writes.delete(intentPath)
 
 	delta, err := d.applyIntentDelta(ctx, partition, intent, nil, true)
 	if err != nil {
@@ -602,55 +566,56 @@ type intentDelta struct {
 }
 
 // applyIntentDelta updates one intent in the cached partition aggregate in O(1).
-// It mutates the cached runtime in place under runtimeMu; readers clone under
-// RLock, so this does not race. Callers must hold the per-partition write lock.
+// It mutates the cached runtime in place under the cache lock; readers clone
+// under RLock, so this does not race. Callers must hold the per-partition write lock.
 func (d *Dispatcher) applyIntentDelta(ctx context.Context, partition, intent string, after *statedomain.IntentState, removed bool) (intentDelta, error) {
 	runtime, err := d.ensureRuntime(ctx, partition)
 	if err != nil {
 		return intentDelta{}, err
 	}
-	d.runtimeMu.Lock()
-	defer d.runtimeMu.Unlock()
-
-	base := runtime.PartitionState
-	if base == nil {
-		base = &statedomain.PartitionState{
-			APIVersion: "guardian/v1alpha1",
-			Kind:       "PartitionState",
-			Partition:  partition,
+	var delta intentDelta
+	_, ok := d.runtimeCache.with(partition, func(*statedomain.PartitionRuntime) {
+		base := runtime.PartitionState
+		if base == nil {
+			base = &statedomain.PartitionState{
+				APIVersion: "guardian/v1alpha1",
+				Kind:       "PartitionState",
+				Partition:  partition,
+			}
+			runtime.PartitionState = base
 		}
-		runtime.PartitionState = base
+		previousStatus := base.Status
+		before := runtime.Intents[intent]
+		selected := statedomain.PartitionSelectsIntent(base, intent)
+		statedomain.AdjustIntentMetrics(&base.Metrics, base, intent, before, after)
+		if removed {
+			delete(runtime.Intents, intent)
+		} else if after != nil {
+			runtime.Intents[intent] = statedomain.CloneIntentState(after)
+		}
+		runtime.UpdatedAt = nowUTC()
+		status, display, summary := statedomain.DerivePartitionPresentation(base, base.Metrics)
+		base.Status, base.DisplayStatus, base.Summary = status, display, summary
+		delta = intentDelta{
+			previousStatus: previousStatus,
+			newStatus:      status,
+			runtime:        runtime,
+			before:         before,
+			after:          after,
+			selected:       selected,
+		}
+	})
+	if !ok {
+		return intentDelta{}, fmt.Errorf("dispatcher: partition runtime for %q is not cached", partition)
 	}
-	previousStatus := base.Status
-	before := runtime.Intents[intent]
-	selected := statedomain.PartitionSelectsIntent(base, intent)
-	statedomain.AdjustIntentMetrics(&base.Metrics, base, intent, before, after)
-	if removed {
-		delete(runtime.Intents, intent)
-	} else if after != nil {
-		runtime.Intents[intent] = statedomain.CloneIntentState(after)
-	}
-	runtime.UpdatedAt = nowUTC()
-	status, display, summary := statedomain.DerivePartitionPresentation(base, base.Metrics)
-	base.Status, base.DisplayStatus, base.Summary = status, display, summary
-	return intentDelta{
-		previousStatus: previousStatus,
-		newStatus:      status,
-		runtime:        runtime,
-		before:         before,
-		after:          after,
-		selected:       selected,
-	}, nil
+	return delta, nil
 }
 
 // ensureRuntime returns the cached partition runtime, hydrating from the store on
 // miss. The returned pointer is the live cache entry; callers must hold the
-// partition write lock and runtimeMu before mutating it.
+// partition write lock and mutate it through runtimeCache.with.
 func (d *Dispatcher) ensureRuntime(ctx context.Context, partition string) (*statedomain.PartitionRuntime, error) {
-	d.runtimeMu.RLock()
-	runtime := d.runtimeCache[partition]
-	d.runtimeMu.RUnlock()
-	if runtime != nil {
+	if runtime, ok := d.runtimeCache.get(partition); ok {
 		return runtime, nil
 	}
 	loaded, err := common.LoadPartitionRuntime(ctx, d.store, partition)
@@ -663,9 +628,7 @@ func (d *Dispatcher) ensureRuntime(ctx context.Context, partition string) (*stat
 	// storePartitionRuntime seeds the cache and initialises the status gauges for
 	// the loaded intents so subsequent O(1) incremental updates stay accurate.
 	d.storePartitionRuntime(loaded)
-	d.runtimeMu.RLock()
-	runtime = d.runtimeCache[partition]
-	d.runtimeMu.RUnlock()
+	runtime, _ := d.runtimeCache.get(partition)
 	return runtime, nil
 }
 
@@ -874,15 +837,7 @@ func (d *Dispatcher) lockPartitionWrites(partition string) func() {
 	if partition == "" {
 		return func() {}
 	}
-	d.partitionWriteMu.Lock()
-	lock, ok := d.partitionWriteLocks[partition]
-	if !ok {
-		lock = &sync.Mutex{}
-		d.partitionWriteLocks[partition] = lock
-	}
-	d.partitionWriteMu.Unlock()
-	lock.Lock()
-	return lock.Unlock
+	return d.partitionLocks.Lock(partition)
 }
 
 // lockTaskArchive serialises task-archive chain updates for one partition only.
@@ -892,15 +847,7 @@ func (d *Dispatcher) lockTaskArchive(partition string) func() {
 	if partition == "" {
 		return func() {}
 	}
-	d.archiveMu.Lock()
-	lock, ok := d.archiveLocks[partition]
-	if !ok {
-		lock = &sync.Mutex{}
-		d.archiveLocks[partition] = lock
-	}
-	d.archiveMu.Unlock()
-	lock.Lock()
-	return lock.Unlock
+	return d.archiveLocks.Lock(partition)
 }
 
 // writeFile persists content to logicalPath, skipping the write when the bytes
@@ -936,12 +883,7 @@ func (d *Dispatcher) commitRuntime(ctx context.Context, runtime *statedomain.Par
 }
 
 func (d *Dispatcher) cachedPartitionStatus(partition string) string {
-	d.runtimeMu.RLock()
-	defer d.runtimeMu.RUnlock()
-	if cached := d.runtimeCache[partition]; cached != nil && cached.PartitionState != nil {
-		return cached.PartitionState.Status
-	}
-	return ""
+	return d.runtimeCache.status(partition)
 }
 
 func (d *Dispatcher) emitPartitionStatusEvent(ctx context.Context, runtime *statedomain.PartitionRuntime, previousStatus string) {
@@ -982,9 +924,7 @@ func (d *Dispatcher) emitPartitionStatusEvent(ctx context.Context, runtime *stat
 }
 
 func (d *Dispatcher) partitionRuntime(ctx context.Context, partition string) (*statedomain.PartitionRuntime, error) {
-	d.runtimeMu.RLock()
-	cached, ok := d.runtimeCache[partition]
-	d.runtimeMu.RUnlock()
+	cached, ok := d.runtimeCache.get(partition)
 	if ok {
 		return statedomain.ClonePartitionRuntime(cached), nil
 	}
@@ -1004,18 +944,12 @@ func (d *Dispatcher) storePartitionRuntime(runtime *statedomain.PartitionRuntime
 		return
 	}
 	current := statedomain.ClonePartitionRuntime(statedomain.NormalizePartitionRuntime(runtime))
-	d.runtimeMu.Lock()
-	previous := statedomain.ClonePartitionRuntime(d.runtimeCache[current.Partition])
-	d.runtimeCache[current.Partition] = current
-	d.runtimeMu.Unlock()
+	previous := d.runtimeCache.swap(current)
 	applyRuntimeMetricDelta(previous, current)
 }
 
 func (d *Dispatcher) evictPartitionRuntime(partition string) {
-	d.runtimeMu.Lock()
-	previous := statedomain.ClonePartitionRuntime(d.runtimeCache[partition])
-	delete(d.runtimeCache, partition)
-	d.runtimeMu.Unlock()
+	previous := d.runtimeCache.take(partition)
 	applyRuntimeMetricDelta(previous, nil)
 }
 
@@ -1057,9 +991,7 @@ func (d *Dispatcher) loadPartitionReleaseLog(ctx context.Context, partition stri
 	if partition == "" {
 		return nil, fmt.Errorf("dispatcher: release log partition is empty")
 	}
-	d.releaseMu.RLock()
-	cached, ok := d.releaseCache[partition]
-	d.releaseMu.RUnlock()
+	cached, ok := d.releases.get(partition)
 	if ok {
 		return releasedomain.ClonePartitionReleaseLog(cached), nil
 	}
@@ -1092,27 +1024,15 @@ func (d *Dispatcher) storePartitionReleaseLog(log *releasedomain.PartitionReleas
 	if log == nil {
 		return
 	}
-	d.releaseMu.Lock()
-	d.releaseCache[log.Partition] = releasedomain.ClonePartitionReleaseLog(log)
-	d.releaseMu.Unlock()
+	d.releases.put(log)
 }
 
 func (d *Dispatcher) evictPartitionReleaseLog(partition string) {
-	d.releaseMu.Lock()
-	delete(d.releaseCache, partition)
-	d.releaseMu.Unlock()
+	d.releases.remove(partition)
 }
 
 func (d *Dispatcher) staleReleaseLogPartitions(seen map[string]struct{}) []string {
-	d.releaseMu.RLock()
-	stale := make([]string, 0, len(d.releaseCache))
-	for partition := range d.releaseCache {
-		if _, ok := seen[partition]; ok {
-			continue
-		}
-		stale = append(stale, partition)
-	}
-	d.releaseMu.RUnlock()
+	stale := d.releases.stale(seen)
 	sort.Strings(stale)
 	return stale
 }
@@ -1187,11 +1107,9 @@ func (d *Dispatcher) SyncGeneratedPayload(ctx context.Context, dir string, files
 		}); err != nil {
 			return err
 		}
-		d.lastHashMu.Lock()
 		for _, del := range deletes {
-			delete(d.lastWriteHash, del.LogicalPath)
+			d.writes.delete(del.LogicalPath)
 		}
-		d.lastHashMu.Unlock()
 		guardianDeletesTotal.WithLabelValues("sync_generated_payload").Add(float64(len(deletes)))
 	}
 	d.payloadFilesMu.Lock()
@@ -1364,15 +1282,7 @@ func (d *Dispatcher) partitionNames(ctx context.Context) ([]string, error) {
 }
 
 func (d *Dispatcher) staleRuntimePartitions(seen map[string]struct{}) []string {
-	d.runtimeMu.RLock()
-	stale := make([]string, 0, len(d.runtimeCache))
-	for partition := range d.runtimeCache {
-		if _, ok := seen[partition]; ok {
-			continue
-		}
-		stale = append(stale, partition)
-	}
-	d.runtimeMu.RUnlock()
+	stale := d.runtimeCache.stale(seen)
 	sort.Strings(stale)
 	return stale
 }

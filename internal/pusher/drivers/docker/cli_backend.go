@@ -1,6 +1,7 @@
 package dockerdriver
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -51,8 +52,8 @@ func NewCLIBackend(dockerBinary, stateDir string) (*CLIBackend, error) {
 	return &CLIBackend{docker: resolved, stateDir: stateDir}, nil
 }
 
-func (b *CLIBackend) EnsureNetwork(network Network) error {
-	_, ok, err := b.GetNetwork(network.Name)
+func (b *CLIBackend) EnsureNetwork(ctx context.Context, network Network) error {
+	_, ok, err := b.GetNetwork(ctx, network.Name)
 	if err != nil {
 		return err
 	}
@@ -69,12 +70,12 @@ func (b *CLIBackend) EnsureNetwork(network Network) error {
 	}
 	args = append(args, labelArgs(network.Labels)...)
 	args = append(args, network.Name)
-	_, err = b.run(args...)
+	_, err = b.run(ctx, args...)
 	return err
 }
 
-func (b *CLIBackend) GetNetwork(name string) (Network, bool, error) {
-	out, ok, err := b.inspect("network", name)
+func (b *CLIBackend) GetNetwork(ctx context.Context, name string) (Network, bool, error) {
+	out, ok, err := b.inspect(ctx, "network", name)
 	if err != nil || !ok {
 		return Network{}, ok, err
 	}
@@ -100,12 +101,12 @@ func (b *CLIBackend) GetNetwork(name string) (Network, bool, error) {
 	}, true, nil
 }
 
-func (b *CLIBackend) DeleteNetwork(name string) error {
-	_, err := b.runAllowNotFound("network", "rm", name)
+func (b *CLIBackend) DeleteNetwork(ctx context.Context, name string) error {
+	_, err := b.runAllowNotFound(ctx, "network", "rm", name)
 	return err
 }
 
-func (b *CLIBackend) ConnectNetwork(networkName, containerName string, aliases []string) error {
+func (b *CLIBackend) ConnectNetwork(ctx context.Context, networkName, containerName string, aliases []string) error {
 	args := []string{"network", "connect"}
 	for _, alias := range aliases {
 		if alias == "" {
@@ -114,7 +115,7 @@ func (b *CLIBackend) ConnectNetwork(networkName, containerName string, aliases [
 		args = append(args, "--alias", alias)
 	}
 	args = append(args, networkName, containerName)
-	_, err := b.run(args...)
+	_, err := b.run(ctx, args...)
 	if dockerNetworkAlreadyConnected(err) {
 		return nil
 	}
@@ -129,8 +130,8 @@ func dockerNetworkAlreadyConnected(err error) bool {
 	return strings.Contains(msg, "already exists in network")
 }
 
-func (b *CLIBackend) UpsertVolume(volume Volume) error {
-	current, ok, err := b.GetVolume(volume.Name)
+func (b *CLIBackend) UpsertVolume(ctx context.Context, volume Volume) error {
+	current, ok, err := b.GetVolume(ctx, volume.Name)
 	if err != nil {
 		return err
 	}
@@ -138,7 +139,7 @@ func (b *CLIBackend) UpsertVolume(volume Volume) error {
 		return nil
 	}
 	if ok {
-		if err := b.DeleteVolume(volume.Name); err != nil {
+		if err := b.DeleteVolume(ctx, volume.Name); err != nil {
 			return err
 		}
 	}
@@ -152,12 +153,12 @@ func (b *CLIBackend) UpsertVolume(volume Volume) error {
 	args := []string{"volume", "create"}
 	args = append(args, labelArgs(labels)...)
 	args = append(args, volume.Name)
-	_, err = b.run(args...)
+	_, err = b.run(ctx, args...)
 	return err
 }
 
-func (b *CLIBackend) GetVolume(name string) (Volume, bool, error) {
-	out, ok, err := b.inspect("volume", name)
+func (b *CLIBackend) GetVolume(ctx context.Context, name string) (Volume, bool, error) {
+	out, ok, err := b.inspect(ctx, "volume", name)
 	if err != nil || !ok {
 		return Volume{}, ok, err
 	}
@@ -182,22 +183,22 @@ func (b *CLIBackend) GetVolume(name string) (Volume, bool, error) {
 	}, true, nil
 }
 
-func (b *CLIBackend) DeleteVolume(name string) error {
-	if err := b.detachManagedContainersFromVolume(name); err != nil {
+func (b *CLIBackend) DeleteVolume(ctx context.Context, name string) error {
+	if err := b.detachManagedContainersFromVolume(ctx, name); err != nil {
 		return err
 	}
-	_, err := b.runAllowNotFound("volume", "rm", "-f", name)
+	_, err := b.runAllowNotFound(ctx, "volume", "rm", "-f", name)
 	return err
 }
 
-func (b *CLIBackend) detachManagedContainersFromVolume(volumeName string) error {
-	out, err := b.run("ps", "-aq", "--filter", "volume="+volumeName)
+func (b *CLIBackend) detachManagedContainersFromVolume(ctx context.Context, volumeName string) error {
+	out, err := b.run(ctx, "ps", "-aq", "--filter", "volume="+volumeName)
 	if err != nil {
 		return err
 	}
 	ids := strings.Fields(strings.TrimSpace(string(out)))
 	for _, id := range ids {
-		container, ok, err := b.GetContainer(id)
+		container, ok, err := b.GetContainer(ctx, id)
 		if err != nil {
 			return err
 		}
@@ -207,14 +208,14 @@ func (b *CLIBackend) detachManagedContainersFromVolume(volumeName string) error 
 		if !strings.EqualFold(container.Labels["guardian.managed"], "true") {
 			return fmt.Errorf("docker volume %q is in use by unmanaged container %q", volumeName, container.Name)
 		}
-		if err := b.DeleteContainer(container.Name); err != nil {
+		if err := b.DeleteContainer(ctx, container.Name); err != nil {
 			return fmt.Errorf("remove container %q using volume %q: %w", container.Name, volumeName, err)
 		}
 	}
 	return nil
 }
 
-func (b *CLIBackend) UpsertConfig(config Config) error {
+func (b *CLIBackend) UpsertConfig(ctx context.Context, config Config) error {
 	dir := b.configDir(config.Name)
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("remove docker config dir %q: %w", dir, err)
@@ -235,7 +236,7 @@ func (b *CLIBackend) UpsertConfig(config Config) error {
 	return writeJSON(filepath.Join(dir, "metadata.json"), state)
 }
 
-func (b *CLIBackend) GetConfig(name string) (Config, bool, error) {
+func (b *CLIBackend) GetConfig(ctx context.Context, name string) (Config, bool, error) {
 	statePath := filepath.Join(b.configDir(name), "metadata.json")
 	data, err := os.ReadFile(statePath)
 	if err != nil {
@@ -261,15 +262,15 @@ func (b *CLIBackend) GetConfig(name string) (Config, bool, error) {
 	}, true, nil
 }
 
-func (b *CLIBackend) DeleteConfig(name string) error {
+func (b *CLIBackend) DeleteConfig(ctx context.Context, name string) error {
 	if err := os.RemoveAll(b.configDir(name)); err != nil {
 		return fmt.Errorf("remove docker config dir for %q: %w", name, err)
 	}
 	return nil
 }
 
-func (b *CLIBackend) UpsertContainer(container Container) error {
-	current, ok, err := b.GetContainer(container.Name)
+func (b *CLIBackend) UpsertContainer(ctx context.Context, container Container) error {
+	current, ok, err := b.GetContainer(ctx, container.Name)
 	if err != nil {
 		return err
 	}
@@ -277,11 +278,11 @@ func (b *CLIBackend) UpsertContainer(container Container) error {
 		return nil
 	}
 	if ok {
-		if err := b.DeleteContainer(container.Name); err != nil {
+		if err := b.DeleteContainer(ctx, container.Name); err != nil {
 			return err
 		}
 	}
-	if err := b.checkPortConflicts(container); err != nil {
+	if err := b.checkPortConflicts(ctx, container); err != nil {
 		return err
 	}
 	inlineDir, err := b.stageInlineFiles(container)
@@ -399,12 +400,12 @@ func (b *CLIBackend) UpsertContainer(container Container) error {
 	}
 	args = append(args, container.Image)
 	args = append(args, runArgs...)
-	_, err = b.run(args...)
+	_, err = b.run(ctx, args...)
 	return err
 }
 
-func (b *CLIBackend) GetContainer(name string) (Container, bool, error) {
-	out, ok, err := b.inspect("container", name)
+func (b *CLIBackend) GetContainer(ctx context.Context, name string) (Container, bool, error) {
+	out, ok, err := b.inspect(ctx, "container", name)
 	if err != nil || !ok {
 		return Container{}, ok, err
 	}
@@ -418,8 +419,8 @@ func (b *CLIBackend) GetContainer(name string) (Container, bool, error) {
 	return containers[0], true, nil
 }
 
-func (b *CLIBackend) DeleteContainer(name string) error {
-	_, err := b.runAllowNotFound("container", "rm", "-f", name)
+func (b *CLIBackend) DeleteContainer(ctx context.Context, name string) error {
+	_, err := b.runAllowNotFound(ctx, "container", "rm", "-f", name)
 	if err != nil {
 		return err
 	}
@@ -429,9 +430,9 @@ func (b *CLIBackend) DeleteContainer(name string) error {
 	return nil
 }
 
-func (b *CLIBackend) ListContainersByAsset(partition, intent, asset string) ([]Container, error) {
+func (b *CLIBackend) ListContainersByAsset(ctx context.Context, partition, intent, asset string) ([]Container, error) {
 	args := []string{"ps", "-aq", "--filter", "label=guardian.partition=" + partition, "--filter", "label=guardian.intent=" + intent, "--filter", "label=guardian.asset=" + asset}
-	out, err := b.run(args...)
+	out, err := b.run(ctx, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -441,7 +442,7 @@ func (b *CLIBackend) ListContainersByAsset(partition, intent, asset string) ([]C
 	}
 	containers := make([]Container, 0, len(ids))
 	for _, id := range ids {
-		container, ok, err := b.GetContainer(id)
+		container, ok, err := b.GetContainer(ctx, id)
 		if err != nil {
 			return nil, err
 		}
@@ -453,8 +454,8 @@ func (b *CLIBackend) ListContainersByAsset(partition, intent, asset string) ([]C
 	return containers, nil
 }
 
-func (b *CLIBackend) run(args ...string) ([]byte, error) {
-	cmd := exec.Command(b.docker, args...)
+func (b *CLIBackend) run(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, b.docker, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("docker %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
@@ -466,20 +467,20 @@ func (b *CLIBackend) run(args ...string) ([]byte, error) {
 // are already bound by a different, running container. Guardian-unmanaged
 // containers blocking a port are stopped automatically (with a log warning).
 // Guardian-managed containers that still hold the port are a hard error.
-func (b *CLIBackend) checkPortConflicts(container Container) error {
+func (b *CLIBackend) checkPortConflicts(ctx context.Context, container Container) error {
 	for _, binding := range container.Ports {
 		if binding.HostPort <= 0 {
 			continue
 		}
 		port := strconv.Itoa(binding.HostPort)
-		out, err := b.run("ps", "-q", "--filter", "publish="+port)
+		out, err := b.run(ctx, "ps", "-q", "--filter", "publish="+port)
 		if err != nil {
 			// best-effort: skip if docker ps fails
 			continue
 		}
 		ids := strings.Fields(strings.TrimSpace(string(out)))
 		for _, id := range ids {
-			c, ok, err := b.GetContainer(id)
+			c, ok, err := b.GetContainer(ctx, id)
 			if err != nil || !ok {
 				continue
 			}
@@ -495,7 +496,7 @@ func (b *CLIBackend) checkPortConflicts(container Container) error {
 			// Unmanaged container (e.g. bootstrap docker-compose service): stop it
 			// so Guardian can take ownership of the port.
 			fmt.Printf("guardian-pusher: stopping unmanaged container %q that is holding host port %s\n", c.Name, port)
-			if _, err := b.run("stop", c.Name); err != nil {
+			if _, err := b.run(ctx, "stop", c.Name); err != nil {
 				return fmt.Errorf("host port %s held by unmanaged container %q; failed to stop it: %w", port, c.Name, err)
 			}
 		}
@@ -503,8 +504,8 @@ func (b *CLIBackend) checkPortConflicts(container Container) error {
 	return nil
 }
 
-func (b *CLIBackend) runAllowNotFound(args ...string) ([]byte, error) {
-	cmd := exec.Command(b.docker, args...)
+func (b *CLIBackend) runAllowNotFound(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, b.docker, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		text := strings.TrimSpace(string(out))
@@ -516,8 +517,8 @@ func (b *CLIBackend) runAllowNotFound(args ...string) ([]byte, error) {
 	return out, nil
 }
 
-func (b *CLIBackend) inspect(kind, name string) ([]byte, bool, error) {
-	cmd := exec.Command(b.docker, kind, "inspect", name)
+func (b *CLIBackend) inspect(ctx context.Context, kind, name string) ([]byte, bool, error) {
+	cmd := exec.CommandContext(ctx, b.docker, kind, "inspect", name)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		text := strings.TrimSpace(string(out))
@@ -752,3 +753,5 @@ func k8sMemoryToDocker(mem string) string {
 	}
 	return mem
 }
+
+var _ BackendAPI = (*CLIBackend)(nil)

@@ -2120,3 +2120,5 @@ func toELBv2HealthProto(proto string) elbv2types.ProtocolEnum {
 		return elbv2types.ProtocolEnumHttp
 	}
 }
+
+var _ BackendAPI = (*AWSBackend)(nil)

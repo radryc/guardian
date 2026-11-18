@@ -457,12 +457,12 @@ func TestComputeDiff_DetectsImageDrift(t *testing.T) {
 	diff := applyThenDiff(t, assets, func(b *Backend) {
 		// Simulate someone running the container with a different image.
 		name := computeContainerNameForTest("local", "p", "i", "svc", 0)
-		c, ok, _ := b.GetContainer(name)
+		c, ok, _ := b.GetContainer(context.Background(), name)
 		if !ok {
 			return
 		}
 		c.Image = "demo:v2-manual"
-		_ = b.UpsertContainer(c)
+		_ = b.UpsertContainer(context.Background(), c)
 	})
 	if diff.Drift == nil || diff.Drift.Status == "InSync" {
 		t.Errorf("expected Drifted for image change, got %+v", diff.Drift)
@@ -473,12 +473,12 @@ func TestComputeDiff_DetectsStoppedContainer(t *testing.T) {
 	assets := baseComputeAssets("demo:v1")
 	diff := applyThenDiff(t, assets, func(b *Backend) {
 		name := computeContainerNameForTest("local", "p", "i", "svc", 0)
-		c, ok, _ := b.GetContainer(name)
+		c, ok, _ := b.GetContainer(context.Background(), name)
 		if !ok {
 			return
 		}
 		c.Running = false
-		_ = b.UpsertContainer(c)
+		_ = b.UpsertContainer(context.Background(), c)
 	})
 	if diff.Drift == nil || diff.Drift.Status == "InSync" {
 		t.Errorf("expected Drifted for stopped container, got %+v", diff.Drift)
@@ -495,13 +495,13 @@ func TestComputeDiff_DetectsEnvDrift(t *testing.T) {
 	assets := baseComputeAssets("demo:v1")
 	diff := applyThenDiff(t, assets, func(b *Backend) {
 		name := computeContainerNameForTest("local", "p", "i", "svc", 0)
-		c, ok, _ := b.GetContainer(name)
+		c, ok, _ := b.GetContainer(context.Background(), name)
 		if !ok {
 			return
 		}
 		// Change the env value out-of-band.
 		c.Env["APP_MODE"] = "staging"
-		_ = b.UpsertContainer(c)
+		_ = b.UpsertContainer(context.Background(), c)
 	})
 	if diff.Drift == nil || diff.Drift.Status == "InSync" {
 		t.Errorf("expected Drifted for env change, got %+v", diff.Drift)
@@ -519,13 +519,13 @@ func TestComputeDiff_DetectsPortDrift(t *testing.T) {
 	}}
 	diff := applyThenDiff(t, assets, func(b *Backend) {
 		name := computeContainerNameForTest("local", "p", "i", "svc", 0)
-		c, ok, _ := b.GetContainer(name)
+		c, ok, _ := b.GetContainer(context.Background(), name)
 		if !ok {
 			return
 		}
 		// Remove all ports.
 		c.Ports = nil
-		_ = b.UpsertContainer(c)
+		_ = b.UpsertContainer(context.Background(), c)
 	})
 	if diff.Drift == nil || diff.Drift.Status == "InSync" {
 		t.Errorf("expected Drifted for port removal, got %+v", diff.Drift)
@@ -543,12 +543,12 @@ func TestComputeDiff_DetectsCapabilityDrift(t *testing.T) {
 	}}
 	diff := applyThenDiff(t, assets, func(b *Backend) {
 		name := computeContainerNameForTest("local", "p", "i", "svc", 0)
-		c, ok, _ := b.GetContainer(name)
+		c, ok, _ := b.GetContainer(context.Background(), name)
 		if !ok {
 			return
 		}
 		c.Capabilities = nil // removed out-of-band
-		_ = b.UpsertContainer(c)
+		_ = b.UpsertContainer(context.Background(), c)
 	})
 	if diff.Drift == nil || diff.Drift.Status == "InSync" {
 		t.Errorf("expected Drifted for capability removal, got %+v", diff.Drift)
@@ -567,7 +567,7 @@ func TestVolumeDiff_HashOnlyChange_NotDrift(t *testing.T) {
 	}}
 	diff := applyThenDiff(t, assets, func(b *Backend) {
 		name := driverutil.ResourceName("docker-vol", targetdomain.Placement{Cluster: "local"}, "p", "i", "vol")
-		v, ok, _ := b.GetVolume(name)
+		v, ok, _ := b.GetVolume(context.Background(), name)
 		if !ok {
 			return
 		}
@@ -576,7 +576,7 @@ func TestVolumeDiff_HashOnlyChange_NotDrift(t *testing.T) {
 			v.Labels = map[string]string{}
 		}
 		v.Labels["guardian.hash"] = "manually-changed"
-		_ = b.UpsertVolume(v)
+		_ = b.UpsertVolume(context.Background(), v)
 	})
 	if diff.Drift == nil || diff.Drift.Status != "InSync" {
 		t.Errorf("expected InSync when only volume hash changed, got %+v", diff.Drift)
@@ -604,7 +604,7 @@ func TestLoadBalancerDiff_HashOnlyChange_NotDrift(t *testing.T) {
 	}
 	diff := applyThenDiff(t, assets, func(b *Backend) {
 		name := driverutil.ResourceName("docker-lb", targetdomain.Placement{Cluster: "local"}, "p", "i", "edge")
-		c, ok, _ := b.GetContainer(name)
+		c, ok, _ := b.GetContainer(context.Background(), name)
 		if !ok {
 			return
 		}
@@ -613,7 +613,7 @@ func TestLoadBalancerDiff_HashOnlyChange_NotDrift(t *testing.T) {
 			c.Labels = map[string]string{}
 		}
 		c.Labels["guardian.hash"] = "manually-changed"
-		_ = b.UpsertContainer(c)
+		_ = b.UpsertContainer(context.Background(), c)
 	})
 	if diff.Drift == nil || diff.Drift.Status != "InSync" {
 		t.Errorf("expected InSync when only load balancer hash changed, got %+v", diff.Drift)
@@ -847,7 +847,7 @@ func TestNetworkDiff_DriverDrift(t *testing.T) {
 	}
 	// Mutate the network driver out-of-band.
 	netName := driverutil.ResourceName("docker-net", targetdomain.Placement{Cluster: "local"}, "", "", "mynet")
-	n, ok, _ := backend.GetNetwork(netName)
+	n, ok, _ := backend.GetNetwork(ctx, netName)
 	if !ok {
 		t.Fatalf("network not found after apply")
 	}

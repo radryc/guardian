@@ -43,6 +43,15 @@ RUN apk add --no-cache ca-certificates kubectl yq
 RUN addgroup -S guardian && adduser -S -G guardian guardian && \
   mkdir -p /home/guardian/.kube && chown -R guardian:guardian /home/guardian
 
+# otelc's HTTP and gRPC client instrumentation keeps in-flight spans in
+# goroutine-local storage. A long-lived stream (a client-go watch, the
+# guardian-change subscription) never ends, so every span started later on the
+# same goroutine inherits its trace and the process emits one enormous
+# process-lifetime trace. MonoFS gRPC clients are instrumented manually
+# (internal/store/monofs) and end their spans deterministically, so keep otelc
+# for log<->trace correlation and runtime metrics only.
+ENV OTEL_GO_DISABLED_INSTRUMENTATIONS=nethttp,grpc
+
 LABEL org.opencontainers.image.version=${BUILD_VERSION}
 LABEL org.opencontainers.image.revision=${BUILD_COMMIT}
 LABEL org.opencontainers.image.created=${BUILD_TIME}

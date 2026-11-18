@@ -100,13 +100,13 @@ func (d *GeneratedStackDriver) Check(ctx context.Context, in registry.AssetInput
 		return err
 	}
 	defer cleanup()
-	if err := d.backend.Synthesize(ctx, req); err != nil {
+	if err := d.stackBackend().Synthesize(ctx, req); err != nil {
 		return err
 	}
-	if err := d.backend.CheckEnvironment(ctx, req); err != nil {
+	if err := d.stackBackend().CheckEnvironment(ctx, req); err != nil {
 		return err
 	}
-	current, ok, err := d.backend.GetStack(ctx, req)
+	current, ok, err := d.stackBackend().GetStack(ctx, req)
 	if err != nil {
 		return err
 	}
@@ -122,13 +122,13 @@ func (d *GeneratedStackDriver) Diff(ctx context.Context, in registry.AssetInput)
 		return taskdomain.DriftReport{}, err
 	}
 	defer cleanup()
-	if err := d.backend.Synthesize(ctx, req); err != nil {
+	if err := d.stackBackend().Synthesize(ctx, req); err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	if err := d.backend.CheckEnvironment(ctx, req); err != nil {
+	if err := d.stackBackend().CheckEnvironment(ctx, req); err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	current, ok, err := d.backend.GetStack(ctx, req)
+	current, ok, err := d.stackBackend().GetStack(ctx, req)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -145,7 +145,7 @@ func (d *GeneratedStackDriver) Diff(ctx context.Context, in registry.AssetInput)
 	if current.Tags["guardian.hash"] != req.DesiredHash {
 		return changed("generated stack differs from desired hash"), nil
 	}
-	driftStatus, err := d.backend.DetectDrift(ctx, req)
+	driftStatus, err := d.stackBackend().DetectDrift(ctx, req)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -164,13 +164,13 @@ func (d *GeneratedStackDriver) Apply(ctx context.Context, in registry.AssetInput
 		return registry.AssetResult{}, err
 	}
 	defer cleanup()
-	if err := d.backend.Synthesize(ctx, req); err != nil {
+	if err := d.stackBackend().Synthesize(ctx, req); err != nil {
 		return registry.AssetResult{}, err
 	}
-	if err := d.backend.CheckEnvironment(ctx, req); err != nil {
+	if err := d.stackBackend().CheckEnvironment(ctx, req); err != nil {
 		return registry.AssetResult{}, err
 	}
-	stack, err := d.backend.DeployStack(ctx, req)
+	stack, err := d.stackBackend().DeployStack(ctx, req)
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
@@ -193,7 +193,7 @@ func (d *GeneratedStackDriver) Destroy(ctx context.Context, in registry.AssetInp
 		return err
 	}
 	defer cleanup()
-	if err := d.backend.DeleteStack(ctx, req); err != nil {
+	if err := d.stackBackend().DeleteStack(ctx, req); err != nil {
 		return err
 	}
 	d.deleteExecutionRole(ctx, in)

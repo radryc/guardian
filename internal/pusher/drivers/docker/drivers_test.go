@@ -194,12 +194,12 @@ func TestDockerDriversApplyDiffDestroy(t *testing.T) {
 	if apply.Outputs["external-blob.endpoint"] != "http://host.docker.internal:19000" {
 		t.Fatalf("unexpected external object store output: %v", apply.Outputs)
 	}
-	if _, ok, err := backend.GetVolume("docker-vol-main-demo-stack-data"); err != nil {
+	if _, ok, err := backend.GetVolume(ctx, "docker-vol-main-demo-stack-data"); err != nil {
 		t.Fatalf("get volume: %v", err)
 	} else if !ok {
 		t.Fatalf("expected docker volume to be materialized")
 	}
-	if containers, err := backend.ListContainersByAsset("demo", "stack", "app"); err != nil {
+	if containers, err := backend.ListContainersByAsset(ctx, "demo", "stack", "app"); err != nil {
 		t.Fatalf("list containers: %v", err)
 	} else if len(containers) != 2 {
 		t.Fatalf("expected 2 app containers, got %d", len(containers))
@@ -208,7 +208,7 @@ func TestDockerDriversApplyDiffDestroy(t *testing.T) {
 	} else if containers[0].ExtraHosts["host.docker.internal"] != "host-gateway" {
 		t.Fatalf("expected default extra host, got %+v", containers[0].ExtraHosts)
 	}
-	if containers, err := backend.ListContainersByAsset("demo", "stack", "external-blob"); err != nil {
+	if containers, err := backend.ListContainersByAsset(ctx, "demo", "stack", "external-blob"); err != nil {
 		t.Fatalf("list external object store containers: %v", err)
 	} else if len(containers) != 0 {
 		t.Fatalf("expected external object store to avoid container provisioning, got %d containers", len(containers))
@@ -238,7 +238,7 @@ func TestDockerDriversApplyDiffDestroy(t *testing.T) {
 	if destroy.Status != taskdomain.ResultSucceeded {
 		t.Fatalf("destroy status = %q", destroy.Status)
 	}
-	if containers, err := backend.ListContainersByAsset("demo", "stack", "app"); err != nil {
+	if containers, err := backend.ListContainersByAsset(ctx, "demo", "stack", "app"); err != nil {
 		t.Fatalf("list containers after destroy: %v", err)
 	} else if len(containers) != 0 {
 		t.Fatalf("expected app containers to be removed")
@@ -465,7 +465,7 @@ inlineFiles:
 	if apply.Outputs["app.address"] != "app:9090" {
 		t.Fatalf("unexpected address output: %v", apply.Outputs)
 	}
-	containers, err := backend.ListContainersByAsset("demo", "stack", "app")
+	containers, err := backend.ListContainersByAsset(ctx, "demo", "stack", "app")
 	if err != nil {
 		t.Fatalf("list containers: %v", err)
 	}
@@ -530,7 +530,7 @@ func TestDockerSingleContainerApplyRevivesStoppedContainer(t *testing.T) {
 	}
 
 	name := objectStoreName(in)
-	container, ok, err := backend.GetContainer(name)
+	container, ok, err := backend.GetContainer(ctx, name)
 	if err != nil {
 		t.Fatalf("get container: %v", err)
 	}
@@ -538,7 +538,7 @@ func TestDockerSingleContainerApplyRevivesStoppedContainer(t *testing.T) {
 		t.Fatal("expected container")
 	}
 	container.Running = false
-	if err := backend.UpsertContainer(container); err != nil {
+	if err := backend.UpsertContainer(ctx, container); err != nil {
 		t.Fatalf("stop container: %v", err)
 	}
 
@@ -553,7 +553,7 @@ func TestDockerSingleContainerApplyRevivesStoppedContainer(t *testing.T) {
 	if _, err := driver.Apply(ctx, in); err != nil {
 		t.Fatalf("revive apply: %v", err)
 	}
-	container, ok, err = backend.GetContainer(name)
+	container, ok, err = backend.GetContainer(ctx, name)
 	if err != nil {
 		t.Fatalf("get container after revive: %v", err)
 	}
@@ -653,7 +653,7 @@ func TestDockerSingleContainerDiffDetectsStoppedContainer(t *testing.T) {
 			case "Observability":
 				containerName = observabilityName(in)
 			}
-			container, ok, err := backend.GetContainer(containerName)
+			container, ok, err := backend.GetContainer(ctx, containerName)
 			if err != nil {
 				t.Fatalf("get container: %v", err)
 			}
@@ -661,7 +661,7 @@ func TestDockerSingleContainerDiffDetectsStoppedContainer(t *testing.T) {
 				t.Fatalf("expected %s container to exist", tc.assetType)
 			}
 			container.Running = false
-			if err := backend.UpsertContainer(container); err != nil {
+			if err := backend.UpsertContainer(ctx, container); err != nil {
 				t.Fatalf("stop container: %v", err)
 			}
 
@@ -721,7 +721,7 @@ func TestDockerLoadBalancerDiffDetectsStoppedContainer(t *testing.T) {
 		t.Fatalf("expected in sync while running, got %+v", drift)
 	}
 
-	container, ok, err := backend.GetContainer(loadBalancerName(in))
+	container, ok, err := backend.GetContainer(ctx, loadBalancerName(in))
 	if err != nil {
 		t.Fatalf("get container: %v", err)
 	}
@@ -729,7 +729,7 @@ func TestDockerLoadBalancerDiffDetectsStoppedContainer(t *testing.T) {
 		t.Fatal("expected load balancer container to exist")
 	}
 	container.Running = false
-	if err := backend.UpsertContainer(container); err != nil {
+	if err := backend.UpsertContainer(ctx, container); err != nil {
 		t.Fatalf("stop container: %v", err)
 	}
 
@@ -764,7 +764,7 @@ func TestConfigRawPayloadAppliesToDockerConfig(t *testing.T) {
 	if _, err := driver.Apply(ctx, input); err != nil {
 		t.Fatalf("Apply() error = %v", err)
 	}
-	config, ok, err := backend.GetConfig(configName(input, "app-config"))
+	config, ok, err := backend.GetConfig(ctx, configName(input, "app-config"))
 	if err != nil || !ok {
 		t.Fatalf("get config: ok=%v err=%v", ok, err)
 	}
@@ -780,5 +780,125 @@ func writeFile(t *testing.T, ctx context.Context, store *memory.Store, path stri
 		Context: guardianapi.MutationContext{PrincipalID: "guardiand"},
 	}); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func TestDockerVolumeObserveExisting(t *testing.T) {
+	ctx := context.Background()
+	backend := NewBackend()
+	driver := &VolumeDriver{baseDriver{backend: backend}}
+	in := registry.AssetInput{
+		PartitionName: "demo",
+		IntentName:    "stack",
+		Target:        targetdomain.Placement{Cluster: "main"},
+		Asset: taskdomain.AbstractAsset{
+			Type: "Volume",
+			Name: "upstream-data",
+			Properties: map[string]any{
+				"observeExisting": true,
+				"size":            "20Gi",
+				"accessMode":      "ReadWriteOnce",
+			},
+		},
+	}
+
+	// The volume was created outside Guardian, so it does not carry Guardian
+	// labels and does not use Guardian's namespaced volume name.
+	if err := backend.UpsertVolume(ctx, Volume{Name: "upstream-data", Size: "5Gi"}); err != nil {
+		t.Fatalf("seed volume: %v", err)
+	}
+
+	drift, err := driver.Diff(ctx, in)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if drift.Status != "InSync" {
+		t.Fatalf("drift = %+v, want InSync", drift)
+	}
+	health, _, err := driver.ObserveState(ctx, in)
+	if err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	if health == nil || health.Status != taskdomain.HealthHealthy {
+		t.Fatalf("health = %+v, want healthy", health)
+	}
+
+	result, err := driver.Apply(ctx, in)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if result.Outputs["name"] != "upstream-data" {
+		t.Fatalf("outputs = %+v, want name upstream-data", result.Outputs)
+	}
+	volume, ok, err := backend.GetVolume(ctx, "upstream-data")
+	if err != nil || !ok {
+		t.Fatalf("get volume: ok=%v err=%v", ok, err)
+	}
+	if volume.Hash != "" || len(volume.Labels) != 0 || volume.Size != "5Gi" {
+		t.Fatalf("apply must not modify an observed volume, got %+v", volume)
+	}
+
+	if err := driver.Destroy(ctx, in); err != nil {
+		t.Fatalf("destroy: %v", err)
+	}
+	if _, ok, err := backend.GetVolume(ctx, "upstream-data"); err != nil || !ok {
+		t.Fatalf("destroy must keep an observed volume: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestDockerVolumeObserveExistingMissing(t *testing.T) {
+	ctx := context.Background()
+	backend := NewBackend()
+	driver := &VolumeDriver{baseDriver{backend: backend}}
+	in := registry.AssetInput{
+		PartitionName: "demo",
+		IntentName:    "stack",
+		Target:        targetdomain.Placement{Cluster: "main"},
+		Asset: taskdomain.AbstractAsset{
+			Type:       "Volume",
+			Name:       "upstream-data",
+			Properties: map[string]any{"observeExisting": true},
+		},
+	}
+
+	drift, err := driver.Diff(ctx, in)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if drift.Status != "Changed" {
+		t.Fatalf("drift = %+v, want Changed", drift)
+	}
+	if _, err := driver.Apply(ctx, in); err == nil {
+		t.Fatalf("apply must fail when the observed volume is missing")
+	}
+}
+
+func TestDockerVolumeObserveExistingExplicitID(t *testing.T) {
+	ctx := context.Background()
+	backend := NewBackend()
+	driver := &VolumeDriver{baseDriver{backend: backend}}
+	in := registry.AssetInput{
+		PartitionName: "demo",
+		IntentName:    "stack",
+		Target:        targetdomain.Placement{Cluster: "main"},
+		Asset: taskdomain.AbstractAsset{
+			Type: "Volume",
+			Name: "upstream-data",
+			Properties: map[string]any{
+				"observeExisting": true,
+				"existingID":      "legacy-data",
+			},
+		},
+	}
+	if err := backend.UpsertVolume(ctx, Volume{Name: "legacy-data"}); err != nil {
+		t.Fatalf("seed volume: %v", err)
+	}
+
+	drift, err := driver.Diff(ctx, in)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if drift.Status != "InSync" {
+		t.Fatalf("drift = %+v, want InSync", drift)
 	}
 }

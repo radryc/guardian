@@ -282,6 +282,7 @@ func BuildTaskFromManifest(intentState *statedomain.IntentState, manifestContent
 		IntentSpecHash:    intentState.IntentSpecHash,
 		AssetVersionIDs:   copyStringMap(intentState.AssetVersionIDs),
 		AssetVersions:     copyStringMap(intentState.AssetVersions),
+		PriorOutputs:      nonNilStringMap(intentState.Outputs),
 		ForceApply:        forceApply,
 		Assets:            assets,
 		CreatedAt:         time.Now().UTC(),
@@ -333,6 +334,7 @@ func BuildTaskFromExisting(current *taskdomain.Task, op taskdomain.Operation) *t
 	next.CreatedAt = time.Now().UTC()
 	next.AssetVersionIDs = copyStringMap(current.AssetVersionIDs)
 	next.AssetVersions = copyStringMap(current.AssetVersions)
+	next.PriorOutputs = copyStringMap(current.PriorOutputs)
 	next.Assets = cloneAssets(current.Assets)
 	return &next
 }
@@ -363,6 +365,13 @@ func copyAnyMap(in map[string]any) map[string]any {
 		out[key] = value
 	}
 	return out
+}
+
+func nonNilStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return map[string]string{}
+	}
+	return copyStringMap(in)
 }
 
 func copyStringMap(in map[string]string) map[string]string {

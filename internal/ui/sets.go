@@ -58,6 +58,7 @@ func (s *Server) handleSets(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		all = s.filterSetsForAccess(r.Context(), all, visible)
 		children := map[string]int{}
 		member := map[string]bool{}
 		for _, set := range all {
@@ -130,6 +131,17 @@ func (s *Server) handleSetRoute(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
+		}
+		if s.readFilterActive(r.Context()) {
+			all, err := store.List(r.Context())
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			if !visibleSetIDs(all, visible)[id] {
+				writeSetError(w, os.ErrNotExist)
+				return
+			}
 		}
 		set.Partitions = filterVisiblePartitions(set.Partitions, visible)
 		writeJSON(w, http.StatusOK, SetView{Set: *set, PartitionCount: len(set.Partitions)})

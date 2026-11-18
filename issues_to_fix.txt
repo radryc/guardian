@@ -1,1 +1,0 @@
- ewhen asset crash looping , after pushing new one need to manually reconsile to new one be picked, this is wrong check logic

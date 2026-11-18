@@ -159,7 +159,9 @@ func main() {
 		log.Fatalf("configure kubernetes backend: %v", err)
 	}
 	reg := registry.New()
-	kubernetesdriver.Register(reg, kubeBackend, secrets.NewStoreResolver(store))
+	if err := kubernetesdriver.Register(reg, kubeBackend, secrets.NewStoreResolver(store)); err != nil {
+		log.Fatalf("register kubernetes drivers: %v", err)
+	}
 	runtime := &runtimepkg.Runtime{
 		QueuePath:               paths.QueueDir(pusherName),
 		WorkerID:                workerID,

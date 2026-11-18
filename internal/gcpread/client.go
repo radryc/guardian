@@ -232,6 +232,15 @@ func (c *Client) QueryMetric(ctx context.Context, q MetricQuery) ([]MetricSeries
 		aligner = "ALIGN_MEAN"
 	}
 	params.Set("aggregation.perSeriesAligner", aligner)
+	// Cloud Monitoring rejects timeSeries queries whose alignment period is
+	// zero or below 10s. Doctor does not send one, so default to one minute
+	// (60 points over a one-hour window) unless the caller asks for something
+	// else.
+	alignmentPeriod := q.AlignmentPeriod
+	if alignmentPeriod < 10*time.Second {
+		alignmentPeriod = time.Minute
+	}
+	params.Set("aggregation.alignmentPeriod", fmt.Sprintf("%ds", int64(alignmentPeriod.Seconds())))
 	params.Set("aggregation.crossSeriesReducer", "REDUCE_SUM")
 	params.Add("aggregation.groupByFields", "resource.type")
 	params.Add("aggregation.groupByFields", "resource.labels.location")

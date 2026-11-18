@@ -1,22 +1,17 @@
 package common
 
-import (
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
-)
+import "github.com/radryc/guardian/internal/metrics"
 
 var (
-	partitionRuntimeLoadsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "guardian",
-		Subsystem: "runtime",
-		Name:      "partition_loads_total",
-		Help:      "Total partition runtime loads by source.",
-	}, []string{"source"})
+	partitionRuntimeLoadsTotal = metrics.NewCounter(
+		"guardian_runtime_partition_loads_total",
+		"Total partition runtime loads by source.",
+		"source",
+	)
 
-	partitionRuntimeIntentStatesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "guardian",
-		Subsystem: "runtime",
-		Name:      "partition_intent_states_loaded_total",
-		Help:      "Total intent states materialized from partition runtime loads by source.",
-	}, []string{"source"})
+	partitionRuntimeIntentStatesTotal = metrics.NewCounter(
+		"guardian_runtime_partition_intent_states_loaded_total",
+		"Total intent states materialized from partition runtime loads by source.",
+		"source",
+	)
 )

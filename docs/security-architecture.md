@@ -1,6 +1,6 @@
 # Guardian Security Architecture
 
-Status: regenerated from source, October 2026.
+Status: regenerated from source, November 2026.
 Companion to [Architecture](architecture.md) and [Logical flows](logical-flow.md).
 
 This document describes the security properties the code actually has, the
@@ -81,12 +81,12 @@ Trust boundaries:
 
 | Boundary | What crosses it | Current control |
 |---|---|---|
-| Browser → `guardiand` | Bearer/session identity, mutations | OIDC verification in observe mode; optional login wall; no per-route authz |
+| Browser → `guardiand` | Bearer/session identity, mutations | OIDC verification in observe mode; optional login wall (`--require-ui-auth`); `authorizeMutation` (`CanModify`/`IsAdmin`) when access policy enabled; CSP and `Origin`/`Referer` checks |
 | CI/repo → MonoFS | Desired-state YAML, access policy | MonoFS token/principal; no signature on `repo notify` |
 | `guardianctl` → MonoFS | Desired state, registry, tasks | MonoFS bearer token; no Guardian-side authorization |
 | `guardiand` → MonoFS | All runtime state, queues | MonoFS token; writable control-plane role |
 | Pusher → MonoFS | Task claims/results, state registration | MonoFS token; pusher can write any Guardian path its token allows |
-| Doctor/Grafana → AWS pusher `:19090` | Queries, observed state, source uploads | Static bearer token; empty token disables auth |
+| Doctor/Grafana → AWS pusher `:19090` | Queries, observed state, source uploads | Loopback default; bearer token + scopes (`read`, `diff`, `admin`), optional TLS/mTLS, rate limits; `/v1/aws/observed/diff` disabled by default |
 | AWS pusher → AWS | IAM/CFN/service calls | Assumed role `GuardianCdkDeployRole`; ambient SDK credentials for some paths |
 | Pusher → target cluster/host | Workloads, volumes, secrets | Cluster RBAC, Docker socket (host root equivalent) |
 
@@ -126,14 +126,13 @@ metadata and is also used for REST-style version calls.
    allowed through; identity is attached when present.
 4. Optionally wraps with `WebAuthenticator` when an OIDC client secret and
    redirect URL are configured. Browser login is enabled; `RequireLogin` is
-   only true when `MONOFS_AUTHZ_ENFORCE_UI=true`.
+   only true when `GUARDIAN_REQUIRE_UI_AUTH=true` (or `MONOFS_OIDC_ISSUER` / an access policy is configured).
 
 Consequences:
 
 - Default: anyone who can reach the UI can read and mutate.
-- With `MONOFS_AUTHZ_ENFORCE_UI=true`: `/api/m2m/*` and `/api/access/policy`
-  are login-exempt; `/api/m2m/overview` and `/api/m2m/partitions*` also lack
-  their own M2M check, so they remain anonymous.
+- With `GUARDIAN_REQUIRE_UI_AUTH=true`: `/api/m2m/*` and `/api/access/policy`
+  are login-exempt; `/api/m2m/*` routes enforce `requireM2MAccess`.
 - `/api/client-config` is not login-exempt, so enabling the login wall can
   break token-based CLI discovery (the CLI sends a discovery token, not a
   browser session).
@@ -153,13 +152,13 @@ an identity hint, not a short-lived credential.
 
 ### 3.4 Machine-to-machine (M2M)
 
-- `/api/m2m/pushers*` and `/api/m2m/federation/partitions` use
-  `requireM2MAccess`: internal token, admin role, or loopback.
-- `/api/m2m/overview` and `/api/m2m/partitions*` do **not** call
-  `requireM2MAccess`.
-- The AWS pusher read API uses a single static bearer token; an empty token
-  means no authentication at all.
-- There is no mTLS, token rotation, or per-caller scope anywhere in Guardian.
+- `/api/m2m/pushers*`, `/api/m2m/federation/partitions`, `/api/m2m/overview`,
+  and `/api/m2m/partitions*` use `requireM2MAccess`: internal token, admin role,
+  or loopback.
+- The AWS and GCP pusher read APIs support TLS/mTLS, scoped bearer tokens
+  (`--awsread-scopes` / `--read-scopes`), rotating token files
+  (`--awsread-token-file` / `--read-token-file`), and per-caller rate limits.
+  On loopback, an empty token disables auth.
 
 ### 3.5 Loopback trust
 
@@ -172,25 +171,23 @@ proxy configuration.
 
 ## 4. Authorization
 
-### 4.1 Control-plane deploy guard
-
-`internal/authz.Guard` wraps partition reconcile when
-`--authz-enforce-deploy` is set. It:
-
-- loads grants from a JSON file and/or inline JSON;
-- checks `ActionModify` for the partition;
-- returns nil when enforcement is off, the evaluator is nil, the partition is
-  empty (error path), or the request has no/anonymous identity.
-
-The anonymous bypass is intentional for trusted automation, but it means the
-guard is **not an authentication boundary**: omitting the `Authorization`
-header bypasses it. Loading errors are logged and disable enforcement rather
-than failing startup.
-
-### 4.2 Access policy
+### 4.1 Access policy is the only authorization source
 
 `internal/access` compiles a repo-managed ACL from `/.access/envs/<env>.yaml`
-against the live partition catalog.
+against the live partition catalog. It drives UI read filtering, UI mutations,
+and the reconciler's partition-modify guard (`AuthorizeModify`). Internal
+scheduler work is attributed to the `guardiand` policy client; if that client
+is removed from the ACL, automation fails closed.
+
+The former `internal/authz.Guard` and `MONOFS_AUTHZ_GRANTS_JSON` path were
+removed. There is no second grant store and no anonymous bypass outside the
+policy: a missing policy under enforcement denies modifications.
+
+### 4.2 Access policy scopes
+
+`role: admin` is scope-aware: a wildcard admin is global; an admin grant with
+explicit partition/log/trace/MonoFS lists is limited to those resources.
+Deny rules override allows; metrics are always visible.
 
 | Mode | Raw path | Enforce | Behaviour |
 |---|---|---|---|
@@ -202,8 +199,10 @@ Implemented decisions:
 
 - `CanSee` — used by the UI for partition GETs and overview filtering.
 - `CanModify` — used by `Server.authorizeMutation` for every partition-scoped
-  mutation (bundle save, delete, reconcile, validate, activity).
-- `IsAdmin` — used for registry/repo/set/scan/unmanaged mutations.
+  mutation (bundle save, delete, reconcile, validate, activity) and for set
+  membership changes (add/remove partitions).
+- `IsAdmin` — used for registry/repo/scan/unmanaged mutations and set metadata
+  (create/rename/move/delete).
 - `FilterPartitions` — read filtering.
 
 Still not implemented:
@@ -227,6 +226,7 @@ policy is disabled, and permissive in observe mode.
 | Delete partition | Observe-mode OIDC | No | `CanModify` | No | Required indirectly |
 | Reconcile | Observe-mode OIDC | No | `CanModify` | Yes (optional, anonymous bypass) | Required indirectly |
 | Register pusher/repo | Observe-mode OIDC | No | `IsAdmin` | No | Required indirectly |
+| Add/remove set partitions | Observe-mode OIDC | No | `CanModify` on every added/removed partition | No | Required indirectly |
 | Create scan/set/unmanaged association | Observe-mode OIDC | No | `IsAdmin` | No | Required indirectly |
 | Read pusher token | Observe-mode OIDC | No | Permissioned by network/token | No | — |
 | M2M overview/partitions | M2M token/admin/loopback | — | `requireM2MAccess` | — | — |
@@ -292,10 +292,10 @@ and prevents self-service registry changes unless the policy says otherwise.
 
 | Link | Transport | Protection |
 |---|---|---|
-| Browser ↔ `guardiand` | HTTP | None by default; no TLS, HSTS, or secure-cookie enforcement in Guardian |
+| Browser ↔ `guardiand` | HTTP/HTTPS | Security headers (CSP, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`), `Origin`/`Referer` checks, optional HSTS (`--enable-hsts`) |
 | `guardiand` ↔ MonoFS | gRPC | `insecure.NewCredentials()`; token in metadata |
 | Pusher ↔ MonoFS | gRPC | Same |
-| Doctor ↔ AWS pusher | HTTP `:19090` | Static bearer token; no TLS |
+| Doctor ↔ AWS pusher | HTTP/HTTPS `:19090` | Scoped bearer token + optional TLS/mTLS; plain HTTP on loopback by default |
 | AWS pusher ↔ AWS | HTTPS | AWS SDK TLS |
 | Webhook | HTTP/HTTPS | HMAC signature; no timestamp/nonce |
 | `guardiand` ↔ OTLP collector | gRPC | `Insecure` defaults true in telemetry config |
@@ -304,8 +304,9 @@ and prevents self-service registry changes unless the policy says otherwise.
 
 - MonoFS is the system of record; encryption at rest is a MonoFS/deployment
   concern, not enforced by Guardian.
-- The compliance publisher copies state/archive objects to S3 but does not set
-  SSE/KMS, Object Lock, or retries. Errors are dropped.
+- The compliance publisher copies state/archive objects to S3 with
+  exponential-backoff retries, `OnError` reporting, optional SSE-KMS
+  (`SSEKMSKeyID`), and optional Object Lock (`GOVERNANCE`/`COMPLIANCE`).
 - The local FS store writes files `0644` and keeps every version forever.
 - Bootstrap-generated token files are `0644`; shared encryption keys are
   `0644`.
@@ -317,8 +318,10 @@ and prevents self-service registry changes unless the policy says otherwise.
 - Mutations carry `PrincipalID`, `Reason`, and `CorrelationID` in the MonoFS
   mutation context.
 - Task results and state include task IDs and timestamps.
-- Task specs are deleted after processing and are not archived, so the exact
-  executed payload is not reconstructible from the archive.
+- Task specs are archived under `/partitions/<p>/.state/tasks/<taskID>.json`
+  with configurable retention (`GUARDIAN_TASK_ARCHIVE_RETENTION` /
+  `GUARDIAN_TASK_ARCHIVE_MAX_AGE`) and a SHA-256 hash chain; queue files are
+  deleted after processing.
 - The UI exposes events and deployments, but there is no tamper-evident audit
   log and no guaranteed retention.
 
@@ -328,8 +331,8 @@ and prevents self-service registry changes unless the policy says otherwise.
 
 | Listener | Default | Auth | Notes |
 |---|---|---|---|
-| Guardian UI/API | `guardian.uiListenAddress`; bootstrap uses `:8090` | OIDC observe-mode; optional login wall | Serves `/metrics` unauthenticated; static directory listing under `/static/` |
-| AWS read API | `127.0.0.1:19090` (loopback default) | Static token; empty disables auth (warned if non-loopback) | Plaintext HTTP; no timeouts |
+| Guardian UI/API | `guardian.uiListenAddress`; bootstrap uses `:8090` | OIDC observe-mode; optional login wall (`--require-ui-auth`) | CSP, security headers, `Origin`/`Referer` checks; static directory listing under `/static/` |
+| AWS read API | `127.0.0.1:19090` (loopback default) | Scoped bearer token (`--awsread-token` / `--awsread-token-file`); empty disables auth on loopback only | Optional TLS/mTLS, per-caller rate limits, body limits, server timeouts; `/v1/aws/observed/diff` disabled by default (`--awsread-enable-diff=false`) |
 | Pusher metrics/OTLP | exporter-dependent | Usually none | Depends on collector configuration |
 | MonoFS | deployment-specific | Token | Outside Guardian's code |
 
@@ -346,19 +349,20 @@ pusher.
 
 ### 8.1 Images
 
-- All Guardian images run as root; none declares `USER`.
+- All Guardian images (`Dockerfile`, `Dockerfile.pusher-{aws,docker,gcp,k8s}`)
+  run as non-root `USER guardian`.
 - The Docker pusher mounts `/var/run/docker.sock` and runs with
   `--network host` in bootstrap. Docker socket access is host-root equivalent.
 - Drivers can create privileged/capability-added containers from asset
   properties.
-- No seccomp, AppArmor, read-only root filesystem, or capability drop is set.
+- No seccomp, AppArmor, read-only root filesystem, or capability drop is set in
+  the default manifests.
 
 ### 8.2 Build and release
 
-- CI runs only `go test ./...`; there is no image build, SBOM, signing, or
-  vulnerability scan in the repository workflows.
-- The only release workflow deletes `go.sum`, which removes checksum
-  verification for downstream builds.
+- CI runs `go vet`, `go test`, UI build, and vulnerability scanning; SBOM
+  generation and image signing are not yet wired in the repository workflows.
+- The former release workflow that deleted `go.sum` has been removed.
 - Dockerfile build args use `BUILD_VERSION`/`BUILD_COMMIT`, while
   `guardianctl image build` passes `VERSION`/`COMMIT`; images often have empty
   version metadata.
@@ -379,12 +383,11 @@ pusher.
 
 ### 8.4 Path traversal and write scope
 
-Several user-controlled names are joined into store or filesystem paths
-without rejecting `..`:
+UI bundle save, CLI `--partition`/`--env`, repo import, and queue cleanup now
+validate names with `internal/paths/validate.go` to reject `..` and slashes.
+Other callers still construct store or filesystem paths from names without a
+full `safejoin` audit:
 
-- UI bundle save: intent names → `/partitions/<p>/intents/<name>.yaml`.
-- CLI `--partition`, `--env`, and payload paths.
-- Queue cleanup: `result.Pusher` and `result.TaskID` → delete paths.
 - Observed collector: assembly dir + template/stack name.
 - AWS source staging: entrypoint paths.
 
@@ -405,13 +408,13 @@ namespaces, which limits but does not eliminate the impact.
 | T4 | Pusher result path traversal deletes other partitions | Queue identity validated; traversal names rejected at CLI/UI/repo boundaries | Residual: other name-to-path callers not audited | Critical |
 | T5 | Attacker reads pusher tokens | `/api/pushers` returns token; store readable | Token grants observed API access | High |
 | T6 | Attacker exfiltrates env secrets via pusher registration | `TokenEnv` + attacker `observedApiUrl` | UI can set both; observed client sends token to URL | High |
-| T7 | AWS read API abused to read logs/traces/templates | Loopback default; warning on non-loopback without token | Residual: plaintext HTTP, static token, no scopes/timeouts | High |
-| T8 | RCE on AWS pusher via observed diff | Token | `appCommand` + npm install; arbitrary source | Critical |
+| T7 | AWS read API abused to read logs/traces/templates | Loopback default; scoped tokens + rotation; TLS/mTLS; rate/body limits | Residual: plain HTTP on loopback by default; empty token allowed on loopback | Medium |
+| T8 | RCE on AWS pusher via observed diff | Disabled by default (`--awsread-enable-diff=false`); requires `diff` scope | Residual: `appCommand` + npm install when explicitly enabled | High |
 | T9 | AWS credential theft via CDK app | Assumed role | Static creds in child env; malicious package scripts | Critical |
 | T10 | Secret values leak into state/results/logs | Partial UI masking | Plaintext outputs, 0644 files, argv, no redaction | High |
 | T11 | Cross-tenant path traversal via names | Shared validation on UI/CLI/repo/result boundaries | Residual: observed collector and other path builders not fully audited | High |
 | T12 | IAM privilege escalation via generated roles | Per-intent role | `Resource:"*"`, `iam:CreateRole/AttachRolePolicy/PassRole` | High |
-| T13 | Supply-chain compromise of pusher image | None | Root, no signing/SBOM, `go.sum` deletion workflow | High |
+| T13 | Supply-chain compromise of pusher image | Non-root `USER guardian`; `go.sum` preserved; CI vet/vuln scan | Residual: no SBOM or image signing in CI | Medium |
 | T14 | Denial of service by scan/refresh loops | Timeouts in some calls | Unbounded listings, 500-stack refresh, no rate limit | Medium |
 | T15 | Webhook replay/forgery | HMAC body | No timestamp/nonce; secret may be in config | Medium |
 | T16 | Deploy guard bypass | Optional enforce | Anonymous identity allowed; errors disable; CLI bypasses | High |
@@ -463,15 +466,15 @@ concrete controls.
 
 Minimum hardening for a non-development deployment:
 
-- [ ] Set `MONOFS_AUTHZ_ENFORCE_UI=true` and configure OIDC.
+- [ ] Set `GUARDIAN_REQUIRE_UI_AUTH=true` and configure OIDC.
 - [ ] Put the UI behind an authenticating proxy/mTLS if browser login is not
       used.
-- [ ] Bind the UI to a private interface; do not expose `/metrics` publicly.
+- [ ] Bind the UI to a private interface or behind TLS/authenticating proxy.
 - [ ] Keep the AWS read API on `127.0.0.1:19090` or a private interface, and
       always set `--awsread-token` (prefer mTLS in front).
 - [ ] Do not enable `/v1/aws/observed/diff` for untrusted callers.
-- [ ] Set `GUARDIAN_AUTHZ_ENFORCE_DEPLOY=true` and provide grants; do not rely
-      on anonymous automation.
+- [ ] Set `GUARDIAN_ACCESS_ENFORCE=true`, publish `access/envs/<env>.yaml`,
+      and keep the `guardiand` client in the ACL so scheduler work is attributed.
 - [ ] Use a MonoFS token scoped to the guardian namespace and rotate it.
 - [ ] Avoid `Secret.properties.value`; use payload files or external secret
       references and restrict read access to the partition.

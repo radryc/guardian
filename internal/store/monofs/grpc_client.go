@@ -2,6 +2,8 @@ package monofs
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -123,6 +125,45 @@ type GRPCClient struct {
 	stopHeartbeat chan struct{}
 	stopOnce      sync.Once
 	heartbeatWG   sync.WaitGroup
+}
+
+// RepoCommit returns the commit currently projected for a repository display
+// path. It is used by in-cluster image builds so a new repository revision can
+// produce a new image tag without a local checkout. Repository metadata lives
+// on the storage nodes, so this reads from any node via GetRepositoryInfo.
+func (c *GRPCClient) RepoCommit(ctx context.Context, displayPath string) (string, error) {
+	displayPath = strings.Trim(displayPath, "/")
+	if displayPath == "" {
+		return "", fmt.Errorf("repository display path is required")
+	}
+	sum := sha256.Sum256([]byte(displayPath))
+	storageID := hex.EncodeToString(sum[:])
+
+	c.mu.Lock()
+	nodes := make([]nodeTarget, 0, len(c.nodeClients))
+	for id, client := range c.nodeClients {
+		nodes = append(nodes, nodeTarget{id: id, client: client})
+	}
+	c.mu.Unlock()
+	if len(nodes) == 0 {
+		return "", fmt.Errorf("no monofs nodes are connected")
+	}
+
+	var lastErr error
+	for _, node := range nodes {
+		callCtx, cancel := c.withTimeout(ctx)
+		resp, err := node.client.GetRepositoryInfo(callCtx, &pb.GetRepositoryInfoRequest{StorageId: storageID})
+		cancel()
+		if err != nil {
+			lastErr = mapRPCError(err)
+			continue
+		}
+		if commit := strings.TrimSpace(resp.GetCommitHash()); commit != "" {
+			return commit, nil
+		}
+		return "", fmt.Errorf("repository %q has no commit hash", displayPath)
+	}
+	return "", lastErr
 }
 
 type nodeTarget struct {

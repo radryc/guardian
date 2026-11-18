@@ -9,9 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -22,7 +22,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/radryc/guardian/internal/access"
 	"github.com/radryc/guardian/internal/buildinfo"
 	historydomain "github.com/radryc/guardian/internal/domain/history"
@@ -360,7 +359,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // authorizeMutation applies the repo-managed access policy to every mutating
 // UI/API request. Partition-scoped mutations require the maintainer/admin role
-// on that partition; other registry/scan/set mutations require admin. The
+// on that partition; set membership is scoped to the partitions being added or
+// removed; creating a set requires the maintainer/admin role on at least one
+// partition; other registry/scan/set-metadata mutations require admin. The
 // check is a no-op when the access policy is disabled (the default), and it is
 // permissive in observe mode, mirroring read filtering.
 func (s *Server) authorizeMutation(r *http.Request) bool {
@@ -380,10 +381,79 @@ func (s *Server) authorizeMutation(r *http.Request) bool {
 	if strings.HasPrefix(r.URL.Path, "/api/repos/") && strings.HasSuffix(r.URL.Path, "/notify") {
 		return s.requestCanReadAccessPolicy(r)
 	}
+	// Creating an empty set is allowed for principals who can modify at least
+	// one partition; membership is still checked partition-by-partition below.
+	if r.URL.Path == "/api/sets" && r.Method == http.MethodPost {
+		return s.access.CanModifyAny(r.Context())
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/sets/") {
+		return s.authorizeSetMutation(r)
+	}
 	if name, ok := partitionFromAPIPath(r.URL.Path); ok {
 		return s.access.CanModify(r.Context(), name)
 	}
 	return s.access.IsAdmin(r.Context())
+}
+
+// maxSetMutationBytes caps the set-membership request body the authorization
+// guard will inspect. It mirrors the handler's own limit.
+const maxSetMutationBytes = 1 << 20
+
+// authorizeSetMutation scopes virtual-set membership changes to the partitions
+// they name. Sets are metadata only, but adding or removing a partition still
+// affects the navigation entry for that partition, so the caller must hold the
+// maintainer/admin role on every partition the request touches. Set creation is
+// handled by authorizeMutation (maintainer/admin on at least one partition);
+// rename/move/delete remains a platform-wide admin operation because it changes
+// shared navigation for partitions the caller may not manage.
+func (s *Server) authorizeSetMutation(r *http.Request) bool {
+	if setAPIAction(r.URL.Path) != "partitions" || r.Method != http.MethodPost {
+		return s.access.IsAdmin(r.Context())
+	}
+	if r.Body == nil {
+		return s.access.IsAdmin(r.Context())
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxSetMutationBytes+1))
+	if err != nil {
+		return false
+	}
+	if len(body) > maxSetMutationBytes {
+		return false
+	}
+	// The handler decodes the same body, so restore it before returning.
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	var req setPartitionsRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		// A malformed body cannot mutate anything; let the handler emit 400.
+		return true
+	}
+	for _, partition := range append(append([]string(nil), req.Add...), req.Remove...) {
+		partition = strings.TrimSpace(partition)
+		if partition == "" {
+			continue
+		}
+		if !s.access.CanModify(r.Context(), partition) {
+			return false
+		}
+	}
+	return true
+}
+
+// setAPIAction returns the action segment of /api/sets/{id}/{action} (empty
+// when the path has no action).
+func setAPIAction(path string) string {
+	const prefix = "/api/sets/"
+	if !strings.HasPrefix(path, prefix) {
+		return ""
+	}
+	rest := strings.Trim(strings.TrimPrefix(path, prefix), "/")
+	if rest == "" {
+		return ""
+	}
+	if idx := strings.Index(rest, "/"); idx >= 0 {
+		return rest[idx+1:]
+	}
+	return ""
 }
 
 func partitionFromAPIPath(path string) (string, bool) {
@@ -407,7 +477,6 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("/static/", s.static)
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/health", s.handleHealth)
-	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/api/v1/status/buildinfo", s.handleBuildInfo)
 	mux.HandleFunc("/api/client-config", s.handleClientConfig)
 	mux.HandleFunc("/api/me", s.handleMe)
@@ -1354,12 +1423,17 @@ func writeMethodNotAllowed(w http.ResponseWriter, allowed ...string) {
 }
 
 func requestIsLoopback(r *http.Request) bool {
-	host := strings.TrimSpace(r.RemoteAddr)
-	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
-		host = parsedHost
+	if r == nil || hasForwardingHeaders(r) {
+		return false
 	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return isLoopbackRemote(r.RemoteAddr)
+}
+
+func hasForwardingHeaders(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return len(r.Header.Values("X-Forwarded-For")) > 0 || len(r.Header.Values("Forwarded")) > 0
 }
 
 func requestCanReadClientConfig(r *http.Request, expectedToken string) bool {

@@ -41,9 +41,12 @@ type AssetInput struct {
 	Asset         taskdomain.AbstractAsset
 	Assets        map[string]taskdomain.AbstractAsset
 	AssetVersions map[string]string
-	Target        targetdomain.Placement
-	Store         guardianapi.ReadStore
-	WorkerID      string
+	// Outputs is the intent's prior output snapshot, captured when the task was
+	// created. Drivers read it instead of loading live runtime state.
+	Outputs  map[string]string
+	Target   targetdomain.Placement
+	Store    guardianapi.ReadStore
+	WorkerID string
 }
 
 type AssetResult struct {

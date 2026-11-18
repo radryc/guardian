@@ -5,26 +5,33 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/radryc/guardian/internal/gcpobserve"
+	"golang.org/x/time/rate"
 )
+
+const defaultMaxRequestBodyBytes = 1 << 20
 
 // Handler serves the GCP read API over HTTP.
 type Handler struct {
-	Reader     Reader
-	Token      string
-	TokenFile  string
-	PromQL     PromQLProxier
-	PusherName string
-	Project    string
-	Region     string
-	Scopes     map[string]struct{}
-	Observed   ObservedProvider
+	Reader              Reader
+	Token               string
+	TokenFile           string
+	PromQL              PromQLProxier
+	PusherName          string
+	Project             string
+	Region              string
+	Scopes              map[string]struct{}
+	Observed            ObservedProvider
+	MaxRequestBodyBytes int64
+	rateState
 }
 
 // ObservedProvider is the observed-state surface served by the read API.
@@ -81,6 +88,30 @@ func (h *Handler) WithScopes(scopes ...string) *Handler {
 	return h
 }
 
+// WithMaxRequestBodyBytes bounds request bodies that are not already limited by
+// a handler-specific decoder.
+func (h *Handler) WithMaxRequestBodyBytes(limit int64) *Handler {
+	if limit > 0 {
+		h.MaxRequestBodyBytes = limit
+	}
+	return h
+}
+
+// WithRateLimit configures a per-caller token bucket. Non-positive values
+// disable rate limiting.
+func (h *Handler) WithRateLimit(requestsPerSecond float64, burst int) *Handler {
+	if requestsPerSecond <= 0 {
+		return h
+	}
+	if burst <= 0 {
+		burst = 1
+	}
+	h.rateLimit = rate.Limit(requestsPerSecond)
+	h.rateBurst = burst
+	h.rateBuckets = make(map[string]*rate.Limiter)
+	return h
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimSuffix(r.URL.Path, "/")
 	if !h.tokenValid(r) {
@@ -90,6 +121,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !h.scopeAllowed() {
 		writeError(w, http.StatusForbidden, "insufficient token scope")
 		return
+	}
+	if path != "/healthz" && !h.allowRate(r) {
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+		return
+	}
+	if r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
+		r.Body = http.MaxBytesReader(w, r.Body, h.requestBodyLimit())
 	}
 
 	switch {
@@ -164,6 +203,51 @@ func (h *Handler) scopeAllowed() bool {
 	return ok
 }
 
+func (h *Handler) allowRate(r *http.Request) bool {
+	if h.rateLimit <= 0 {
+		return true
+	}
+	key := strings.TrimSpace(r.Header.Get("Authorization"))
+	if key == "" {
+		host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+		if err != nil {
+			host = strings.TrimSpace(r.RemoteAddr)
+		}
+		key = "ip:" + host
+	}
+	now := time.Now()
+	h.rateMu.Lock()
+	defer h.rateMu.Unlock()
+	limiter, ok := h.rateBuckets[key]
+	if !ok {
+		limiter = rate.NewLimiter(h.rateLimit, h.rateBurst)
+		h.rateBuckets[key] = limiter
+		if len(h.rateBuckets) > 4096 {
+			for candidate, bucket := range h.rateBuckets {
+				if candidate != key && bucket.TokensAt(now) >= float64(h.rateBurst) {
+					delete(h.rateBuckets, candidate)
+				}
+			}
+		}
+	}
+	return limiter.AllowN(now, 1)
+}
+
+func (h *Handler) requestBodyLimit() int64 {
+	if h.MaxRequestBodyBytes > 0 {
+		return h.MaxRequestBodyBytes
+	}
+	return defaultMaxRequestBodyBytes
+}
+
+// rateState is embedded in Handler to keep the public type readable.
+type rateState struct {
+	rateMu      sync.Mutex
+	rateLimit   rate.Limit
+	rateBurst   int
+	rateBuckets map[string]*rate.Limiter
+}
+
 func (h *Handler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	descriptors, err := h.Reader.ListMetrics(r.Context(), r.URL.Query().Get("namespace"), r.URL.Query().Get("metric"))
 	if err != nil {
@@ -192,14 +276,20 @@ func (h *Handler) handleQueryMetric(w http.ResponseWriter, r *http.Request) {
 		}
 		dimensions[strings.TrimPrefix(key, "dim.")] = list[0]
 	}
+	alignmentPeriod, err := parseAlignmentPeriod(values.Get("alignment_period"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid alignment_period: "+err.Error())
+		return
+	}
 	series, err := h.Reader.QueryMetric(r.Context(), MetricQuery{
-		Namespace:    values.Get("namespace"),
-		MetricName:   values.Get("metric"),
-		Dimensions:   dimensions,
-		ResourceType: values.Get("resource_type"),
-		Aligner:      values.Get("aligner"),
-		From:         from,
-		To:           to,
+		Namespace:       values.Get("namespace"),
+		MetricName:      values.Get("metric"),
+		Dimensions:      dimensions,
+		ResourceType:    values.Get("resource_type"),
+		Aligner:         values.Get("aligner"),
+		AlignmentPeriod: alignmentPeriod,
+		From:            from,
+		To:              to,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
@@ -323,6 +413,20 @@ func (h *Handler) handlePromQL(w http.ResponseWriter, r *http.Request, suffix st
 	}
 	w.WriteHeader(status)
 	_, _ = w.Write(payload)
+}
+
+func parseAlignmentPeriod(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	if parsed, err := time.ParseDuration(raw); err == nil {
+		return parsed, nil
+	}
+	if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		return time.Duration(seconds) * time.Second, nil
+	}
+	return 0, errors.New("expected a duration (for example 60s) or seconds")
 }
 
 func parseTime(raw string, fallback time.Time) (time.Time, error) {

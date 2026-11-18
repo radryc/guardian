@@ -167,6 +167,7 @@ type GuardianImageBuild struct {
 	KanikoMirror             string `yaml:"kanikoMirror"`
 	KanikoDockerConfigSecret string `yaml:"kanikoDockerConfigSecret"`
 	BuildKitImage            string `yaml:"buildKitImage"`
+	BuildKitPVCSize          string `yaml:"buildKitPVCSize"`
 }
 
 type GuardianLocalRegistry struct {
@@ -297,6 +298,7 @@ func DefaultConfig() Config {
 				KanikoMirror:             "registry.strata.local:5000",
 				KanikoDockerConfigSecret: "",
 				BuildKitImage:            "moby/buildkit:latest",
+				BuildKitPVCSize:          "20Gi",
 			},
 			LocalRegistry: GuardianLocalRegistry{
 				Name:      "monofs-registry",
@@ -499,6 +501,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("BUILDKITD_IMAGE"); v != "" {
 		cfg.Guardian.ImageBuild.BuildKitImage = v
+	}
+	if v := os.Getenv("BUILDKIT_PVC_SIZE"); v != "" {
+		cfg.Guardian.ImageBuild.BuildKitPVCSize = v
 	}
 	if v := os.Getenv("LOCAL_REGISTRY_HOST"); v != "" {
 		cfg.Guardian.LocalRegistry.Host = v

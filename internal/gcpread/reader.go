@@ -89,8 +89,12 @@ type MetricQuery struct {
 	Dimensions   map[string]string
 	ResourceType string
 	Aligner      string
-	From         time.Time
-	To           time.Time
+	// AlignmentPeriod is forwarded as aggregation.alignmentPeriod. Cloud
+	// Monitoring requires at least 10s; QueryMetric defaults to 60s when this
+	// is unset so metric queries do not fail with INVALID_ARGUMENT.
+	AlignmentPeriod time.Duration
+	From            time.Time
+	To              time.Time
 }
 
 // LogQuery selects Cloud Logging entries.

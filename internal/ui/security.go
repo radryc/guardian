@@ -50,7 +50,7 @@ func (s *Server) checkUIAuth(w http.ResponseWriter, r *http.Request) bool {
 	if !identity.IsAnonymous() {
 		return true
 	}
-	if s.allowLoopbackAnonymous && isLoopbackRemote(r.RemoteAddr) {
+	if s.allowLoopbackAnonymous && requestIsLoopback(r) {
 		return true
 	}
 	w.Header().Set("WWW-Authenticate", "Bearer")
@@ -85,7 +85,7 @@ func (s *Server) checkMutationOrigin(w http.ResponseWriter, r *http.Request) boo
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Authorization"))), "bearer ") {
 		return true
 	}
-	if s.allowLoopbackAnonymous && isLoopbackRemote(r.RemoteAddr) {
+	if s.allowLoopbackAnonymous && requestIsLoopback(r) {
 		return true
 	}
 	if len(r.Cookies()) > 0 {

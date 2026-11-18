@@ -3,8 +3,8 @@ package results
 import (
 	"testing"
 
-	"github.com/prometheus/client_golang/prometheus"
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
+	"github.com/radryc/guardian/internal/metrics"
 )
 
 func TestRecordAssetObservationsReplacesHistoricStatus(t *testing.T) {
@@ -47,28 +47,15 @@ func TestRecordAssetObservationsReplacesHistoricStatus(t *testing.T) {
 
 func observationStatuses(t *testing.T, partition, intent, asset, assetType string) map[string]int {
 	t.Helper()
-	metricFamilies, err := prometheus.DefaultGatherer.Gather()
-	if err != nil {
-		t.Fatalf("gather metrics: %v", err)
-	}
 	statuses := map[string]int{}
-	for _, family := range metricFamilies {
-		if family.GetName() != "guardian_asset_observation_current" {
+	for _, sample := range metrics.Snapshot("guardian_asset_observation_current") {
+		if sample.Labels["guardian_target_partition"] != partition ||
+			sample.Labels["guardian_target_intent"] != intent ||
+			sample.Labels["guardian_target_asset"] != asset ||
+			sample.Labels["guardian_asset_type"] != assetType {
 			continue
 		}
-		for _, metric := range family.GetMetric() {
-			labels := map[string]string{}
-			for _, label := range metric.GetLabel() {
-				labels[label.GetName()] = label.GetValue()
-			}
-			if labels["guardian_target_partition"] != partition ||
-				labels["guardian_target_intent"] != intent ||
-				labels["guardian_target_asset"] != asset ||
-				labels["guardian_asset_type"] != assetType {
-				continue
-			}
-			statuses[labels["status"]]++
-		}
+		statuses[sample.Labels["status"]]++
 	}
 	return statuses
 }

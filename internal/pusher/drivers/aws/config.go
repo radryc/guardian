@@ -34,7 +34,7 @@ func (d *ConfigDriver) Check(ctx context.Context, in registry.AssetInput) error 
 	if err != nil {
 		return err
 	}
-	_, _, err = d.backend.GetParameter(ctx, configParameterName(spec, in))
+	_, _, err = d.parameterBackend().GetParameter(ctx, configParameterName(spec, in))
 	return err
 }
 
@@ -54,7 +54,7 @@ func (d *ConfigDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 	data := configFileValue(files)
 
 	name := configParameterName(spec, in)
-	param, ok, err := d.backend.GetParameter(ctx, name)
+	param, ok, err := d.parameterBackend().GetParameter(ctx, name)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -96,7 +96,7 @@ func (d *ConfigDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 	name := configParameterName(spec, in)
 
 	tags := awsTags(in, hash)
-	if err := d.backend.UpsertParameter(ctx, Parameter{
+	if err := d.parameterBackend().UpsertParameter(ctx, Parameter{
 		Name:  name,
 		Type:  paramType,
 		Value: value,
@@ -117,7 +117,7 @@ func (d *ConfigDriver) Destroy(ctx context.Context, in registry.AssetInput) erro
 	if err != nil {
 		return err
 	}
-	return d.backend.DeleteParameter(ctx, configParameterName(spec, in))
+	return d.parameterBackend().DeleteParameter(ctx, configParameterName(spec, in))
 }
 
 func decodeConfig(in registry.AssetInput) (*assetdefs.ConfigSpec, error) {

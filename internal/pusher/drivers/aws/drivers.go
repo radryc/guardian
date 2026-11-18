@@ -2,6 +2,7 @@ package awsdriver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -13,7 +14,6 @@ import (
 	assetdomain "github.com/radryc/guardian/internal/domain/asset"
 	assetdefs "github.com/radryc/guardian/internal/domain/assets"
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
-	orchestratorcommon "github.com/radryc/guardian/internal/orchestrator/common"
 	probepkg "github.com/radryc/guardian/internal/pusher/drivers/probe"
 	"github.com/radryc/guardian/internal/pusher/driverutil"
 	"github.com/radryc/guardian/internal/pusher/registry"
@@ -23,10 +23,93 @@ import (
 )
 
 type baseDriver struct {
-	backend  BackendAPI
-	resolver secrets.Resolver
+	backend BackendAPI
+	// Narrow capabilities let each driver depend on only the resource family
+	// it manages. When nil the accessor falls back to backend, which keeps
+	// direct struct construction in tests working.
+	stack         StackBackend
+	files         FileSystemBackend
+	vpcs          VPCBackend
+	databases     DatabaseBackend
+	parameters    ParameterBackend
+	secretStore   SecretBackend
+	services      ServiceBackend
+	loadBalancers LoadBalancerBackend
+	buckets       BucketBackend
+	logs          LogBackend
+	resolver      secrets.Resolver
 	// executionRoleMode is "shared" (account bootstrap role) or "per-intent".
 	executionRoleMode string
+}
+
+func (d baseDriver) stackBackend() StackBackend {
+	if d.stack != nil {
+		return d.stack
+	}
+	return d.backend
+}
+
+func (d baseDriver) fileSystemBackend() FileSystemBackend {
+	if d.files != nil {
+		return d.files
+	}
+	return d.backend
+}
+
+func (d baseDriver) vpcBackend() VPCBackend {
+	if d.vpcs != nil {
+		return d.vpcs
+	}
+	return d.backend
+}
+
+func (d baseDriver) databaseBackend() DatabaseBackend {
+	if d.databases != nil {
+		return d.databases
+	}
+	return d.backend
+}
+
+func (d baseDriver) parameterBackend() ParameterBackend {
+	if d.parameters != nil {
+		return d.parameters
+	}
+	return d.backend
+}
+
+func (d baseDriver) secretBackend() SecretBackend {
+	if d.secretStore != nil {
+		return d.secretStore
+	}
+	return d.backend
+}
+
+func (d baseDriver) serviceBackend() ServiceBackend {
+	if d.services != nil {
+		return d.services
+	}
+	return d.backend
+}
+
+func (d baseDriver) loadBalancerBackend() LoadBalancerBackend {
+	if d.loadBalancers != nil {
+		return d.loadBalancers
+	}
+	return d.backend
+}
+
+func (d baseDriver) bucketBackend() BucketBackend {
+	if d.buckets != nil {
+		return d.buckets
+	}
+	return d.backend
+}
+
+func (d baseDriver) logBackend() LogBackend {
+	if d.logs != nil {
+		return d.logs
+	}
+	return d.backend
 }
 
 // perIntentExecutionRoles reports whether the driver provisions a
@@ -86,21 +169,35 @@ type Options struct {
 	ExecutionRoleMode string
 }
 
-func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resolver) {
-	RegisterWithOptions(reg, backend, resolver, Options{})
+func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resolver) error {
+	return RegisterWithOptions(reg, backend, resolver, Options{})
 }
 
-func RegisterWithOptions(reg *registry.Registry, backend BackendAPI, resolver secrets.Resolver, opts Options) {
+func RegisterWithOptions(reg *registry.Registry, backend BackendAPI, resolver secrets.Resolver, opts Options) error {
 	if reg == nil {
-		return
+		return errors.New("awsdriver: registry is required")
 	}
 	if backend == nil {
-		backend = NewBackend()
+		return errors.New("awsdriver: backend is required")
 	}
 	if resolver == nil {
 		resolver = secrets.NoopResolver{}
 	}
-	base := baseDriver{backend: backend, resolver: resolver, executionRoleMode: opts.ExecutionRoleMode}
+	base := baseDriver{
+		backend:           backend,
+		stack:             backend,
+		files:             backend,
+		vpcs:              backend,
+		databases:         backend,
+		parameters:        backend,
+		secretStore:       backend,
+		services:          backend,
+		loadBalancers:     backend,
+		buckets:           backend,
+		logs:              backend,
+		resolver:          resolver,
+		executionRoleMode: opts.ExecutionRoleMode,
+	}
 	reg.Register(&CDKStackDriver{base})
 	reg.Register(&GeneratedStackDriver{base})
 	reg.Register(&SecretDriver{base})
@@ -114,6 +211,7 @@ func RegisterWithOptions(reg *registry.Registry, backend BackendAPI, resolver se
 	reg.Register(&NetworkDriver{baseDriver: base})
 	reg.Register(&ObservabilityDriver{base})
 	reg.Register(probepkg.New())
+	return nil
 }
 
 func (d *CDKStackDriver) Type() string { return assetdomain.TypeCDKStack }
@@ -144,7 +242,7 @@ func (d *SecretDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 		return taskdomain.DriftReport{}, fmt.Errorf("expected SecretSpec, got %T", specAny)
 	}
 	if adopted := strings.TrimSpace(spec.ExistingSecret); adopted != "" {
-		_, exists, err := d.backend.GetSecret(ctx, adopted)
+		_, exists, err := d.secretBackend().GetSecret(ctx, adopted)
 		if err != nil {
 			return taskdomain.DriftReport{}, err
 		}
@@ -160,19 +258,15 @@ func (d *SecretDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 			return taskdomain.DriftReport{}, err
 		}
 	}
-	state, err := orchestratorcommon.LoadIntentState(ctx, in.Store, in.PartitionName, in.IntentName)
-	if err != nil {
-		return changedDrift(in.Asset.Name, "secret outputs pending"), nil
-	}
 	hash := digest.ContentHash([]byte(value))
-	if stored := strings.TrimSpace(state.Outputs[in.Asset.Name+".valueHash"]); stored != "" {
+	if stored := strings.TrimSpace(in.Outputs[in.Asset.Name+".valueHash"]); stored != "" {
 		if stored != hash {
 			return changedDrift(in.Asset.Name, "secret outputs differ"), nil
 		}
-	} else if strings.TrimSpace(state.Outputs[in.Asset.Name+".value"]) != strings.TrimSpace(value) {
+	} else if strings.TrimSpace(in.Outputs[in.Asset.Name+".value"]) != strings.TrimSpace(value) {
 		return changedDrift(in.Asset.Name, "secret outputs differ"), nil
 	}
-	if strings.TrimSpace(spec.SecretRef) != "" && strings.TrimSpace(state.Outputs[in.Asset.Name+".secretRef"]) != strings.TrimSpace(spec.SecretRef) {
+	if strings.TrimSpace(spec.SecretRef) != "" && strings.TrimSpace(in.Outputs[in.Asset.Name+".secretRef"]) != strings.TrimSpace(spec.SecretRef) {
 		return changedDrift(in.Asset.Name, "secret reference differs"), nil
 	}
 	return inSyncDrift(in.Asset.Name, "secret asset is in sync"), nil
@@ -209,7 +303,7 @@ func (d *SecretDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 	hash := driverutil.CompositeHash(in)
 	tags := awsTags(in, hash)
 
-	secretARN, err := d.backend.UpsertSecret(ctx, Secret{
+	secretARN, err := d.secretBackend().UpsertSecret(ctx, Secret{
 		Name:  secretName,
 		Value: value,
 		Hash:  hash,
@@ -250,13 +344,13 @@ func (d *CDKStackDriver) Check(ctx context.Context, in registry.AssetInput) erro
 	if err := rejectSnapshotApply(req, "check"); err != nil {
 		return err
 	}
-	if err := d.backend.Synthesize(ctx, req); err != nil {
+	if err := d.stackBackend().Synthesize(ctx, req); err != nil {
 		return err
 	}
-	if err := d.backend.CheckEnvironment(ctx, req); err != nil {
+	if err := d.stackBackend().CheckEnvironment(ctx, req); err != nil {
 		return err
 	}
-	current, ok, err := d.backend.GetStack(ctx, req)
+	current, ok, err := d.stackBackend().GetStack(ctx, req)
 	if err != nil {
 		return err
 	}
@@ -275,13 +369,13 @@ func (d *CDKStackDriver) Diff(ctx context.Context, in registry.AssetInput) (task
 	if err := rejectSnapshotApply(req, "diff"); err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	if err := d.backend.Synthesize(ctx, req); err != nil {
+	if err := d.stackBackend().Synthesize(ctx, req); err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	if err := d.backend.CheckEnvironment(ctx, req); err != nil {
+	if err := d.stackBackend().CheckEnvironment(ctx, req); err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	current, ok, err := d.backend.GetStack(ctx, req)
+	current, ok, err := d.stackBackend().GetStack(ctx, req)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -291,7 +385,7 @@ func (d *CDKStackDriver) Diff(ctx context.Context, in registry.AssetInput) (task
 	if current.Tags["guardian.hash"] != req.DesiredHash {
 		return changedDrift(in.Asset.Name, "cloudformation stack differs from desired hash"), nil
 	}
-	driftStatus, err := d.backend.DetectDrift(ctx, req)
+	driftStatus, err := d.stackBackend().DetectDrift(ctx, req)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -310,13 +404,13 @@ func (d *CDKStackDriver) Apply(ctx context.Context, in registry.AssetInput) (reg
 	if err := rejectSnapshotApply(req, "apply"); err != nil {
 		return registry.AssetResult{}, err
 	}
-	if err := d.backend.Synthesize(ctx, req); err != nil {
+	if err := d.stackBackend().Synthesize(ctx, req); err != nil {
 		return registry.AssetResult{}, err
 	}
-	if err := d.backend.CheckEnvironment(ctx, req); err != nil {
+	if err := d.stackBackend().CheckEnvironment(ctx, req); err != nil {
 		return registry.AssetResult{}, err
 	}
-	stack, err := d.backend.DeployStack(ctx, req)
+	stack, err := d.stackBackend().DeployStack(ctx, req)
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
@@ -350,7 +444,7 @@ func (d *CDKStackDriver) Destroy(ctx context.Context, in registry.AssetInput) er
 	if err := rejectSnapshotApply(req, "destroy"); err != nil {
 		return err
 	}
-	return d.backend.DeleteStack(ctx, req)
+	return d.stackBackend().DeleteStack(ctx, req)
 }
 
 func rejectSnapshotApply(req StackRequest, operation string) error {

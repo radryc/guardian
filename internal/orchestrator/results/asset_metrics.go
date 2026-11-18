@@ -4,18 +4,14 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
+	"github.com/radryc/guardian/internal/metrics"
 	"github.com/radryc/guardian/internal/observability"
 )
 
-var assetObservationCurrent = promauto.NewGaugeVec(prometheus.GaugeOpts{
-	Namespace: "guardian",
-	Subsystem: "asset",
-	Name:      "observation_current",
-	Help:      "Latest asset health/readiness observation; value is always 1.",
-}, []string{
+var assetObservationCurrent = metrics.NewGauge(
+	"guardian_asset_observation_current",
+	"Latest asset health/readiness observation; value is always 1.",
 	"guardian_target_partition",
 	"guardian_target_intent",
 	"guardian_target_asset",
@@ -23,7 +19,7 @@ var assetObservationCurrent = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	"service",
 	"status",
 	"readiness",
-})
+)
 
 var (
 	assetObservationMu     sync.Mutex

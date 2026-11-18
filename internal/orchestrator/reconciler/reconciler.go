@@ -21,6 +21,7 @@ import (
 	statedomain "github.com/radryc/guardian/internal/domain/state"
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
 	"github.com/radryc/guardian/internal/historyquery"
+	"github.com/radryc/guardian/internal/keyedmutex"
 	"github.com/radryc/guardian/internal/orchestrator/common"
 	"github.com/radryc/guardian/internal/orchestrator/dispatcher"
 	"github.com/radryc/guardian/internal/paths"
@@ -59,7 +60,7 @@ type Reconciler struct {
 	backlogTarget  int           // outstanding tasks considered healthy
 	minRateLimit   float64       // adaptive floor in partitions per second
 	currentRate    float64       // current adaptive ceiling applied to the limiter
-	partitionLocks sync.Map
+	partitionLocks *keyedmutex.Locks
 	reconcileMu    sync.Mutex // serialises full sweeps so paced runs cannot overlap
 
 	// authorize optionally gates externally-triggered partition reconciles
@@ -76,8 +77,7 @@ type Reconciler struct {
 	shardIndex            int
 	shardCount            int
 
-	cdkMemoMu        sync.RWMutex
-	cdkPayloadHashes map[string]string // "partition/intent" → fingerprint
+	cdkMemo *cdkMemo // "partition/intent" → generated-stack fingerprint
 }
 
 // SetShardConfig configures deterministic consistent-hash partition sharding
@@ -361,8 +361,9 @@ func NewReconcilerWithOptions(store guardianapi.Store, dispatcher *dispatcher.Di
 		intervalStr:           intervalStr,
 		staleTaskAfter:        staleTaskAfter,
 		parallelism:           defaultParallelism(),
+		partitionLocks:        keyedmutex.New(),
 		scheduledFingerprints: make(map[string]string),
-		cdkPayloadHashes:      make(map[string]string),
+		cdkMemo:               newCDKMemo(),
 	}
 }
 
@@ -452,9 +453,8 @@ func (r *Reconciler) ReconcilePartition(ctx context.Context, partitionName strin
 			return fmt.Errorf("reconcile %s: %w", partitionName, err)
 		}
 	}
-	partitionLock := r.partitionLock(partitionName)
-	partitionLock.Lock()
-	defer partitionLock.Unlock()
+	unlock := r.partitionLocks.Lock(partitionName)
+	defer unlock()
 	return r.reconcilePartition(ctx, partitionName, force, false)
 }
 
@@ -467,29 +467,25 @@ func (r *Reconciler) ForceApplyPartition(ctx context.Context, partitionName stri
 			return fmt.Errorf("reconcile %s: %w", partitionName, err)
 		}
 	}
-	partitionLock := r.partitionLock(partitionName)
-	partitionLock.Lock()
-	defer partitionLock.Unlock()
+	unlock := r.partitionLocks.Lock(partitionName)
+	defer unlock()
 	return r.reconcilePartition(ctx, partitionName, force, true)
 }
 
-type readFileWithInfoStore interface {
-	ReadFileWithInfo(ctx context.Context, logicalPath string) ([]byte, guardianapi.FileInfo, error)
-}
-
-func readFileWithStat(ctx context.Context, store guardianapi.Store, logicalPath string) ([]byte, guardianapi.FileInfo, error) {
-	if rwi, ok := store.(readFileWithInfoStore); ok {
-		return rwi.ReadFileWithInfo(ctx, logicalPath)
-	}
-	content, err := store.ReadFile(ctx, logicalPath)
+func readFileWithStat(ctx context.Context, store guardianapi.ReadStore, logicalPath string) ([]byte, guardianapi.FileInfo, error) {
+	content, version, exists, err := store.ReadFileVersioned(ctx, logicalPath)
 	if err != nil {
 		return nil, guardianapi.FileInfo{}, err
 	}
-	info, err := store.Stat(ctx, logicalPath)
-	if err != nil {
-		return nil, guardianapi.FileInfo{}, err
+	if !exists {
+		return nil, guardianapi.FileInfo{}, os.ErrNotExist
 	}
-	return content, info, nil
+	return content, guardianapi.FileInfo{
+		Path:      logicalPath,
+		Size:      int64(len(content)),
+		VersionID: version.VersionID,
+		ModTime:   version.CommittedAt,
+	}, nil
 }
 
 func (r *Reconciler) reconcilePartition(ctx context.Context, partitionName string, force bool, forceApply bool) error {
@@ -1180,11 +1176,6 @@ func (r *Reconciler) partitionNames(ctx context.Context) ([]string, error) {
 	}
 	sort.Strings(names)
 	return names, nil
-}
-
-func (r *Reconciler) partitionLock(partitionName string) *sync.Mutex {
-	lock, _ := r.partitionLocks.LoadOrStore(partitionName, &sync.Mutex{})
-	return lock.(*sync.Mutex)
 }
 
 // ─── Scheduler management ─────────────────────────────────────────────────────

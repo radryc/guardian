@@ -8,18 +8,28 @@ import (
 
 var ErrConflict = errors.New("guardianapi: version conflict")
 
+// VersionedReader returns content and its authoritative version atomically.
+// It is part of ReadStore because callers must not fall back to a racy
+// read + Stat sequence: optimistic concurrency across replicas depends on the
+// content and its version being read together.
+type VersionedReader interface {
+	ReadFileVersioned(ctx context.Context, logicalPath string) (content []byte, version FileVersion, exists bool, err error)
+}
+
+// PagedDirLister lists large directories without materialising every entry.
+// It is part of ReadStore so callers never have to choose between a paged and
+// an unpaged scan based on a runtime type assertion.
+type PagedDirLister interface {
+	ListDirPage(ctx context.Context, logicalDir string, opts DirListOptions) (DirListPage, error)
+}
+
 // ReadStore provides read-only access to the logical filesystem.
 type ReadStore interface {
 	ReadFile(ctx context.Context, logicalPath string) ([]byte, error)
 	ListDir(ctx context.Context, logicalDir string) ([]DirEntry, error)
 	Stat(ctx context.Context, logicalPath string) (FileInfo, error)
-}
-
-// VersionedReader returns content and its authoritative version atomically.
-// Stores that cannot provide this may omit it; callers must fall back to the
-// legacy read + ListVersions path.
-type VersionedReader interface {
-	ReadFileVersioned(ctx context.Context, logicalPath string) (content []byte, version FileVersion, exists bool, err error)
+	VersionedReader
+	PagedDirLister
 }
 
 type DirListOptions struct {
@@ -31,10 +41,6 @@ type DirListPage struct {
 	Entries    []DirEntry `json:"entries"`
 	NextOffset int        `json:"nextOffset"`
 	HasMore    bool       `json:"hasMore"`
-}
-
-type PagedDirLister interface {
-	ListDirPage(ctx context.Context, logicalDir string, opts DirListOptions) (DirListPage, error)
 }
 
 // WatchStore provides change notifications for logical path prefixes.

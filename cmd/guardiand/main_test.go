@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -468,5 +469,23 @@ func seedRawFile(t *testing.T, ctx context.Context, store guardianapi.WriteStore
 		Context: guardianapi.MutationContext{PrincipalID: "test", Reason: "seed fixture"},
 	}); err != nil {
 		t.Fatalf("UpsertFiles(%s) error = %v", logicalPath, err)
+	}
+}
+
+func TestApplyHTTPServerTimeouts(t *testing.T) {
+	srv := &http.Server{}
+	applyHTTPServerTimeouts(srv)
+
+	if srv.ReadHeaderTimeout != 10*time.Second {
+		t.Fatalf("ReadHeaderTimeout = %v, want 10s", srv.ReadHeaderTimeout)
+	}
+	if srv.ReadTimeout != 30*time.Second {
+		t.Fatalf("ReadTimeout = %v, want 30s", srv.ReadTimeout)
+	}
+	if srv.WriteTimeout != 60*time.Second {
+		t.Fatalf("WriteTimeout = %v, want 60s", srv.WriteTimeout)
+	}
+	if srv.IdleTimeout != 120*time.Second {
+		t.Fatalf("IdleTimeout = %v, want 120s", srv.IdleTimeout)
 	}
 }

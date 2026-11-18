@@ -5,8 +5,8 @@
 Guardian is a declarative deployment control plane. Desired state lives in
 MonoFS as partitions and intents; Guardian compiles them into typed assets,
 computes drift, and queues tasks; pusher workers claim those tasks and execute
-DIFF → CHECK → APPLY (or DESTROY) against Kubernetes, Docker, AWS, or a local
-backend.
+DIFF → CHECK → APPLY (or DESTROY) against Kubernetes, Docker, AWS, GCP, or a
+local backend.
 
 Guardian has no database of its own: **MonoFS is the store and the message
 bus**. Partitions, intents, runtime state, queues, archives, and the platform
@@ -23,9 +23,10 @@ model and trust boundaries.
 | --- | --- |
 | `guardiand` | Control plane: reconciler, result processor, observed collector, alerting, UI/API |
 | `guardianctl` | Operator CLI: partitions, intents, repos, pushers, AWS, images, bootstrap |
-| `guardian-pusher-k8s` | Kubernetes driver (client-go or kubectl) |
+| `guardian-pusher-k8s` | Kubernetes driver (client-go or kubectl), optional observed read API |
 | `guardian-pusher-docker` | Docker driver |
 | `guardian-pusher-aws` | AWS driver (CDK + SDK), account scans, observed read API (`:19090`) |
+| `guardian-pusher-gcp` | GCP driver (OpenTofu + SDK), Cloud Asset Inventory, GCP read API (`:19091`) |
 | `guardian-pusher-local` | In-process reference drivers for dev/dogfood |
 | `guardian-docker` | Inspect/diff guardian-labelled Docker resources |
 
@@ -71,6 +72,7 @@ go build -o guardian-pusher-docker ./cmd/guardian-pusher-docker
 make guardian-build                                  # guardiand image
 make pusher-docker-image-build
 make pusher-k8s-image-build
+make pusher-gcp-image-build
 ```
 
 ## Quick start

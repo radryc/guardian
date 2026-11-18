@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"sort"
 	"strings"
 
@@ -174,16 +175,15 @@ func (c *ClientBackend) ensureNamespace(ctx context.Context, namespace string) e
 	return nil
 }
 
-func (c *ClientBackend) UpsertConfigMap(cm ConfigMap) error {
-	ctx := context.Background()
+func (c *ClientBackend) UpsertConfigMap(ctx context.Context, cm ConfigMap) error {
 	if err := c.ensureNamespace(ctx, cm.Namespace); err != nil {
 		return err
 	}
 	return c.applyObject(ctx, configMapManifest(cm))
 }
 
-func (c *ClientBackend) GetConfigMap(namespace, name string) (ConfigMap, bool, error) {
-	raw, ok, err := c.getObject(context.Background(), configMapsGVR, namespace, name)
+func (c *ClientBackend) GetConfigMap(ctx context.Context, namespace, name string) (ConfigMap, bool, error) {
+	raw, ok, err := c.getObject(ctx, configMapsGVR, namespace, name)
 	if err != nil || !ok {
 		return ConfigMap{}, ok, err
 	}
@@ -194,20 +194,19 @@ func (c *ClientBackend) GetConfigMap(namespace, name string) (ConfigMap, bool, e
 	return cm, true, nil
 }
 
-func (c *ClientBackend) DeleteConfigMap(namespace, name string) error {
-	return c.deleteObject(context.Background(), configMapsGVR, namespace, name)
+func (c *ClientBackend) DeleteConfigMap(ctx context.Context, namespace, name string) error {
+	return c.deleteObject(ctx, configMapsGVR, namespace, name)
 }
 
-func (c *ClientBackend) UpsertClaim(claim PersistentVolumeClaim) error {
-	ctx := context.Background()
+func (c *ClientBackend) UpsertClaim(ctx context.Context, claim PersistentVolumeClaim) error {
 	if err := c.ensureNamespace(ctx, claim.Namespace); err != nil {
 		return err
 	}
 	return c.applyObject(ctx, claimManifest(claim))
 }
 
-func (c *ClientBackend) GetClaim(namespace, name string) (PersistentVolumeClaim, bool, error) {
-	raw, ok, err := c.getObject(context.Background(), claimsGVR, namespace, name)
+func (c *ClientBackend) GetClaim(ctx context.Context, namespace, name string) (PersistentVolumeClaim, bool, error) {
+	raw, ok, err := c.getObject(ctx, claimsGVR, namespace, name)
 	if err != nil || !ok {
 		return PersistentVolumeClaim{}, ok, err
 	}
@@ -218,16 +217,20 @@ func (c *ClientBackend) GetClaim(namespace, name string) (PersistentVolumeClaim,
 	return claim, true, nil
 }
 
-func (c *ClientBackend) DeleteClaim(namespace, name string) error {
-	return c.deleteObject(context.Background(), claimsGVR, namespace, name)
+func (c *ClientBackend) DeleteClaim(ctx context.Context, namespace, name string) error {
+	return c.deleteObject(ctx, claimsGVR, namespace, name)
 }
 
-func (c *ClientBackend) UpsertDeployment(deployment Deployment) error {
-	ctx := context.Background()
+func (c *ClientBackend) UpsertDeployment(ctx context.Context, deployment Deployment) error {
 	if err := c.ensureNamespace(ctx, deployment.Namespace); err != nil {
 		return err
 	}
 	for _, item := range deploymentManifestItems(deployment) {
+		if kind, _ := item["kind"].(string); kind == "Deployment" {
+			if err := c.clearDeploymentEnvConflicts(ctx, item); err != nil {
+				return err
+			}
+		}
 		if err := c.applyObject(ctx, item); err != nil {
 			return err
 		}
@@ -235,8 +238,48 @@ func (c *ClientBackend) UpsertDeployment(deployment Deployment) error {
 	return nil
 }
 
-func (c *ClientBackend) GetDeployment(namespace, name string) (Deployment, bool, error) {
-	ctx := context.Background()
+// clearDeploymentEnvConflicts removes stale valueFrom fields from a live
+// Deployment when Guardian's desired manifest sets the same env var to a
+// literal value. Server-side apply will not delete a field owned by another
+// manager, and Kubernetes rejects an env var carrying both value and
+// valueFrom.
+func (c *ClientBackend) clearDeploymentEnvConflicts(ctx context.Context, desired map[string]any) error {
+	u := &unstructured.Unstructured{Object: desired}
+	resource, err := c.resourceFor(u.GroupVersionKind())
+	if err != nil {
+		return err
+	}
+	iface := resource.Namespace(u.GetNamespace())
+	existing, err := iface.Get(ctx, u.GetName(), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("get Deployment/%s: %w", u.GetName(), err)
+	}
+	desiredNormalized, err := normalizeManifest(desired)
+	if err != nil {
+		return err
+	}
+	patch, err := deploymentEnvConflictPatch(desiredNormalized, existing.Object)
+	if err != nil {
+		return err
+	}
+	if len(patch) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("encode env conflict patch for Deployment/%s: %w", u.GetName(), err)
+	}
+	if _, err := iface.Patch(ctx, u.GetName(), types.JSONPatchType, data, metav1.PatchOptions{FieldManager: c.fieldManager}); err != nil {
+		return fmt.Errorf("clear env conflicts on Deployment/%s: %w", u.GetName(), err)
+	}
+	log.Printf("[Kubernetes] cleared %d stale env valueFrom field(s) on Deployment %s/%s", len(patch), u.GetNamespace(), u.GetName())
+	return nil
+}
+
+func (c *ClientBackend) GetDeployment(ctx context.Context, namespace, name string) (Deployment, bool, error) {
 	deploymentGVR, err := c.deploymentGVR()
 	if err != nil {
 		return Deployment{}, false, err
@@ -267,8 +310,7 @@ func (c *ClientBackend) deploymentGVR() (schema.GroupVersionResource, error) {
 	return mapping.Resource, nil
 }
 
-func (c *ClientBackend) DeleteDeployment(namespace, name string) error {
-	ctx := context.Background()
+func (c *ClientBackend) DeleteDeployment(ctx context.Context, namespace, name string) error {
 	deploymentGVR, err := c.deploymentGVR()
 	if err != nil {
 		return err
@@ -279,16 +321,15 @@ func (c *ClientBackend) DeleteDeployment(namespace, name string) error {
 	return c.deleteObject(ctx, configMapsGVR, namespace, inlineConfigMapName(name))
 }
 
-func (c *ClientBackend) UpsertService(service Service) error {
-	ctx := context.Background()
+func (c *ClientBackend) UpsertService(ctx context.Context, service Service) error {
 	if err := c.ensureNamespace(ctx, service.Namespace); err != nil {
 		return err
 	}
 	return c.applyObject(ctx, serviceManifest(service))
 }
 
-func (c *ClientBackend) GetService(namespace, name string) (Service, bool, error) {
-	raw, ok, err := c.getObject(context.Background(), servicesGVR, namespace, name)
+func (c *ClientBackend) GetService(ctx context.Context, namespace, name string) (Service, bool, error) {
+	raw, ok, err := c.getObject(ctx, servicesGVR, namespace, name)
 	if err != nil || !ok {
 		return Service{}, ok, err
 	}
@@ -299,20 +340,19 @@ func (c *ClientBackend) GetService(namespace, name string) (Service, bool, error
 	return service, true, nil
 }
 
-func (c *ClientBackend) DeleteService(namespace, name string) error {
-	return c.deleteObject(context.Background(), servicesGVR, namespace, name)
+func (c *ClientBackend) DeleteService(ctx context.Context, namespace, name string) error {
+	return c.deleteObject(ctx, servicesGVR, namespace, name)
 }
 
-func (c *ClientBackend) UpsertNetworkPolicy(policy NetworkPolicy) error {
-	ctx := context.Background()
+func (c *ClientBackend) UpsertNetworkPolicy(ctx context.Context, policy NetworkPolicy) error {
 	if err := c.ensureNamespace(ctx, policy.Namespace); err != nil {
 		return err
 	}
 	return c.applyObject(ctx, networkPolicyManifest(policy))
 }
 
-func (c *ClientBackend) GetNetworkPolicy(namespace, name string) (NetworkPolicy, bool, error) {
-	raw, ok, err := c.getObject(context.Background(), networkPoliciesGVR, namespace, name)
+func (c *ClientBackend) GetNetworkPolicy(ctx context.Context, namespace, name string) (NetworkPolicy, bool, error) {
+	raw, ok, err := c.getObject(ctx, networkPoliciesGVR, namespace, name)
 	if err != nil || !ok {
 		return NetworkPolicy{}, ok, err
 	}
@@ -323,8 +363,8 @@ func (c *ClientBackend) GetNetworkPolicy(namespace, name string) (NetworkPolicy,
 	return policy, true, nil
 }
 
-func (c *ClientBackend) DeleteNetworkPolicy(namespace, name string) error {
-	return c.deleteObject(context.Background(), networkPoliciesGVR, namespace, name)
+func (c *ClientBackend) DeleteNetworkPolicy(ctx context.Context, namespace, name string) error {
+	return c.deleteObject(ctx, networkPoliciesGVR, namespace, name)
 }
 
 func (c *ClientBackend) podsTerminalFailure(ctx context.Context, namespace string, labels map[string]string) (reason, message, podName string) {
@@ -375,11 +415,11 @@ func waitingFailure(statuses []any) (reason, message string, found bool) {
 	return "", "", false
 }
 
-func (c *ClientBackend) GetPodEvents(namespace, podName string) ([]string, error) {
+func (c *ClientBackend) GetPodEvents(ctx context.Context, namespace, podName string) ([]string, error) {
 	if podName == "" {
 		return nil, nil
 	}
-	list, err := c.client.Resource(eventsGVR).Namespace(namespace).List(context.Background(), metav1.ListOptions{
+	list, err := c.client.Resource(eventsGVR).Namespace(namespace).List(ctx, metav1.ListOptions{
 		FieldSelector: "involvedObject.name=" + podName,
 	})
 	if err != nil {
@@ -413,7 +453,7 @@ func (c *ClientBackend) GetPodEvents(namespace, podName string) ([]string, error
 // ApplyManifest applies a raw (possibly multi-document) manifest via
 // server-side apply. When namespace is non-empty it is applied to documents
 // that do not carry their own namespace.
-func (c *ClientBackend) ApplyManifest(namespace string, manifest []byte) error {
+func (c *ClientBackend) ApplyManifest(ctx context.Context, namespace string, manifest []byte) error {
 	decoder := utilyaml.NewYAMLOrJSONDecoder(bytes.NewReader(manifest), 4096)
 	for {
 		var obj map[string]any
@@ -436,7 +476,7 @@ func (c *ClientBackend) ApplyManifest(namespace string, manifest []byte) error {
 				metadata["namespace"] = namespace
 			}
 		}
-		if err := c.applyObject(context.Background(), obj); err != nil {
+		if err := c.applyObject(ctx, obj); err != nil {
 			return err
 		}
 	}

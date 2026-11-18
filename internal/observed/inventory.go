@@ -162,7 +162,7 @@ func (c *Collector) persistResourceInventory(ctx context.Context, partition stri
 	// processor may have advanced status or queued a task in the meantime.
 	base := statedomain.CloneIntentState(state)
 	state.Resources = statedomain.CloneResourceObservations(resources)
-	state.Timestamps.LastObservedAt = time.Now().UTC()
+	state.Timestamps.LastObservedAt = c.now()
 	updated, err := c.Dispatcher.UpdateIntentState(ctx, partition, intent.Metadata.Name, func(latest *statedomain.IntentState) error {
 		statedomain.MergeIntentState(latest, base, state)
 		return nil

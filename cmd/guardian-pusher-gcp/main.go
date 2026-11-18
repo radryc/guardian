@@ -185,7 +185,9 @@ func main() {
 	}
 
 	reg := registry.New()
-	gcpdriver.Register(reg, backend, secrets.NewStoreResolver(store))
+	if err := gcpdriver.Register(reg, backend, secrets.NewStoreResolver(store)); err != nil {
+		log.Fatalf("register gcp drivers: %v", err)
+	}
 
 	runtime := &runtimepkg.Runtime{
 		QueuePath:               paths.QueueDir(pusherName),

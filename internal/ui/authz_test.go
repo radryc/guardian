@@ -3,13 +3,19 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/radryc/guardian/internal/access"
+	"github.com/radryc/guardian/internal/observability"
 	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/pusher/probes"
+	"github.com/radryc/guardian/internal/registry"
+	setstore "github.com/radryc/guardian/internal/sets"
 	"github.com/radryc/guardian/internal/store/memory"
 	"github.com/radryc/guardian/pkg/guardianapi"
 	coreauthz "github.com/radryc/monofs/pkg/authz"
@@ -80,6 +86,12 @@ func authzRequest(ctx context.Context, method, path string) *http.Request {
 	return req.WithContext(ctx)
 }
 
+func authzJSONRequest(ctx context.Context, method, path, body string) *http.Request {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	return req.WithContext(ctx)
+}
+
 func identityFor(email string) context.Context {
 	return coreauthz.ContextWithIdentity(context.Background(), coreauthz.Identity{Subject: "sub-" + email, Email: email})
 }
@@ -117,6 +129,73 @@ func TestAuthorizeMutationObserveModeIsPermissive(t *testing.T) {
 	srv := newAuthzTestServer(t, false)
 	if !srv.authorizeMutation(authzRequest(identityFor("viewer@example.com"), http.MethodDelete, "/api/partitions/aws-x")) {
 		t.Fatal("observe mode must not enforce mutations")
+	}
+}
+
+func TestAuthorizeMutationSetMembershipScopedToPartitions(t *testing.T) {
+	srv := newAuthzTestServer(t, true)
+	cases := []struct {
+		name  string
+		email string
+		body  string
+		want  bool
+	}{
+		{"maintainer adds own partition", "maintainer@example.com", `{"add":["aws-x"]}`, true},
+		{"maintainer adds foreign partition", "maintainer@example.com", `{"add":["k8s-z"]}`, false},
+		{"maintainer removes own partition", "maintainer@example.com", `{"remove":["aws-x"]}`, true},
+		{"maintainer removes foreign partition", "maintainer@example.com", `{"remove":["k8s-z"]}`, false},
+		{"maintainer mixed add is denied", "maintainer@example.com", `{"add":["aws-x","k8s-z"]}`, false},
+		{"viewer cannot add visible partition", "viewer@example.com", `{"add":["aws-x"]}`, false},
+		{"admin adds any partition", "admin@example.com", `{"add":["k8s-z"]}`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := authzJSONRequest(identityFor(tc.email), http.MethodPost, "/api/sets/core-sre/partitions", tc.body)
+			if got := srv.authorizeMutation(req); got != tc.want {
+				t.Fatalf("authorizeMutation() = %v, want %v", got, tc.want)
+			}
+			if tc.want {
+				// The handler must still be able to decode the body.
+				raw, err := io.ReadAll(req.Body)
+				if err != nil {
+					t.Fatalf("read restored body: %v", err)
+				}
+				if string(raw) != tc.body {
+					t.Fatalf("restored body = %q, want %q", raw, tc.body)
+				}
+			}
+		})
+	}
+}
+
+func TestAuthorizeMutationSetCreateRequiresPartitionMaintainer(t *testing.T) {
+	srv := newAuthzTestServer(t, true)
+	if !srv.authorizeMutation(authzRequest(identityFor("maintainer@example.com"), http.MethodPost, "/api/sets")) {
+		t.Fatal("maintainer should create sets")
+	}
+	if srv.authorizeMutation(authzRequest(identityFor("viewer@example.com"), http.MethodPost, "/api/sets")) {
+		t.Fatal("viewer must not create sets")
+	}
+	if !srv.authorizeMutation(authzRequest(identityFor("admin@example.com"), http.MethodPost, "/api/sets")) {
+		t.Fatal("admin should create sets")
+	}
+	if srv.authorizeMutation(authzRequest(identityFor("maintainer@example.com"), http.MethodPatch, "/api/sets/core-sre")) {
+		t.Fatal("maintainer must not rename sets")
+	}
+}
+
+func TestAuthorizeMutationSetCreateObserveModeIsPermissive(t *testing.T) {
+	srv := newAuthzTestServer(t, false)
+	if !srv.authorizeMutation(authzRequest(identityFor("viewer@example.com"), http.MethodPost, "/api/sets")) {
+		t.Fatal("observe mode must not enforce set creation")
+	}
+}
+
+func TestAuthorizeMutationSetMembershipObserveModeIsPermissive(t *testing.T) {
+	srv := newAuthzTestServer(t, false)
+	req := authzJSONRequest(identityFor("viewer@example.com"), http.MethodPost, "/api/sets/core-sre/partitions", `{"add":["k8s-z"]}`)
+	if !srv.authorizeMutation(req) {
+		t.Fatal("observe mode must not enforce set membership")
 	}
 }
 
@@ -159,5 +238,234 @@ func TestAuthorizeRepoNotifyUsesInternalToken(t *testing.T) {
 	req.Header.Set("X-Guardian-Internal-Token", "internal-token")
 	if !srv.authorizeMutation(req) {
 		t.Fatal("notify with the internal token should be allowed")
+	}
+}
+
+func TestReadFiltersHideInvisiblePartitions(t *testing.T) {
+	srv := newAuthzTestServer(t, true)
+	ctx := identityFor("viewer@example.com")
+
+	probeResults := srv.filterProbes(ctx, []probes.Result{
+		{ProbeID: "visible", Partition: "aws-x"},
+		{ProbeID: "hidden", Partition: "k8s-z"},
+	})
+	if len(probeResults) != 1 || probeResults[0].Partition != "aws-x" {
+		t.Fatalf("probes = %+v, want only aws-x", probeResults)
+	}
+
+	identities := srv.filterIdentities(ctx, []observability.IdentityRecord{
+		{Service: "visible", Partition: "aws-x"},
+		{Service: "hidden", Partition: "k8s-z"},
+	})
+	if len(identities) != 1 || identities[0].Partition != "aws-x" {
+		t.Fatalf("identities = %+v, want only aws-x", identities)
+	}
+}
+
+func TestFilterReposTrimsInvisibleBindings(t *testing.T) {
+	srv := newAuthzTestServer(t, true)
+	ctx := identityFor("viewer@example.com")
+
+	repos := []registry.Repo{
+		{Name: "visible", Partition: "aws-x", Path: "/partitions/aws-x"},
+		{Name: "hidden", Partition: "k8s-z", Path: "/partitions/k8s-z"},
+		{Name: "multi", Bindings: []registry.RepoBinding{
+			{Partition: "aws-x", Path: "/partitions/aws-x"},
+			{Partition: "k8s-z", Path: "/partitions/k8s-z"},
+		}},
+		{Name: "unbound"},
+	}
+	got := srv.filterRepos(ctx, repos)
+	if len(got) != 2 {
+		t.Fatalf("repos = %+v, want visible and multi only", got)
+	}
+	if got[0].Name != "visible" || got[1].Name != "multi" {
+		t.Fatalf("repos = %v, want [visible multi]", []string{got[0].Name, got[1].Name})
+	}
+	if len(got[1].Bindings) != 1 || got[1].Bindings[0].Partition != "aws-x" {
+		t.Fatalf("multi bindings = %+v, want only aws-x", got[1].Bindings)
+	}
+	if got[1].Partition != "aws-x" {
+		t.Fatalf("multi legacy partition = %q, want aws-x", got[1].Partition)
+	}
+
+	admin := srv.filterRepos(identityFor("admin@example.com"), repos)
+	if len(admin) != 4 {
+		t.Fatalf("admin repos = %d, want all 4", len(admin))
+	}
+
+	observe := newAuthzTestServer(t, false)
+	got = observe.filterRepos(identityFor("viewer@example.com"), repos)
+	if len(got) != 4 {
+		t.Fatalf("observe repos = %d, want all 4", len(got))
+	}
+}
+
+func TestFilterPushersHidesExclusivePushersAndRedactsTokens(t *testing.T) {
+	srv := newAuthzTestServer(t, true)
+	pa := &pusherAccess{
+		restricted: true,
+		known:      map[string]bool{"aws-visible": true, "aws-hidden": true},
+		visible:    map[string]bool{"aws-visible": true},
+	}
+	pushers := []registry.Pusher{
+		{Name: "aws-visible", Token: "visible-secret"},
+		{Name: "aws-hidden", Token: "hidden-secret"},
+		{Name: "k8s-main", Token: "global-secret"},
+	}
+	got := srv.filterPushers(pushers, pa)
+	if len(got) != 2 {
+		t.Fatalf("pushers = %+v, want aws-visible and k8s-main", got)
+	}
+	for _, pusher := range got {
+		if pusher.Token != "" {
+			t.Fatalf("pusher %s token = %q, want redacted", pusher.Name, pusher.Token)
+		}
+	}
+	if got[0].Name != "aws-visible" || got[1].Name != "k8s-main" {
+		t.Fatalf("pushers = %v, want [aws-visible k8s-main]", []string{got[0].Name, got[1].Name})
+	}
+
+	unrestricted := srv.filterPushers(pushers, &pusherAccess{})
+	if len(unrestricted) != 3 || unrestricted[0].Token != "visible-secret" {
+		t.Fatalf("unrestricted pushers = %+v, want all with tokens", unrestricted)
+	}
+}
+
+func TestVisibleSetIDsKeepsAncestorsOfVisiblePartitions(t *testing.T) {
+	all := []setstore.Set{
+		{ID: "division-a", Partitions: []string{"k8s-z"}},
+		{ID: "division-b", Partitions: []string{"aws-x"}},
+		{ID: "parent"},
+		{ID: "parent-child", ParentID: "parent", Partitions: []string{"aws-x"}},
+		{ID: "empty"},
+	}
+	keep := visibleSetIDs(all, map[string]bool{"aws-x": true})
+	if keep["division-a"] || keep["empty"] {
+		t.Fatalf("keep = %v, want hidden sets dropped", keep)
+	}
+	if !keep["division-b"] || !keep["parent"] || !keep["parent-child"] {
+		t.Fatalf("keep = %v, want visible set and its ancestors kept", keep)
+	}
+}
+
+func TestFilterSetsForAccessHidesEmptySets(t *testing.T) {
+	srv := newAuthzTestServer(t, true)
+	ctx := identityFor("viewer@example.com")
+	all := []setstore.Set{
+		{ID: "hidden", Partitions: []string{"k8s-z"}},
+		{ID: "visible", Partitions: []string{"aws-x"}},
+		{ID: "empty"},
+	}
+	got := srv.filterSetsForAccess(ctx, all, map[string]bool{"aws-x": true})
+	if len(got) != 1 || got[0].ID != "visible" {
+		t.Fatalf("sets = %+v, want only visible", got)
+	}
+
+	observe := newAuthzTestServer(t, false)
+	got = observe.filterSetsForAccess(identityFor("viewer@example.com"), all, map[string]bool{"aws-x": true})
+	if len(got) != len(all) {
+		t.Fatalf("observe mode sets = %d, want all %d", len(got), len(all))
+	}
+}
+
+func TestHandleReposFiltersInvisibleRepositories(t *testing.T) {
+	srv := newAuthzTestServer(t, true)
+	for _, repo := range []registry.Repo{
+		{Name: "strata-div-a", Partition: "k8s-z"},
+		{Name: "strata-div-b", Partition: "aws-x"},
+	} {
+		raw, err := json.Marshal(repo)
+		if err != nil {
+			t.Fatalf("marshal repo: %v", err)
+		}
+		writeAuthzFixture(t, srv.store.(*memory.Store), paths.RepoRecord(repo.Name), string(raw))
+	}
+	req := authzRequest(identityFor("viewer@example.com"), http.MethodGet, "/api/repos")
+	rec := httptest.NewRecorder()
+	srv.handleRepos(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp repoListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Repos) != 1 || resp.Repos[0].Name != "strata-div-b" {
+		t.Fatalf("repos = %+v, want only strata-div-b", resp.Repos)
+	}
+}
+
+func TestHandleSetsHidesInvisibleSets(t *testing.T) {
+	srv := newAuthzTestServer(t, true)
+	store := srv.store.(*memory.Store)
+	sets := setstore.New(store)
+	if _, err := sets.Create(context.Background(), &setstore.Set{Name: "Hidden", Partitions: []string{"k8s-z"}}); err != nil {
+		t.Fatalf("create hidden set: %v", err)
+	}
+	if _, err := sets.Create(context.Background(), &setstore.Set{Name: "Visible", Partitions: []string{"aws-x"}}); err != nil {
+		t.Fatalf("create visible set: %v", err)
+	}
+
+	req := authzRequest(identityFor("viewer@example.com"), http.MethodGet, "/api/sets")
+	rec := httptest.NewRecorder()
+	srv.handleSets(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp SetsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Sets) != 1 || resp.Sets[0].Name != "Visible" {
+		t.Fatalf("sets = %+v, want only Visible", resp.Sets)
+	}
+}
+
+func TestHandlePushersFiltersAndRedacts(t *testing.T) {
+	srv := newAuthzTestServer(t, true)
+	store := srv.store.(*memory.Store)
+	for _, repo := range []registry.Repo{
+		{Name: "repo-visible", Pusher: "aws-visible", Partition: "aws-x"},
+		{Name: "repo-hidden", Pusher: "aws-hidden", Partition: "k8s-z"},
+	} {
+		raw, err := json.Marshal(repo)
+		if err != nil {
+			t.Fatalf("marshal repo: %v", err)
+		}
+		writeAuthzFixture(t, store, paths.RepoRecord(repo.Name), string(raw))
+	}
+	for _, pusher := range []registry.Pusher{
+		{Name: "aws-visible", ObservedAPIURL: "http://visible", Token: "visible-secret"},
+		{Name: "aws-hidden", ObservedAPIURL: "http://hidden", Token: "hidden-secret"},
+		{Name: "k8s-main", ObservedAPIURL: "http://global", Token: "global-secret"},
+	} {
+		raw, err := json.Marshal(pusher)
+		if err != nil {
+			t.Fatalf("marshal pusher: %v", err)
+		}
+		writeAuthzFixture(t, store, paths.PusherRecord(pusher.Name), string(raw))
+	}
+
+	req := authzRequest(identityFor("viewer@example.com"), http.MethodGet, "/api/pushers")
+	rec := httptest.NewRecorder()
+	srv.handlePushers(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp pusherListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Pushers) != 2 {
+		t.Fatalf("pushers = %+v, want aws-visible and k8s-main", resp.Pushers)
+	}
+	for _, pusher := range resp.Pushers {
+		if pusher.Name == "aws-hidden" {
+			t.Fatal("hidden pusher leaked to viewer")
+		}
+		if pusher.Token != "" {
+			t.Fatalf("pusher %s token = %q, want redacted", pusher.Name, pusher.Token)
+		}
 	}
 }

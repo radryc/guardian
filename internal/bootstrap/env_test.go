@@ -151,6 +151,35 @@ func TestRenderFetcherOTelWiring(t *testing.T) {
 	}
 }
 
+func TestRenderFetcherBlobLayoutV2(t *testing.T) {
+	if _, err := exec.LookPath("envsubst"); err != nil {
+		t.Skip("envsubst is not installed")
+	}
+	cfg := DefaultConfig()
+	env, err := ComputeEnv(&cfg)
+	if err != nil {
+		t.Fatalf("ComputeEnv: %v", err)
+	}
+	storageDir, _ := TemplateDirs()
+	rendered, err := RenderTemplate(
+		filepath.Join(storageDir, "deploy-fetcher.yaml"),
+		env,
+		Env{"SUFFIX": "a", "FETCHER_COMPACT_ENABLED": "true"},
+	)
+	if err != nil {
+		t.Fatalf("RenderTemplate: %v", err)
+	}
+	wants := []string{
+		"name: MONOFS_BLOB_LAYOUT_V2\n              value: \"true\"",
+		"name: MONOFS_BLOB_COMPACT_ENABLED\n              value: \"true\"",
+	}
+	for _, want := range wants {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered fetcher manifest is missing %q", want)
+		}
+	}
+}
+
 func TestRenderGuardianRepoImportWiring(t *testing.T) {
 	if _, err := exec.LookPath("envsubst"); err != nil {
 		t.Skip("envsubst is not installed")

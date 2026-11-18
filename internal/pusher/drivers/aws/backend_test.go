@@ -128,58 +128,16 @@ func (b *Backend) DeleteStack(_ context.Context, req StackRequest) error {
 	return nil
 }
 
-func envKey(account, region string) string {
-	return account + "/" + region
-}
-
-func stackKey(account, region, stackName string) string {
-	return envKey(account, region) + "/" + stackName
-}
-
-func cloneStackState(in StackState) StackState {
-	return StackState{
-		ID:      in.ID,
-		Name:    in.Name,
-		Status:  in.Status,
-		Tags:    cloneStringMap(in.Tags),
-		Outputs: cloneStringMap(in.Outputs),
-	}
-}
-
-func cloneRequest(in StackRequest) StackRequest {
-	return StackRequest{
-		PartitionName: in.PartitionName,
-		IntentName:    in.IntentName,
-		AssetName:     in.AssetName,
-		Target:        in.Target,
-		Manifest:      in.Manifest,
-		WorkspaceDir:  in.WorkspaceDir,
-		AppCommand:    in.AppCommand,
-		Context:       cloneStringMap(in.Context),
-		Env:           cloneStringMap(in.Env),
-		DesiredHash:   in.DesiredHash,
-		Tags:          cloneStringMap(in.Tags),
-	}
-}
-
-func cloneStringMap(in map[string]string) map[string]string {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
-	return out
-}
-
 func (b *Backend) UpsertFileSystem(ctx context.Context, fs FileSystem) (string, error) {
 	return "fs-test", nil
 }
+
 func (b *Backend) GetFileSystem(ctx context.Context, fsID string) (FileSystem, bool, error) {
 	return FileSystem{ID: fsID, Hash: "test"}, true, nil
 }
+
 func (b *Backend) DeleteFileSystem(ctx context.Context, fsID string) error { return nil }
+
 func (b *Backend) UpsertVPC(ctx context.Context, vpc VPC) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -191,18 +149,21 @@ func (b *Backend) UpsertVPC(ctx context.Context, vpc VPC) (string, error) {
 	b.vpcs[vpc.ID] = clone
 	return vpc.ID, nil
 }
+
 func (b *Backend) GetVPC(ctx context.Context, vpcID string) (VPC, bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	vpc, ok := b.vpcs[vpcID]
 	return vpc, ok, nil
 }
+
 func (b *Backend) DeleteVPC(ctx context.Context, vpcID string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.vpcs, vpcID)
 	return nil
 }
+
 func (b *Backend) UpsertDBCluster(ctx context.Context, cluster DBCluster) (DBCluster, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -221,12 +182,14 @@ func (b *Backend) UpsertDBCluster(ctx context.Context, cluster DBCluster) (DBClu
 	b.dbClusters[cluster.Name] = clone
 	return clone, nil
 }
+
 func (b *Backend) GetDBCluster(ctx context.Context, name string) (DBCluster, bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	cluster, ok := b.dbClusters[name]
 	return cluster, ok, nil
 }
+
 func (b *Backend) DeleteDBCluster(ctx context.Context, arn, name string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -241,67 +204,95 @@ func (b *Backend) DeleteDBCluster(ctx context.Context, arn, name string) error {
 	delete(b.dbClusters, name)
 	return nil
 }
+
 func (b *Backend) UpsertParameter(ctx context.Context, param Parameter) error { return nil }
+
 func (b *Backend) GetParameter(ctx context.Context, name string) (Parameter, bool, error) {
 	return Parameter{Name: name, Hash: "test"}, true, nil
 }
+
 func (b *Backend) DeleteParameter(ctx context.Context, name string) error { return nil }
+
 func (b *Backend) UpsertSecret(ctx context.Context, secret Secret) (string, error) {
 	return "arn:aws:secretsmanager:test:test:secret:test", nil
 }
+
 func (b *Backend) GetSecret(ctx context.Context, secretID string) (Secret, bool, error) {
 	return Secret{ID: secretID, Hash: "test"}, true, nil
 }
+
 func (b *Backend) DeleteSecret(ctx context.Context, secretID string) error { return nil }
+
 func (b *Backend) UpsertService(ctx context.Context, svc ECSService) error { return nil }
+
 func (b *Backend) GetService(ctx context.Context, cluster, name string) (ECSService, bool, error) {
 	return ECSService{Name: name, Hash: "test"}, true, nil
 }
+
 func (b *Backend) DeleteService(ctx context.Context, cluster, name string) error { return nil }
+
 func (b *Backend) AttachServiceToTargetGroup(ctx context.Context, cluster, service, container, tgARN string, port int, sgID string) error {
 	return nil
 }
+
 func (b *Backend) EnsureObservabilityTaskRole(ctx context.Context) (string, error) {
 	return "arn:aws:iam::test:role/guardian-otel-sidecar-role", nil
 }
+
 func (b *Backend) UpsertLoadBalancer(ctx context.Context, lb LoadBalancer) (string, error) {
 	return "arn:aws:elasticloadbalancing:test:test:loadbalancer/test", nil
 }
+
 func (b *Backend) GetLoadBalancer(ctx context.Context, name string) (LoadBalancer, bool, error) {
 	return LoadBalancer{Name: name, Hash: "test"}, true, nil
 }
+
 func (b *Backend) DeleteLoadBalancer(ctx context.Context, arn string) error { return nil }
+
 func (b *Backend) EnsureLoadBalancerSecurityGroup(ctx context.Context, name, scheme string, ports []int) (string, error) {
 	return "sg-test", nil
 }
+
 func (b *Backend) UpsertTargetGroup(ctx context.Context, tg TargetGroup) (string, error) {
 	return "arn:aws:elasticloadbalancing:test:test:targetgroup/test", nil
 }
+
 func (b *Backend) GetTargetGroup(ctx context.Context, name string) (TargetGroup, bool, error) {
 	return TargetGroup{Name: name, Hash: "test"}, true, nil
 }
+
 func (b *Backend) DeleteTargetGroup(ctx context.Context, arn string) error { return nil }
+
 func (b *Backend) UpsertListener(ctx context.Context, listener Listener) (string, error) {
 	return "arn:aws:elasticloadbalancing:test:test:listener/test", nil
 }
+
 func (b *Backend) GetListener(ctx context.Context, lbARN string, port int) (Listener, bool, error) {
 	return Listener{Hash: "test"}, true, nil
 }
-func (b *Backend) DeleteListener(ctx context.Context, arn string) error      { return nil }
+
+func (b *Backend) DeleteListener(ctx context.Context, arn string) error { return nil }
+
 func (b *Backend) UpsertBucket(ctx context.Context, bucket BucketSpec) error { return nil }
+
 func (b *Backend) GetBucket(ctx context.Context, name string) (BucketSpec, bool, error) {
 	return BucketSpec{Name: name, Hash: "test"}, true, nil
 }
-func (b *Backend) DeleteBucket(ctx context.Context, name string) error      { return nil }
+
+func (b *Backend) DeleteBucket(ctx context.Context, name string) error { return nil }
+
 func (b *Backend) UpsertLogGroup(ctx context.Context, group LogGroup) error { return nil }
+
 func (b *Backend) GetLogGroup(ctx context.Context, name string) (LogGroup, bool, error) {
 	return LogGroup{Name: name, Hash: "test"}, true, nil
 }
 
 // EnsureExecutionRole is a no-op on the in-memory backend.
+
 func (b *Backend) EnsureExecutionRole(ctx context.Context, roleName string, actions []string) (string, error) {
 	return fmt.Sprintf("arn:aws:iam::000000000000:role/%s", roleName), nil
 }
 
 // DeleteExecutionRole is a no-op on the in-memory backend.
+
 func (b *Backend) DeleteExecutionRole(ctx context.Context, roleName string) error { return nil }

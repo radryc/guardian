@@ -223,9 +223,11 @@ func main() {
 		sdkBackend := awsdriver.NewAWSBackend("", region, false)
 		composite := awsdriver.NewCompositeBackend(backend, sdkBackend)
 		reg := registry.New()
-		awsdriver.RegisterWithOptions(reg, composite, secrets.NewStoreResolver(store), awsdriver.Options{
+		if err := awsdriver.RegisterWithOptions(reg, composite, secrets.NewStoreResolver(store), awsdriver.Options{
 			ExecutionRoleMode: cfnExecutionRole,
-		})
+		}); err != nil {
+			log.Fatalf("register aws drivers: %v", err)
+		}
 		runtimeRunner = &runtimepkg.Runtime{
 			QueuePath:               paths.QueueDir(pusherName),
 			WorkerID:                workerID,

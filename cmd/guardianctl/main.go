@@ -482,6 +482,22 @@ func (l *lazyStore) Stat(ctx context.Context, logicalPath string) (guardianapi.F
 	return store.Stat(ctx, logicalPath)
 }
 
+func (l *lazyStore) ReadFileVersioned(ctx context.Context, logicalPath string) ([]byte, guardianapi.FileVersion, bool, error) {
+	store, err := l.resolve(ctx)
+	if err != nil {
+		return nil, guardianapi.FileVersion{}, false, err
+	}
+	return store.ReadFileVersioned(ctx, logicalPath)
+}
+
+func (l *lazyStore) ListDirPage(ctx context.Context, logicalDir string, opts guardianapi.DirListOptions) (guardianapi.DirListPage, error) {
+	store, err := l.resolve(ctx)
+	if err != nil {
+		return guardianapi.DirListPage{}, err
+	}
+	return store.ListDirPage(ctx, logicalDir, opts)
+}
+
 func (l *lazyStore) Watch(ctx context.Context, prefixes []string) (<-chan guardianapi.ChangeEvent, error) {
 	store, err := l.resolve(ctx)
 	if err != nil {

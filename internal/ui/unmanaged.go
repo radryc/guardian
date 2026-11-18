@@ -32,6 +32,12 @@ func (s *Server) handleUnmanaged(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	pa, err := s.pusherAccessFor(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	result = s.filterUnmanagedResult(r.Context(), result, pa)
 	writeJSON(w, http.StatusOK, result)
 }
 

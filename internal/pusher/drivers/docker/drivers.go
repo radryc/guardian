@@ -13,7 +13,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	assetdefs "github.com/radryc/guardian/internal/domain/assets"
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
-	orchestratorcommon "github.com/radryc/guardian/internal/orchestrator/common"
 	probepkg "github.com/radryc/guardian/internal/pusher/drivers/probe"
 	"github.com/radryc/guardian/internal/pusher/driverutil"
 	"github.com/radryc/guardian/internal/pusher/registry"
@@ -50,12 +49,12 @@ func WithDefaultExtraHosts(hosts map[string]string) Option {
 	}
 }
 
-func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resolver, options ...Option) {
+func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resolver, options ...Option) error {
 	if reg == nil {
-		return
+		return errors.New("dockerdriver: registry is required")
 	}
 	if backend == nil {
-		backend = NewBackend()
+		return errors.New("dockerdriver: backend is required")
 	}
 	if resolver == nil {
 		resolver = secrets.NoopResolver{}
@@ -79,6 +78,7 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 	reg.Register(&SQLDatabaseDriver{baseDriver: base, typeName: "SQLDatabase"})
 	reg.Register(&ObservabilityDriver{base})
 	reg.Register(probepkg.New())
+	return nil
 }
 
 func (d *VolumeDriver) Type() string                         { return "Volume" }
@@ -110,7 +110,11 @@ func (d *VolumeDriver) ObserveState(ctx context.Context, in registry.AssetInput)
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
-	volume, ok, err := d.backend.GetVolume(volumeName(in, in.Asset.Name))
+	spec, err := decodeVolume(in)
+	if err != nil {
+		return nil, nil, err
+	}
+	volume, ok, err := d.backend.GetVolume(ctx, volumeSourceName(in, spec, in.Asset.Name))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -133,10 +137,16 @@ func (d *VolumeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	name := volumeName(in, in.Asset.Name)
-	current, ok, err := d.backend.GetVolume(name)
+	name := volumeSourceName(in, spec, in.Asset.Name)
+	current, ok, err := d.backend.GetVolume(ctx, name)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
+	}
+	if spec.ObserveExisting {
+		if !ok {
+			return changedDrift(in.Asset.Name, "docker volume differs"), nil
+		}
+		return inSyncDrift(in.Asset.Name, "docker volume is in sync"), nil
 	}
 	size := firstNonEmpty(payload.Size, spec.Size)
 	accessMode := firstNonEmpty(payload.AccessMode, spec.AccessMode)
@@ -162,13 +172,21 @@ func (d *VolumeDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 	if err != nil {
 		return registry.AssetResult{}, err
 	}
-	name := volumeName(in, in.Asset.Name)
+	name := volumeSourceName(in, spec, in.Asset.Name)
+	if spec.ObserveExisting {
+		if _, ok, err := d.backend.GetVolume(ctx, name); err != nil {
+			return registry.AssetResult{}, err
+		} else if !ok {
+			return registry.AssetResult{}, fmt.Errorf("observed volume %s is missing", name)
+		}
+		return registry.AssetResult{Outputs: map[string]string{"name": name}}, nil
+	}
 	hash := hashWithPayload(driverutil.AssetHash(in), payload)
 	ephemeral := driverutil.BoolValue(spec.Ephemeral)
 	if payload.Ephemeral != nil {
 		ephemeral = *payload.Ephemeral
 	}
-	if err := d.backend.UpsertVolume(Volume{
+	if err := d.backend.UpsertVolume(ctx, Volume{
 		Name:       name,
 		Hash:       hash,
 		Labels:     driverutil.Labels("docker", in, hash),
@@ -185,7 +203,14 @@ func (d *VolumeDriver) Destroy(ctx context.Context, in registry.AssetInput) erro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return d.backend.DeleteVolume(volumeName(in, in.Asset.Name))
+	spec, err := decodeVolume(in)
+	if err != nil {
+		return err
+	}
+	if spec.ObserveExisting {
+		return nil
+	}
+	return d.backend.DeleteVolume(ctx, volumeSourceName(in, spec, in.Asset.Name))
 }
 
 func (d *ConfigDriver) Check(ctx context.Context, in registry.AssetInput) error {
@@ -196,7 +221,7 @@ func (d *ConfigDriver) ObserveState(ctx context.Context, in registry.AssetInput)
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
-	config, ok, err := d.backend.GetConfig(configName(in, in.Asset.Name))
+	config, ok, err := d.backend.GetConfig(ctx, configName(in, in.Asset.Name))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -221,7 +246,7 @@ func (d *ConfigDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 	}
 	name := configName(in, in.Asset.Name)
 	hash := hashWithPayload(driverutil.AssetHash(in), files.HashStruct())
-	current, ok, err := d.backend.GetConfig(name)
+	current, ok, err := d.backend.GetConfig(ctx, name)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -245,7 +270,7 @@ func (d *ConfigDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 	}
 	hash := hashWithPayload(driverutil.AssetHash(in), files.HashStruct())
 	name := configName(in, in.Asset.Name)
-	if err := d.backend.UpsertConfig(Config{
+	if err := d.backend.UpsertConfig(ctx, Config{
 		Name:   name,
 		Hash:   hash,
 		Labels: driverutil.Labels("docker", in, hash),
@@ -261,7 +286,7 @@ func (d *ConfigDriver) Destroy(ctx context.Context, in registry.AssetInput) erro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return d.backend.DeleteConfig(configName(in, in.Asset.Name))
+	return d.backend.DeleteConfig(ctx, configName(in, in.Asset.Name))
 }
 
 func (d *NetworkDriver) Check(ctx context.Context, in registry.AssetInput) error {
@@ -272,7 +297,7 @@ func (d *NetworkDriver) ObserveState(ctx context.Context, in registry.AssetInput
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
-	network, ok, err := d.backend.GetNetwork(explicitNetworkName(in, in.Asset.Name))
+	network, ok, err := d.backend.GetNetwork(ctx, explicitNetworkName(in, in.Asset.Name))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -292,7 +317,7 @@ func (d *NetworkDriver) Diff(ctx context.Context, in registry.AssetInput) (taskd
 		return taskdomain.DriftReport{}, err
 	}
 	name := explicitNetworkName(in, in.Asset.Name)
-	current, ok, err := d.backend.GetNetwork(name)
+	current, ok, err := d.backend.GetNetwork(ctx, name)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -320,7 +345,7 @@ func (d *NetworkDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	if driver == "" {
 		driver = "bridge"
 	}
-	if err := d.backend.EnsureNetwork(Network{
+	if err := d.backend.EnsureNetwork(ctx, Network{
 		Name:     name,
 		Hash:     hash,
 		Labels:   driverutil.Labels("docker", in, hash),
@@ -336,7 +361,7 @@ func (d *NetworkDriver) Destroy(ctx context.Context, in registry.AssetInput) err
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return d.backend.DeleteNetwork(explicitNetworkName(in, in.Asset.Name))
+	return d.backend.DeleteNetwork(ctx, explicitNetworkName(in, in.Asset.Name))
 }
 
 func (d *SecretDriver) Check(ctx context.Context, in registry.AssetInput) error {
@@ -365,19 +390,15 @@ func (d *SecretDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 			return taskdomain.DriftReport{}, err
 		}
 	}
-	state, err := orchestratorcommon.LoadIntentState(ctx, in.Store, in.PartitionName, in.IntentName)
-	if err != nil {
-		return changedDrift(in.Asset.Name, "secret outputs pending"), nil
-	}
 	hash := digest.ContentHash([]byte(value))
-	if stored := strings.TrimSpace(state.Outputs[in.Asset.Name+".valueHash"]); stored != "" {
+	if stored := strings.TrimSpace(in.Outputs[in.Asset.Name+".valueHash"]); stored != "" {
 		if stored != hash {
 			return changedDrift(in.Asset.Name, "secret outputs differ"), nil
 		}
-	} else if strings.TrimSpace(state.Outputs[in.Asset.Name+".value"]) != strings.TrimSpace(value) {
+	} else if strings.TrimSpace(in.Outputs[in.Asset.Name+".value"]) != strings.TrimSpace(value) {
 		return changedDrift(in.Asset.Name, "secret outputs differ"), nil
 	}
-	if strings.TrimSpace(spec.SecretRef) != "" && strings.TrimSpace(state.Outputs[in.Asset.Name+".secretRef"]) != strings.TrimSpace(spec.SecretRef) {
+	if strings.TrimSpace(spec.SecretRef) != "" && strings.TrimSpace(in.Outputs[in.Asset.Name+".secretRef"]) != strings.TrimSpace(spec.SecretRef) {
 		return changedDrift(in.Asset.Name, "secret reference differs"), nil
 	}
 	return inSyncDrift(in.Asset.Name, "secret asset is in sync"), nil
@@ -418,12 +439,12 @@ func (d *ComputeDriver) Check(ctx context.Context, in registry.AssetInput) error
 		return err
 	}
 	for _, mount := range spec.VolumeMounts {
-		if _, _, err := d.backend.GetVolume(volumeName(in, mount.Volume)); err != nil {
+		if _, _, err := d.backend.GetVolume(ctx, volumeSourceRef(in, mount.Volume)); err != nil {
 			return err
 		}
 	}
 	for _, mount := range spec.ConfigMounts {
-		if _, _, err := d.backend.GetConfig(configName(in, mount.Config)); err != nil {
+		if _, _, err := d.backend.GetConfig(ctx, configName(in, mount.Config)); err != nil {
 			return err
 		}
 	}
@@ -441,7 +462,7 @@ func (d *ComputeDriver) ObserveState(ctx context.Context, in registry.AssetInput
 	}
 	if spec.ObserveExisting {
 		name := dockerObserveContainerName(in, spec)
-		container, ok, err := d.backend.GetContainer(name)
+		container, ok, err := d.backend.GetContainer(ctx, name)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -453,7 +474,7 @@ func (d *ComputeDriver) ObserveState(ctx context.Context, in registry.AssetInput
 		}
 		return &taskdomain.HealthObservation{Status: taskdomain.HealthHealthy, Summary: "docker compute observed, running"}, readiness, nil
 	}
-	containers, err := d.backend.ListContainersByAsset(in.PartitionName, in.IntentName, in.Asset.Name)
+	containers, err := d.backend.ListContainersByAsset(ctx, in.PartitionName, in.IntentName, in.Asset.Name)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -462,7 +483,7 @@ func (d *ComputeDriver) ObserveState(ctx context.Context, in registry.AssetInput
 		return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: "docker compute replica set is incomplete"}, readiness, nil
 	}
 	for _, name := range desiredNames {
-		container, ok, err := d.backend.GetContainer(name)
+		container, ok, err := d.backend.GetContainer(ctx, name)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -492,7 +513,7 @@ func (d *ComputeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskd
 	}
 	if spec.ObserveExisting {
 		name := dockerObserveContainerName(in, spec)
-		_, ok, err := d.backend.GetContainer(name)
+		_, ok, err := d.backend.GetContainer(ctx, name)
 		if err != nil {
 			return taskdomain.DriftReport{}, err
 		}
@@ -507,13 +528,13 @@ func (d *ComputeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskd
 	}
 	hash := hashWithPayload(computeHash(in, spec), payload)
 	network := networkName(in)
-	if _, ok, err := d.backend.GetNetwork(network); err != nil {
+	if _, ok, err := d.backend.GetNetwork(ctx, network); err != nil {
 		return taskdomain.DriftReport{}, err
 	} else if !ok {
 		return changedDrift(in.Asset.Name, "docker network differs"), nil
 	}
 	desiredNames := computeContainerNames(in, spec)
-	current, err := d.backend.ListContainersByAsset(in.PartitionName, in.IntentName, in.Asset.Name)
+	current, err := d.backend.ListContainersByAsset(ctx, in.PartitionName, in.IntentName, in.Asset.Name)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -526,7 +547,7 @@ func (d *ComputeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskd
 		return taskdomain.DriftReport{}, err
 	}
 	for idx, name := range desiredNames {
-		actual, ok, err := d.backend.GetContainer(name)
+		actual, ok, err := d.backend.GetContainer(ctx, name)
 		if err != nil {
 			return taskdomain.DriftReport{}, err
 		}
@@ -563,7 +584,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	}
 	if spec.ObserveExisting {
 		name := dockerObserveContainerName(in, spec)
-		container, ok, err := d.backend.GetContainer(name)
+		container, ok, err := d.backend.GetContainer(ctx, name)
 		if err != nil {
 			return registry.AssetResult{}, err
 		}
@@ -581,7 +602,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 		return registry.AssetResult{}, err
 	}
 	network := networkName(in)
-	if err := d.backend.EnsureNetwork(Network{Name: network, Labels: map[string]string{"guardian.cluster": in.Target.Cluster}}); err != nil {
+	if err := d.backend.EnsureNetwork(ctx, Network{Name: network, Labels: map[string]string{"guardian.cluster": in.Target.Cluster}}); err != nil {
 		return registry.AssetResult{}, err
 	}
 	hash := hashWithPayload(computeHash(in, spec), payload)
@@ -600,17 +621,17 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 			return registry.AssetResult{}, err
 		}
 		d.applyContainerDefaults(&container)
-		if err := d.backend.UpsertContainer(container); err != nil {
+		if err := d.backend.UpsertContainer(ctx, container); err != nil {
 			return registry.AssetResult{}, err
 		}
-		if err := d.connectExtraNetworks(in, spec.Networks, container); err != nil {
+		if err := d.connectExtraNetworks(ctx, in, spec.Networks, container); err != nil {
 			return registry.AssetResult{}, err
 		}
 		if idx == 0 {
 			primary = container
 		}
 	}
-	if err := removeExtraContainers(d.backend, in, desired); err != nil {
+	if err := removeExtraContainers(ctx, d.backend, in, desired); err != nil {
 		return registry.AssetResult{}, err
 	}
 	outputs := map[string]string{
@@ -635,12 +656,12 @@ func (d *ComputeDriver) Destroy(ctx context.Context, in registry.AssetInput) err
 	if spec.ObserveExisting {
 		return nil
 	}
-	containers, err := d.backend.ListContainersByAsset(in.PartitionName, in.IntentName, in.Asset.Name)
+	containers, err := d.backend.ListContainersByAsset(ctx, in.PartitionName, in.IntentName, in.Asset.Name)
 	if err != nil {
 		return err
 	}
 	for _, container := range containers {
-		if err := d.backend.DeleteContainer(container.Name); err != nil {
+		if err := d.backend.DeleteContainer(ctx, container.Name); err != nil {
 			return err
 		}
 	}
@@ -669,16 +690,9 @@ func (d *TraefikRouteDriver) Diff(ctx context.Context, in registry.AssetInput) (
 	if in.Store == nil {
 		return changedDrift(in.Asset.Name, "Traefik route metadata pending"), nil
 	}
-	state, err := orchestratorcommon.LoadIntentState(ctx, in.Store, in.PartitionName, in.IntentName)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return changedDrift(in.Asset.Name, "Traefik route metadata pending"), nil
-		}
-		return taskdomain.DriftReport{}, err
-	}
-	if strings.TrimSpace(state.Outputs[in.Asset.Name+".hostname"]) != strings.TrimSpace(spec.Hostname) ||
-		strings.TrimSpace(state.Outputs[in.Asset.Name+".target"]) != strings.TrimSpace(spec.Target) ||
-		strings.TrimSpace(state.Outputs[in.Asset.Name+".portName"]) != strings.TrimSpace(spec.PortName) {
+	if strings.TrimSpace(in.Outputs[in.Asset.Name+".hostname"]) != strings.TrimSpace(spec.Hostname) ||
+		strings.TrimSpace(in.Outputs[in.Asset.Name+".target"]) != strings.TrimSpace(spec.Target) ||
+		strings.TrimSpace(in.Outputs[in.Asset.Name+".portName"]) != strings.TrimSpace(spec.PortName) {
 		return changedDrift(in.Asset.Name, "Traefik route metadata differs"), nil
 	}
 	return inSyncDrift(in.Asset.Name, "Traefik route metadata is in sync"), nil
@@ -713,7 +727,7 @@ func (d *LoadBalancerDriver) Check(ctx context.Context, in registry.AssetInput) 
 		return err
 	}
 	for _, target := range spec.Targets {
-		if _, err := d.backend.ListContainersByAsset(in.PartitionName, in.IntentName, target); err != nil {
+		if _, err := d.backend.ListContainersByAsset(ctx, in.PartitionName, in.IntentName, target); err != nil {
 			return err
 		}
 	}
@@ -749,7 +763,7 @@ func (d *LoadBalancerDriver) Diff(ctx context.Context, in registry.AssetInput) (
 		return taskdomain.DriftReport{}, err
 	}
 	name := loadBalancerName(in)
-	actual, ok, err := d.backend.GetContainer(name)
+	actual, ok, err := d.backend.GetContainer(ctx, name)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -779,7 +793,7 @@ func (d *LoadBalancerDriver) Apply(ctx context.Context, in registry.AssetInput) 
 		return registry.AssetResult{}, err
 	}
 	network := networkName(in)
-	if err := d.backend.EnsureNetwork(Network{Name: network, Labels: map[string]string{"guardian.cluster": in.Target.Cluster}}); err != nil {
+	if err := d.backend.EnsureNetwork(ctx, Network{Name: network, Labels: map[string]string{"guardian.cluster": in.Target.Cluster}}); err != nil {
 		return registry.AssetResult{}, err
 	}
 	bootstrapConfig, err := d.loadBalancerBootstrap(in, spec)
@@ -787,10 +801,10 @@ func (d *LoadBalancerDriver) Apply(ctx context.Context, in registry.AssetInput) 
 		return registry.AssetResult{}, err
 	}
 	container := d.buildLoadBalancerContainer(in, spec, payload, bootstrapConfig)
-	if err := d.backend.UpsertContainer(container); err != nil {
+	if err := d.backend.UpsertContainer(ctx, container); err != nil {
 		return registry.AssetResult{}, err
 	}
-	if err := d.connectExtraNetworks(in, spec.Networks, container); err != nil {
+	if err := d.connectExtraNetworks(ctx, in, spec.Networks, container); err != nil {
 		return registry.AssetResult{}, err
 	}
 	outputs := map[string]string{"id": container.Name}
@@ -826,7 +840,7 @@ func (d *LoadBalancerDriver) Destroy(ctx context.Context, in registry.AssetInput
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return d.backend.DeleteContainer(loadBalancerName(in))
+	return d.backend.DeleteContainer(ctx, loadBalancerName(in))
 }
 
 func (d *ObjectStoreDriver) Check(ctx context.Context, in registry.AssetInput) error {
@@ -893,7 +907,7 @@ func (d *ObjectStoreDriver) Apply(ctx context.Context, in registry.AssetInput) (
 		return registry.AssetResult{}, err
 	}
 	network := networkName(in)
-	if err := d.backend.EnsureNetwork(Network{Name: network, Labels: map[string]string{"guardian.cluster": in.Target.Cluster}}); err != nil {
+	if err := d.backend.EnsureNetwork(ctx, Network{Name: network, Labels: map[string]string{"guardian.cluster": in.Target.Cluster}}); err != nil {
 		return registry.AssetResult{}, err
 	}
 	hash := hashWithPayload(objectStoreHash(in), payload)
@@ -916,10 +930,10 @@ func (d *ObjectStoreDriver) Apply(ctx context.Context, in registry.AssetInput) (
 	}
 	applyContainerPayload(&container, payload)
 	d.applyContainerDefaults(&container)
-	if err := d.backend.UpsertContainer(container); err != nil {
+	if err := d.backend.UpsertContainer(ctx, container); err != nil {
 		return registry.AssetResult{}, err
 	}
-	if err := d.connectExtraNetworks(in, spec.Networks, container); err != nil {
+	if err := d.connectExtraNetworks(ctx, in, spec.Networks, container); err != nil {
 		return registry.AssetResult{}, err
 	}
 	port := firstContainerPort(container.Ports)
@@ -940,7 +954,7 @@ func (d *ObjectStoreDriver) Destroy(ctx context.Context, in registry.AssetInput)
 	if spec.Endpoint != "" {
 		return nil
 	}
-	return d.backend.DeleteContainer(objectStoreName(in))
+	return d.backend.DeleteContainer(ctx, objectStoreName(in))
 }
 
 func (d *SQLDatabaseDriver) Check(ctx context.Context, in registry.AssetInput) error {
@@ -979,7 +993,7 @@ func (d *SQLDatabaseDriver) Apply(ctx context.Context, in registry.AssetInput) (
 	engine := strings.ToLower(spec.Engine)
 	image, port, env := sqlDatabaseImagePortEnv(spec)
 	network := networkName(in)
-	if err := d.backend.EnsureNetwork(Network{Name: network, Labels: map[string]string{"guardian.cluster": in.Target.Cluster}}); err != nil {
+	if err := d.backend.EnsureNetwork(ctx, Network{Name: network, Labels: map[string]string{"guardian.cluster": in.Target.Cluster}}); err != nil {
 		return registry.AssetResult{}, err
 	}
 	hash := hashWithPayload(sqlDatabaseHash(in), payload)
@@ -999,10 +1013,10 @@ func (d *SQLDatabaseDriver) Apply(ctx context.Context, in registry.AssetInput) (
 	}
 	applyContainerPayload(&container, payload)
 	d.applyContainerDefaults(&container)
-	if err := d.backend.UpsertContainer(container); err != nil {
+	if err := d.backend.UpsertContainer(ctx, container); err != nil {
 		return registry.AssetResult{}, err
 	}
-	if err := d.connectExtraNetworks(in, spec.Networks, container); err != nil {
+	if err := d.connectExtraNetworks(ctx, in, spec.Networks, container); err != nil {
 		return registry.AssetResult{}, err
 	}
 	resolvedPort := firstContainerPort(container.Ports)
@@ -1017,7 +1031,7 @@ func (d *SQLDatabaseDriver) Destroy(ctx context.Context, in registry.AssetInput)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return d.backend.DeleteContainer(sqlDatabaseName(in))
+	return d.backend.DeleteContainer(ctx, sqlDatabaseName(in))
 }
 
 func (d *ObservabilityDriver) Check(ctx context.Context, in registry.AssetInput) error {
@@ -1067,7 +1081,7 @@ func (d *ObservabilityDriver) Apply(ctx context.Context, in registry.AssetInput)
 		return registry.AssetResult{}, err
 	}
 	network := networkName(in)
-	if err := d.backend.EnsureNetwork(Network{Name: network, Labels: map[string]string{"guardian.cluster": in.Target.Cluster}}); err != nil {
+	if err := d.backend.EnsureNetwork(ctx, Network{Name: network, Labels: map[string]string{"guardian.cluster": in.Target.Cluster}}); err != nil {
 		return registry.AssetResult{}, err
 	}
 	hash := hashWithPayload(observabilityHash(in), payload)
@@ -1090,10 +1104,10 @@ func (d *ObservabilityDriver) Apply(ctx context.Context, in registry.AssetInput)
 	}
 	applyContainerPayload(&container, payload)
 	d.applyContainerDefaults(&container)
-	if err := d.backend.UpsertContainer(container); err != nil {
+	if err := d.backend.UpsertContainer(ctx, container); err != nil {
 		return registry.AssetResult{}, err
 	}
-	if err := d.connectExtraNetworks(in, spec.Networks, container); err != nil {
+	if err := d.connectExtraNetworks(ctx, in, spec.Networks, container); err != nil {
 		return registry.AssetResult{}, err
 	}
 	resolvedPort := firstContainerPort(container.Ports)
@@ -1110,7 +1124,7 @@ func (d *ObservabilityDriver) Destroy(ctx context.Context, in registry.AssetInpu
 	if spec, err := decodeObservability(in); err == nil && observabilityEnvOnly(spec) {
 		return nil
 	}
-	return d.backend.DeleteContainer(observabilityName(in))
+	return d.backend.DeleteContainer(ctx, observabilityName(in))
 }
 
 func (d *baseDriver) checkReferencedAssets(ctx context.Context, in registry.AssetInput) error {
@@ -1124,11 +1138,11 @@ func (d *baseDriver) checkReferencedAssets(ctx context.Context, in registry.Asse
 		}
 		switch asset.Type {
 		case "Volume":
-			if _, _, err := d.backend.GetVolume(volumeName(in, dep)); err != nil {
+			if _, _, err := d.backend.GetVolume(ctx, volumeSourceRef(in, dep)); err != nil {
 				return err
 			}
 		case "Config":
-			if _, _, err := d.backend.GetConfig(configName(in, dep)); err != nil {
+			if _, _, err := d.backend.GetConfig(ctx, configName(in, dep)); err != nil {
 				return err
 			}
 		}
@@ -1140,7 +1154,7 @@ func (d *baseDriver) diffSingleContainer(ctx context.Context, in registry.AssetI
 	if err := ctx.Err(); err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	container, ok, err := d.backend.GetContainer(name)
+	container, ok, err := d.backend.GetContainer(ctx, name)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -1157,7 +1171,7 @@ func (d *baseDriver) observeContainerHealth(ctx context.Context, name, healthySu
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	container, ok, err := d.backend.GetContainer(name)
+	container, ok, err := d.backend.GetContainer(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -1206,17 +1220,17 @@ func (d *baseDriver) applyContainerDefaults(container *Container) {
 	}
 }
 
-func (d *baseDriver) connectExtraNetworks(in registry.AssetInput, networks []string, container Container) error {
+func (d *baseDriver) connectExtraNetworks(ctx context.Context, in registry.AssetInput, networks []string, container Container) error {
 	for _, netAsset := range networks {
 		netName := explicitNetworkName(in, netAsset)
-		if err := d.backend.EnsureNetwork(Network{
+		if err := d.backend.EnsureNetwork(ctx, Network{
 			Name:   netName,
 			Driver: "bridge",
 			Labels: map[string]string{"guardian.cluster": in.Target.Cluster},
 		}); err != nil {
 			return fmt.Errorf("ensure network %s: %w", netName, err)
 		}
-		if err := d.backend.ConnectNetwork(netName, container.Name, container.Aliases); err != nil {
+		if err := d.backend.ConnectNetwork(ctx, netName, container.Name, container.Aliases); err != nil {
 			return fmt.Errorf("connect network %s to %s: %w", netName, container.Name, err)
 		}
 	}
@@ -1396,15 +1410,8 @@ func externalObjectStoreDiff(ctx context.Context, in registry.AssetInput, spec *
 	if in.Store == nil {
 		return changedDrift(in.Asset.Name, "external object store reference pending"), nil
 	}
-	state, err := orchestratorcommon.LoadIntentState(ctx, in.Store, in.PartitionName, in.IntentName)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return changedDrift(in.Asset.Name, "external object store reference pending"), nil
-		}
-		return taskdomain.DriftReport{}, err
-	}
 	want := strings.TrimSpace(spec.Endpoint)
-	got := strings.TrimSpace(state.Outputs[in.Asset.Name+".endpoint"])
+	got := strings.TrimSpace(in.Outputs[in.Asset.Name+".endpoint"])
 	if got != want {
 		return changedDrift(in.Asset.Name, "external object store endpoint differs"), nil
 	}
@@ -1510,7 +1517,7 @@ func buildComputeContainer(ctx context.Context, in registry.AssetInput, spec *as
 	}
 	for _, mount := range spec.VolumeMounts {
 		container.VolumeMounts = append(container.VolumeMounts, VolumeMount{
-			Source:   volumeName(in, mount.Volume),
+			Source:   volumeSourceRef(in, mount.Volume),
 			Target:   mount.Path,
 			ReadOnly: mount.ReadOnly,
 		})
@@ -1582,7 +1589,7 @@ func objectStoreVolumeMounts(in registry.AssetInput, spec *assetdefs.ObjectStore
 	if spec.Volume == "" {
 		return nil
 	}
-	return []VolumeMount{{Source: volumeName(in, spec.Volume), Target: "/data"}}
+	return []VolumeMount{{Source: volumeSourceRef(in, spec.Volume), Target: "/data"}}
 }
 
 func objectStoreConfigMounts(in registry.AssetInput, spec *assetdefs.ObjectStoreSpec) []ConfigMount {
@@ -1603,7 +1610,7 @@ func sqlDatabaseVolumeMounts(in registry.AssetInput, spec *assetdefs.SQLDatabase
 	case "mysql", "mariadb":
 		target = "/var/lib/mysql"
 	}
-	return []VolumeMount{{Source: volumeName(in, spec.Volume), Target: target}}
+	return []VolumeMount{{Source: volumeSourceRef(in, spec.Volume), Target: target}}
 }
 
 func sqlDatabaseConfigMounts(in registry.AssetInput, spec *assetdefs.SQLDatabaseSpec) []ConfigMount {
@@ -1645,7 +1652,7 @@ func observabilityVolumeMounts(in registry.AssetInput, spec *assetdefs.Observabi
 	if spec.Volume == "" {
 		return nil
 	}
-	return []VolumeMount{{Source: volumeName(in, spec.Volume), Target: "/var/lib/otelcol"}}
+	return []VolumeMount{{Source: volumeSourceRef(in, spec.Volume), Target: "/var/lib/otelcol"}}
 }
 
 func sqlDatabaseImagePortEnv(spec *assetdefs.SQLDatabaseSpec) (string, int, map[string]string) {
@@ -1839,6 +1846,29 @@ func volumeName(in registry.AssetInput, assetName string) string {
 	return driverutil.ResourceName("docker-vol", in.Target, in.PartitionName, in.IntentName, assetName)
 }
 
+// volumeSourceName resolves the docker volume a Volume asset refers to.
+// Observed volumes keep their upstream name (ExistingID, else the asset name)
+// and are never renamed, modified or deleted by Guardian; managed volumes use
+// the namespaced volume name.
+func volumeSourceName(in registry.AssetInput, spec *assetdefs.VolumeSpec, assetName string) string {
+	if spec != nil && spec.ObserveExisting {
+		if explicit := strings.TrimSpace(spec.ExistingID); explicit != "" {
+			return explicit
+		}
+		return assetName
+	}
+	return volumeName(in, assetName)
+}
+
+// volumeSourceRef resolves a referenced Volume asset to its docker volume name.
+func volumeSourceRef(in registry.AssetInput, assetName string) string {
+	_, typed, err := driverutil.DecodeNamedAsset(in, assetName)
+	if err != nil {
+		return volumeName(in, assetName)
+	}
+	return volumeSourceName(in, typed.(*assetdefs.VolumeSpec), assetName)
+}
+
 func configName(in registry.AssetInput, assetName string) string {
 	return driverutil.ResourceName("docker-cfg", in.Target, in.PartitionName, in.IntentName, assetName)
 }
@@ -1867,12 +1897,12 @@ func observabilityName(in registry.AssetInput) string {
 	return driverutil.ResourceName("docker-obs", in.Target, in.PartitionName, in.IntentName, in.Asset.Name)
 }
 
-func removeExtraContainers(backend BackendAPI, in registry.AssetInput, desired []string) error {
+func removeExtraContainers(ctx context.Context, backend BackendAPI, in registry.AssetInput, desired []string) error {
 	want := make(map[string]struct{}, len(desired))
 	for _, name := range desired {
 		want[name] = struct{}{}
 	}
-	containers, err := backend.ListContainersByAsset(in.PartitionName, in.IntentName, in.Asset.Name)
+	containers, err := backend.ListContainersByAsset(ctx, in.PartitionName, in.IntentName, in.Asset.Name)
 	if err != nil {
 		return err
 	}
@@ -1880,7 +1910,7 @@ func removeExtraContainers(backend BackendAPI, in registry.AssetInput, desired [
 		if _, ok := want[container.Name]; ok {
 			continue
 		}
-		if err := backend.DeleteContainer(container.Name); err != nil {
+		if err := backend.DeleteContainer(ctx, container.Name); err != nil {
 			return err
 		}
 	}

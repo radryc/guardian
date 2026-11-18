@@ -435,3 +435,5 @@ func matchesAnyPrefix(logicalPath string, prefixes []string) bool {
 var _ guardianapi.Store = (*Store)(nil)
 
 var _ = errors.Is
+
+var _ guardianapi.Store = (*Store)(nil)

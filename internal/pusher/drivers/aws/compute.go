@@ -62,7 +62,7 @@ func (d *ComputeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskd
 	svcName := computeServiceName(spec, in)
 	cluster := computeCluster(spec, in)
 
-	svc, ok, err := d.backend.GetService(ctx, cluster, svcName)
+	svc, ok, err := d.serviceBackend().GetService(ctx, cluster, svcName)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -201,13 +201,13 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	tags := awsTags(in, hash)
 
 	if !computeAdopted(spec) {
-		_ = d.backend.UpsertLogGroup(ctx, LogGroup{
+		_ = d.logBackend().UpsertLogGroup(ctx, LogGroup{
 			Name: logGroup,
 			Hash: hash,
 			Tags: tags,
 		})
 		if len(sidecars) > 0 {
-			_ = d.backend.UpsertLogGroup(ctx, LogGroup{
+			_ = d.logBackend().UpsertLogGroup(ctx, LogGroup{
 				Name: observabilityLogGroup(in),
 				Hash: hash,
 				Tags: tags,
@@ -243,7 +243,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 		},
 	}
 
-	if err := d.backend.UpsertService(ctx, svc); err != nil {
+	if err := d.serviceBackend().UpsertService(ctx, svc); err != nil {
 		return registry.AssetResult{}, fmt.Errorf("upsert ECS service: %w", err)
 	}
 
@@ -262,7 +262,7 @@ func (d *ComputeDriver) Destroy(ctx context.Context, in registry.AssetInput) err
 	if err != nil {
 		return err
 	}
-	return d.backend.DeleteService(ctx, computeCluster(spec, in), computeServiceName(spec, in))
+	return d.serviceBackend().DeleteService(ctx, computeCluster(spec, in), computeServiceName(spec, in))
 }
 
 func decodeCompute(in registry.AssetInput) (*assetdefs.ComputeSpec, error) {

@@ -136,7 +136,9 @@ func main() {
 		log.Fatalf("parse docker add hosts: %v", err)
 	}
 	reg := registry.New()
-	dockerdriver.Register(reg, dockerBackend, secrets.NewStoreResolver(store), dockerdriver.WithDefaultExtraHosts(defaultExtraHosts))
+	if err := dockerdriver.Register(reg, dockerBackend, secrets.NewStoreResolver(store), dockerdriver.WithDefaultExtraHosts(defaultExtraHosts)); err != nil {
+		log.Fatalf("register docker drivers: %v", err)
+	}
 	runtime := &runtimepkg.Runtime{
 		QueuePath:               paths.QueueDir(pusherName),
 		WorkerID:                workerID,

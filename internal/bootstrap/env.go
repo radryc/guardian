@@ -192,6 +192,7 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["GUARDIAN_KANIKO_REGISTRY_MIRROR"] = cfg.Guardian.ImageBuild.KanikoMirror
 	env["GUARDIAN_KANIKO_DOCKER_CONFIG_SECRET"] = cfg.Guardian.ImageBuild.KanikoDockerConfigSecret
 	env["BUILDKITD_IMAGE"] = cfg.Guardian.ImageBuild.BuildKitImage
+	env["BUILDKIT_PVC_SIZE"] = cfg.Guardian.ImageBuild.BuildKitPVCSize
 	env["LOCAL_REGISTRY_PORT"] = cfg.Guardian.LocalRegistry.Port
 	env["LOCAL_REGISTRY_HOST_ALIASES"] = "" // set during deploy after clusterIP is known
 	env["MONOFS_WORKSPACE_STATE_DIR"] = envOrDefault("MONOFS_WORKSPACE_STATE_DIR", "")
@@ -212,13 +213,10 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["MONOFS_AUTO_REFRESH_OWNER"] = envOrDefault("MONOFS_AUTO_REFRESH_OWNER", cfg.Storage.Router.AutoRefreshOwner)
 	env["MONOFS_GUARDIAN_STATE_DIR"] = envOrDefault("MONOFS_GUARDIAN_STATE_DIR", ".monofs-router-state")
 
-	// --- Partition authz + SSO (OIDC). Off by default; enabled by start.sh --with-dex. ---
+	// --- SSO (OIDC). Off by default; enabled by start.sh --with-dex. ---
 	env["MONOFS_OIDC_ISSUER"] = envOrDefault("MONOFS_OIDC_ISSUER", "")
 	env["MONOFS_OIDC_AUDIENCE"] = envOrDefault("MONOFS_OIDC_AUDIENCE", "")
 	env["MONOFS_OIDC_JWKS_URL"] = envOrDefault("MONOFS_OIDC_JWKS_URL", "")
-	env["MONOFS_AUTHZ_ENFORCE_INGEST"] = envOrDefault("MONOFS_AUTHZ_ENFORCE_INGEST", "false")
-	env["MONOFS_AUTHZ_GRANTS_JSON"] = envOrDefault("MONOFS_AUTHZ_GRANTS_JSON", "")
-	env["GUARDIAN_AUTHZ_ENFORCE_DEPLOY"] = envOrDefault("GUARDIAN_AUTHZ_ENFORCE_DEPLOY", "false")
 	env["MONOFS_OIDC_CLIENT_ID"] = envOrDefault("MONOFS_OIDC_CLIENT_ID", "")
 	env["MONOFS_OIDC_CLIENT_SECRET"] = envOrDefault("MONOFS_OIDC_CLIENT_SECRET", "")
 	env["MONOFS_OIDC_REDIRECT_URL"] = envOrDefault("MONOFS_OIDC_REDIRECT_URL", "")
@@ -227,13 +225,13 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env["MONOFS_ROUTER_OIDC_REDIRECT_URL"] = envOrDefault("MONOFS_ROUTER_OIDC_REDIRECT_URL", "")
 	env["MONOFS_ROUTER_OIDC_AUTH_URL"] = envOrDefault("MONOFS_ROUTER_OIDC_AUTH_URL", "")
 	env["MONOFS_ROUTER_OIDC_END_SESSION_URL"] = envOrDefault("MONOFS_ROUTER_OIDC_END_SESSION_URL", "")
-	env["MONOFS_AUTHZ_ENFORCE_UI"] = envOrDefault("MONOFS_AUTHZ_ENFORCE_UI", "false")
+	env["GUARDIAN_REQUIRE_UI_AUTH"] = envOrDefault("GUARDIAN_REQUIRE_UI_AUTH", "false")
 
 	// --- Repo-managed access policy (pkg/authz/policy) ---
 	// Guardiand compiles the published ACL (/.access/envs/<env>.yaml) and
 	// serves the compiled bundle; the router consumes it for UI/API read
-	// filtering. Both sides default to the shared cluster token. Observe-only
-	// unless MONOFS_ACCESS_ENFORCE / GUARDIAN_ACCESS_ENFORCE are set.
+	// filtering and ingest. Both sides default to the shared cluster token.
+	// Observe-only unless MONOFS_ACCESS_ENFORCE / GUARDIAN_ACCESS_ENFORCE are set.
 	env["MONOFS_ACCESS_POLICY_URL"] = envOrDefault("MONOFS_ACCESS_POLICY_URL", "")
 	env["MONOFS_ACCESS_POLICY_FILE"] = envOrDefault("MONOFS_ACCESS_POLICY_FILE", "")
 	env["MONOFS_ACCESS_POLICY_TOKEN"] = envOrDefault("MONOFS_ACCESS_POLICY_TOKEN", monofsToken)

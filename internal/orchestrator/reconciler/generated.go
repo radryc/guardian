@@ -61,13 +61,8 @@ func (r *Reconciler) syncGeneratedAWSPayloads(ctx context.Context, partition str
 		}
 		memoKey := partition + "/" + name
 		fp := cdkIntentFingerprint(partition, name, compiledIntent)
-		if fp != "" {
-			r.cdkMemoMu.RLock()
-			prevFP := r.cdkPayloadHashes[memoKey]
-			r.cdkMemoMu.RUnlock()
-			if prevFP == fp {
-				continue
-			}
+		if fp != "" && r.cdkMemo.get(memoKey) == fp {
+			continue
 		}
 		result, err := cdkgen.Generate(cdkgen.Input{
 			Partition: partition,
@@ -96,12 +91,7 @@ func (r *Reconciler) syncGeneratedAWSPayloads(ctx context.Context, partition str
 			continue
 		}
 		if fp != "" {
-			r.cdkMemoMu.Lock()
-			if r.cdkPayloadHashes == nil {
-				r.cdkPayloadHashes = make(map[string]string)
-			}
-			r.cdkPayloadHashes[memoKey] = fp
-			r.cdkMemoMu.Unlock()
+			r.cdkMemo.set(memoKey, fp)
 		}
 		log.Printf("reconciler: partition=%s intent=%s generated CDK stack %s (%d assets, %d files)",
 			partition, name, result.Manifest.StackName, len(result.GeneratedAssets), len(result.Files))

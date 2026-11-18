@@ -802,8 +802,16 @@ func deployStorageTemplates(ctx context.Context, cfg *bootstrap.Config, env boot
 	createMinioBucket(ctx, cfg.Storage.Namespace, dryRun)
 
 	// Fetchers are recreated one at a time so blob reads retain redundancy.
+	// fetcher-a owns v2 pack compaction; CAS makes duplicate runs safe, but a
+	// single compactor avoids doing the work twice in the demo.
 	if err := applyEachWait("deploy-fetcher.yaml",
-		func(s string) bootstrap.Env { return bootstrap.Env{"SUFFIX": s} },
+		func(s string) bootstrap.Env {
+			compact := "false"
+			if s == "a" {
+				compact = "true"
+			}
+			return bootstrap.Env{"SUFFIX": s, "FETCHER_COMPACT_ENABLED": compact}
+		},
 		fetcherSuffixes,
 		func(ctx context.Context, s string) error {
 			return bootstrap.WaitForDeploymentTimeout(ctx, ns, "fetcher-"+s, fetcherRolloutTimeout, dryRun)
@@ -854,10 +862,9 @@ func deployStorageTemplates(ctx context.Context, cfg *bootstrap.Config, env boot
 		return err
 	}
 
-	// LB-edge deployments
-	if err := apply("deploy-lb-k8s-agent.yaml", nil); err != nil {
-		return err
-	}
+	// LB-edge deployments. The k8s agent is reconciled by the lb-agent
+	// partition; bootstrapping a second, zero-replica copy only creates a
+	// confusing unmanaged placeholder.
 	if err := apply("deploy-lb-port-sync.yaml", nil); err != nil {
 		return err
 	}
@@ -966,6 +973,7 @@ func deployGuardianTemplates(ctx context.Context, cfg *bootstrap.Config, env boo
 	bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "svc-guardian-ui.yaml"), env, nil, dryRun)
 	bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "deploy-guardiand.yaml"), env, nil, dryRun)
 	bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "deploy-pusher-k8s.yaml"), env, nil, dryRun)
+	bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "pvc-buildkitd.yaml"), env, nil, dryRun)
 	bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "deploy-buildkitd.yaml"), env, nil, dryRun)
 	bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "svc-buildkitd.yaml"), env, nil, dryRun)
 

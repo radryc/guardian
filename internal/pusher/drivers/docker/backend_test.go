@@ -1,6 +1,7 @@
 package dockerdriver
 
 import (
+	"context"
 	"sort"
 	"sync"
 )
@@ -13,91 +14,6 @@ type Backend struct {
 	containers map[string]Container
 }
 
-type Network struct {
-	Name     string
-	Hash     string
-	Labels   map[string]string
-	Driver   string
-	Internal bool
-}
-
-type Volume struct {
-	Name       string
-	Hash       string
-	Labels     map[string]string
-	Size       string
-	AccessMode string
-	Ephemeral  bool
-}
-
-type Config struct {
-	Name   string
-	Hash   string
-	Labels map[string]string
-	Files  map[string]string
-	Binary bool
-}
-
-type PortBinding struct {
-	Name          string `yaml:"name,omitempty"`
-	Protocol      string `yaml:"protocol,omitempty"`
-	ContainerPort int    `yaml:"containerPort,omitempty"`
-	HostPort      int    `yaml:"hostPort,omitempty"`
-}
-
-type VolumeMount struct {
-	Source   string `yaml:"source,omitempty"`
-	Target   string `yaml:"target,omitempty"`
-	ReadOnly bool   `yaml:"readOnly,omitempty"`
-}
-
-type HostBindMount struct {
-	Source   string `yaml:"source,omitempty"`
-	Target   string `yaml:"target,omitempty"`
-	ReadOnly bool   `yaml:"readOnly,omitempty"`
-}
-
-type ConfigMount struct {
-	Config     string `yaml:"config,omitempty"`
-	SourcePath string `yaml:"sourcePath,omitempty"`
-	TargetPath string `yaml:"targetPath,omitempty"`
-	ReadOnly   bool   `yaml:"readOnly,omitempty"`
-}
-
-type ExtraNetwork struct {
-	Name    string
-	Aliases []string
-}
-
-type Container struct {
-	Name              string
-	Kind              string
-	Image             string
-	Hash              string
-	Labels            map[string]string
-	Network           string
-	Aliases           []string
-	ExtraNetworks     []ExtraNetwork
-	ExtraHosts        map[string]string
-	Command           []string
-	Args              []string
-	Env               map[string]string
-	User              string
-	Ports             []PortBinding
-	VolumeMounts      []VolumeMount
-	ConfigMounts      []ConfigMount
-	HostBindMounts    []HostBindMount
-	InlineFiles       map[string]string
-	Privileged        bool
-	Capabilities      []string
-	ShmSize           string
-	GPUs              string
-	Running           bool
-	CPULimit          string
-	MemoryLimit       string
-	MemoryReservation string
-}
-
 func NewBackend() *Backend {
 	return &Backend{
 		networks:   map[string]Network{},
@@ -107,28 +23,28 @@ func NewBackend() *Backend {
 	}
 }
 
-func (b *Backend) EnsureNetwork(network Network) error {
+func (b *Backend) EnsureNetwork(ctx context.Context, network Network) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.networks[network.Name] = cloneNetwork(network)
 	return nil
 }
 
-func (b *Backend) GetNetwork(name string) (Network, bool, error) {
+func (b *Backend) GetNetwork(ctx context.Context, name string) (Network, bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	network, ok := b.networks[name]
 	return cloneNetwork(network), ok, nil
 }
 
-func (b *Backend) DeleteNetwork(name string) error {
+func (b *Backend) DeleteNetwork(ctx context.Context, name string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.networks, name)
 	return nil
 }
 
-func (b *Backend) ConnectNetwork(networkName, containerName string, aliases []string) error {
+func (b *Backend) ConnectNetwork(ctx context.Context, networkName, containerName string, aliases []string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	container, ok := b.containers[containerName]
@@ -145,70 +61,70 @@ func (b *Backend) ConnectNetwork(networkName, containerName string, aliases []st
 	return nil
 }
 
-func (b *Backend) UpsertVolume(volume Volume) error {
+func (b *Backend) UpsertVolume(ctx context.Context, volume Volume) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.volumes[volume.Name] = cloneVolume(volume)
 	return nil
 }
 
-func (b *Backend) GetVolume(name string) (Volume, bool, error) {
+func (b *Backend) GetVolume(ctx context.Context, name string) (Volume, bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	volume, ok := b.volumes[name]
 	return cloneVolume(volume), ok, nil
 }
 
-func (b *Backend) DeleteVolume(name string) error {
+func (b *Backend) DeleteVolume(ctx context.Context, name string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.volumes, name)
 	return nil
 }
 
-func (b *Backend) UpsertConfig(config Config) error {
+func (b *Backend) UpsertConfig(ctx context.Context, config Config) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.configs[config.Name] = cloneConfig(config)
 	return nil
 }
 
-func (b *Backend) GetConfig(name string) (Config, bool, error) {
+func (b *Backend) GetConfig(ctx context.Context, name string) (Config, bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	config, ok := b.configs[name]
 	return cloneConfig(config), ok, nil
 }
 
-func (b *Backend) DeleteConfig(name string) error {
+func (b *Backend) DeleteConfig(ctx context.Context, name string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.configs, name)
 	return nil
 }
 
-func (b *Backend) UpsertContainer(container Container) error {
+func (b *Backend) UpsertContainer(ctx context.Context, container Container) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.containers[container.Name] = cloneContainer(container)
 	return nil
 }
 
-func (b *Backend) GetContainer(name string) (Container, bool, error) {
+func (b *Backend) GetContainer(ctx context.Context, name string) (Container, bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	container, ok := b.containers[name]
 	return cloneContainer(container), ok, nil
 }
 
-func (b *Backend) DeleteContainer(name string) error {
+func (b *Backend) DeleteContainer(ctx context.Context, name string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.containers, name)
 	return nil
 }
 
-func (b *Backend) ListContainersByAsset(partition, intent, asset string) ([]Container, error) {
+func (b *Backend) ListContainersByAsset(ctx context.Context, partition, intent, asset string) ([]Container, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	out := make([]Container, 0)
@@ -280,15 +196,4 @@ func cloneContainer(in Container) Container {
 		MemoryLimit:       in.MemoryLimit,
 		MemoryReservation: in.MemoryReservation,
 	}
-}
-
-func cloneStringMap(in map[string]string) map[string]string {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
-	return out
 }

@@ -1,6 +1,6 @@
 # Guardian Logical Flows
 
-Status: regenerated from source, October 2026.
+Status: regenerated from source, November 2026.
 Companion to [Architecture](architecture.md). This document describes what
 happens, in order, for each major workflow. File references point at the
 implementation that owns the behaviour.
@@ -62,18 +62,18 @@ Implementation details:
 
 ### 1.3 UI bundle save flow
 
-1. `PUT /api/partitions/{name}/bundle` accepts a JSON envelope with config
-   text, intent documents, and optional deletes.
-2. The server checks that intent names are non-empty and unique, but does not
-   validate names against the partition name regex.
-3. It writes `config.yaml` and each intent via `paths.IntentManifest`, then
+1. `PUT /api/partitions/{name}/bundle` accepts a JSON envelope (8 MiB body
+   limit) with config text, intent documents, and optional deletes.
+2. `Server.authorizeMutation` enforces `access.CanModify` on the partition
+   when the access policy is enabled.
+3. The server validates the partition name (`paths.ValidatePartitionName`) and
+   intent names (`paths.ValidateIntentName`), and restores redacted inline
+   Secret values from the stored manifest.
+4. It writes `config.yaml` and each intent via `paths.IntentManifest`, then
    emits an event.
-4. If `DisableAutoDeployOnIngest` is false (default), it calls
+5. If `DisableAutoDeployOnIngest` is false (default), it calls
    `ReconcilePartition` immediately.
-5. The partition detail cache is invalidated.
-
-The endpoint has no body-size limit and no in-handler authorization; see
-[security](security-architecture.md).
+6. The partition detail cache is invalidated.
 
 ### 1.4 Repo import flow
 
@@ -91,13 +91,10 @@ flowchart LR
     A -->|no| WAIT[wait for explicit reconcile]
 ```
 
-Two importers exist:
-
-- `internal/repoimport.Import` (shared by the daemon loop): handles config
-  normalization, optional `partitionPath` override, duplicate-intent checks,
-  and refuses inline secrets.
-- `cmd/guardianctl/repo_cmd.go` and `internal/ui/registry.go` have their own
-  import variants with different filtering and secret handling.
+`internal/repoimport.Import` is the single shared importer used by the daemon
+repo-import loop, UI repo ingest, `guardianctl repo import`, and `guardianctl
+repo sync`. It handles config normalization, optional `partitionPath` override,
+duplicate-intent checks, and refuses inline secrets.
 
 The shared importer now prunes files recorded in
 `/partitions/<p>/.state/repo-import.json` by the same source when they are no
@@ -402,7 +399,6 @@ DESTROY tasks. Underlying cloud/cluster resources remain.
 
 ### 5.4 Problems
 
-- `Destroying` is never aged out, so a lost DESTROY result wedges purge.
 - The watcher ignores `.deletion.json`, so deletion is not immediate on all
   paths.
 - Forced purge can race late tasks that recreate resources.
@@ -615,9 +611,9 @@ sequenceDiagram
   paths/TCP ports and limits.
 - Journeys are multi-step request sequences with extraction and assertions.
 - `AllowExternal` controls whether non-cluster targets are allowed.
-- There is no probe history in MonoFS; history is in telemetry.
-- The documented storeless mode can panic because snapshot writing dereferences
-  a nil store.
+- Probe results are stored as a latest snapshot plus bounded per-probe history
+  (`internal/pusher/probes/store.go`), and storeless mode safely skips
+  persistence when the store is nil.
 
 ---
 
@@ -645,7 +641,9 @@ sequenceDiagram
 - Observe: denials are logged, nothing filtered.
 - Enforce: reads filtered; if no policy ever loaded, non-admin reads fail
   closed.
-- `CanModify` exists but has no callers. Mutating UI endpoints do not check it.
+- `CanModify` gates partition mutations and set membership (one check per
+  added/removed partition); `IsAdmin` gates registry/repo/scan mutations and
+  set metadata.
 - The CLI writes directly to MonoFS and bypasses this entire flow.
 
 ---
@@ -667,12 +665,12 @@ flowchart TD
     J -->|no| K[Wait]
 ```
 
-- State per partition: `notifications.json`.
+- State per partition: `notifications.json` (updated with CAS via
+  `ExpectedVersionID`).
 - Defaults: 30s poll, 15m cooldown, 6h repeat.
 - Webhook signature is `HMAC-SHA256(body)` with no timestamp or nonce.
-- Partial channel success is treated as delivered; retry waits for the repeat
-  interval.
-- In HA, replicas race on the notification state file.
+- Delivery uses per-channel retries and idempotency keys so partial channel
+  success does not suppress retry of failed channels.
 
 ---
 
@@ -740,15 +738,15 @@ metadata. The token helper does not refresh and ignores JWT expiry/audience.
 When OIDC verification is enabled and a client secret + redirect URL are
 configured, `guardiand` mounts `/auth/login`, `/auth/callback`, and
 `/auth/logout`. Identity is resolved from the `monofs_session` cookie or a
-bearer token. `MONOFS_AUTHZ_ENFORCE_UI=true` turns the login wall on; by default
+bearer token. `GUARDIAN_REQUIRE_UI_AUTH=true` turns the login wall on; by default
 it is observe-only.
 
 ### 14.4 Control-plane deploy authorization
 
-`--authz-enforce-deploy` loads grants from a JSON file or inline JSON and wraps
-partition reconcile with a maintainer/admin check. Anonymous identities are
-explicitly allowed (trusted automation), and a load error disables enforcement
-rather than failing closed.
+`GUARDIAN_ACCESS_ENFORCE=true` makes the compiled access policy decide and wraps
+partition reconcile with a maintainer/admin check. Internal scheduler work is
+attributed to the `guardiand` policy client, so it is authorized by the ACL like
+any other principal. A missing policy under enforcement fails closed.
 
 ---
 

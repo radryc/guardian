@@ -1,6 +1,7 @@
 package awsread
 
 import (
+	"crypto/subtle"
 	"net"
 	"net/http"
 	"os"
@@ -114,7 +115,8 @@ func (h *Handler) tokenValid(r *http.Request) bool {
 	if !strings.HasPrefix(header, "Bearer ") {
 		return false
 	}
-	return strings.TrimSpace(strings.TrimPrefix(header, "Bearer ")) == token
+	provided := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(token)) == 1
 }
 
 func (h *Handler) scopeAllowed(scope string) bool {

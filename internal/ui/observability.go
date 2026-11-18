@@ -212,5 +212,6 @@ func (s *Server) handleObservabilityIdentities(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	records = s.filterIdentities(r.Context(), records)
 	writeJSONWithETag(w, r, http.StatusOK, map[string]any{"identities": records})
 }

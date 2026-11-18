@@ -1,9 +1,6 @@
 package dispatcher
 
-import (
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
-)
+import "github.com/radryc/guardian/internal/metrics"
 
 var (
 	// guardianWritesTotal counts every logical file write issued by the dispatcher.
@@ -11,77 +8,67 @@ var (
 	//   queue_task, write_intent_state, write_partition_state,
 	//   write_partition_runtime, archive_deployment, write_event,
 	//   delete_intent_state, delete_partition_runtime, cleanup_task
-	guardianWritesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "guardian",
-		Subsystem: "dispatcher",
-		Name:      "writes_total",
-		Help:      "Total logical file writes issued by the Guardian dispatcher, by operation.",
-	}, []string{"operation"})
+	guardianWritesTotal = metrics.NewCounter(
+		"guardian_dispatcher_writes_total",
+		"Total logical file writes issued by the Guardian dispatcher, by operation.",
+		"operation",
+	)
 
 	// guardianWriteBytesTotal counts raw bytes sent to the store by the dispatcher.
-	guardianWriteBytesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "guardian",
-		Subsystem: "dispatcher",
-		Name:      "write_bytes_total",
-		Help:      "Total bytes written to the store by the Guardian dispatcher, by operation.",
-	}, []string{"operation"})
+	guardianWriteBytesTotal = metrics.NewCounter(
+		"guardian_dispatcher_write_bytes_total",
+		"Total bytes written to the store by the Guardian dispatcher, by operation.",
+		"operation",
+	)
 
 	// guardianSkippedWritesTotal counts writes suppressed by the content-hash guard.
-	guardianSkippedWritesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "guardian",
-		Subsystem: "dispatcher",
-		Name:      "skipped_writes_total",
-		Help:      "Total writes skipped by the Guardian dispatcher because content was identical to the last write.",
-	}, []string{"operation"})
+	guardianSkippedWritesTotal = metrics.NewCounter(
+		"guardian_dispatcher_skipped_writes_total",
+		"Total writes skipped by the Guardian dispatcher because content was identical to the last write.",
+		"operation",
+	)
 
 	// guardianDeletesTotal counts logical file deletes issued by the dispatcher.
-	guardianDeletesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "guardian",
-		Subsystem: "dispatcher",
-		Name:      "deletes_total",
-		Help:      "Total logical file deletes issued by the Guardian dispatcher, by operation.",
-	}, []string{"operation"})
+	guardianDeletesTotal = metrics.NewCounter(
+		"guardian_dispatcher_deletes_total",
+		"Total logical file deletes issued by the Guardian dispatcher, by operation.",
+		"operation",
+	)
 
 	// guardianPartitionStatusCurrent tracks the latest derived partition status distribution.
-	guardianPartitionStatusCurrent = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "guardian",
-		Subsystem: "dispatcher",
-		Name:      "partition_status_current",
-		Help:      "Current number of partitions in each derived status.",
-	}, []string{"status"})
+	guardianPartitionStatusCurrent = metrics.NewGauge(
+		"guardian_dispatcher_partition_status_current",
+		"Current number of partitions in each derived status.",
+		"status",
+	)
 
 	// guardianIntentStatusCurrent tracks the latest derived intent status distribution.
-	guardianIntentStatusCurrent = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "guardian",
-		Subsystem: "dispatcher",
-		Name:      "intent_status_current",
-		Help:      "Current number of desired intents in each status across partition runtime snapshots.",
-	}, []string{"status"})
-	guardianCASConflictsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "guardian",
-		Subsystem: "dispatcher",
-		Name:      "cas_conflicts_total",
-		Help:      "Compare-and-swap conflicts observed by the Guardian dispatcher.",
-	}, []string{"operation"})
+	guardianIntentStatusCurrent = metrics.NewGauge(
+		"guardian_dispatcher_intent_status_current",
+		"Current number of desired intents in each status across partition runtime snapshots.",
+		"status",
+	)
 
-	guardianCASRetriesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "guardian",
-		Subsystem: "dispatcher",
-		Name:      "cas_retries_total",
-		Help:      "Compare-and-swap retries performed by the Guardian dispatcher.",
-	}, []string{"operation"})
+	guardianCASConflictsTotal = metrics.NewCounter(
+		"guardian_dispatcher_cas_conflicts_total",
+		"Compare-and-swap conflicts observed by the Guardian dispatcher.",
+		"operation",
+	)
 
-	guardianCASExhaustedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "guardian",
-		Subsystem: "dispatcher",
-		Name:      "cas_exhausted_total",
-		Help:      "Compare-and-swap retry budgets exhausted by the Guardian dispatcher.",
-	}, []string{"operation"})
+	guardianCASRetriesTotal = metrics.NewCounter(
+		"guardian_dispatcher_cas_retries_total",
+		"Compare-and-swap retries performed by the Guardian dispatcher.",
+		"operation",
+	)
 
-	guardianCASVersionMissingTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Namespace: "guardian",
-		Subsystem: "dispatcher",
-		Name:      "cas_version_missing_total",
-		Help:      "Intent state writes where content existed but no authoritative version was available.",
-	})
+	guardianCASExhaustedTotal = metrics.NewCounter(
+		"guardian_dispatcher_cas_exhausted_total",
+		"Compare-and-swap retry budgets exhausted by the Guardian dispatcher.",
+		"operation",
+	)
+
+	guardianCASVersionMissingTotal = metrics.NewCounter(
+		"guardian_dispatcher_cas_version_missing_total",
+		"Intent state writes where content existed but no authoritative version was available.",
+	)
 )

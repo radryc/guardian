@@ -56,6 +56,9 @@ users:
   admin@example.com:
     partitions: ["*"]
     role: admin
+  scoped-admin@example.com:
+    partitions: [aws-x]
+    role: admin
 groups:
   sre:
     partitions: ["*"]
@@ -245,5 +248,38 @@ func TestPolicyJSONIncludesPartitionQuota(t *testing.T) {
 	defaults := pol.QuotaDefaults()
 	if defaults.Query == nil || defaults.Query.RequestsPerSecond != 5 {
 		t.Fatalf("defaults = %#v, want rps 5", defaults)
+	}
+}
+
+func TestAuthorizeModify(t *testing.T) {
+	svc := newTestService(t, true, true)
+
+	if err := svc.AuthorizeModify(ctxFor("admin@example.com"), "k8s-z"); err != nil {
+		t.Fatalf("global admin: %v", err)
+	}
+	if err := svc.AuthorizeModify(ctxFor("sre@example.com", "sre"), "aws-x"); err != nil {
+		t.Fatalf("maintainer: %v", err)
+	}
+	if err := svc.AuthorizeModify(ctxFor("scoped-admin@example.com"), "aws-x"); err != nil {
+		t.Fatalf("scoped admin on its partition: %v", err)
+	}
+	if err := svc.AuthorizeModify(ctxFor("scoped-admin@example.com"), "k8s-z"); err == nil {
+		t.Fatal("scoped admin must not modify partitions it does not list")
+	}
+	if err := svc.AuthorizeModify(ctxFor("foo@example.com"), "aws-x"); err == nil {
+		t.Fatal("viewer must not modify")
+	}
+	if err := svc.AuthorizeModify(context.Background(), "aws-x"); err == nil {
+		t.Fatal("anonymous must not modify under enforcement")
+	}
+
+	observe := newTestService(t, false, true)
+	if err := observe.AuthorizeModify(context.Background(), "aws-x"); err != nil {
+		t.Fatalf("observe mode must be permissive: %v", err)
+	}
+
+	notLoaded := newTestService(t, true, false)
+	if err := notLoaded.AuthorizeModify(ctxFor("admin@example.com"), "aws-x"); err == nil {
+		t.Fatal("enforcing without a loaded policy must fail closed")
 	}
 }

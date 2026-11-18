@@ -222,7 +222,7 @@ func TestBootstrapDeployDryRun(t *testing.T) {
 		"deploy-node.yaml", "deploy-router.yaml",
 		"pdb-node.yaml", "pdb-fetcher.yaml", "pdb-router.yaml",
 		"rbac-lb-agent.yaml", "configmap-lb-port-sync.yaml",
-		"deploy-lb-k8s-agent.yaml", "deploy-lb-port-sync.yaml", "deploy-haproxy.yaml",
+		"deploy-lb-port-sync.yaml", "deploy-haproxy.yaml",
 		"deploy-registry.yaml",
 	}
 	for _, name := range storageTemplates {

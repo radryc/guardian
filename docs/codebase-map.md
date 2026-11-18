@@ -1,9 +1,9 @@
 # Guardian Codebase Map
 
-Status: October 2026, derived from source.
-This is a per-file description of every Go and TypeScript file in the
-repository (429 files). Test files are described by what they cover. The goal
-is orientation: read this first, then open the file.
+Status: November 2026, derived from source.
+This is a per-file description of Go and TypeScript source files in the
+repository. Test files are described by what they cover. The goal is
+orientation: read this first, then open the file.
 
 Legend:
 
@@ -20,7 +20,7 @@ Legend:
 
 | File | What it does |
 |---|---|
-| `main.go` | Entry point. Parses flags, loads config/env, sets up telemetry, opens MonoFS or memory store, constructs dispatcher/processor/reconciler, installs optional authz, starts UI/API and all background loops, handles shutdown. Contains the result worker pool, live-result safety scan, pusher-name derivation, observed/alerting constructors. |
+| `main.go` | Entry point. Parses flags, loads config/env, sets up telemetry, opens MonoFS or memory store, constructs dispatcher/processor/reconciler, wires compiled access-policy enforcement, starts UI/API and all background loops, handles shutdown. Contains the result worker pool, live-result safety scan, pusher-name derivation, observed/alerting constructors. |
 | `envconfig.go` | Applies `GUARDIAN_PUSHERS`, observed/onboarding/repo-import env overrides; parses `name:queueDir` pushers and `GUARDIAN_ACCESS_INTERVAL`. |
 | `envconfig_test.go` | Tests pusher parsing, env application, defaults untouched, invalid values ignored, nil safety. |
 | `main_test.go` | Tests live-result scanning (terminal/active/reference cases), stable partition worker hashing, many-result processing; benchmark. |
@@ -51,6 +51,7 @@ Legend:
 | `observability_cmd.go` | Lists canonical observability identities. |
 | `onboard.go` | Runs the onboarding controller once for a pusher/prefix. |
 | `bootstrap.go` | Development-only `dev` commands: setup/build/deploy/init/stop/destroy/status, kind cluster and registry wiring, calls shared image helpers, URL stamping. |
+| `gcp.go` | `gcp setup` (WIF pool/provider, `guardian-deployer` SA, KMS, GCS state bucket) and `gcp pusher-deploy`. |
 | `aws.go` | `aws setup` (deploy role, policy, Roles Anywhere) and `aws init` (CFN execution policies, CDK bootstrap, ECR repos). |
 | `aws_deploy.go` | `aws pusher-deploy`: `npx cdk deploy AwsPusherStack` wrapper. |
 | `aws_ecr.go` | ECR login helper (`aws ecr get-login-password` → `docker login`). |
@@ -80,6 +81,8 @@ Legend:
 |---|---|
 | `cmd/guardian-pusher-aws/main.go` | AWS worker: flags/env, telemetry, MonoFS/FS store, composite SDK+CLI backend, driver registration, runtime with account/region `CanHandle`, scan runner, SQS observed-event consumer, probe runner, onboarding SSM reader, observed read API (loopback `:19090` default), observed-only mode, graceful shutdown. |
 | `cmd/guardian-pusher-aws/main_test.go` | Loopback listen-address classification test. |
+| `cmd/guardian-pusher-gcp/main.go` | GCP worker: OpenTofu + GCP SDK drivers, flags/env, telemetry, MonoFS/FS store, runtime with project/region `CanHandle`, Cloud Asset Inventory observer, read API (`:19091` default), graceful shutdown. |
+| `cmd/guardian-pusher-gcp/readapi.go` | HTTP server setup for the GCP read API (TLS/mTLS, bearer token/scopes, rate/body limits). |
 | `cmd/guardian-pusher-docker/main.go` | Docker worker: CLI backend, driver registration, runtime, probes, state dir, telemetry. |
 | `cmd/guardian-pusher-docker/main_test.go` | Tests Docker driver host/port parsing (`parseAddHosts`). |
 | `cmd/guardian-pusher-k8s/main.go` | Kubernetes worker: client-go or kubectl backend selection, driver registration, runtime, probes, telemetry. |
@@ -101,7 +104,9 @@ Legend:
 | File | What it does |
 |---|---|
 | `catalog.go` | Loads partition names/labels into the policy catalog and computes a digest for change detection. |
+| `partition.go` | Validates and stores repo-owned per-partition `access.yaml` files and provenance sidecars under `/.access/partitions`. |
 | `service.go` | Compiles `/.access` ACL + imports against the catalog; staged disabled/observe/enforce modes; `CanSee`, `IsAdmin`, `CanModify`, `FilterPartitions`, `Explain`, `PolicyJSON`, background refresh. |
+| `partition_test.go` | Repo-owned per-partition `access.yaml` validation, scope restrictions, and provenance tests. |
 | `service_test.go` | Visibility, observe mode, fail-closed, disabled permissive, roles, explain/JSON. |
 
 ## 3. `internal/alerting`
@@ -110,13 +115,6 @@ Legend:
 |---|---|
 | `evaluator.go` | Polls partition runtimes, classifies failures, applies threshold/cooldown/repeat rules, matches channels/rules, dispatches webhooks, persists `notifications.json`, writes events. |
 | `evaluator_test.go` | Fire once/recover, rule matching, webhook end-to-end. |
-
-## 4. `internal/authz`
-
-| File | What it does |
-|---|---|
-| `guard.go` | Control-plane modify guard backed by MonoFS grant store; service principal + scoped evaluator; file/inline grant loading. |
-| `guard_test.go` | Maintainer/admin/anonymous, observe mode, scoping, empty store. |
 
 ## 5. `internal/awsgen`
 
@@ -146,11 +144,13 @@ Legend:
 | `reader.go` | Public read contract for Doctor: metric/log/trace/alarm DTOs and the `Reader` interface. |
 | `aws_reader.go` | AWS SDK implementation: CloudWatch metrics/alarms, Logs Insights, X-Ray, per-region config cache, Metrics Insights query. |
 | `handler.go` | HTTP handler and route switch for `/v1/aws/*`; bearer auth; meta/alarms/metrics/logs/X-Ray/PromQL/onboarding/probes/observed endpoints. |
+| `security.go` | TLS/mTLS listener configuration, rotating token-file/scoped bearer auth, per-caller rate limiting, body size limits, and server timeouts. |
 | `promql.go` | SigV4 PromQL proxy to CloudWatch's Prometheus-compatible API; query normalization. |
 | `promql_fallback.go` | Empty/unsupported PromQL fallback to ListMetrics + GetMetricData/Metrics Insights; time parsing/helpers. |
 | `promql_label_values.go` | `__name__` label-values fallback from `ListMetrics`. |
 | `handler_test.go` | Route/auth tests, log body, metric dimensions, X-Ray parsing, observed/probes, label fallback. |
 | `promql_normalize_test.go` | Metric-selector normalization tables. |
+| `security_test.go` | Scoped auth, token-file rotation, rate limits, body limits, TLS/mTLS tests. |
 
 ## 8. `internal/awsscan`
 
@@ -183,7 +183,8 @@ Legend:
 | `config.go` | Dev bootstrap config schema/defaults, template rendering inputs, env-derived values, image names, namespaces. |
 | `deploy.go` | Renders/applies Kubernetes templates, builds/loads images, creates namespaces/registry, deploys MonoFS/Guardian/pusher. |
 | `env.go` | Computes bootstrap environment (tokens, encryption key, S3/MinIO settings), fetcher/OTel wiring, URL stamping helpers. |
-| `env_test.go` | Config/env computations, OTel wiring (one test currently fails against external templates). |
+| `deploy_test.go` | Bootstrap deploy/render unit tests. |
+| `env_test.go` | Config/env computations and OTel wiring tests. |
 
 ## 11. `internal/buildinfo`
 
@@ -277,7 +278,8 @@ actions the generated stack needs.
 
 | File | What it does |
 |---|---|
-| `publisher.go` | No-op publisher and async S3 publisher: queues logical-path payloads, uploads in a single goroutine, key construction, close. No retry/SSE. |
+| `publisher.go` | No-op publisher and async S3 publisher: exponential-backoff retry, optional SSE-KMS and Object Lock, `OnError` callback, idempotent `Close`. |
+| `publisher_test.go` | S3 publisher retry, SSE-KMS, Object Lock, error callback, and close tests. |
 
 ## 18. `internal/config`
 
@@ -325,7 +327,8 @@ actions the generated stack needs.
 | `probe.go` | Probe spec: single check or journey, protocol/port/path, assertions, retries, interval, auth. |
 | `k8sresource.go` | K8sResource spec: raw manifests, namespace, prune/ownership flags. |
 | `awsresource.go` | AWSResource fallback spec: CFN type/properties/existing flag. |
-| `*_test.go` | Per-type validation and catalog tests (`secret_test.go`, `probe_test.go`, `imagebuild_test.go`, `awsresource_test.go`, `traefikroute_test.go`, `compute_dynamic_hostname_test.go`, `registry_test.go`). |
+| `observedresource.go` | ObservedResource spec for report-only observed resources. |
+| `secret_test.go`, `probe_test.go`, `imagebuild_test.go`, `awsresource_test.go`, `traefikroute_test.go`, `compute_dynamic_hostname_test.go`, `registry_test.go` | Per-type validation, dynamic hostname, secret ref, and catalog tests. |
 
 ### 20.3 Other domain packages
 
@@ -335,12 +338,15 @@ actions the generated stack needs.
 | `history/history.go` | Deployment record and timeline types. |
 | `intent/intent.go` | Intent manifest and type/implementation constants. |
 | `partition/partition.go` | Partition manifest, reconciliation/defaults/probes/observability specs. |
+| `partition/partition_test.go` | Partition validation and defaults tests. |
 | `release/release.go` | `ReleaseRecord`, `PartitionReleaseLog`, clone helpers. |
 | `release/release_test.go` | Release record clone/merge semantics. |
 | `state/state.go` | Partition/intent state, 17 statuses, resource observations, timestamps, deep clones. |
 | `state/partition_status.go` | Aggregate partition status metrics/normalization/health roll-up helpers. |
+| `state/merge_test.go` | State merge and resource observation tests. |
 | `state/partition_status_test.go` | Status roll-up/metrics tests. |
 | `target/target.go` | Placement (cluster, namespace, region, account) and matching helpers. |
+| `target/target_test.go` | Target matching and normalization tests. |
 | `task/task.go` | Task, abstract asset, claim, result, drift/health/readiness/log types. |
 | `task/redact.go` | Secret asset output redaction helpers (`RedactedValue`, `RedactSecretOutputs`, `RedactSecretStrings`). |
 
@@ -416,7 +422,7 @@ actions the generated stack needs.
 |---|---|
 | `common.go` | Shared helpers: load state, outputs, dependency health, in-flight detection, status preservation, task building from manifests, generated-stack substitution, clones. |
 | `runtime.go` | Loads a partition runtime (partition + all intent states) and normalizes metrics/status. |
-| `runtime_metrics.go` | Prometheus counters for runtime loads and intent state counts. |
+| `runtime_metrics.go` | OTel-backed counters (`internal/metrics`) for runtime loads and intent state counts. |
 | `common_test.go` | Status transitions, generated-stack substitution, authoritative state scan. |
 | `generated_test.go` | CDK task building. |
 | `runtime_test.go` | Runtime load/normalize. |
@@ -425,10 +431,13 @@ actions the generated stack needs.
 
 | File | What it does |
 |---|---|
-| `dispatcher.go` | Write side of the control plane: queue tasks (plus audit copy); write/delete state; events; archive deployments; release log; caches; compliance publish; generated payload sync; forget partition. |
-| `metrics.go` | Prometheus counters/gauges for writes, bytes, skips, deletes, statuses. |
+| `dispatcher.go` | Write side of the control plane: queue tasks (plus audit copy and retention/hash-chain); CAS `UpdateIntentState`; write/delete state; events; archive deployments; release log; compliance publish; generated payload sync; forget partition. |
+| `caches.go` | `writeTracker`, `runtimeCache`, and `releaseLogCache` helpers for the dispatcher. |
+| `metrics.go` | OTel-backed counters/gauges (`internal/metrics`) for writes, bytes, skips, deletes, statuses. |
 | `dispatcher_test.go` | Serialization/runtime derivation. |
+| `dispatcher_update_test.go` | CAS `UpdateIntentState` conflict/retry tests. |
 | `release_test.go` | Release monotonicity/concurrency. |
+| `task_archive_test.go` | Task-archive retention and SHA-256 hash-chain tests. |
 | `dispatcher_bench_test.go` | Write-byte benchmark. |
 
 ### 27.3 `reconciler`
@@ -438,7 +447,8 @@ actions the generated stack needs.
 | `reconciler.go` | Scheduling and reconcile orchestration: full/per-partition reconcile, compile, task selection, stale tasks, removed intents, release recovery, quartz jobs, priorities, sharding. |
 | `deletion.go` | Deletion marker, destroy/orphan flow, queue purge, recursive partition purge. |
 | `schedule.go` | Priority heap/pool, trigger parsing (duration/cron), deterministic offset, quartz jobs. |
-| `generated.go` | Generates and prunes CDK payloads; fingerprint memo. |
+| `generated.go` | Generates and prunes CDK payloads. |
+| `generated_memo.go` | `cdkMemo` fingerprint memoization for generated CDK payloads. |
 | `reconciler_integration_test.go` | End-to-end DIFF/CHECK/APPLY/DESTROY, lock/readonly/manual/deletion/parallel. |
 | `authorizer_test.go` | Auth gate behavior. |
 | `generated_test.go` | CDK generation/pruning. |
@@ -450,7 +460,7 @@ actions the generated stack needs.
 | File | What it does |
 |---|---|
 | `processor.go` | Applies task results: identity/provenance checks, stale check, secret redaction, per-op transitions, follow-up queueing, rollback, archive/release, dependents, cleanup. |
-| `asset_metrics.go` | Records asset health/readiness observations as Prometheus series. |
+| `asset_metrics.go` | Records asset health/readiness observations via `internal/metrics` (OTel). |
 | `processor_test.go` | Success/failure/observed/ rollback/task reuse/metrics. |
 | `asset_metrics_test.go` | Metric replacement/cleanup. |
 
@@ -485,8 +495,9 @@ actions the generated stack needs.
 | File | What it does |
 |---|---|
 | `drivers.go` | Driver registration (12 drivers + probe), `baseDriver`, execution-role handling, CDKStack and Secret drivers. |
-| `backend_api.go` | 43-method backend god interface + all AWS resource DTOs (EFS, VPC, DB cluster, parameter, secret, ECS, LB, target group, listener, bucket, log group, stack). |
-| `backend.go` | In-memory test double with canned stacks/resources/drift. |
+| `backend_api.go` | Capability-split AWS backend interfaces (`StackBackend`, `FileSystemBackend`, `VPCBackend`, `DatabaseBackend`, `ParameterBackend`, `SecretBackend`, `ServiceBackend`, `LoadBalancerBackend`, `BucketBackend`, `LogBackend`) and DTOs. |
+| `backend_keys.go` | Production key helpers for AWS backend resources. |
+| `backend_test.go` | In-memory test double with canned stacks/resources/drift. |
 | `aws_backend.go` | AWS SDK backend: EFS, SSM, Secrets Manager, ECS/cluster/task/service/roles, ELBv2, S3, log groups, CFN stubs, VPC, RDS/Aurora. |
 | `cli_backend.go` | CDK/CloudFormation CLI backend: stage source, `cdk synth/deploy`, stack get/drift/delete, EFS/VPC stubs. |
 | `composite_backend.go` | Delegates CDK/CFN methods to CLI backend and resource methods to SDK backend; execution-role pass-through. |
@@ -518,7 +529,8 @@ actions the generated stack needs.
 | File | What it does |
 |---|---|
 | `backend_api.go` | Docker backend interface: network/volume/config/container CRUD, list by asset. |
-| `backend.go` | In-memory Docker backend with clone helpers (drops ShmSize/GPUs). |
+| `backend_types.go` | Production Docker backend DTOs and resource state types. |
+| `backend_test.go` | In-memory Docker backend test double with clone helpers. |
 | `drivers.go` | All Docker drivers + registration + naming/hash/decoders. |
 | `desired.go` | Builds desired container/network snapshots for `guardian-docker diff`. |
 | `payload.go` | Loads/merges `payload.docker.yaml`, hashes with payload, applies overlays. |
@@ -537,7 +549,11 @@ actions the generated stack needs.
 | File | What it does |
 |---|---|
 | `backend_api.go` | Kubernetes backend interface: ConfigMap/PVC/Deployment/Service/NetworkPolicy CRUD, pod events, raw apply. |
-| `backend.go` | In-memory Kubernetes backend and object models (clone drops RunAsUser). |
+| `backend_types.go` | Production Kubernetes backend DTOs and object models. |
+| `backend_test.go` | In-memory Kubernetes backend test double. |
+| `envconflict.go` | Detects duplicate/conflicting container environment variable keys. |
+| `observe.go` | Converts live Kubernetes objects into observed resource inventories. |
+| `envconflict_test.go` | Environment variable conflict detection tests. |
 | `drivers.go` | All Kubernetes drivers + registration + decoders/naming/manifests inputs. |
 | `manifest.go` | Pure manifest builders: ConfigMap, PVC, Service, NetworkPolicy, Deployment, inline ConfigMap. |
 | `network.go` | Network asset → NetworkPolicy; Compute joins by label. |
@@ -554,17 +570,32 @@ actions the generated stack needs.
 | `network_test.go` | NetworkPolicy apply/diff/destroy. |
 | `client_backend_test.go` | Kubeconfig/apply round-trips, waiting classification, selector stability. |
 
-### 29.5 `pusher/drivers/probe`
+### 29.5 `pusher/drivers/gcp`
+
+| File | What it does |
+|---|---|
+| `drivers.go` | Registers the 8 GCP asset drivers (`Network`, `ObjectStore`, `Secret`, `Compute`, `SQLDatabase`, `Volume`, `LoadBalancer`, `Observability`). |
+| `blueprints.go` | Embedded OpenTofu HCL blueprints (`embed.FS`) copied into per-intent workspaces. |
+| `opentofu_backend.go` | Driver backend bridging asset specs to OpenTofu workspaces and state. |
+| `opentofu/workspace.go` | Per-intent OpenTofu workspace materialization and GCS/KMS backend config. |
+| `opentofu/runner.go` | Executes `tofu init/plan/apply/output/destroy` with `flock` locking. |
+| `opentofu/plan.go` | Parses `tofu plan`/`show` JSON for drift detection. |
+| `opentofu/lock.go` | File-lock wrapper preventing concurrent OpenTofu runs on the same state. |
+| `drivers_more_test.go`, `drivers_remaining_test.go`, `opentofu/opentofu_test.go`, `opentofu_integration_test.go` | GCP driver unit and OpenTofu integration tests. |
+
+### 29.6 `pusher/drivers/probe`
 
 | File | What it does |
 |---|---|
 | `probe.go` | No-op Probe driver; real execution is in `internal/pusher/probes`. |
 
-### 29.6 `pusher/driverutil`
+### 29.7 `pusher/driverutil`
 
 | File | What it does |
 |---|---|
-| `driverutil.go` | Shared driver helpers: asset decode, payload loading, hashing, naming, clones, ownership labels. |
+| `driverutil.go` | Shared driver helpers: asset decode, payload loading, clones, ownership labels. |
+| `hashing.go` | Deterministic desired-spec and payload hashing helpers. |
+| `otelenv.go` | Standard OpenTelemetry environment variable injection for workloads. |
 | `configfiles.go` | Config content precedence (inline/config map/payload) and file staging. |
 | `driverutil_test.go` | Hash/payload/naming helpers. |
 | `configfiles_test.go` | Config precedence. |
@@ -604,6 +635,7 @@ actions the generated stack needs.
 | `identity.go` | Principal ID resolution. |
 | `runtime_test.go` | Claim CAS, operations, observed state, dependency blocking, trace redaction, expired claims, retry. |
 | `runtime_concurrency_test.go` | Concurrency limit/shard ownership/benchmark. |
+| `runtime_trace_root_test.go` | OTel trace-root propagation tests for task execution. |
 | `registration_test.go` | Heartbeat preserves fields; waits for URL. |
 | `identity_test.go` | Principal ID cases. |
 
@@ -647,8 +679,11 @@ actions the generated stack needs.
 | File | What it does |
 |---|---|
 | `fs/store.go` | Local filesystem store: read/list/stat, upsert/delete, `.versions` history, logical→physical confinement; no watch. |
+| `fs/conformance_test.go` | Runs `storetest` conformance suite against `store/fs`. |
 | `memory/store.go` | In-memory store: current/history maps, watchers, CAS (`absent`/expected), tombstones. |
+| `memory/conformance_test.go` | Runs `storetest` conformance suite against `store/memory`. |
 | `memory/store_test.go` | CRUD/watch/CAS. |
+| `storetest/conformance.go` | Shared store conformance suite: round-trip, CAS conflicts, tombstones, paging, version history. |
 | `monofs/adapter.go` | Maps Guardian logical namespace to physical MonoFS paths; implements Store; event remap; paged/stat/watch fallbacks. |
 | `monofs/grpc_client.go` | MonoFS gRPC client: router/node dialing, register/heartbeat, upsert streaming, delete/list versions/get, file/dir reads, watch, topology refresh, retries. |
 | `monofs/open.go` | Builds GRPC client + adapter. |
@@ -665,12 +700,15 @@ actions the generated stack needs.
 | `telemetry.go` | Sets up tracer/meter/logger providers, exporters, resource attributes, shutdown. |
 | `log_writer.go` | `io.Writer` that parses standard log lines and emits OTLP log records. |
 | `log_writer_test.go` | Log writer behavior. |
+| `telemetry_test.go` | Telemetry initialization and resource-attribute tests. |
 
 ## 35. `internal/ui`
 
 | File | What it does |
 |---|---|
 | `server.go` | UI/API server: options, caches, mux route table, static/template serving, central mutation authz, client-config/access/M2M gates, partition routes, bundle save/validate/reconcile/delete, JSON helpers. |
+| `security.go` | Browser security headers (CSP, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, optional HSTS) and `Origin`/`Referer` validation. |
+| `access_filter.go` | Access-policy read filtering helpers for UI partition/overview views. |
 | `data.go` | Read model: all UI DTOs; overview/detail/history/rollout/activity aggregation; planner compile; health/status derivation; topology; redaction; catalog. |
 | `assignments.go` | Builds partition assignment view from repo bindings/pushers; warnings for mismatches. |
 | `intent_manifests.go` | Reads/sorts/parses intent manifests, duplicate-name resolution (`.yaml` over `.yml`). |
@@ -702,6 +740,8 @@ actions the generated stack needs.
 | `unmanaged_test.go` | Unmanaged list/detect/associate/validation. |
 | `authz_test.go` | Mutation guard: partition roles, admin-only registry actions, observe mode. |
 | `redact_test.go` | Secret property redaction, manifest round-trip restore, intent-name traversal rejection. |
+| `observed_resource_test.go` | Observed resource observation/topology rendering tests. |
+| `security_test.go` | Security header, CSP, `Origin`/`Referer`, and HSTS tests. |
 
 ### 35.1 `internal/ui/static-src`
 
@@ -747,7 +787,23 @@ served template is `internal/ui/templates/index.html`. Generated outputs
 
 ---
 
-## 39. Coverage notes
+## 39. Additional internal packages (`clock`, `keyedmutex`, `metrics`, `gcp*`, `k8s*`)
+
+| File | What it does |
+|---|---|
+| `internal/clock/clock.go` | Injectable `Clock` interface and real/mock helpers for time-dependent loops. |
+| `internal/keyedmutex/keyedmutex.go` | Shared per-key mutex helper used by the dispatcher and reconciler. |
+| `internal/metrics/metrics_test.go` | Tests for the OTel-backed Prometheus-shaped metrics shim (`CounterVec`, `GaugeVec`). |
+| `internal/gcpobserve/observer.go` | Cloud Asset Inventory observer for GCP projects and Cloud Run revisions. |
+| `internal/gcpobserve/observer_test.go`, `observer_integration_test.go` | GCP observer unit and integration tests. |
+| `internal/gcpread/client.go`, `reader.go`, `handler.go` | GCP read API client, Cloud Monitoring/Logging/Trace reader, and `/v1/gcp/*` HTTP handler. |
+| `internal/gcpread/client_test.go`, `gcpread_integration_test.go` | GCP read API client and integration tests. |
+| `internal/gcpscan/scanner.go`, `scanner_test.go` | GCP project inventory scanner and unit tests. |
+| `internal/gcpsetup/setup.go` | GCP WIF pool/provider, `guardian-deployer` SA, KMS key, and GCS state bucket setup. |
+| `internal/k8sobserve/` | Kubernetes live resource inventory for `/v1/k8s/observed/stacks`. |
+| `internal/k8sread/` | Kubernetes read-only resource API handler and client. |
+
+## 40. Coverage notes
 
 - Every `.go` and `.ts` file under `cmd/`, `internal/`, `pkg/`, and `tools/`
   is listed above (429 files total).

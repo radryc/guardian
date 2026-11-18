@@ -100,3 +100,33 @@ func TestHandlerMissingTokenFileFailsClosed(t *testing.T) {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
 }
+
+func TestHandlerConstantTimeTokenValidation(t *testing.T) {
+	h := NewHandler(&fakeReader{}, "super-secret-token")
+
+	cases := []struct {
+		name   string
+		header string
+		want   int
+	}{
+		{name: "missing", header: "", want: http.StatusUnauthorized},
+		{name: "wrong scheme", header: "Basic c2VjcmV0", want: http.StatusUnauthorized},
+		{name: "prefix only", header: "Bearer super-secret", want: http.StatusUnauthorized},
+		{name: "wrong token same length", header: "Bearer super-secret-tokeX", want: http.StatusUnauthorized},
+		{name: "valid token", header: "Bearer super-secret-token", want: http.StatusOK},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/v1/aws/log-groups", nil)
+			if tc.header != "" {
+				req.Header.Set("Authorization", tc.header)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tc.want, rec.Body.String())
+			}
+		})
+	}
+}

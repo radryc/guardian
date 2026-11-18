@@ -262,6 +262,34 @@ func (s *Service) CanModify(ctx context.Context, partition string) bool {
 	return p.Role(id, partition).Allows(coreauthz.ActionModify)
 }
 
+// CanModifyAny reports whether the identity holds the maintainer/admin role on
+// at least one partition. It is used for shared metadata that is not yet bound
+// to a specific partition, such as creating an empty virtual set. Membership
+// changes are still checked per partition by CanModify.
+func (s *Service) CanModifyAny(ctx context.Context) bool {
+	if s == nil || !s.Enabled() || !s.enforce {
+		return true
+	}
+	p := s.current()
+	if p == nil {
+		return false
+	}
+	id := identityFromContext(ctx)
+	if p.IsAdmin(id) {
+		return true
+	}
+	names, all := p.VisiblePartitions(id)
+	if all {
+		return p.Role(id, "*").Allows(coreauthz.ActionModify)
+	}
+	for _, name := range names {
+		if p.Role(id, name).Allows(coreauthz.ActionModify) {
+			return true
+		}
+	}
+	return false
+}
+
 // AuthorizeModify is the error-returning form used by the reconciler. It
 // distinguishes "policy not loaded" from "insufficient role" so an operator
 // can tell a broken deployment from a real denial.

@@ -2,16 +2,13 @@ package dockerdriver
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os/exec"
 	"strings"
 
 	assetdefs "github.com/radryc/guardian/internal/domain/assets"
-	statedomain "github.com/radryc/guardian/internal/domain/state"
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
-	"github.com/radryc/guardian/internal/paths"
 	"github.com/radryc/guardian/internal/pusher/driverutil"
 	"github.com/radryc/guardian/internal/pusher/registry"
 )
@@ -165,20 +162,6 @@ func (d *ImageBuildDriver) buildRequest(ctx context.Context, in registry.AssetIn
 	}, func() {}, nil
 }
 
-func currentImageRef(ctx context.Context, in registry.AssetInput) (string, error) {
-	if in.Store == nil {
-		return "", nil
-	}
-	raw, err := in.Store.ReadFile(ctx, paths.IntentState(in.PartitionName, in.IntentName))
-	if err != nil {
-		return "", nil
-	}
-	var state statedomain.IntentState
-	if err := json.Unmarshal(raw, &state); err != nil {
-		return "", fmt.Errorf("decode intent state for %s/%s: %w", in.PartitionName, in.IntentName, err)
-	}
-	if state.Outputs == nil {
-		return "", nil
-	}
-	return strings.TrimSpace(state.Outputs[in.Asset.Name+".imageRef"]), nil
+func currentImageRef(_ context.Context, in registry.AssetInput) (string, error) {
+	return strings.TrimSpace(in.Outputs[in.Asset.Name+".imageRef"]), nil
 }

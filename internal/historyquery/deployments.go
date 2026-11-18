@@ -157,21 +157,10 @@ func loadDeploymentRecordsFromArchiveScan(ctx context.Context, store guardianapi
 }
 
 func listArchiveEntries(ctx context.Context, store guardianapi.ReadStore, partitionName, intentName string) ([]guardianapi.DirEntry, error) {
-	logicalDir := paths.ArchiveIntentRoot(partitionName, intentName)
-	if paged, ok := store.(guardianapi.PagedDirLister); ok {
-		return listArchiveEntriesPaged(ctx, paged, logicalDir)
-	}
-	entries, err := store.ListDir(ctx, logicalDir)
-	if err != nil {
-		if isArchiveNotFound(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return entries, nil
+	return listArchiveEntriesPaged(ctx, store, paths.ArchiveIntentRoot(partitionName, intentName))
 }
 
-func listArchiveEntriesPaged(ctx context.Context, store guardianapi.PagedDirLister, logicalDir string) ([]guardianapi.DirEntry, error) {
+func listArchiveEntriesPaged(ctx context.Context, store guardianapi.ReadStore, logicalDir string) ([]guardianapi.DirEntry, error) {
 	out := make([]guardianapi.DirEntry, 0)
 	offset := 0
 	for {

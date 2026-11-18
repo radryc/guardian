@@ -6,48 +6,78 @@ import (
 	targetdomain "github.com/radryc/guardian/internal/domain/target"
 )
 
+// BackendAPI is the complete AWS backend contract. Drivers should depend on
+// the narrow capability interface for the resource family they manage; the
+// composition below exists so a single backend can implement all of them.
 type BackendAPI interface {
-	// CloudFormation / CDK
+	StackBackend
+	FileSystemBackend
+	VPCBackend
+	DatabaseBackend
+	ParameterBackend
+	SecretBackend
+	ServiceBackend
+	LoadBalancerBackend
+	BucketBackend
+	LogBackend
+}
+
+// StackBackend drives CloudFormation / CDK stacks.
+type StackBackend interface {
 	Synthesize(ctx context.Context, req StackRequest) error
 	CheckEnvironment(ctx context.Context, req StackRequest) error
 	GetStack(ctx context.Context, req StackRequest) (StackState, bool, error)
 	DetectDrift(ctx context.Context, req StackRequest) (StackDriftStatus, error)
 	DeployStack(ctx context.Context, req StackRequest) (StackState, error)
 	DeleteStack(ctx context.Context, req StackRequest) error
+}
 
-	// EFS
+// FileSystemBackend manages EFS file systems.
+type FileSystemBackend interface {
 	UpsertFileSystem(ctx context.Context, fs FileSystem) (string, error)
 	GetFileSystem(ctx context.Context, fsID string) (FileSystem, bool, error)
 	DeleteFileSystem(ctx context.Context, fsID string) error
+}
 
-	// VPC
+// VPCBackend manages VPC network boundaries.
+type VPCBackend interface {
 	UpsertVPC(ctx context.Context, vpc VPC) (string, error)
 	GetVPC(ctx context.Context, vpcID string) (VPC, bool, error)
 	DeleteVPC(ctx context.Context, vpcID string) error
+}
 
-	// RDS (Aurora)
+// DatabaseBackend manages RDS Aurora clusters.
+type DatabaseBackend interface {
 	UpsertDBCluster(ctx context.Context, cluster DBCluster) (DBCluster, error)
 	GetDBCluster(ctx context.Context, name string) (DBCluster, bool, error)
 	DeleteDBCluster(ctx context.Context, arn, name string) error
+}
 
-	// SSM Parameter Store
+// ParameterBackend manages SSM parameters.
+type ParameterBackend interface {
 	UpsertParameter(ctx context.Context, param Parameter) error
 	GetParameter(ctx context.Context, name string) (Parameter, bool, error)
 	DeleteParameter(ctx context.Context, name string) error
+}
 
-	// Secrets Manager
+// SecretBackend manages Secrets Manager entries.
+type SecretBackend interface {
 	UpsertSecret(ctx context.Context, secret Secret) (string, error)
 	GetSecret(ctx context.Context, secretID string) (Secret, bool, error)
 	DeleteSecret(ctx context.Context, secretID string) error
+}
 
-	// ECS
+// ServiceBackend manages ECS services and the task roles they need.
+type ServiceBackend interface {
 	UpsertService(ctx context.Context, svc ECSService) error
 	GetService(ctx context.Context, cluster, name string) (ECSService, bool, error)
 	DeleteService(ctx context.Context, cluster, name string) error
 	AttachServiceToTargetGroup(ctx context.Context, cluster, service, container, tgARN string, port int, sgID string) error
 	EnsureObservabilityTaskRole(ctx context.Context) (string, error)
+}
 
-	// ELBv2 (ALB/NLB)
+// LoadBalancerBackend manages ELBv2 load balancers, target groups and listeners.
+type LoadBalancerBackend interface {
 	UpsertLoadBalancer(ctx context.Context, lb LoadBalancer) (string, error)
 	GetLoadBalancer(ctx context.Context, name string) (LoadBalancer, bool, error)
 	DeleteLoadBalancer(ctx context.Context, arn string) error
@@ -60,13 +90,17 @@ type BackendAPI interface {
 	UpsertListener(ctx context.Context, listener Listener) (string, error)
 	GetListener(ctx context.Context, lbARN string, port int) (Listener, bool, error)
 	DeleteListener(ctx context.Context, arn string) error
+}
 
-	// S3
+// BucketBackend manages S3 buckets.
+type BucketBackend interface {
 	UpsertBucket(ctx context.Context, bucket BucketSpec) error
 	GetBucket(ctx context.Context, name string) (BucketSpec, bool, error)
 	DeleteBucket(ctx context.Context, name string) error
+}
 
-	// CloudWatch Logs
+// LogBackend manages CloudWatch log groups.
+type LogBackend interface {
 	UpsertLogGroup(ctx context.Context, group LogGroup) error
 	GetLogGroup(ctx context.Context, name string) (LogGroup, bool, error)
 }

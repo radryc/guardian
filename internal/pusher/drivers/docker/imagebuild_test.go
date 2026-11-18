@@ -33,6 +33,7 @@ func inputForImageBuildTest(store *memory.Store) registry.AssetInput {
 		IntentName:    "svc",
 		Asset:         taskdomain.AbstractAsset{Name: "web", Type: "ImageBuild"},
 		Store:         store,
+		Outputs:       map[string]string{"web.imageRef": "registry.example.com/app:1"},
 	}
 }
 

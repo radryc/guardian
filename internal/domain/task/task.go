@@ -31,9 +31,13 @@ type Task struct {
 	IntentSpecHash    string                 `json:"intentSpecHash"`
 	AssetVersionIDs   map[string]string      `json:"assetVersionIDs"`
 	AssetVersions     map[string]string      `json:"assetVersions,omitempty"`
-	Assets            []AbstractAsset        `json:"assets"`
-	ForceApply        bool                   `json:"forceApply,omitempty"`
-	CreatedAt         time.Time              `json:"createdAt"`
+	// PriorOutputs is the intent's output map as of task creation. Drivers must
+	// consume this snapshot instead of reading live runtime state: the state may
+	// advance while the task is queued or executing (TOCTOU).
+	PriorOutputs map[string]string `json:"priorOutputs"`
+	Assets       []AbstractAsset   `json:"assets"`
+	ForceApply   bool              `json:"forceApply,omitempty"`
+	CreatedAt    time.Time         `json:"createdAt"`
 }
 
 type AbstractAsset struct {

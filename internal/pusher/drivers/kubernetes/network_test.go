@@ -39,7 +39,7 @@ func TestKubernetesNetworkDriverApplyDiffDestroy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Apply() error = %v", err)
 	}
-	policy, ok, err := backend.GetNetworkPolicy("platform", networkPolicyName(in))
+	policy, ok, err := backend.GetNetworkPolicy(ctx, "platform", networkPolicyName(in))
 	if err != nil || !ok {
 		t.Fatalf("network policy missing: ok=%v err=%v", ok, err)
 	}
@@ -64,7 +64,7 @@ func TestKubernetesNetworkDriverApplyDiffDestroy(t *testing.T) {
 	if err := driver.Destroy(ctx, in); err != nil {
 		t.Fatalf("Destroy() error = %v", err)
 	}
-	if _, ok, _ := backend.GetNetworkPolicy("platform", networkPolicyName(in)); ok {
+	if _, ok, _ := backend.GetNetworkPolicy(ctx, "platform", networkPolicyName(in)); ok {
 		t.Fatalf("network policy still present after destroy")
 	}
 }
@@ -89,7 +89,7 @@ func TestKubernetesComputeJoinsNetworks(t *testing.T) {
 	if _, err := driver.Apply(ctx, in); err != nil {
 		t.Fatalf("Apply() error = %v", err)
 	}
-	deployment, ok, err := backend.GetDeployment("platform", computeDeploymentName(in, nil))
+	deployment, ok, err := backend.GetDeployment(ctx, "platform", computeDeploymentName(in, nil))
 	if err != nil || !ok {
 		t.Fatalf("deployment missing: ok=%v err=%v", ok, err)
 	}

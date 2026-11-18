@@ -123,7 +123,7 @@ func (b *ImageBuildBackend) BuildAndPublish(ctx context.Context, req ImageBuildR
 		}
 	}()
 
-	buildErr := b.waitForJobStreaming(ctx, namespace, jobName, req.ImageRef, logCh)
+	buildErr := b.waitForJobStreaming(ctx, namespace, jobName, req.ImageRef, "builder", logCh)
 	close(logCh)
 	<-logDone
 
@@ -270,11 +270,16 @@ func (b *ImageBuildBackend) applyManifest(obj map[string]any) error {
 	return nil
 }
 
-func (b *ImageBuildBackend) waitForJobStreaming(ctx context.Context, namespace, jobName, imageRef string, logCh chan<- BuildLogEntry) error {
+func (b *ImageBuildBackend) waitForJobStreaming(ctx context.Context, namespace, jobName, imageRef, containerName string, logCh chan<- BuildLogEntry) error {
 	deadline := time.Now().Add(30 * time.Minute)
 	logTicker := time.NewTicker(30 * time.Second)
 	defer logTicker.Stop()
-	var lastLogLines int
+	var lastLogLine string
+
+	jobKind := containerName
+	if containerName == "builder" {
+		jobKind = "buildkit"
+	}
 
 	emit := func(level, msg string) {
 		entry := BuildLogEntry{Timestamp: time.Now().UTC(), Level: level, Message: msg}
@@ -287,26 +292,39 @@ func (b *ImageBuildBackend) waitForJobStreaming(ctx context.Context, namespace, 
 		log.Printf("[ImageBuild] image=%s %s", imageRef, msg)
 	}
 
-	emit("info", fmt.Sprintf("kaniko job %s started", jobName))
+	emit("info", fmt.Sprintf("%s job %s started", jobKind, jobName))
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-logTicker.C:
-			// Stream latest Kaniko logs as progress.
-			if out, err := exec.CommandContext(ctx, b.kubectl, "-n", namespace, "logs",
-				"-l", fmt.Sprintf("job-name=%s", jobName), "-c", "kaniko",
-				fmt.Sprintf("--tail=%d", 20)).CombinedOutput(); err == nil {
+			// Stream the job container's latest logs as progress. The build
+			// container is "builder"; the image-load job calls it "skopeo".
+			out, logErr := exec.CommandContext(ctx, b.kubectl, "-n", namespace, "logs",
+				"-l", fmt.Sprintf("job-name=%s", jobName), "-c", containerName,
+				"--tail=100").CombinedOutput()
+			if logErr != nil {
+				log.Printf("[ImageBuild] image=%s log stream container=%s failed: %v", imageRef, containerName, logErr)
+			} else {
 				lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-				newLines := lines
-				if len(lines) > lastLogLines && lastLogLines > 0 {
-					newLines = lines[lastLogLines:]
+				start := 0
+				if lastLogLine != "" {
+					for i := len(lines) - 1; i >= 0; i-- {
+						if strings.TrimSpace(lines[i]) == lastLogLine {
+							start = i + 1
+							break
+						}
+					}
 				}
-				lastLogLines = len(lines)
-				for _, l := range newLines {
+				for _, l := range lines[start:] {
 					if l = strings.TrimSpace(l); l != "" {
 						emit("info", l)
+					}
+				}
+				if len(lines) > 0 {
+					if last := strings.TrimSpace(lines[len(lines)-1]); last != "" {
+						lastLogLine = last
 					}
 				}
 			}
@@ -321,7 +339,7 @@ func (b *ImageBuildBackend) waitForJobStreaming(ctx context.Context, namespace, 
 			parts := strings.Split(strings.TrimSpace(string(out)), ",")
 			if len(parts) == 2 {
 				if parts[0] == "1" {
-					emit("info", fmt.Sprintf("kaniko job %s succeeded", jobName))
+					emit("info", fmt.Sprintf("%s job %s succeeded", jobKind, jobName))
 					return nil
 				}
 				if parts[1] != "" && parts[1] != "0" {
@@ -590,7 +608,7 @@ func (b *ImageBuildBackend) skopeoLoadAndPush(ctx context.Context, req ImageLoad
 		}
 	}()
 
-	buildErr := b.waitForJobStreaming(ctx, namespace, jobName, req.ImageRef, logCh)
+	buildErr := b.waitForJobStreaming(ctx, namespace, jobName, req.ImageRef, "skopeo", logCh)
 	close(logCh)
 	<-logDone
 

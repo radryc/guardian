@@ -32,25 +32,29 @@ type readAPIConfig struct {
 	StateBucket    string
 }
 
+func validateReadAPIConfig(cfg readAPIConfig) error {
+	loopback := isLoopbackListen(cfg.Address)
+	hasToken := strings.TrimSpace(cfg.Token) != "" || strings.TrimSpace(cfg.TokenFile) != ""
+	if !loopback && !hasToken {
+		return fmt.Errorf("GCP read API is listening on %s without a bearer token; configure --read-token or --read-token-file", cfg.Address)
+	}
+	if (strings.TrimSpace(cfg.TLSCert) == "") != (strings.TrimSpace(cfg.TLSKey) == "") {
+		return fmt.Errorf("GCP read API TLS requires both --read-tls-cert and --read-tls-key")
+	}
+	if !loopback && strings.TrimSpace(cfg.TLSCert) == "" && !cfg.AllowPlaintext {
+		return fmt.Errorf("GCP read API is listening on %s without TLS; configure --read-tls-cert/--read-tls-key or pass --read-allow-plaintext for a trusted network", cfg.Address)
+	}
+	return nil
+}
+
 // startReadAPI starts the GCP read API in the background. Errors are logged and
 // do not stop the task queue; the pusher stays useful without the read API.
 func startReadAPI(ctx context.Context, cfg readAPIConfig) (*http.Server, error) {
 	if strings.TrimSpace(cfg.Address) == "" {
 		return nil, nil
 	}
-	loopback := isLoopbackListen(cfg.Address)
-	hasToken := strings.TrimSpace(cfg.Token) != "" || strings.TrimSpace(cfg.TokenFile) != ""
-	if !loopback && !hasToken {
-		return nil, fmt.Errorf("GCP read API is listening on %s without a bearer token; configure --read-token or --read-token-file", cfg.Address)
-	}
-	if (strings.TrimSpace(cfg.TLSCert) == "") != (strings.TrimSpace(cfg.TLSKey) == "") {
-		return nil, fmt.Errorf("GCP read API TLS requires both --read-tls-cert and --read-tls-key")
-	}
-	// A bearer token is enough to expose the read API on a non-loopback
-	// address (the token is checked on every request). TLS is required only
-	// when the endpoint is unauthenticated.
-	if !loopback && strings.TrimSpace(cfg.TLSCert) == "" && !cfg.AllowPlaintext && !hasToken {
-		return nil, fmt.Errorf("GCP read API is listening on %s without TLS or a bearer token; configure --read-tls-cert/--read-tls-key, --read-token, or pass --read-allow-plaintext", cfg.Address)
+	if err := validateReadAPIConfig(cfg); err != nil {
+		return nil, err
 	}
 
 	reader, err := gcpread.New(gcpread.Config{
@@ -67,7 +71,9 @@ func startReadAPI(ctx context.Context, cfg readAPIConfig) (*http.Server, error) 
 		WithPromQL(reader.PromQL()).
 		WithIdentity(cfg.Pusher, cfg.Project, cfg.Region).
 		WithScopes(splitCSV(cfg.Scopes)...).
-		WithObserved(observer)
+		WithObserved(observer).
+		WithRateLimit(50, 100).
+		WithMaxRequestBodyBytes(1 << 20)
 	if strings.TrimSpace(cfg.TokenFile) != "" {
 		handler.WithTokenFile(cfg.TokenFile)
 	}

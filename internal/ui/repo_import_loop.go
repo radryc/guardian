@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -95,6 +96,7 @@ func (s *Server) syncRepoBundlesShard(ctx context.Context, shard, shards int) {
 	}
 
 	changed := make(map[string]struct{})
+	seen := make(map[string]struct{})
 	for _, repo := range repos {
 		if ctx.Err() != nil {
 			return
@@ -106,44 +108,15 @@ func (s *Server) syncRepoBundlesShard(ctx context.Context, shard, shards int) {
 		if root == "" {
 			continue
 		}
-		source := repoimport.NewStoreSource(s.store, root)
-		entries, err := source.ListDir(ctx, repoimport.PartitionsSubdir)
-		if err != nil {
-			if !errors.Is(err, os.ErrNotExist) && ctx.Err() == nil {
-				log.Printf("guardian repo-import: %s: list %s: %v", repo.Name, repoimport.PartitionsSubdir, err)
-			}
-			continue
-		}
-		if len(entries) == 0 {
-			continue
-		}
-		for _, binding := range repo.BindingList() {
-			if !hasPartitionBundle(ctx, source, binding.Partition) {
-				continue
-			}
-			result, err := repoimport.Import(ctx, source, s.store, repoimport.Options{
-				RepoName:  repo.Name,
-				Partition: binding.Partition,
-				Principal: s.principalID,
-				Source:    repo.Source,
-				Prune:     true,
-			})
-			if err != nil {
-				if ctx.Err() == nil {
-					log.Printf("guardian repo-import: %s/%s: %v", repo.Name, binding.Partition, err)
-				}
-				continue
-			}
-			if result.Changed {
-				for _, warning := range result.Warnings {
-					log.Printf("guardian repo-import: %s: %s", repo.Name, warning)
-				}
-				changed[binding.Partition] = struct{}{}
-				log.Printf("guardian repo-import: shard %d/%d %s imported %s (%d changed file(s))",
-					shard, shards, repo.Name, binding.Partition, result.FilesWritten)
-			}
-		}
+		seen[root] = struct{}{}
+		s.importRepoBundles(ctx, root, repo.Name, repo.Source, repo.BindingList(), changed)
 	}
+
+	// Repo-authored partitions do not need a registry entry: discovering every
+	// ingested repository that carries guardian/partitions makes
+	// `monofs-admin ingest` (or a git push with MonoFS auto-refresh) the only
+	// setup step.
+	s.discoverRepoBundles(ctx, seen, changed, shard, shards)
 
 	if len(changed) == 0 {
 		return
@@ -156,6 +129,126 @@ func (s *Server) syncRepoBundlesShard(ctx context.Context, shard, shards int) {
 	s.repoImportMu.Lock()
 	s.autoDeployPartitions(ctx, partitions)
 	s.repoImportMu.Unlock()
+}
+
+// importRepoBundles imports partition bundles under root. bindings limits the
+// import to registered partition names; an empty slice imports every directory
+// under guardian/partitions (used for auto-discovered repositories).
+func (s *Server) importRepoBundles(ctx context.Context, root, repoName, source string, bindings []registry.RepoBinding, changed map[string]struct{}) {
+	sourceStore := repoimport.NewStoreSource(s.store, root)
+	partitions := make([]string, 0)
+	if len(bindings) > 0 {
+		for _, binding := range bindings {
+			partitions = append(partitions, binding.Partition)
+		}
+	} else {
+		entries, err := sourceStore.ListDir(ctx, repoimport.PartitionsSubdir)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) && ctx.Err() == nil {
+				log.Printf("guardian repo-import: %s: list %s: %v", repoName, repoimport.PartitionsSubdir, err)
+			}
+			return
+		}
+		for _, entry := range entries {
+			if entry.IsDir {
+				partitions = append(partitions, entry.Name)
+			}
+		}
+	}
+
+	for _, partition := range partitions {
+		if ctx.Err() != nil {
+			return
+		}
+		if !hasPartitionBundle(ctx, sourceStore, partition) {
+			continue
+		}
+		result, err := repoimport.Import(ctx, sourceStore, s.store, repoimport.Options{
+			RepoName:  repoName,
+			Partition: partition,
+			Principal: s.principalID,
+			Source:    source,
+			Prune:     true,
+		})
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Printf("guardian repo-import: %s/%s: %v", repoName, partition, err)
+			}
+			continue
+		}
+		if result.Changed {
+			for _, warning := range result.Warnings {
+				log.Printf("guardian repo-import: %s: %s", repoName, warning)
+			}
+			changed[partition] = struct{}{}
+			log.Printf("guardian repo-import: %s imported %s (%d changed file(s))",
+				repoName, partition, result.FilesWritten)
+		}
+	}
+}
+
+// discoveryHosts are MonoFS namespaces whose children are repositories rather
+// than single repositories themselves.
+var discoveryHosts = map[string]bool{
+	"github.com":    true,
+	"gitlab.com":    true,
+	"bitbucket.org": true,
+	"codeberg.org":  true,
+}
+
+func (s *Server) discoverRepoBundles(ctx context.Context, seen, changed map[string]struct{}, shard, shards int) {
+	entries, err := s.store.ListDir(ctx, "/.repos")
+	if err != nil {
+		return
+	}
+	for _, top := range entries {
+		if !top.IsDir {
+			continue
+		}
+		topPath := path.Join("/.repos", top.Name)
+		if !discoveryHosts[top.Name] {
+			s.importDiscoveredRepo(ctx, topPath, seen, changed, shard, shards)
+			continue
+		}
+		owners, err := s.store.ListDir(ctx, topPath)
+		if err != nil {
+			continue
+		}
+		for _, owner := range owners {
+			if !owner.IsDir {
+				continue
+			}
+			ownerPath := path.Join(topPath, owner.Name)
+			repos, err := s.store.ListDir(ctx, ownerPath)
+			if err != nil {
+				continue
+			}
+			for _, repo := range repos {
+				if repo.IsDir {
+					s.importDiscoveredRepo(ctx, path.Join(ownerPath, repo.Name), seen, changed, shard, shards)
+				}
+			}
+		}
+	}
+}
+
+func (s *Server) importDiscoveredRepo(ctx context.Context, root string, seen, changed map[string]struct{}, shard, shards int) {
+	if ctx.Err() != nil {
+		return
+	}
+	if _, ok := seen[root]; ok {
+		return
+	}
+	name := strings.TrimPrefix(root, "/.repos/")
+	if shards > 1 && repowatch.ShardFor(name, shards) != shard {
+		return
+	}
+	seen[root] = struct{}{}
+	source := repoimport.NewStoreSource(s.store, root)
+	if entries, err := source.ListDir(ctx, repoimport.PartitionsSubdir); err != nil || len(entries) == 0 {
+		return
+	}
+	s.importRepoBundles(ctx, root, name, root, nil, changed)
 }
 
 func hasPartitionBundle(ctx context.Context, source repoimport.Source, partition string) bool {

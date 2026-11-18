@@ -57,7 +57,7 @@ func (d *ObservabilityDriver) Diff(ctx context.Context, in registry.AssetInput) 
 	}
 	switch observabilityMode(spec) {
 	case "gateway", "auto", "collector":
-		svc, ok, err := d.backend.GetService(ctx, in.Target.Cluster, gatewayServiceName(in))
+		svc, ok, err := d.serviceBackend().GetService(ctx, in.Target.Cluster, gatewayServiceName(in))
 		if err != nil {
 			return taskdomain.DriftReport{}, err
 		}
@@ -110,8 +110,8 @@ func (d *ObservabilityDriver) applyGateway(ctx context.Context, in registry.Asse
 	}
 	hash := driverutil.CompositeHash(in)
 	logGroup := observabilityLogGroup(in)
-	_ = d.backend.UpsertLogGroup(ctx, LogGroup{Name: logGroup, Hash: hash, Tags: awsTags(in, hash)})
-	taskRole, err := d.backend.EnsureObservabilityTaskRole(ctx)
+	_ = d.logBackend().UpsertLogGroup(ctx, LogGroup{Name: logGroup, Hash: hash, Tags: awsTags(in, hash)})
+	taskRole, err := d.serviceBackend().EnsureObservabilityTaskRole(ctx)
 	if err != nil {
 		return registry.AssetResult{}, fmt.Errorf("ensure observability task role: %w", err)
 	}
@@ -152,7 +152,7 @@ func (d *ObservabilityDriver) applyGateway(ctx context.Context, in registry.Asse
 			}},
 		},
 	}
-	if err := d.backend.UpsertService(ctx, svc); err != nil {
+	if err := d.serviceBackend().UpsertService(ctx, svc); err != nil {
 		return registry.AssetResult{}, fmt.Errorf("upsert otel gateway: %w", err)
 	}
 	return registry.AssetResult{Outputs: map[string]string{
@@ -175,7 +175,7 @@ func (d *ObservabilityDriver) Destroy(ctx context.Context, in registry.AssetInpu
 	}
 	switch observabilityMode(spec) {
 	case "gateway", "auto", "collector":
-		return d.backend.DeleteService(ctx, in.Target.Cluster, gatewayServiceName(in))
+		return d.serviceBackend().DeleteService(ctx, in.Target.Cluster, gatewayServiceName(in))
 	default:
 		return nil
 	}

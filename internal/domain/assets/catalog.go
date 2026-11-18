@@ -578,6 +578,8 @@ func volumeCatalogFields() []CatalogField {
 		{Path: "class", Title: "Storage class", Control: "text", Description: "Storage class or backend driver selection."},
 		{Path: "accessMode", Title: "Access mode", Control: "select", Options: []string{"ReadWriteOnce", "ReadWriteMany", "ReadOnlyMany"}, Description: "How many readers or writers may mount the volume."},
 		{Path: "ephemeral", Title: "Ephemeral", Control: "boolean", Description: "Create scratch storage removed alongside the workload."},
+		{Path: "observeExisting", Title: "Observe existing", Control: "boolean", Description: "Adopt a volume that already exists outside Guardian; it is only checked for existence and is never modified or deleted."},
+		{Path: "existingID", Title: "Existing volume name or ID", Control: "text", Description: "Name of the pre-existing volume to adopt when observeExisting is set (Kubernetes claim name, AWS file system ID, GCP disk name). Defaults to the asset name."},
 	}
 }
 
