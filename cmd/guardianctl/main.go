@@ -676,6 +676,7 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 	reg.Register("access", "who-can", accessWhoCanCommand(printer))
 	reg.Register("access", "publish", storeCommand(accessPublishCommand(store, printer)))
 	reg.Register("notify", "test", notifyTestCommand(printer))
+	reg.Register("audit", "verify", auditVerifyCommand(printer))
 	reg.Register("partition", "validate-local", partitionValidateLocalCommand(printer))
 	reg.Register("partition", "reconcile", storeCommand(partitionReconcileCommand(store, printer)))
 	reg.Register("partition", "tag", partitionTagCommand(printer))
