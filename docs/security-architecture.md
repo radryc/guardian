@@ -109,9 +109,13 @@ principal ID:
 - Pushers: `--monofs-token`, principal `guardian-pusher-<name>`.
 - `guardian-pusher-aws --observed-only`: memory store, no MonoFS.
 
-The gRPC client uses `insecure.NewCredentials()` (`internal/store/monofs`).
-Transport security is therefore whatever the surrounding network/proxy
-provides; there is no TLS/mTLS in the client. The token is sent as gRPC bearer
+The gRPC client (`internal/store/monofs`) refuses plaintext while the token is
+sent. Configure TLS with `GUARDIAN_MONOFS_TLS=true` (system roots) or
+`GUARDIAN_MONOFS_TLS_CA_FILE`, `GUARDIAN_MONOFS_TLS_CLIENT_CERT_FILE` /
+`GUARDIAN_MONOFS_TLS_CLIENT_KEY_FILE`, and `GUARDIAN_MONOFS_TLS_SERVER_NAME`
+(alternatively `CLIENT_CERT_FILE`, `CLIENT_KEY_FILE`, `SERVER_NAME`). Plaintext
+requires the explicit `GUARDIAN_MONOFS_ALLOW_PLAINTEXT=true` escape hatch,
+intended only for isolated local development. The token is sent as gRPC bearer
 metadata and is also used for REST-style version calls.
 
 ### 3.2 OIDC on the Guardian UI
@@ -300,13 +304,13 @@ and prevents self-service registry changes unless the policy says otherwise.
 
 | Link | Transport | Protection |
 |---|---|---|
-| Browser ↔ `guardiand` | HTTP/HTTPS | Security headers (CSP, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`), `Origin`/`Referer` checks, optional HSTS (`--enable-hsts`) |
-| `guardiand` ↔ MonoFS | gRPC | `insecure.NewCredentials()`; token in metadata |
+| Browser ↔ `guardiand` | HTTP/HTTPS | Security headers (CSP, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`), `Origin`/`Referer` checks, optional HSTS (`--enable-hsts`); direct TLS via `GUARDIAN_UI_TLS_CERT_FILE` / `GUARDIAN_UI_TLS_KEY_FILE` |
+| `guardiand` ↔ MonoFS | gRPC | TLS (`GUARDIAN_MONOFS_TLS*`) or explicit `GUARDIAN_MONOFS_ALLOW_PLAINTEXT`; token in metadata |
 | Pusher ↔ MonoFS | gRPC | Same |
 | Doctor ↔ AWS pusher | HTTP/HTTPS `:19090` | Scoped bearer token + optional TLS/mTLS; plain HTTP on loopback by default |
 | AWS pusher ↔ AWS | HTTPS | AWS SDK TLS |
 | Webhook | HTTP/HTTPS | HMAC signature; no timestamp/nonce |
-| `guardiand` ↔ OTLP collector | gRPC | `Insecure` defaults true in telemetry config |
+| `guardiand` ↔ OTLP collector | gRPC | `Insecure` defaults from the endpoint scheme (`https://` → TLS); `GUARDIAN_OTEL_INSECURE` overrides |
 
 ### 6.2 At rest
 

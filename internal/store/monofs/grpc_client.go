@@ -3,6 +3,8 @@ package monofs
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"net"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +24,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/stats"
@@ -103,6 +107,7 @@ type GRPCClient struct {
 	useExternalAddresses bool
 	rpcTimeout           time.Duration
 	writable             bool
+	transportCreds       credentials.TransportCredentials
 
 	mu       sync.Mutex
 	routerMu sync.Mutex
@@ -193,10 +198,92 @@ func shouldInstrumentMonoFSRPC(info *stats.RPCTagInfo) bool {
 	return info == nil || info.FullMethodName != pb.MonoFSRouter_SubscribeGuardianChanges_FullMethodName
 }
 
-func dialRouter(addr string) (*grpc.ClientConn, error) {
+// envValue returns the first non-empty trimmed environment value.
+func envValue(keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// monoFSTransportCredentials selects the gRPC transport for MonoFS connections.
+//
+// The Guardian token is always sent to the router (and embedded in node RPCs),
+// so plaintext is refused unless GUARDIAN_MONOFS_ALLOW_PLAINTEXT=true is set
+// explicitly. TLS is enabled by GUARDIAN_MONOFS_TLS=true (system roots) or by
+// configuring a CA/client certificate/server name:
+//
+//	GUARDIAN_MONOFS_TLS_CA_FILE
+//	GUARDIAN_MONOFS_TLS_CLIENT_CERT_FILE (or CLIENT_CERT_FILE)
+//	GUARDIAN_MONOFS_TLS_CLIENT_KEY_FILE  (or CLIENT_KEY_FILE)
+//	GUARDIAN_MONOFS_TLS_SERVER_NAME      (or SERVER_NAME)
+func monoFSTransportCredentials() (credentials.TransportCredentials, error) {
+	caFile := envValue("GUARDIAN_MONOFS_TLS_CA_FILE", "GUARDIAN_MONOFS_CA_FILE")
+	certFile := envValue("GUARDIAN_MONOFS_TLS_CLIENT_CERT_FILE", "GUARDIAN_MONOFS_CLIENT_CERT_FILE", "CLIENT_CERT_FILE")
+	keyFile := envValue("GUARDIAN_MONOFS_TLS_CLIENT_KEY_FILE", "GUARDIAN_MONOFS_CLIENT_KEY_FILE", "CLIENT_KEY_FILE")
+	serverName := envValue("GUARDIAN_MONOFS_TLS_SERVER_NAME", "GUARDIAN_MONOFS_SERVER_NAME", "SERVER_NAME")
+
+	tlsEnabled := false
+	if raw := strings.TrimSpace(os.Getenv("GUARDIAN_MONOFS_TLS")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid GUARDIAN_MONOFS_TLS value %q: %w", raw, err)
+		}
+		tlsEnabled = parsed
+	}
+	tlsEnabled = tlsEnabled || caFile != "" || certFile != "" || keyFile != "" || serverName != ""
+
+	allowPlaintext := false
+	if raw := strings.TrimSpace(os.Getenv("GUARDIAN_MONOFS_ALLOW_PLAINTEXT")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid GUARDIAN_MONOFS_ALLOW_PLAINTEXT value %q: %w", raw, err)
+		}
+		allowPlaintext = parsed
+	}
+
+	if !tlsEnabled {
+		if allowPlaintext {
+			return insecure.NewCredentials(), nil
+		}
+		return nil, fmt.Errorf("monofs: refusing to send the guardian token over plaintext; set GUARDIAN_MONOFS_TLS=true (or configure GUARDIAN_MONOFS_TLS_CA_FILE) — set GUARDIAN_MONOFS_ALLOW_PLAINTEXT=true only for isolated local development")
+	}
+
+	if (certFile == "") != (keyFile == "") {
+		return nil, fmt.Errorf("monofs: TLS client certificate and key must be configured together")
+	}
+
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		ServerName: serverName,
+	}
+	if caFile != "" {
+		pem, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("monofs: read TLS CA file %q: %w", caFile, err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("monofs: TLS CA file %q contains no usable certificates", caFile)
+		}
+		tlsConfig.RootCAs = pool
+	}
+	if certFile != "" {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("monofs: load TLS client certificate: %w", err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{cert}
+	}
+	return credentials.NewTLS(tlsConfig), nil
+}
+
+func dialRouter(addr string, creds credentials.TransportCredentials) (*grpc.ClientConn, error) {
 	return grpc.NewClient(
 		addr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(creds),
 		grpcx.IPv4DialerOption(),
 		grpc.WithPerRPCCredentials(cliBearerCreds{}),
 		grpc.WithStatsHandler(monoFSClientStatsHandler()),
@@ -252,6 +339,11 @@ func NewGRPCClient(ctx context.Context, cfg ClientConfig) (*GRPCClient, error) {
 		return nil, fmt.Errorf("parse monofs router address %q: %w", cfg.RouterAddr, err)
 	}
 
+	transportCreds, err := monoFSTransportCredentials()
+	if err != nil {
+		return nil, err
+	}
+
 	// Router pods can roll while a CLI or pusher is starting (for example when
 	// credentials are patched into the deployment). Retry transient transport
 	// errors instead of failing the whole command with "error reading server
@@ -266,7 +358,7 @@ func NewGRPCClient(ctx context.Context, cfg ClientConfig) (*GRPCClient, error) {
 			}
 		}
 
-		conn, err := dialRouter(cfg.RouterAddr)
+		conn, err := dialRouter(cfg.RouterAddr, transportCreds)
 		if err != nil {
 			lastErr = fmt.Errorf("connect to monofs router: %w", err)
 			continue
@@ -286,6 +378,7 @@ func NewGRPCClient(ctx context.Context, cfg ClientConfig) (*GRPCClient, error) {
 			useExternalAddresses: cfg.UseExternalAddresses,
 			rpcTimeout:           cfg.RPCTimeout,
 			writable:             cfg.Writable,
+			transportCreds:       transportCreds,
 			routerConn:           conn,
 			router:               pb.NewMonoFSRouterClient(conn),
 			nodeConns:            map[string]*grpc.ClientConn{},
@@ -1142,7 +1235,7 @@ func (c *GRPCClient) refreshNodes(ctx context.Context) error {
 		}
 		nodeConn, dialErr := grpc.NewClient(
 			nodeAddr,
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithTransportCredentials(c.transportCreds),
 			grpcx.IPv4DialerOption(),
 			grpc.WithStatsHandler(monoFSClientStatsHandler()),
 			grpc.WithKeepaliveParams(keepalive.ClientParameters{
@@ -1251,7 +1344,7 @@ func (c *GRPCClient) reconnectRouter(ctx context.Context) error {
 
 	oldConn := c.routerConn
 
-	newConn, err := dialRouter(c.routerAddr)
+	newConn, err := dialRouter(c.routerAddr, c.transportCreds)
 	if err != nil {
 		return fmt.Errorf("reconnect to monofs router: %w", err)
 	}

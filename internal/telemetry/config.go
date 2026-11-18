@@ -48,7 +48,9 @@ func LoadConfig(component, instanceID string) (Config, error) {
 	}
 	insecure := envFirst("OTEL_EXPORTER_OTLP_INSECURE", "GUARDIAN_OTEL_INSECURE")
 	if insecure == "" {
-		cfg.Insecure = true
+		// Default transport security from the endpoint scheme: https endpoints
+		// use TLS, everything else keeps the historical plaintext default.
+		cfg.Insecure = !strings.HasPrefix(strings.ToLower(strings.TrimSpace(cfg.Endpoint)), "https://")
 	} else {
 		value, err := strconv.ParseBool(insecure)
 		if err != nil {

@@ -540,8 +540,20 @@ func main() {
 			WriteTimeout:      60 * time.Second,
 			IdleTimeout:       120 * time.Second,
 		}
-		runHTTPServer(ctx, &wg, httpServer)
-		log.Printf("guardian ui listening on %s", cfg.Guardian.UIListenAddress)
+		// TLS terminates directly in guardiand when a certificate and key are
+		// provided; otherwise plain HTTP is kept for deployments that terminate
+		// TLS at an ingress/proxy.
+		uiTLSCertFile := strings.TrimSpace(os.Getenv("GUARDIAN_UI_TLS_CERT_FILE"))
+		uiTLSKeyFile := strings.TrimSpace(os.Getenv("GUARDIAN_UI_TLS_KEY_FILE"))
+		if (uiTLSCertFile == "") != (uiTLSKeyFile == "") {
+			log.Fatalf("guardian ui: GUARDIAN_UI_TLS_CERT_FILE and GUARDIAN_UI_TLS_KEY_FILE must be set together")
+		}
+		runHTTPServer(ctx, &wg, httpServer, uiTLSCertFile, uiTLSKeyFile)
+		if uiTLSCertFile != "" {
+			log.Printf("guardian ui listening on %s (TLS)", cfg.Guardian.UIListenAddress)
+		} else {
+			log.Printf("guardian ui listening on %s", cfg.Guardian.UIListenAddress)
+		}
 	}
 	run := func(name string, fn func(context.Context) error) {
 		wg.Add(1)
@@ -797,7 +809,7 @@ func applyHTTPServerTimeouts(server *http.Server) {
 	}
 }
 
-func runHTTPServer(ctx context.Context, wg *sync.WaitGroup, server *http.Server) {
+func runHTTPServer(ctx context.Context, wg *sync.WaitGroup, server *http.Server, certFile, keyFile string) {
 	if server == nil {
 		return
 	}
@@ -813,7 +825,13 @@ func runHTTPServer(ctx context.Context, wg *sync.WaitGroup, server *http.Server)
 				log.Printf("shutdown ui server: %v", err)
 			}
 		}()
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if certFile != "" && keyFile != "" {
+			err = server.ListenAndServeTLS(certFile, keyFile)
+		} else {
+			err = server.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			log.Printf("ui-server stopped: %v", err)
 		}
 	}()
