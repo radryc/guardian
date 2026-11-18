@@ -76,7 +76,7 @@ func main() {
 	flag.StringVar(&authzOIDCIssuer, "oidc-issuer", "", "OIDC issuer URL for SSO token verification on the Guardian UI (observe mode when empty)")
 	flag.StringVar(&authzOIDCAudience, "oidc-audience", "", "Expected OIDC audience for SSO tokens")
 	flag.StringVar(&authzOIDCJWKSURL, "oidc-jwks-url", "", "OIDC JWKS URL (discovered from issuer when empty)")
-	flag.BoolVar(&requireUIAuth, "require-ui-auth", false, "Reject anonymous Guardian UI/API mutations")
+	flag.BoolVar(&requireUIAuth, "require-ui-auth", true, "Reject anonymous Guardian UI/API mutations")
 	flag.BoolVar(&allowLoopbackAnonymous, "allow-loopback-anonymous", false, "Allow anonymous loopback mutations for local development")
 	flag.StringVar(&trustedOrigins, "trusted-origins", "", "Comma-separated extra origins allowed to submit browser mutations")
 	flag.BoolVar(&enableHSTS, "enable-hsts", false, "Emit Strict-Transport-Security even when TLS terminates upstream")
@@ -95,33 +95,22 @@ func main() {
 
 	accessPolicyConfigured := strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_POLICY_PATH")) != "" ||
 		strings.EqualFold(strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_ENFORCE")), "true")
-	if !flagProvided("require-ui-auth") {
-		if raw := strings.TrimSpace(os.Getenv("GUARDIAN_REQUIRE_UI_AUTH")); raw != "" {
-			parsed, parseErr := strconv.ParseBool(raw)
-			if parseErr != nil {
-				log.Fatalf("invalid GUARDIAN_REQUIRE_UI_AUTH value %q: %v", raw, parseErr)
-			}
-			requireUIAuth = parsed
-		} else {
-			requireUIAuth = strings.TrimSpace(authzOIDCIssuer) != "" || accessPolicyConfigured
-		}
-	}
-	if !flagProvided("allow-loopback-anonymous") {
-		if raw := strings.TrimSpace(os.Getenv("GUARDIAN_ALLOW_LOOPBACK_ANONYMOUS")); raw != "" {
-			parsed, parseErr := strconv.ParseBool(raw)
-			if parseErr != nil {
-				log.Fatalf("invalid GUARDIAN_ALLOW_LOOPBACK_ANONYMOUS value %q: %v", raw, parseErr)
-			}
-			allowLoopbackAnonymous = parsed
-		} else {
-			// Local development remains usable while OIDC is not configured.
-			// Once an identity provider exists, anonymous loopback mutations are
-			// off unless the operator explicitly turns them back on.
-			allowLoopbackAnonymous = !requireUIAuth || strings.TrimSpace(authzOIDCIssuer) == ""
-		}
+	var authResolveErr error
+	requireUIAuth, allowLoopbackAnonymous, authResolveErr = resolveUIAuthSettings(
+		flagProvided("require-ui-auth"),
+		requireUIAuth,
+		flagProvided("allow-loopback-anonymous"),
+		allowLoopbackAnonymous,
+	)
+	if authResolveErr != nil {
+		log.Fatalf("%v", authResolveErr)
 	}
 	if !flagProvided("require-ui-auth") && requireUIAuth && !accessPolicyConfigured && strings.TrimSpace(authzOIDCIssuer) == "" {
-		log.Printf("guardian ui: authentication is required but no OIDC/access policy is configured; only loopback mutations are allowed")
+		if allowLoopbackAnonymous {
+			log.Printf("guardian ui: authentication is required but no OIDC/access policy is configured; only loopback mutations are allowed")
+		} else {
+			log.Printf("guardian ui: authentication is required (fail-closed) and no OIDC/access policy is configured; anonymous mutations are rejected")
+		}
 	}
 	if !flagProvided("trusted-origins") {
 		trustedOrigins = strings.TrimSpace(os.Getenv("GUARDIAN_TRUSTED_ORIGINS"))
@@ -289,6 +278,11 @@ func main() {
 			}
 			complianceConfig.ObjectLockRetainUntil = retainUntil
 		}
+		retainDuration, retainErr := resolveComplianceRetention(cfg.Compliance.ObjectLockRetainDuration)
+		if retainErr != nil {
+			log.Fatalf("%v", retainErr)
+		}
+		complianceConfig.ObjectLockRetainDuration = retainDuration
 		if raw := strings.TrimSpace(cfg.Compliance.RetryBaseDelay); raw != "" {
 			delay, parseErr := time.ParseDuration(raw)
 			if parseErr != nil {
@@ -710,6 +704,56 @@ func flagProvided(name string) bool {
 		}
 	})
 	return provided
+}
+
+func envBool(key string, fallback bool) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("invalid %s value %q: %w", key, raw, err)
+	}
+	return parsed, nil
+}
+
+func resolveUIAuthSettings(requireFlagSet, requireFlagVal, allowLoopbackFlagSet, allowLoopbackFlagVal bool) (bool, bool, error) {
+	requireUIAuth := requireFlagVal
+	if !requireFlagSet {
+		var err error
+		requireUIAuth, err = envBool("GUARDIAN_REQUIRE_UI_AUTH", true)
+		if err != nil {
+			return false, false, err
+		}
+	}
+	allowLoopbackAnonymous := allowLoopbackFlagVal
+	if !allowLoopbackFlagSet {
+		var err error
+		allowLoopbackAnonymous, err = envBool("GUARDIAN_ALLOW_LOOPBACK_ANONYMOUS", false)
+		if err != nil {
+			return false, false, err
+		}
+	}
+	return requireUIAuth, allowLoopbackAnonymous, nil
+}
+
+func resolveComplianceRetention(cfgValue string) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv("GUARDIAN_COMPLIANCE_OBJECT_LOCK_RETENTION"))
+	if raw == "" {
+		raw = strings.TrimSpace(cfgValue)
+	}
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid GUARDIAN_COMPLIANCE_OBJECT_LOCK_RETENTION value %q: %w", raw, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("invalid GUARDIAN_COMPLIANCE_OBJECT_LOCK_RETENTION value %q: duration must be positive", raw)
+	}
+	return d, nil
 }
 
 func applyHTTPServerTimeouts(server *http.Server) {

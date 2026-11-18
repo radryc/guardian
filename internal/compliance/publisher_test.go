@@ -134,3 +134,46 @@ func TestS3PublisherPublishAfterCloseIsDropped(t *testing.T) {
 		t.Fatalf("calls = %d, want 0", fake.calls)
 	}
 }
+
+func TestS3PublisherDynamicObjectLockRetention(t *testing.T) {
+	fake := &fakePutter{}
+	t0 := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	retention := 24 * time.Hour
+	pub := newS3Publisher(fake, Config{
+		S3Bucket:                 "bucket",
+		ObjectLockMode:           "COMPLIANCE",
+		ObjectLockRetainDuration: retention,
+		// Static timestamp in the past should be ignored when duration is set.
+		ObjectLockRetainUntil: t0.Add(-time.Hour),
+	})
+	var mu sync.Mutex
+	current := t0
+	pub.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return current
+	}
+
+	in1 := pub.input(uploadRequest{key: "a.json", content: []byte("{}"), contentType: "application/json"})
+	mu.Lock()
+	current = t0.Add(2 * time.Hour)
+	mu.Unlock()
+	in2 := pub.input(uploadRequest{key: "b.json", content: []byte("{}"), contentType: "application/json"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := pub.Close(ctx); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	if in1.ObjectLockRetainUntilDate == nil || !in1.ObjectLockRetainUntilDate.Equal(t0.Add(retention)) {
+		t.Fatalf("first retain until = %v, want %v", in1.ObjectLockRetainUntilDate, t0.Add(retention))
+	}
+	wantSecond := t0.Add(2*time.Hour + retention)
+	if in2.ObjectLockRetainUntilDate == nil || !in2.ObjectLockRetainUntilDate.Equal(wantSecond) {
+		t.Fatalf("second retain until = %v, want %v", in2.ObjectLockRetainUntilDate, wantSecond)
+	}
+	if string(in1.ObjectLockMode) != "COMPLIANCE" || string(in2.ObjectLockMode) != "COMPLIANCE" {
+		t.Fatalf("unexpected object lock modes: %q, %q", in1.ObjectLockMode, in2.ObjectLockMode)
+	}
+}

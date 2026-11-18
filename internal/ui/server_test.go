@@ -242,8 +242,39 @@ func TestServerClientConfigReturnsMonoFSDiscovery(t *testing.T) {
 	if cfg.MonoFS == nil {
 		t.Fatalf("expected MonoFS discovery config")
 	}
-	if cfg.MonoFS.RouterAddr != "localhost:9090" || cfg.MonoFS.Token != "guardian-dev-token" || !cfg.MonoFS.UseExternalAddresses {
+	if cfg.MonoFS.RouterAddr != "localhost:9090" || cfg.MonoFS.Token != "" || !cfg.MonoFS.UseExternalAddresses {
 		t.Fatalf("unexpected client config: %+v", cfg.MonoFS)
+	}
+}
+
+func TestServerClientConfigIncludesTokenOnlyWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	srv, err := New(Options{
+		Store:       memory.New(),
+		PrincipalID: "test-ui",
+		Pushers:     []string{"local"},
+		ClientConfig: ClientConfig{MonoFS: &MonoFSClientConfig{
+			RouterAddr:           "localhost:9090",
+			Token:                "guardian-dev-token",
+			UseExternalAddresses: true,
+		}},
+		ClientConfigIncludeToken: true,
+	})
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	httpSrv := httptest.NewServer(srv)
+	defer httpSrv.Close()
+
+	var cfg ClientConfig
+	requestJSON(t, httpSrv, http.MethodGet, "/api/client-config", nil, &cfg)
+	if cfg.MonoFS == nil {
+		t.Fatalf("expected MonoFS discovery config")
+	}
+	if cfg.MonoFS.Token != "guardian-dev-token" {
+		t.Fatalf("token = %q, want %q", cfg.MonoFS.Token, "guardian-dev-token")
 	}
 }
 
@@ -442,6 +473,13 @@ func TestServerClientConfigAllowsMatchingDiscoveryToken(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var cfg ClientConfig
+	if err := json.Unmarshal(rec.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("decode client config: %v", err)
+	}
+	if cfg.MonoFS == nil || cfg.MonoFS.Token != "" {
+		t.Fatalf("expected MonoFS token to be redacted, got %+v", cfg.MonoFS)
 	}
 }
 

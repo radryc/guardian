@@ -51,8 +51,11 @@ type Options struct {
 	DataCacheTTL       time.Duration
 	EnableFlowTopology bool
 	FlowEvaluator      FlowStateEvaluator
-	ClientConfig       ClientConfig
-	ClientConfigToken  string
+	ClientConfig             ClientConfig
+	ClientConfigToken        string
+	// ClientConfigIncludeToken includes MonoFS.Token in /api/client-config
+	// responses. Disabled by default so credentials are not leaked.
+	ClientConfigIncludeToken bool
 	// DisableAutoDeployOnIngest turns off the reconcile that normally follows a
 	// successful repo ingest. Auto-deploy is on unless this is set.
 	DisableAutoDeployOnIngest bool
@@ -104,8 +107,9 @@ type Server struct {
 	projectionCache        *uiProjectionCache
 	partitionLoadMu        sync.Mutex
 	partitionLoads         map[string]*partitionLoad
-	clientConfig           ClientConfig
-	clientConfigToken      string
+	clientConfig             ClientConfig
+	clientConfigToken        string
+	clientConfigIncludeToken bool
 	autoDeployOnIngest     bool
 	repoImportMu           sync.Mutex
 	unmanaged              UnmanagedService
@@ -319,8 +323,9 @@ func New(opts Options) (*Server, error) {
 		partitionData:          newPartitionDataCache(dataCacheTTL),
 		rolloutCache:           newRolloutCache(defaultRolloutTTL),
 		projectionCache:        newUIProjectionCache(opts.Store, dataCacheTTL),
-		clientConfig:           opts.ClientConfig,
-		clientConfigToken:      strings.TrimSpace(opts.ClientConfigToken),
+		clientConfig:             opts.ClientConfig,
+		clientConfigToken:        strings.TrimSpace(opts.ClientConfigToken),
+		clientConfigIncludeToken: opts.ClientConfigIncludeToken,
 		autoDeployOnIngest:     !opts.DisableAutoDeployOnIngest,
 		unmanaged:              opts.Unmanaged,
 		access:                 opts.Access,
@@ -614,7 +619,11 @@ func (s *Server) handleClientConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("client config unavailable"))
 		return
 	}
-	writeJSON(w, http.StatusOK, s.clientConfig)
+	monofsCfg := *s.clientConfig.MonoFS
+	if !s.clientConfigIncludeToken {
+		monofsCfg.Token = ""
+	}
+	writeJSON(w, http.StatusOK, ClientConfig{MonoFS: &monofsCfg})
 }
 
 // handleAccessPolicy serves the compiled access policy bundle to MonoFS and

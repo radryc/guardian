@@ -11,9 +11,32 @@ import (
 	"github.com/radryc/guardian/internal/registry"
 )
 
+type m2mPusher struct {
+	registry.Pusher
+	HasToken bool `json:"hasToken"`
+}
+
+type m2mPusherListResponse struct {
+	Pushers    []m2mPusher                  `json:"pushers"`
+	Total      int                          `json:"total,omitempty"`
+	Matched    int                          `json:"matched,omitempty"`
+	NextCursor string                       `json:"nextCursor,omitempty"`
+	HasMore    bool                         `json:"hasMore,omitempty"`
+	Summary    *registry.PusherFleetSummary `json:"summary,omitempty"`
+}
+
+func redactM2MPusher(p registry.Pusher) m2mPusher {
+	hasToken := strings.TrimSpace(p.Token) != ""
+	p.Token = ""
+	return m2mPusher{
+		Pusher:   p,
+		HasToken: hasToken,
+	}
+}
+
 // handleM2MPushers exposes the pusher registry to trusted machine callers
-// (Doctor federation / the catalog controller). It returns bearer tokens, so it
-// is gated by the same internal token as the access-policy endpoint.
+// (Doctor federation / the catalog controller). Raw bearer tokens are redacted
+// from responses; hasToken indicates whether a token is configured.
 func (s *Server) handleM2MPushers(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/api/m2m/pushers" {
 		http.NotFound(w, r)
@@ -47,8 +70,12 @@ func (s *Server) handleM2MPushers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, pusherListResponse{
-		Pushers:    page.Pushers,
+	redacted := make([]m2mPusher, 0, len(page.Pushers))
+	for _, p := range page.Pushers {
+		redacted = append(redacted, redactM2MPusher(p))
+	}
+	writeJSON(w, http.StatusOK, m2mPusherListResponse{
+		Pushers:    redacted,
 		Total:      page.Total,
 		Matched:    page.Matched,
 		NextCursor: page.NextCursor,
@@ -56,7 +83,7 @@ func (s *Server) handleM2MPushers(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleM2MPusherRoute resolves one pusher by name, including its token.
+// handleM2MPusherRoute resolves one pusher by name with its token redacted.
 func (s *Server) handleM2MPusherRoute(w http.ResponseWriter, r *http.Request) {
 	name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/m2m/pushers/"), "/")
 	if name == "" {
@@ -79,7 +106,7 @@ func (s *Server) handleM2MPusherRoute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, pusher)
+	writeJSON(w, http.StatusOK, redactM2MPusher(*pusher))
 }
 
 func (s *Server) requireM2MAccess(w http.ResponseWriter, r *http.Request) bool {

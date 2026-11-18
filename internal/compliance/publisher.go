@@ -25,10 +25,14 @@ type Config struct {
 	ServerSideEncryption string
 	// SSEKMSKeyID is required when ServerSideEncryption is "aws:kms".
 	SSEKMSKeyID string
-	// ObjectLockMode is "GOVERNANCE" or "COMPLIANCE"; ObjectLockRetainUntil
-	// must also be set.
-	ObjectLockMode        string
-	ObjectLockRetainUntil time.Time
+	// ObjectLockMode is "GOVERNANCE" or "COMPLIANCE"; either
+	// ObjectLockRetainDuration or ObjectLockRetainUntil must also be set.
+	ObjectLockMode string
+	// ObjectLockRetainDuration computes ObjectLockRetainUntilDate dynamically
+	// per upload as time.Now().UTC().Add(ObjectLockRetainDuration). When > 0,
+	// it takes precedence over ObjectLockRetainUntil.
+	ObjectLockRetainDuration time.Duration
+	ObjectLockRetainUntil    time.Time
 	// MaxRetries is the number of retries after the first attempt.
 	MaxRetries int
 	// RetryBaseDelay is the first backoff delay; it doubles per attempt.
@@ -90,11 +94,13 @@ func newS3Publisher(client putObjectAPI, cfg Config) *s3Publisher {
 		finished:       make(chan struct{}),
 		maxRetries:     cfg.MaxRetries,
 		retryBaseDelay: cfg.RetryBaseDelay,
-		sse:            strings.TrimSpace(cfg.ServerSideEncryption),
-		sseKMSKeyID:    strings.TrimSpace(cfg.SSEKMSKeyID),
-		objectLockMode: strings.TrimSpace(cfg.ObjectLockMode),
-		objectLockTill: cfg.ObjectLockRetainUntil,
-		onError:        cfg.OnError,
+		sse:                      strings.TrimSpace(cfg.ServerSideEncryption),
+		sseKMSKeyID:              strings.TrimSpace(cfg.SSEKMSKeyID),
+		objectLockMode:           strings.TrimSpace(cfg.ObjectLockMode),
+		objectLockRetainDuration: cfg.ObjectLockRetainDuration,
+		objectLockTill:           cfg.ObjectLockRetainUntil,
+		now:                      func() time.Time { return time.Now().UTC() },
+		onError:                  cfg.OnError,
 	}
 	pub.wg.Add(1)
 	go pub.run()
@@ -120,11 +126,13 @@ type s3Publisher struct {
 	wg             sync.WaitGroup
 	maxRetries     int
 	retryBaseDelay time.Duration
-	sse            string
-	sseKMSKeyID    string
-	objectLockMode string
-	objectLockTill time.Time
-	onError        func(error)
+	sse                      string
+	sseKMSKeyID              string
+	objectLockMode           string
+	objectLockRetainDuration time.Duration
+	objectLockTill           time.Time
+	now                      func() time.Time
+	onError                  func(error)
 
 	errMu    sync.Mutex
 	firstErr error
@@ -216,9 +224,20 @@ func (p *s3Publisher) input(req uploadRequest) *s3.PutObjectInput {
 	if p.sseKMSKeyID != "" {
 		in.SSEKMSKeyId = &p.sseKMSKeyID
 	}
-	if p.objectLockMode != "" && !p.objectLockTill.IsZero() {
-		in.ObjectLockMode = s3types.ObjectLockMode(p.objectLockMode)
-		in.ObjectLockRetainUntilDate = &p.objectLockTill
+	if p.objectLockMode != "" {
+		if p.objectLockRetainDuration > 0 {
+			nowFn := p.now
+			if nowFn == nil {
+				nowFn = func() time.Time { return time.Now().UTC() }
+			}
+			retainUntil := nowFn().UTC().Add(p.objectLockRetainDuration)
+			in.ObjectLockMode = s3types.ObjectLockMode(p.objectLockMode)
+			in.ObjectLockRetainUntilDate = &retainUntil
+		} else if !p.objectLockTill.IsZero() {
+			retainUntil := p.objectLockTill
+			in.ObjectLockMode = s3types.ObjectLockMode(p.objectLockMode)
+			in.ObjectLockRetainUntilDate = &retainUntil
+		}
 	}
 	return in
 }

@@ -489,3 +489,66 @@ func TestApplyHTTPServerTimeouts(t *testing.T) {
 		t.Fatalf("IdleTimeout = %v, want 120s", srv.IdleTimeout)
 	}
 }
+
+func TestResolveUIAuthSettingsFailClosedDefaults(t *testing.T) {
+	t.Setenv("GUARDIAN_REQUIRE_UI_AUTH", "")
+	t.Setenv("GUARDIAN_ALLOW_LOOPBACK_ANONYMOUS", "")
+
+	requireAuth, allowLoopback, err := resolveUIAuthSettings(false, true, false, false)
+	if err != nil {
+		t.Fatalf("resolveUIAuthSettings() error = %v", err)
+	}
+	if !requireAuth {
+		t.Fatal("requireAuth = false, want true by default")
+	}
+	if allowLoopback {
+		t.Fatal("allowLoopback = true, want false by default")
+	}
+
+	t.Setenv("GUARDIAN_REQUIRE_UI_AUTH", "false")
+	t.Setenv("GUARDIAN_ALLOW_LOOPBACK_ANONYMOUS", "true")
+	requireAuth, allowLoopback, err = resolveUIAuthSettings(false, true, false, false)
+	if err != nil {
+		t.Fatalf("resolveUIAuthSettings(env override) error = %v", err)
+	}
+	if requireAuth {
+		t.Fatal("requireAuth = true, want false when GUARDIAN_REQUIRE_UI_AUTH=false")
+	}
+	if !allowLoopback {
+		t.Fatal("allowLoopback = false, want true when GUARDIAN_ALLOW_LOOPBACK_ANONYMOUS=true")
+	}
+
+	// Explicit CLI flags override env vars.
+	requireAuth, allowLoopback, err = resolveUIAuthSettings(true, true, true, false)
+	if err != nil {
+		t.Fatalf("resolveUIAuthSettings(flag override) error = %v", err)
+	}
+	if !requireAuth || allowLoopback {
+		t.Fatalf("flag override got (%v, %v), want (true, false)", requireAuth, allowLoopback)
+	}
+}
+
+func TestResolveComplianceRetention(t *testing.T) {
+	t.Setenv("GUARDIAN_COMPLIANCE_OBJECT_LOCK_RETENTION", "8760h")
+	d, err := resolveComplianceRetention("24h")
+	if err != nil {
+		t.Fatalf("resolveComplianceRetention() error = %v", err)
+	}
+	if d != 8760*time.Hour {
+		t.Fatalf("retention = %v, want 8760h", d)
+	}
+
+	t.Setenv("GUARDIAN_COMPLIANCE_OBJECT_LOCK_RETENTION", "")
+	d, err = resolveComplianceRetention("24h")
+	if err != nil {
+		t.Fatalf("resolveComplianceRetention(cfg fallback) error = %v", err)
+	}
+	if d != 24*time.Hour {
+		t.Fatalf("retention = %v, want 24h", d)
+	}
+
+	t.Setenv("GUARDIAN_COMPLIANCE_OBJECT_LOCK_RETENTION", "-1h")
+	if _, err := resolveComplianceRetention(""); err == nil {
+		t.Fatal("expected error for non-positive retention duration")
+	}
+}
