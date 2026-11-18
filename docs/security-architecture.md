@@ -417,10 +417,15 @@ full `safejoin` audit:
 - Observed collector: assembly dir + template/stack name.
 - AWS source staging: entrypoint paths.
 
-`paths.normalize` uses `path.Join`/`path.Clean`, which collapses `..` rather
-than rejecting it. In a multi-tenant store this is a cross-tenant
-read/write/delete primitive. The MonoFS adapter rejects unknown top-level
-namespaces, which limits but does not eliminate the impact.
+`paths.normalize` now treats its first component as the root and clamps any
+`..` that would resolve above it, so traversal cannot reach a sibling partition
+(for example `PartitionPath("demo", "../other/x")` stays under
+`/partitions/demo`). Callers that need to reject rather than clamp use
+`paths.NormalizeChecked`, `paths.PartitionPathChecked`, or
+`paths.PartitionRootChecked`, which return `ErrPathEscapesRoot`. The onboarding
+descriptor importer uses the checked form. The MonoFS adapter also rejects
+unknown top-level namespaces, which limits but does not eliminate the impact of
+remaining unaudited callers.
 
 ---
 

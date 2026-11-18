@@ -40,7 +40,7 @@ ARG BUILD_COMMIT=unknown
 ARG BUILD_TIME=unknown
 
 RUN apk add --no-cache ca-certificates nodejs npm aws-cli yq && \
-  npm install -g aws-cdk@2
+  npm install -g aws-cdk@2.160.0
 # gcompat provides the glibc loader needed by aws_signing_helper (the IAM
 # Roles Anywhere credential helper) inside the Alpine runtime image.
 RUN apk add --no-cache gcompat

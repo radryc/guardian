@@ -1,6 +1,7 @@
 package paths
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -122,5 +123,39 @@ func TestAllPathsStartWithSlash(t *testing.T) {
 		if !strings.HasPrefix(path, "/") {
 			t.Errorf("%s = %q: must start with /", name, path)
 		}
+	}
+}
+
+func TestNormalizeRejectsTraversalAboveRoot(t *testing.T) {
+	cases := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"parent sibling", normalize("/partitions/demo", "../other"), "/partitions/demo/other"},
+		{"multiple parents", normalize("/partitions/demo", "../../etc/passwd"), "/partitions/demo/etc/passwd"},
+		{"escaping partition root", PartitionPath("demo", "../../../evil.yaml"), "/partitions/demo/evil.yaml"},
+		{"internal dotdot stays inside", PartitionPath("demo", "intents/../app.yaml"), "/partitions/demo/app.yaml"},
+		{"traversing partition name", PartitionRoot("../escape"), "/partitions/escape"},
+	}
+	for _, tc := range cases {
+		if tc.got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
+func TestNormalizeCheckedReturnsErrorOnEscape(t *testing.T) {
+	if _, err := NormalizeChecked("/partitions/demo", "../other"); !errors.Is(err, ErrPathEscapesRoot) {
+		t.Fatalf("NormalizeChecked() error = %v, want ErrPathEscapesRoot", err)
+	}
+	if _, err := PartitionPathChecked("demo", "../../etc/passwd"); !errors.Is(err, ErrPathEscapesRoot) {
+		t.Fatalf("PartitionPathChecked() error = %v, want ErrPathEscapesRoot", err)
+	}
+	if _, err := PartitionRootChecked(".."); !errors.Is(err, ErrPathEscapesRoot) {
+		t.Fatalf("PartitionRootChecked() error = %v, want ErrPathEscapesRoot", err)
+	}
+	if got, err := PartitionPathChecked("demo", "intents/../app.yaml"); err != nil || got != "/partitions/demo/app.yaml" {
+		t.Fatalf("PartitionPathChecked(valid) = %q, %v", got, err)
 	}
 }

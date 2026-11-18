@@ -1,26 +1,148 @@
 package paths
 
 import (
+	"errors"
+	"fmt"
 	"path"
 	"strings"
 )
 
+// ErrPathEscapesRoot is returned by NormalizeChecked when a component would
+// resolve above the logical root it was joined to.
+var ErrPathEscapesRoot = errors.New("logical path escapes its root")
+
+// normalize joins parts into a cleaned absolute logical path. The first part is
+// treated as the root: any ".." component that would resolve above that root is
+// rejected and clamped instead of silently collapsing to a sibling/parent (for
+// example normalize("/partitions/demo", "../other") yields
+// "/partitions/demo/other", never "/partitions/other"). Callers that must
+// surface the rejection should use NormalizeChecked.
 func normalize(parts ...string) string {
-	joined := path.Join(parts...)
-	if !strings.HasPrefix(joined, "/") {
-		joined = "/" + joined
+	cleaned, err := normalizeChecked(parts...)
+	if err != nil {
+		// Defense in depth: never return a path outside the requested root.
+		root := logicalRoot(parts)
+		return cleanWithinRoot(root, parts[1:])
 	}
-	return path.Clean(joined)
+	return cleaned
+}
+
+// NormalizeChecked is like normalize but returns ErrPathEscapesRoot when a
+// component attempts to traverse above the first (root) part.
+func NormalizeChecked(parts ...string) (string, error) {
+	return normalizeChecked(parts...)
+}
+
+func normalizeChecked(parts ...string) (string, error) {
+	if len(parts) == 0 {
+		return "/", nil
+	}
+	root := logicalRoot(parts)
+	rel := parts[1:]
+
+	// Reject obvious traversal before path.Join silently collapses it. An
+	// absolute-looking relative component is still joined below the root, so it
+	// only becomes an escape when ".." pops above the root depth.
+	depth := 0
+	for _, part := range rel {
+		for _, segment := range strings.Split(part, "/") {
+			switch segment {
+			case "", ".":
+				continue
+			case "..":
+				depth--
+			default:
+				depth++
+			}
+			if depth < 0 {
+				return "", fmt.Errorf("%w: %q", ErrPathEscapesRoot, path.Join(parts...))
+			}
+		}
+	}
+
+	joined := path.Join(append([]string{root}, rel...)...)
+	cleaned := path.Clean(joined)
+	if cleaned != root && !strings.HasPrefix(cleaned, root+"/") {
+		return "", fmt.Errorf("%w: %q", ErrPathEscapesRoot, cleaned)
+	}
+	return cleaned, nil
+}
+
+// logicalRoot returns the cleaned absolute root from the first component.
+func logicalRoot(parts []string) string {
+	root := "/"
+	if len(parts) > 0 {
+		root = strings.TrimSpace(parts[0])
+		if root == "" {
+			root = "/"
+		}
+		if !strings.HasPrefix(root, "/") {
+			root = "/" + root
+		}
+		root = path.Clean(root)
+	}
+	return root
+}
+
+// cleanWithinRoot resolves parts below root, dropping any ".." that would
+// ascend above it. It is the sanitized fallback used by normalize.
+func cleanWithinRoot(root string, parts []string) string {
+	root = logicalRoot([]string{root})
+	stack := make([]string, 0, 8)
+	if root != "/" {
+		for _, segment := range strings.Split(strings.TrimPrefix(root, "/"), "/") {
+			if segment != "" && segment != "." {
+				stack = append(stack, segment)
+			}
+		}
+	}
+	rootDepth := len(stack)
+	for _, part := range parts {
+		for _, segment := range strings.Split(part, "/") {
+			switch segment {
+			case "", ".":
+				continue
+			case "..":
+				if len(stack) > rootDepth {
+					stack = stack[:len(stack)-1]
+				}
+			default:
+				stack = append(stack, segment)
+			}
+		}
+	}
+	if len(stack) == 0 {
+		return "/"
+	}
+	return "/" + strings.Join(stack, "/")
 }
 
 func PartitionsRoot() string { return "/partitions" }
 
 func PartitionRoot(partition string) string { return normalize("/partitions", partition) }
 
+// PartitionRootChecked rejects a partition name that would escape
+// /partitions. Prefer this form when the partition name comes from an
+// untrusted caller.
+func PartitionRootChecked(partition string) (string, error) {
+	return normalizeChecked("/partitions", partition)
+}
+
 // PartitionPath builds a logical path under a partition from a bundle-relative
-// path such as "intents/app.yaml".
+// path such as "intents/app.yaml". Traversal above the partition root is
+// clamped; use PartitionPathChecked when the relative path is untrusted.
 func PartitionPath(partition, relative string) string {
 	return normalize(PartitionRoot(partition), relative)
+}
+
+// PartitionPathChecked builds a partition path and rejects traversal above the
+// partition root.
+func PartitionPathChecked(partition, relative string) (string, error) {
+	root, err := PartitionRootChecked(partition)
+	if err != nil {
+		return "", err
+	}
+	return normalizeChecked(root, relative)
 }
 
 func PartitionConfig(partition string) string {
