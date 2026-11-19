@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -38,6 +39,7 @@ import (
 	"github.com/radryc/guardian/internal/store/memory"
 	monofsstore "github.com/radryc/guardian/internal/store/monofs"
 	"github.com/radryc/guardian/internal/telemetry"
+	"github.com/radryc/guardian/internal/tlsxutil"
 	uiuipkg "github.com/radryc/guardian/internal/ui"
 	unmanagedpkg "github.com/radryc/guardian/internal/unmanaged"
 	"github.com/radryc/guardian/internal/workspacepub"
@@ -550,13 +552,27 @@ func main() {
 		// TLS terminates directly in guardiand when a certificate and key are
 		// provided; otherwise plain HTTP is kept for deployments that terminate
 		// TLS at an ingress/proxy.
+		//
+		// STRATA_TLS_* is the shared contract and is preferred whenever
+		// STRATA_TLS_MODE is not "off". The legacy GUARDIAN_UI_TLS_* variables
+		// keep working unchanged (including as a fallback in STRATA mode).
 		uiTLSCertFile := strings.TrimSpace(os.Getenv("GUARDIAN_UI_TLS_CERT_FILE"))
 		uiTLSKeyFile := strings.TrimSpace(os.Getenv("GUARDIAN_UI_TLS_KEY_FILE"))
+		uiTLSCAFile := strings.TrimSpace(os.Getenv("GUARDIAN_UI_TLS_CA_FILE"))
 		if (uiTLSCertFile == "") != (uiTLSKeyFile == "") {
 			log.Fatalf("guardian ui: GUARDIAN_UI_TLS_CERT_FILE and GUARDIAN_UI_TLS_KEY_FILE must be set together")
 		}
-		runHTTPServer(ctx, &wg, httpServer, uiTLSCertFile, uiTLSKeyFile)
-		if uiTLSCertFile != "" {
+		uiTLSConfig, uiTLSEnabled, err := tlsxutil.ServerTLSConfig(tlsxutil.LegacyServer{
+			CertFile:          uiTLSCertFile,
+			KeyFile:           uiTLSKeyFile,
+			CAFile:            uiTLSCAFile,
+			RequireClientCert: uiTLSCAFile != "",
+		})
+		if err != nil {
+			log.Fatalf("guardian ui: configure TLS: %v", err)
+		}
+		runHTTPServer(ctx, &wg, httpServer, uiTLSConfig)
+		if uiTLSEnabled {
 			log.Printf("guardian ui listening on %s (TLS)", cfg.Guardian.UIListenAddress)
 		} else {
 			log.Printf("guardian ui listening on %s", cfg.Guardian.UIListenAddress)
@@ -840,7 +856,7 @@ func applyHTTPServerTimeouts(server *http.Server) {
 	}
 }
 
-func runHTTPServer(ctx context.Context, wg *sync.WaitGroup, server *http.Server, certFile, keyFile string) {
+func runHTTPServer(ctx context.Context, wg *sync.WaitGroup, server *http.Server, tlsConfig *tls.Config) {
 	if server == nil {
 		return
 	}
@@ -856,13 +872,16 @@ func runHTTPServer(ctx context.Context, wg *sync.WaitGroup, server *http.Server,
 				log.Printf("shutdown ui server: %v", err)
 			}
 		}()
-		var err error
-		if certFile != "" && keyFile != "" {
-			err = server.ListenAndServeTLS(certFile, keyFile)
-		} else {
-			err = server.ListenAndServe()
+		listener, err := net.Listen("tcp", server.Addr)
+		if err != nil {
+			log.Printf("ui-server stopped: %v", err)
+			return
 		}
-		if err != nil && err != http.ErrServerClosed {
+		if tlsConfig != nil {
+			server.TLSConfig = tlsConfig
+			listener = tls.NewListener(listener, tlsConfig)
+		}
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Printf("ui-server stopped: %v", err)
 		}
 	}()

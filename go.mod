@@ -25,6 +25,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/xray v1.45.1
 	github.com/aws/smithy-go v1.28.1
 	github.com/radryc/monofs v0.0.0-20260314053556-1f307c687791
+	github.com/radryc/tlsx v0.0.0-00010101000000-000000000000
 	github.com/reugn/go-quartz v0.15.2
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.65.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0
@@ -119,3 +120,5 @@ require (
 replace github.com/radryc/kvs => ../kvs
 
 replace github.com/radryc/monofs => ../monofs
+
+replace github.com/radryc/tlsx => ../tlsx
