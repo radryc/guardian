@@ -159,6 +159,22 @@ func ClientConfig(legacy LegacyClient) (cfg tlsx.ClientConfig, enabled bool, err
 	return cfg, true, nil
 }
 
+// ServerTLSConfigHTTP builds a *tls.Config for a Guardian HTTP server.
+//
+// Optional mode keeps HTTP plaintext so local UIs, port-forwards and probes
+// keep working while gRPC uses mTLS; required mode enables TLS for HTTP too.
+// An explicit legacy certificate is honored as an opt-in.
+func ServerTLSConfigHTTP(legacy LegacyServer) (*tls.Config, bool, error) {
+	env, err := Env()
+	if err != nil {
+		return nil, false, err
+	}
+	if env.Mode == tlsx.ModeOptional && strings.TrimSpace(legacy.CertFile) == "" {
+		return nil, false, nil
+	}
+	return ServerTLSConfig(legacy)
+}
+
 // ServerTLSConfig builds a *tls.Config for a Guardian server.
 func ServerTLSConfig(legacy LegacyServer) (*tls.Config, bool, error) {
 	cfg, enabled, err := ServerConfig(legacy)

@@ -562,7 +562,7 @@ func main() {
 		if (uiTLSCertFile == "") != (uiTLSKeyFile == "") {
 			log.Fatalf("guardian ui: GUARDIAN_UI_TLS_CERT_FILE and GUARDIAN_UI_TLS_KEY_FILE must be set together")
 		}
-		uiTLSConfig, uiTLSEnabled, err := tlsxutil.ServerTLSConfig(tlsxutil.LegacyServer{
+		uiTLSConfig, uiTLSEnabled, err := tlsxutil.ServerTLSConfigHTTP(tlsxutil.LegacyServer{
 			CertFile:          uiTLSCertFile,
 			KeyFile:           uiTLSKeyFile,
 			CAFile:            uiTLSCAFile,

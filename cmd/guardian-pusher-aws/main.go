@@ -536,7 +536,7 @@ func splitCSV(value string) []string {
 }
 
 func awsReadTLSConfig(certFile, keyFile, clientCAFile string) (*tls.Config, bool, error) {
-	tlsCfg, enabled, err := tlsxutil.ServerTLSConfig(tlsxutil.LegacyServer{
+	tlsCfg, enabled, err := tlsxutil.ServerTLSConfigHTTP(tlsxutil.LegacyServer{
 		CertFile:          certFile,
 		KeyFile:           keyFile,
 		CAFile:            clientCAFile,

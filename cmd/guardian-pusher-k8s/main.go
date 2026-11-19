@@ -21,7 +21,6 @@ import (
 	"github.com/radryc/guardian/internal/k8sobserve"
 	"github.com/radryc/guardian/internal/k8sread"
 	"github.com/radryc/guardian/internal/paths"
-	"github.com/radryc/guardian/internal/tlsxutil"
 	kubernetesdriver "github.com/radryc/guardian/internal/pusher/drivers/kubernetes"
 	"github.com/radryc/guardian/internal/pusher/probes"
 	"github.com/radryc/guardian/internal/pusher/registry"
@@ -30,6 +29,7 @@ import (
 	fsstore "github.com/radryc/guardian/internal/store/fs"
 	monofsstore "github.com/radryc/guardian/internal/store/monofs"
 	"github.com/radryc/guardian/internal/telemetry"
+	"github.com/radryc/guardian/internal/tlsxutil"
 	"github.com/radryc/guardian/internal/versioning/revisions"
 	"github.com/radryc/guardian/pkg/guardianapi"
 )
@@ -211,7 +211,7 @@ func main() {
 			if strings.TrimSpace(readTokenFile) != "" {
 				handler = handler.WithTokenFile(readTokenFile)
 			}
-			readTLS, readTLSEnabled, tlsErr := tlsxutil.ServerTLSConfig(tlsxutil.LegacyServer{})
+			readTLS, readTLSEnabled, tlsErr := tlsxutil.ServerTLSConfigHTTP(tlsxutil.LegacyServer{})
 			if tlsErr != nil {
 				log.Fatalf("kubernetes read API TLS: %v", tlsErr)
 			}

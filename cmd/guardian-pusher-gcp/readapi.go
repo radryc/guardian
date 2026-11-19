@@ -53,7 +53,7 @@ func startReadAPI(ctx context.Context, cfg readAPIConfig) (*http.Server, error) 
 	if strings.TrimSpace(cfg.Address) == "" {
 		return nil, nil
 	}
-	tlsCfg, tlsEnabled, err := tlsxutil.ServerTLSConfig(tlsxutil.LegacyServer{
+	tlsCfg, tlsEnabled, err := tlsxutil.ServerTLSConfigHTTP(tlsxutil.LegacyServer{
 		CertFile:          cfg.TLSCert,
 		KeyFile:           cfg.TLSKey,
 		CAFile:            cfg.TLSClientCA,
