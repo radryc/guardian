@@ -55,6 +55,10 @@ func (b *CLIBackend) DeleteConfigMap(ctx context.Context, namespace, name string
 	return b.deleteResource(ctx, namespace, "configmap", name)
 }
 
+func (b *CLIBackend) DeleteSecret(ctx context.Context, namespace, name string) error {
+	return b.deleteResource(ctx, namespace, "secret", name)
+}
+
 func (b *CLIBackend) UpsertClaim(ctx context.Context, claim PersistentVolumeClaim) error {
 	if err := b.ensureNamespace(ctx, claim.Namespace); err != nil {
 		return err

@@ -11,6 +11,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	assetdomain "github.com/radryc/guardian/internal/domain/asset"
 	assetdefs "github.com/radryc/guardian/internal/domain/assets"
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
 	probepkg "github.com/radryc/guardian/internal/pusher/drivers/probe"
@@ -81,21 +82,34 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 	return nil
 }
 
-func (d *VolumeDriver) Type() string                         { return "Volume" }
-func (d *ConfigDriver) Type() string                         { return "Config" }
-func (d *NetworkDriver) Type() string                        { return "Network" }
-func (d *SecretDriver) Type() string                         { return "Secret" }
-func (d *ComputeDriver) Type() string                        { return "Compute" }
-func (d *TraefikRouteDriver) Type() string                   { return "TraefikRoute" }
-func (d *LoadBalancerDriver) Type() string                   { return "LoadBalancer" }
-func (d *ObjectStoreDriver) Type() string                    { return "ObjectStore" }
-func (d *SQLDatabaseDriver) Type() string                    { return d.typeName }
-func (d *ObservabilityDriver) Type() string                  { return "Observability" }
-func (d *VolumeDriver) Validate(map[string]any) error        { return nil }
-func (d *ConfigDriver) Validate(map[string]any) error        { return nil }
-func (d *NetworkDriver) Validate(map[string]any) error       { return nil }
-func (d *SecretDriver) Validate(map[string]any) error        { return nil }
-func (d *ComputeDriver) Validate(map[string]any) error       { return nil }
+func (d *VolumeDriver) Type() string                   { return "Volume" }
+func (d *ConfigDriver) Type() string                   { return "Config" }
+func (d *NetworkDriver) Type() string                  { return "Network" }
+func (d *SecretDriver) Type() string                   { return "Secret" }
+func (d *ComputeDriver) Type() string                  { return "Compute" }
+func (d *TraefikRouteDriver) Type() string             { return "TraefikRoute" }
+func (d *LoadBalancerDriver) Type() string             { return "LoadBalancer" }
+func (d *ObjectStoreDriver) Type() string              { return "ObjectStore" }
+func (d *SQLDatabaseDriver) Type() string              { return d.typeName }
+func (d *ObservabilityDriver) Type() string            { return "Observability" }
+func (d *VolumeDriver) Validate(map[string]any) error  { return nil }
+func (d *ConfigDriver) Validate(map[string]any) error  { return nil }
+func (d *NetworkDriver) Validate(map[string]any) error { return nil }
+func (d *SecretDriver) Validate(map[string]any) error  { return nil }
+func (d *ComputeDriver) Validate(props map[string]any) error {
+	typed, _, err := assetdefs.Decode(assetdomain.Spec{Type: assetdomain.TypeCompute, Properties: props})
+	if err != nil {
+		return err
+	}
+	spec, ok := typed.(*assetdefs.ComputeSpec)
+	if !ok {
+		return fmt.Errorf("expected ComputeSpec, got %T", typed)
+	}
+	if len(spec.SecretMounts) > 0 {
+		return fmt.Errorf("compute.secretMounts is not supported by the docker driver; inject secrets through env or mount a file with a Volume")
+	}
+	return nil
+}
 func (d *TraefikRouteDriver) Validate(map[string]any) error  { return nil }
 func (d *LoadBalancerDriver) Validate(map[string]any) error  { return nil }
 func (d *ObjectStoreDriver) Validate(map[string]any) error   { return nil }

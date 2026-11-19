@@ -3,6 +3,7 @@ package gcpdriver
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	assetdomain "github.com/radryc/guardian/internal/domain/asset"
@@ -101,6 +102,41 @@ func (d *ComputeDriver) request(in registry.AssetInput, spec *assetdefs.ComputeS
 		memory = strings.TrimSpace(spec.Resources.Limits.Memory)
 	}
 
+	secretMounts := make([]map[string]any, 0, len(spec.SecretMounts))
+	for _, mount := range spec.SecretMounts {
+		_, typed, err := driverutil.DecodeNamedAsset(in, mount.Secret)
+		if err != nil {
+			continue
+		}
+		secretSpec, ok := typed.(*assetdefs.SecretSpec)
+		if !ok {
+			continue
+		}
+		key := strings.TrimSpace(secretSpec.Key)
+		if key == "" {
+			key = "value"
+		}
+		mountPath := strings.TrimSpace(mount.Path)
+		itemPath := strings.TrimSpace(mount.File)
+		if itemPath == "" {
+			itemPath = key
+		} else {
+			mountPath = filepath.Dir(mountPath)
+		}
+		secretID := strings.TrimSpace(secretSpec.ExistingSecret)
+		if secretID == "" {
+			secretID = strings.TrimSpace(in.Outputs[mount.Secret+".secret_id"])
+		}
+		if secretID == "" {
+			secretID = secretName(in.PartitionName, in.IntentName, mount.Secret)
+		}
+		secretMounts = append(secretMounts, map[string]any{
+			"secret":     secretID,
+			"mount_path": mountPath,
+			"item_path":  itemPath,
+		})
+	}
+
 	return StackRequest{
 		Partition:   in.PartitionName,
 		Intent:      in.IntentName,
@@ -110,17 +146,18 @@ func (d *ComputeDriver) request(in registry.AssetInput, spec *assetdefs.ComputeS
 		Blueprint:   "compute",
 		DesiredHash: driverutil.CompositeHash(in),
 		Variables: map[string]any{
-			"name":     cloudRunName(in.PartitionName, in.IntentName, in.Asset.Name),
-			"image":    spec.Image,
-			"replicas": replicas,
-			"env":      env,
-			"args":     []string(spec.Args),
-			"command":  []string(spec.Command),
-			"port":     port,
-			"cpu":      cpu,
-			"memory":   memory,
-			"network":  network,
-			"subnet":   subnet,
+			"name":          cloudRunName(in.PartitionName, in.IntentName, in.Asset.Name),
+			"image":         spec.Image,
+			"replicas":      replicas,
+			"env":           env,
+			"args":          []string(spec.Args),
+			"command":       []string(spec.Command),
+			"port":          port,
+			"cpu":           cpu,
+			"memory":        memory,
+			"network":       network,
+			"subnet":        subnet,
+			"secret_mounts": secretMounts,
 		},
 	}
 }

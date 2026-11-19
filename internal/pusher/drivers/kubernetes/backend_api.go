@@ -6,6 +6,7 @@ type BackendAPI interface {
 	UpsertConfigMap(ctx context.Context, cm ConfigMap) error
 	GetConfigMap(ctx context.Context, namespace, name string) (ConfigMap, bool, error)
 	DeleteConfigMap(ctx context.Context, namespace, name string) error
+	DeleteSecret(ctx context.Context, namespace, name string) error
 
 	UpsertClaim(ctx context.Context, claim PersistentVolumeClaim) error
 	GetClaim(ctx context.Context, namespace, name string) (PersistentVolumeClaim, bool, error)

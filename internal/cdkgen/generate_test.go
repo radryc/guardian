@@ -40,7 +40,7 @@ func demoIntent() Input {
 		SourceDir: "/partitions/aws-demo/payloads/aws-generated/demo-stack",
 		Order:     []string{"demo-api-key", "nginx-page", "nginx-data", "demo-bucket", "nginx", "nginx-edge", "tracegen", "tracegen-otel"},
 		Assets: []assetdomain.Spec{
-			{Type: "Secret", Name: "demo-api-key", Properties: map[string]any{"value": "placeholder"}},
+			{Type: "Secret", Name: "demo-api-key", Properties: map[string]any{"value": "placeholder", "key": "tls.crt"}},
 			{Type: "Config", Name: "nginx-page", Properties: map[string]any{"format": "text", "data": map[string]any{"index.html": "<h1>hi</h1>"}}},
 			{Type: "Volume", Name: "nginx-data", Properties: map[string]any{"accessMode": "ReadWriteMany", "size": "1Gi"}},
 			{Type: "ObjectStore", Name: "demo-bucket", Properties: map[string]any{"engine": "s3", "region": "us-east-1", "versioning": true}},
@@ -48,6 +48,11 @@ func demoIntent() Input {
 				"image":        "111111111111.dkr.ecr.us-east-1.amazonaws.com/demo/nginx:latest",
 				"ports":        []any{map[string]any{"name": "http", "containerPort": float64(80), "protocol": "TCP", "servicePort": float64(80)}},
 				"configMounts": []any{map[string]any{"config": "nginx-page", "path": "/usr/share/nginx/html", "readOnly": true}},
+				"secretMounts": []any{map[string]any{
+					"secret": "demo-api-key",
+					"path":   "/var/run/secrets/strata-tls/tls.crt",
+					"file":   "tls.crt",
+				}},
 				"volumeMounts": []any{map[string]any{"path": "/var/cache/nginx", "volume": "nginx-data"}},
 				"resources":    map[string]any{"limits": map[string]any{"cpu": "256", "memory": "512"}, "requests": map[string]any{"cpu": "256", "memory": "512"}},
 			}},
@@ -125,6 +130,15 @@ func TestGenerateDemoStack(t *testing.T) {
 	}
 	if strings.Contains(stack, "addSecret") || strings.Contains(stack, "addConfig") {
 		t.Error("native asset types must not be generated into the stack")
+	}
+	if !strings.Contains(stack, "secretRefs") || !strings.Contains(stack, "TLS_CRT") {
+		t.Errorf("stack.ts missing secretRefs/TLS_CRT")
+	}
+	if !strings.Contains(string(result.Files["templates/_shared/helpers.ts"]), "buildSecretRefs") {
+		t.Error("helpers.ts missing buildSecretRefs")
+	}
+	if !strings.Contains(string(result.Files["templates/compute.fargate/construct.ts"]), "buildSecretRefs") {
+		t.Error("compute template missing buildSecretRefs")
 	}
 	var manifest PayloadManifest
 	if err := json.Unmarshal(result.Files[PayloadManifestFileName], &manifest); err != nil {

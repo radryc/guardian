@@ -11,6 +11,10 @@ type SecretSpec struct {
 	Value          string `json:"value,omitempty" yaml:"value,omitempty"`
 	SecretRef      string `json:"secretRef,omitempty" yaml:"secretRef,omitempty"`
 	ExistingSecret string `json:"existingSecret,omitempty" yaml:"existingSecret,omitempty"`
+	// Key is the field name used when the secret is materialized as a file
+	// (Kubernetes Secret key, GCP item, or AWS environment variable). It
+	// defaults to "value".
+	Key string `json:"key,omitempty" yaml:"key,omitempty"`
 }
 
 type secretDefinition struct{}
@@ -27,6 +31,11 @@ func (secretDefinition) Validate(spec any, ctx ValidationContext) error {
 	typed, ok := spec.(*SecretSpec)
 	if !ok {
 		return fmt.Errorf("internal secret spec type mismatch")
+	}
+	if key := strings.TrimSpace(typed.Key); key != "" {
+		if key != typed.Key || strings.ContainsAny(key, `/\`) || key == "." || key == ".." {
+			return fmt.Errorf("property key must be a base filename")
+		}
 	}
 	if strings.TrimSpace(typed.ExistingSecret) != "" {
 		if strings.TrimSpace(typed.Value) != "" && strings.TrimSpace(typed.SecretRef) != "" {

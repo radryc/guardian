@@ -38,6 +38,7 @@ var _ BackendAPI = (*ClientBackend)(nil)
 
 var (
 	configMapsGVR      = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
+	secretsGVR         = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
 	claimsGVR          = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "persistentvolumeclaims"}
 	servicesGVR        = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "services"}
 	networkPoliciesGVR = schema.GroupVersionResource{Group: "networking.k8s.io", Version: "v1", Resource: "networkpolicies"}
@@ -196,6 +197,10 @@ func (c *ClientBackend) GetConfigMap(ctx context.Context, namespace, name string
 
 func (c *ClientBackend) DeleteConfigMap(ctx context.Context, namespace, name string) error {
 	return c.deleteObject(ctx, configMapsGVR, namespace, name)
+}
+
+func (c *ClientBackend) DeleteSecret(ctx context.Context, namespace, name string) error {
+	return c.deleteObject(ctx, secretsGVR, namespace, name)
 }
 
 func (c *ClientBackend) UpsertClaim(ctx context.Context, claim PersistentVolumeClaim) error {

@@ -14,6 +14,7 @@ import (
 	runtimepkg "github.com/radryc/guardian/internal/pusher/runtime"
 	"github.com/radryc/guardian/internal/pusher/secrets"
 	"github.com/radryc/guardian/internal/store/memory"
+	"github.com/radryc/guardian/internal/versioning/digest"
 	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
@@ -46,7 +47,9 @@ func TestKubernetesDriversApplyDiffDestroy(t *testing.T) {
 				{Type: "Config", Name: "app-config", Properties: map[string]any{"content": "key: value", "format": "yaml"}},
 				{Type: "Config", Name: "dir-config", Properties: map[string]any{"content": "feature: enabled", "format": "yaml"}},
 				{Type: "Volume", Name: "data", Properties: map[string]any{"size": "10Gi", "accessMode": "ReadWriteOnce"}},
-				{Type: "Compute", Name: "app", DependsOn: []string{"data", "app-config", "dir-config"}, Properties: map[string]any{
+				{Type: "Secret", Name: "tls-cert", Properties: map[string]any{"value": "cert-pem", "key": "tls.crt"}},
+				{Type: "Secret", Name: "tls-key", Properties: map[string]any{"value": "key-pem", "key": "tls.key"}},
+				{Type: "Compute", Name: "app", DependsOn: []string{"data", "app-config", "dir-config", "tls-cert", "tls-key"}, Properties: map[string]any{
 					"image":    "demo:v1",
 					"replicas": 2,
 					"ports":    []any{map[string]any{"containerPort": 8080, "servicePort": 80}},
@@ -62,6 +65,10 @@ func TestKubernetesDriversApplyDiffDestroy(t *testing.T) {
 					},
 					"hostBindMounts": []any{
 						map[string]any{"source": "/dev/fuse", "target": "/dev/fuse"},
+					},
+					"secretMounts": []any{
+						map[string]any{"secret": "tls-cert", "path": "/var/run/secrets/strata-tls", "readOnly": true},
+						map[string]any{"secret": "tls-key", "path": "/etc/app/tls.key", "file": "tls.key", "readOnly": true},
 					},
 				}},
 				{Type: "LoadBalancer", Name: "edge", DependsOn: []string{"app"}, Properties: map[string]any{
@@ -160,6 +167,22 @@ func TestKubernetesDriversApplyDiffDestroy(t *testing.T) {
 	if !hostBindMountFound {
 		t.Fatalf("expected host bind mount to be preserved, got %+v", deployment.Container.VolumeMounts)
 	}
+	secretDirFound := false
+	secretFileFound := false
+	for _, mount := range deployment.Container.VolumeMounts {
+		if mount.SourceKind != "Secret" {
+			continue
+		}
+		switch mount.MountPath {
+		case "/var/run/secrets/strata-tls":
+			secretDirFound = mount.SourceName != "" && mount.SubPath == ""
+		case "/etc/app/tls.key":
+			secretFileFound = mount.SourceName != "" && mount.SubPath == "tls.key"
+		}
+	}
+	if !secretDirFound || !secretFileFound {
+		t.Fatalf("expected secret directory and file mounts, got %+v", deployment.Container.VolumeMounts)
+	}
 	if _, ok, err := backend.GetDeployment(ctx, "platform", "k8s-compute-main-platform-demo-stack-app"); err != nil {
 		t.Fatalf("get deployment: %v", err)
 	} else if !ok {
@@ -197,6 +220,8 @@ func TestKubernetesDriversApplyDiffDestroy(t *testing.T) {
 		Intent:     "stack",
 		Outputs: map[string]string{
 			"external-blob.endpoint": "http://host.docker.internal:19000",
+			"tls-cert.valueHash":     digest.ContentHash([]byte("cert-pem")),
+			"tls-key.valueHash":      digest.ContentHash([]byte("key-pem")),
 		},
 	}))
 
@@ -632,6 +657,38 @@ func TestCLIBackendContainerVolumesRendersHostPathMounts(t *testing.T) {
 	}
 	if len(mounts) != 1 || mounts[0]["mountPath"] != "/dev/fuse" {
 		t.Fatalf("expected hostPath mount at /dev/fuse, got %+v", mounts)
+	}
+}
+
+func TestCLIBackendContainerVolumesRendersSecretMounts(t *testing.T) {
+	deployment := Deployment{
+		Name: "tls",
+		Container: Container{
+			VolumeMounts: []VolumeMount{
+				{SourceKind: "Secret", SourceName: "strata-tls-router", MountPath: "/var/run/secrets/strata-tls", ReadOnly: true},
+				{SourceKind: "Secret", SourceName: "strata-tls-router-key", MountPath: "/etc/tls/tls.key", SubPath: "tls.key", ReadOnly: true},
+			},
+		},
+	}
+
+	volumes, mounts := containerVolumes(deployment)
+	if len(volumes) != 2 {
+		t.Fatalf("expected two volumes, got %+v", volumes)
+	}
+	for idx, want := range []string{"strata-tls-router", "strata-tls-router-key"} {
+		secret, ok := volumes[idx]["secret"].(map[string]any)
+		if !ok || secret["secretName"] != want {
+			t.Fatalf("volume %d = %+v, want secretName %q", idx, volumes[idx], want)
+		}
+	}
+	if len(mounts) != 2 {
+		t.Fatalf("expected two mounts, got %+v", mounts)
+	}
+	if mounts[0]["mountPath"] != "/var/run/secrets/strata-tls" || mounts[0]["readOnly"] != true {
+		t.Fatalf("unexpected directory mount: %+v", mounts[0])
+	}
+	if mounts[1]["subPath"] != "tls.key" || mounts[1]["mountPath"] != "/etc/tls/tls.key" {
+		t.Fatalf("unexpected file mount: %+v", mounts[1])
 	}
 }
 

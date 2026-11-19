@@ -45,6 +45,10 @@ func (b *Backend) DeleteConfigMap(ctx context.Context, namespace, name string) e
 	return nil
 }
 
+func (b *Backend) DeleteSecret(ctx context.Context, namespace, name string) error {
+	return nil
+}
+
 func (b *Backend) UpsertClaim(ctx context.Context, claim PersistentVolumeClaim) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()

@@ -2,6 +2,7 @@ package kubernetesdriver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -310,7 +311,50 @@ func (d *SecretDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 			return registry.AssetResult{}, err
 		}
 	}
-	outputs := map[string]string{"value": value, "valueHash": digest.ContentHash([]byte(value))}
+	key := strings.TrimSpace(spec.Key)
+	if key == "" {
+		key = "value"
+	}
+	if adopted := strings.TrimSpace(spec.ExistingSecret); adopted != "" {
+		outputs := map[string]string{
+			"value":     value,
+			"valueHash": digest.ContentHash([]byte(value)),
+			"name":      adopted,
+			"key":       key,
+		}
+		if spec.SecretRef != "" {
+			outputs["secretRef"] = spec.SecretRef
+		}
+		return registry.AssetResult{Outputs: outputs}, nil
+	}
+	name := secretObjectName(in, in.Asset.Name)
+	manifest, err := json.Marshal(map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Secret",
+		"metadata": map[string]any{
+			"name":      name,
+			"namespace": namespace(in),
+			"labels": map[string]string{
+				"app.kubernetes.io/managed-by": "guardian",
+				"guardian.partition":           in.PartitionName,
+				"guardian.intent":              in.IntentName,
+			},
+		},
+		"type":       "Opaque",
+		"stringData": map[string]string{key: value},
+	})
+	if err != nil {
+		return registry.AssetResult{}, fmt.Errorf("encode secret manifest: %w", err)
+	}
+	if err := d.backend.ApplyManifest(ctx, namespace(in), manifest); err != nil {
+		return registry.AssetResult{}, fmt.Errorf("apply secret %s: %w", name, err)
+	}
+	outputs := map[string]string{
+		"value":     value,
+		"valueHash": digest.ContentHash([]byte(value)),
+		"name":      name,
+		"key":       key,
+	}
 	if spec.SecretRef != "" {
 		outputs["secretRef"] = spec.SecretRef
 	}
@@ -318,7 +362,17 @@ func (d *SecretDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 }
 
 func (d *SecretDriver) Destroy(ctx context.Context, in registry.AssetInput) error {
-	return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	spec, err := decodeSecret(in)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(spec.ExistingSecret) != "" {
+		return nil
+	}
+	return d.backend.DeleteSecret(ctx, namespace(in), secretObjectName(in, in.Asset.Name))
 }
 
 func (d *ComputeDriver) Check(ctx context.Context, in registry.AssetInput) error {
@@ -1475,12 +1529,15 @@ func observabilityEnvOnly(spec *assetdefs.ObservabilitySpec) bool {
 }
 
 func computeHash(in registry.AssetInput, spec *assetdefs.ComputeSpec) string {
-	refs := make([]string, 0, len(spec.VolumeMounts)+len(spec.ConfigMounts)+len(spec.Networks))
+	refs := make([]string, 0, len(spec.VolumeMounts)+len(spec.ConfigMounts)+len(spec.SecretMounts)+len(spec.Networks))
 	for _, mount := range spec.VolumeMounts {
 		refs = append(refs, mount.Volume)
 	}
 	for _, mount := range spec.ConfigMounts {
 		refs = append(refs, mount.Config)
+	}
+	for _, mount := range spec.SecretMounts {
+		refs = append(refs, mount.Secret+"|"+mount.Path+"|"+mount.File)
 	}
 	refs = append(refs, spec.Networks...)
 	return driverutil.CompositeHash(in, refs...)
@@ -1589,6 +1646,35 @@ func buildComputeContainer(ctx context.Context, in registry.AssetInput, resolver
 			cm.SubPath = fileName
 		}
 		container.VolumeMounts = append(container.VolumeMounts, cm)
+	}
+	for _, mount := range spec.SecretMounts {
+		_, typed, err := driverutil.DecodeNamedAsset(in, mount.Secret)
+		if err != nil {
+			return Container{}, err
+		}
+		secretSpec, ok := typed.(*assetdefs.SecretSpec)
+		if !ok {
+			return Container{}, fmt.Errorf("secret mount %q is not a Secret asset", mount.Secret)
+		}
+		key := strings.TrimSpace(secretSpec.Key)
+		if key == "" {
+			key = "value"
+		}
+		file := strings.TrimSpace(mount.File)
+		if file != "" && file != key {
+			return Container{}, fmt.Errorf("secret mount %q file %q does not match Secret key %q", mount.Secret, file, key)
+		}
+		sourceName := strings.TrimSpace(secretSpec.ExistingSecret)
+		if sourceName == "" {
+			sourceName = secretObjectName(in, mount.Secret)
+		}
+		container.VolumeMounts = append(container.VolumeMounts, VolumeMount{
+			SourceKind: "Secret",
+			SourceName: sourceName,
+			MountPath:  mount.Path,
+			SubPath:    file,
+			ReadOnly:   true,
+		})
 	}
 	for _, mount := range spec.HostBindMounts {
 		container.VolumeMounts = append(container.VolumeMounts, VolumeMount{
@@ -1919,6 +2005,10 @@ func volumeClaimName(in registry.AssetInput, spec *assetdefs.VolumeSpec, assetNa
 
 func configMapName(in registry.AssetInput, assetName string) string {
 	return driverutil.ResourceName("k8s-cm", in.Target, in.PartitionName, in.IntentName, assetName)
+}
+
+func secretObjectName(in registry.AssetInput, assetName string) string {
+	return driverutil.ResourceName("k8s-secret", in.Target, in.PartitionName, in.IntentName, assetName)
 }
 
 func namespace(in registry.AssetInput) string {

@@ -46,6 +46,47 @@ model and trust boundaries.
   revisions; failed applies record a rollback and preserve the pushed manifest
   for retry, while operators can restore archived tags explicitly.
 
+### Secret mounts (`compute.secretMounts`)
+
+The asset surface is provider-agnostic: a Compute mounts a **Secret asset**.
+Drivers resolve that asset to the native resource underneath.
+
+```yaml
+assets:
+  - type: Secret
+    name: router-tls
+    properties:
+      # either provide a value/secretRef (Guardian creates it)...
+      secretRef: monofs-secret://shared/router-tls
+      key: tls.crt
+      # ...or adopt one created outside Guardian:
+      # existingSecret: strata-tls-monofs-router
+
+  - type: Compute
+    name: router
+    dependsOn: [router-tls]
+    properties:
+      image: monofs-router:latest
+      secretMounts:
+        - secret: router-tls              # Secret asset name
+          path: /var/run/secrets/strata-tls
+          readOnly: true
+        - secret: router-tls
+          path: /etc/tls/tls.crt
+          file: tls.crt                   # optional single-file mount
+```
+
+| Provider | Implementation underneath |
+| :--- | :--- |
+| Kubernetes | Creates/adopts a `Secret` and mounts it (directory, or one key via `subPath`). |
+| GCP Cloud Run | Uses the Secret Manager secret and mounts it as a secret volume. |
+| AWS ECS | ECS has no secret-file volume; injects the Secrets Manager reference as a task secret env var. |
+| Docker | Rejected: use an env secret or a regular Volume. |
+
+The intent never mentions a K8s Secret name, GCP secret ID, or AWS ARN.
+Adoption (`existingSecret`) is the escape hatch when the secret is provisioned
+externally (for example `tlsx install`).
+
 ## Prerequisites
 
 - Go 1.26.10 (see `go.mod`).

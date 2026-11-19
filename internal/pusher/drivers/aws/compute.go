@@ -3,6 +3,7 @@ package awsdriver
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	assetdefs "github.com/radryc/guardian/internal/domain/assets"
@@ -284,7 +285,64 @@ func resolveComputeSecrets(in registry.AssetInput, spec *assetdefs.ComputeSpec) 
 			secrets[mount.Config] = awsSSMParameterName(in, mount.Config)
 		}
 	}
+	// ECS has no secret-file volume. The Secret asset is resolved to its
+	// Secrets Manager reference and injected as a task secret, with the
+	// environment variable derived from the mounted file (or the Secret key).
+	for _, mount := range spec.SecretMounts {
+		_, typed, err := driverutil.DecodeNamedAsset(in, mount.Secret)
+		if err != nil {
+			continue
+		}
+		secretSpec, ok := typed.(*assetdefs.SecretSpec)
+		if !ok {
+			continue
+		}
+		key := strings.TrimSpace(secretSpec.Key)
+		if key == "" {
+			key = "value"
+		}
+		file := strings.TrimSpace(mount.File)
+		if file == "" {
+			file = key
+		}
+		name := secretMountEnvName(file)
+		if name == "" {
+			continue
+		}
+		secrets[name] = secretMountValueFrom(in, mount.Secret, secretSpec)
+	}
 	return secrets
+}
+
+func secretMountEnvName(raw string) string {
+	raw = filepath.Base(strings.TrimSpace(raw))
+	var b strings.Builder
+	for _, r := range strings.ToUpper(raw) {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	name := strings.Trim(b.String(), "_")
+	if name == "" {
+		return ""
+	}
+	if name[0] >= '0' && name[0] <= '9' {
+		name = "SECRET_" + name
+	}
+	return name
+}
+
+func secretMountValueFrom(in registry.AssetInput, assetName string, spec *assetdefs.SecretSpec) string {
+	if adopted := strings.TrimSpace(spec.ExistingSecret); adopted != "" {
+		return adopted
+	}
+	if arn := strings.TrimSpace(in.Outputs[assetName+".arn"]); arn != "" {
+		return arn
+	}
+	return awsSecretName(in, assetName)
 }
 
 func hasCapability(caps []string, target string) bool {
