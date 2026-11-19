@@ -15,6 +15,7 @@ import (
 	"github.com/radryc/guardian/internal/gcpobserve"
 	"github.com/radryc/guardian/internal/k8sobserve"
 	"github.com/radryc/guardian/internal/onboarding"
+	"github.com/radryc/guardian/internal/tlsxutil"
 	"github.com/radryc/guardian/internal/pusher/probes"
 )
 
@@ -26,24 +27,41 @@ type Client struct {
 	Token    string
 	Provider string
 	HTTP     *http.Client
+
+	initErr error
 }
 
 // NewClient builds an observed API client. Timeout <= 0 uses 30s.
+//
+// When STRATA_TLS_MODE=required, http:// endpoints are upgraded to https://.
+// STRATA_TLS_* also supplies the mTLS client certificate and CA bundle used to
+// reach a TLS-enabled pusher read API.
 func NewClient(baseURL, token string, timeout time.Duration) *Client {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	return &Client{
+	client := &Client{
 		BaseURL:  strings.TrimRight(strings.TrimSpace(baseURL), "/"),
 		Token:    strings.TrimSpace(token),
 		Provider: "aws",
 		HTTP:     &http.Client{Timeout: timeout},
 	}
+	client.BaseURL = tlsxutil.UpgradeURL(client.BaseURL, tlsxutil.HTTPSRequired())
+	httpClient, enabled, err := tlsxutil.HTTPClient(tlsxutil.LegacyClient{}, timeout)
+	if err != nil {
+		client.initErr = err
+	} else if enabled {
+		client.HTTP = httpClient
+	}
+	return client
 }
 
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body any, out any) (bool, error) {
 	if c == nil || c.BaseURL == "" {
 		return false, fmt.Errorf("observed API URL is not configured")
+	}
+	if c.initErr != nil {
+		return false, c.initErr
 	}
 	endpoint := c.BaseURL + path
 	if len(query) > 0 {
