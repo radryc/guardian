@@ -25,7 +25,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/xray v1.45.1
 	github.com/aws/smithy-go v1.28.1
 	github.com/radryc/monofs v0.0.0-20260314053556-1f307c687791
-	github.com/radryc/tlsx v0.0.0-00010101000000-000000000000
 	github.com/reugn/go-quartz v0.15.2
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.65.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0
@@ -93,6 +92,7 @@ require (
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+	github.com/radryc/tlsx v0.0.0-20261119062528-06e96b34334f
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
@@ -120,5 +120,3 @@ require (
 replace github.com/radryc/kvs => ../kvs
 
 replace github.com/radryc/monofs => ../monofs
-
-replace github.com/radryc/tlsx => ../tlsx
