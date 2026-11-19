@@ -75,6 +75,54 @@ make pusher-k8s-image-build
 make pusher-gcp-image-build
 ```
 
+## Transport security (`STRATA_TLS_*`)
+
+Every Guardian process reads the shared `STRATA_TLS_*` contract from
+[`github.com/radryc/tlsx`](../tlsx). `STRATA_TLS_MODE` defaults to `off`, so
+existing plaintext deployments keep working unchanged.
+
+| Env | Meaning |
+| --- | --- |
+| `STRATA_TLS_MODE` | `off` (default, plaintext), `optional` (TLS when certs exist), `required` (TLS only, fail closed) |
+| `STRATA_TLS_CERT_FILE` | PEM server/workload certificate (default `/var/run/secrets/strata-tls/tls.crt`) |
+| `STRATA_TLS_KEY_FILE` | PEM private key (default `/var/run/secrets/strata-tls/tls.key`) |
+| `STRATA_TLS_CA_FILE` | CA bundle used to verify peers (default `/var/run/secrets/strata-tls/ca.crt`) |
+| `STRATA_TLS_SERVER_NAME` | Override the name clients verify in the server certificate |
+| `STRATA_TLS_REQUIRE_CLIENT_CERT` | `true` (default) verifies client certificates for mTLS servers |
+| `STRATA_TLS_ALLOWED_SPIFFE_IDS` | Comma-separated SPIFFE URI SAN allowlist for accepted clients |
+| `STRATA_TLS_EXPECTED_SPIFFE_IDS` | Comma-separated SPIFFE URI SAN allowlist for accepted servers |
+
+Where the contract applies:
+
+- **guardiand UI/API**: terminates TLS itself. `GUARDIAN_UI_TLS_CERT_FILE` and
+  `GUARDIAN_UI_TLS_KEY_FILE` still work; set `GUARDIAN_UI_TLS_CA_FILE` (or
+  `STRATA_TLS_CA_FILE`) to require and verify client certificates.
+- **Pusher read APIs** (`guardian-pusher-aws`, `-gcp`, `-k8s`): server TLS and
+  optional mTLS. The existing `--awsread-tls-*` / `--read-tls-*` flags are
+  retained; `STRATA_TLS_*` is preferred whenever the mode is not `off`. The
+  advertised observed API URL switches to `https://` when TLS is active.
+- **MonoFS gRPC clients**: `STRATA_TLS_*` supplies any setting
+  `GUARDIAN_MONOFS_TLS_*` does not define. The guardian token is still never
+  sent over plaintext unless `GUARDIAN_MONOFS_ALLOW_PLAINTEXT=true` is set
+  explicitly with the mode off.
+- **Observed-state HTTP clients**: `http://` pusher URLs are upgraded to
+  `https://` when the mode is `required`, using the configured CA and client
+  certificate.
+
+Local PKI for development can be generated with `tlsx`:
+
+```bash
+go run github.com/radryc/tlsx/cmd/tlsx gen --dir .tls --reuse-ca
+go run github.com/radryc/tlsx/cmd/tlsx env --dir .tls --service guardian --mode required
+# mount .tls/<service> read-only at /var/run/secrets/strata-tls
+export STRATA_TLS_MODE=required
+export STRATA_TLS_CERT_FILE=/var/run/secrets/strata-tls/tls.crt
+export STRATA_TLS_KEY_FILE=/var/run/secrets/strata-tls/tls.key
+export STRATA_TLS_CA_FILE=/var/run/secrets/strata-tls/ca.crt
+```
+
+Unset `STRATA_TLS_MODE` (or set it to `off`) to return to plaintext.
+
 ## Quick start
 
 ### Full local stack (MonoFS + Guardian + pusher)
