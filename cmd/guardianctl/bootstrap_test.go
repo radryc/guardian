@@ -359,8 +359,8 @@ func contains(s, substr string) bool {
 // Ensure devCommands returns all expected commands.
 func TestBootstrapCommandsList(t *testing.T) {
 	cmds := devCommands()
-	if len(cmds) != 9 {
-		t.Errorf("expected 9 dev commands, got %d", len(cmds))
+	if len(cmds) != 10 {
+		t.Errorf("expected 10 dev commands, got %d", len(cmds))
 	}
 	names := make(map[string]bool)
 	for _, c := range cmds {
@@ -369,7 +369,7 @@ func TestBootstrapCommandsList(t *testing.T) {
 		}
 		names[c.Name] = true
 	}
-	expected := []string{"setup", "build", "deploy", "init", "stop", "destroy", "status", "stamp-urls", "configure-registry"}
+	expected := []string{"setup", "build", "deploy", "init", "mtls", "stop", "destroy", "status", "stamp-urls", "configure-registry"}
 	for _, name := range expected {
 		if !names[name] {
 			t.Errorf("missing command: %s", name)

@@ -31,6 +31,7 @@ func devCommands() []bootstrapReg {
 		{Group: "dev", Name: "build", Cmd: devBuildCommand()},
 		{Group: "dev", Name: "deploy", Cmd: devDeployCommand()},
 		{Group: "dev", Name: "init", Cmd: devInitCommand()},
+		{Group: "dev", Name: "mtls", Cmd: devMTLSCommand()},
 		{Group: "dev", Name: "stop", Cmd: devStopCommand()},
 		{Group: "dev", Name: "destroy", Cmd: devDestroyCommand()},
 		{Group: "dev", Name: "status", Cmd: devStatusCommand()},
@@ -248,10 +249,18 @@ func devInitCommand() *command.Command {
 				}
 			}
 
+			fmt.Println("=== generating mTLS certificates ===")
+			if err := bootstrap.EnsureMTLS(ctx, bootstrap.MTLSDir(), false, false, *dryRun); err != nil {
+				return err
+			}
+
 			storageDir, guardianDir := bootstrap.TemplateDirs()
 
 			fmt.Println("=== deploying storage ===")
 			if err := deployStorageTemplates(ctx, cfg, env, storageDir, *dryRun); err != nil {
+				return err
+			}
+			if err := bootstrap.InjectMTLS(ctx, cfg, *dryRun); err != nil {
 				return err
 			}
 			if err := waitStorageDeployments(ctx, cfg, *dryRun); err != nil {
@@ -317,9 +326,29 @@ func devInitCommand() *command.Command {
 			if err := deployGuardianTemplates(ctx, cfg, env, guardianDir, *dryRun); err != nil {
 				return err
 			}
+			if err := bootstrap.InjectMTLS(ctx, cfg, *dryRun); err != nil {
+				return err
+			}
 
 			fmt.Println("=== dev init complete ===")
 			return nil
+		},
+	}
+}
+
+func devMTLSCommand() *command.Command {
+	flags := flag.NewFlagSet("dev mtls", flag.ContinueOnError)
+	flags.SetOutput(ioDiscard{})
+	dir := flags.String("dir", "", "certificate directory (default: $STRATA_MTLS_DIR or ~/.strata/mtls)")
+	rotate := flags.Bool("rotate", false, "reissue leaf certificates under the existing CA")
+	newCA := flags.Bool("new-ca", false, "create a new CA and reissue all leaf certificates")
+	dryRun := flags.Bool("dry-run", false, "print actions without executing")
+
+	return &command.Command{
+		Description: "Generate local mTLS certificates and install the strata-tls-* Secrets",
+		Flags:       flags,
+		Run: func(ctx context.Context, args []string) error {
+			return bootstrap.EnsureMTLS(ctx, *dir, *rotate, *newCA, *dryRun)
 		},
 	}
 }
@@ -1046,6 +1075,18 @@ func deployDockerPusher(ctx context.Context, cfg *bootstrap.Config, dryRun bool)
 		"-e", "GUARDIAN_CLUSTER=docker-main",
 		"-e", fmt.Sprintf("GUARDIAN_MONOFS_ROUTER=%s", router),
 		"-e", "GUARDIAN_MONOFS_USE_EXTERNAL_ADDRESSES=true",
+	}
+	// Host-side pushers run outside the cluster; mount their generated
+	// certificate so MonoFS gRPC uses the local mTLS CA.
+	mtlsDir := bootstrap.MTLSDir()
+	if _, err := os.Stat(filepath.Join(mtlsDir, "guardian-pusher-docker", "tls.crt")); err == nil {
+		args = append(args,
+			"-v", fmt.Sprintf("%s:%s:ro", filepath.Join(mtlsDir, "guardian-pusher-docker"), "/certs"),
+			"-e", "GUARDIAN_MONOFS_TLS=true",
+			"-e", "GUARDIAN_MONOFS_TLS_CA_FILE=/certs/ca.crt",
+			"-e", "GUARDIAN_MONOFS_TLS_CLIENT_CERT_FILE=/certs/tls.crt",
+			"-e", "GUARDIAN_MONOFS_TLS_CLIENT_KEY_FILE=/certs/tls.key",
+		)
 	}
 	// Pass the MonoFS token through the Docker client environment rather than
 	// `-e NAME=value`, which would expose it in argv and in the command trace.
