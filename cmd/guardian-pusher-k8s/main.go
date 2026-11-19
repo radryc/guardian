@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"github.com/radryc/guardian/internal/k8sobserve"
 	"github.com/radryc/guardian/internal/k8sread"
 	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/tlsxutil"
 	kubernetesdriver "github.com/radryc/guardian/internal/pusher/drivers/kubernetes"
 	"github.com/radryc/guardian/internal/pusher/probes"
 	"github.com/radryc/guardian/internal/pusher/registry"
@@ -209,9 +211,14 @@ func main() {
 			if strings.TrimSpace(readTokenFile) != "" {
 				handler = handler.WithTokenFile(readTokenFile)
 			}
+			readTLS, readTLSEnabled, tlsErr := tlsxutil.ServerTLSConfig(tlsxutil.LegacyServer{})
+			if tlsErr != nil {
+				log.Fatalf("kubernetes read API TLS: %v", tlsErr)
+			}
 			server := &http.Server{
 				Addr:              readAddr,
 				Handler:           handler,
+				TLSConfig:         readTLS,
 				ReadHeaderTimeout: 10 * time.Second,
 				ReadTimeout:       30 * time.Second,
 				WriteTimeout:      2 * time.Minute,
@@ -222,12 +229,26 @@ func main() {
 				_ = server.Shutdown(context.Background())
 			}()
 			go func() {
-				log.Printf("kubernetes read API listening on %s", readAddr)
-				if serveErr := server.ListenAndServe(); serveErr != nil && serveErr != http.ErrServerClosed {
+				log.Printf("kubernetes read API listening on %s (tls=%t)", readAddr, readTLSEnabled)
+				if readTLS == nil {
+					if serveErr := server.ListenAndServe(); serveErr != nil && serveErr != http.ErrServerClosed {
+						log.Printf("kubernetes read API stopped: %v", serveErr)
+					}
+					return
+				}
+				listener, listenErr := net.Listen("tcp", readAddr)
+				if listenErr != nil {
+					log.Printf("kubernetes read API stopped: %v", listenErr)
+					return
+				}
+				if serveErr := server.Serve(tls.NewListener(listener, readTLS)); serveErr != nil && serveErr != http.ErrServerClosed {
 					log.Printf("kubernetes read API stopped: %v", serveErr)
 				}
 			}()
 			observedAPIURL = advertisedReadURL(readAddr)
+			if readTLSEnabled {
+				observedAPIURL = tlsxutil.UpgradeURL(observedAPIURL, true)
+			}
 		}
 	}
 

@@ -19,6 +19,7 @@ import (
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
 	"github.com/radryc/guardian/internal/gcpscan"
 	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/tlsxutil"
 	gcpdriver "github.com/radryc/guardian/internal/pusher/drivers/gcp"
 	"github.com/radryc/guardian/internal/pusher/drivers/gcp/opentofu"
 	"github.com/radryc/guardian/internal/pusher/probes"
@@ -242,8 +243,8 @@ func main() {
 	observedAPIURL := strings.TrimSpace(os.Getenv("GUARDIAN_OBSERVED_API_URL"))
 	if observedAPIURL == "" && !readDisabled {
 		observedAPIURL = advertisedReadURL(readAddr)
-		if observedAPIURL != "" && strings.TrimSpace(readTLSCert) != "" {
-			observedAPIURL = "https" + strings.TrimPrefix(observedAPIURL, "http")
+		if observedAPIURL != "" && readAPIUsesTLS(readTLSCert, readTLSKey, readTLSClientCA) {
+			observedAPIURL = tlsxutil.UpgradeURL(observedAPIURL, true)
 		}
 	}
 	registrationToken := readToken
