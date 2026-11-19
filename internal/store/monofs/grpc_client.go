@@ -18,9 +18,11 @@ import (
 	"time"
 
 	"github.com/radryc/guardian/internal/clitoken"
+	"github.com/radryc/guardian/internal/tlsxutil"
 	"github.com/radryc/guardian/pkg/guardianapi"
 	pb "github.com/radryc/monofs/api/proto"
 	"github.com/radryc/monofs/pkg/grpcx"
+	"github.com/radryc/tlsx"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -219,6 +221,10 @@ func envValue(keys ...string) string {
 //	GUARDIAN_MONOFS_TLS_CLIENT_CERT_FILE (or CLIENT_CERT_FILE)
 //	GUARDIAN_MONOFS_TLS_CLIENT_KEY_FILE  (or CLIENT_KEY_FILE)
 //	GUARDIAN_MONOFS_TLS_SERVER_NAME      (or SERVER_NAME)
+//
+// When STRATA_TLS_MODE is not "off", the shared STRATA_TLS_* contract supplies
+// any transport setting that GUARDIAN_MONOFS_* did not provide. Plaintext
+// remains refused in that mode.
 func monoFSTransportCredentials() (credentials.TransportCredentials, error) {
 	caFile := envValue("GUARDIAN_MONOFS_TLS_CA_FILE", "GUARDIAN_MONOFS_CA_FILE")
 	certFile := envValue("GUARDIAN_MONOFS_TLS_CLIENT_CERT_FILE", "GUARDIAN_MONOFS_CLIENT_CERT_FILE", "CLIENT_CERT_FILE")
@@ -244,11 +250,39 @@ func monoFSTransportCredentials() (credentials.TransportCredentials, error) {
 		allowPlaintext = parsed
 	}
 
+	// The shared STRATA_TLS_* contract is the fallback for any transport
+	// setting the MonoFS-specific variables did not define.
+	env, err := tlsxutil.Env()
+	if err != nil {
+		return nil, err
+	}
+	if env.Mode != tlsx.ModeOff {
+		cfg := env.ClientConfig()
+		if certFile != "" || keyFile != "" {
+			cfg.CertFile = certFile
+			cfg.KeyFile = keyFile
+		}
+		if caFile != "" {
+			cfg.CAFile = caFile
+		}
+		if serverName != "" {
+			cfg.ServerName = serverName
+		}
+		if (cfg.CertFile == "") != (cfg.KeyFile == "") {
+			return nil, fmt.Errorf("monofs: TLS client certificate and key must be configured together")
+		}
+		tlsCfg, err := tlsx.NewClientTLSConfig(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("monofs: configure STRATA TLS: %w", err)
+		}
+		return credentials.NewTLS(tlsCfg), nil
+	}
+
 	if !tlsEnabled {
 		if allowPlaintext {
 			return insecure.NewCredentials(), nil
 		}
-		return nil, fmt.Errorf("monofs: refusing to send the guardian token over plaintext; set GUARDIAN_MONOFS_TLS=true (or configure GUARDIAN_MONOFS_TLS_CA_FILE) — set GUARDIAN_MONOFS_ALLOW_PLAINTEXT=true only for isolated local development")
+		return nil, fmt.Errorf("monofs: refusing to send the guardian token over plaintext; set GUARDIAN_MONOFS_TLS=true (or configure GUARDIAN_MONOFS_TLS_CA_FILE, or STRATA_TLS_MODE=required) — set GUARDIAN_MONOFS_ALLOW_PLAINTEXT=true only for isolated local development")
 	}
 
 	if (certFile == "") != (keyFile == "") {
