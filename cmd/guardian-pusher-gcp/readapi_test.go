@@ -41,6 +41,17 @@ func TestValidateReadAPIConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("non-loopback with STRATA TLS enabled allowed", func(t *testing.T) {
+		err := validateReadAPIConfig(readAPIConfig{
+			Address:    "0.0.0.0:19091",
+			Token:      "secret-token",
+			TLSEnabled: true,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
 	t.Run("mismatched TLS flags rejected", func(t *testing.T) {
 		err := validateReadAPIConfig(readAPIConfig{
 			Address: "0.0.0.0:19091",

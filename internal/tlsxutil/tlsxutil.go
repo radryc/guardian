@@ -133,12 +133,10 @@ func ClientConfig(legacy LegacyClient) (cfg tlsx.ClientConfig, enabled bool, err
 
 	explicitCert := strings.TrimSpace(os.Getenv("STRATA_TLS_CERT_FILE")) != "" || legacyCert != ""
 	if !explicitCert {
-		// Optional mode deployments may not mount a workload certificate; fall
-		// back to one-way TLS instead of failing to start.
-		if env.Mode == tlsx.ModeOptional {
-			if _, statErr := os.Stat(certFile); statErr != nil {
-				certFile, keyFile = "", ""
-			}
+		// Without an explicitly configured workload certificate, fall back to
+		// one-way TLS rather than failing on a missing default mount.
+		if _, statErr := os.Stat(certFile); statErr != nil {
+			certFile, keyFile = "", ""
 		}
 	}
 	if (certFile == "") != (keyFile == "") {

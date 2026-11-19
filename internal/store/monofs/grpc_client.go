@@ -261,6 +261,12 @@ func monoFSTransportCredentials() (credentials.TransportCredentials, error) {
 		if certFile != "" || keyFile != "" {
 			cfg.CertFile = certFile
 			cfg.KeyFile = keyFile
+		} else if strings.TrimSpace(os.Getenv("STRATA_TLS_CERT_FILE")) == "" {
+			// One-way TLS is valid when no workload certificate is mounted.
+			if _, statErr := os.Stat(cfg.CertFile); statErr != nil {
+				cfg.CertFile = ""
+				cfg.KeyFile = ""
+			}
 		}
 		if caFile != "" {
 			cfg.CAFile = caFile

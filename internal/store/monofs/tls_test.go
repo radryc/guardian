@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/radryc/tlsx/pki"
 )
 
 // clearMonoFSTLSEnv pins every transport-related variable so the developer's
@@ -24,6 +26,14 @@ func clearMonoFSTLSEnv(t *testing.T) {
 		"GUARDIAN_MONOFS_TLS_SERVER_NAME",
 		"GUARDIAN_MONOFS_SERVER_NAME",
 		"SERVER_NAME",
+		"STRATA_TLS_MODE",
+		"STRATA_TLS_CERT_FILE",
+		"STRATA_TLS_KEY_FILE",
+		"STRATA_TLS_CA_FILE",
+		"STRATA_TLS_SERVER_NAME",
+		"STRATA_TLS_REQUIRE_CLIENT_CERT",
+		"STRATA_TLS_ALLOWED_SPIFFE_IDS",
+		"STRATA_TLS_EXPECTED_SPIFFE_IDS",
 	} {
 		t.Setenv(key, "")
 	}
@@ -89,5 +99,60 @@ func TestMonoFSTransportCredentialsRequiresCertAndKeyTogether(t *testing.T) {
 
 	if _, err := monoFSTransportCredentials(); err == nil {
 		t.Fatal("client certificate without key must be rejected")
+	}
+}
+
+func TestMonoFSTransportCredentialsSTRATAFallback(t *testing.T) {
+	clearMonoFSTLSEnv(t)
+	bundle, err := pki.Generate(pki.Options{
+		Dir: t.TempDir(),
+		Services: []pki.Service{{
+			Name:      "monofs",
+			Namespace: "guardian",
+			SPIFFEID:  "spiffe://strata.local/ns/guardian/sa/monofs",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("pki.Generate: %v", err)
+	}
+	t.Setenv("STRATA_TLS_MODE", "required")
+	t.Setenv("STRATA_TLS_CA_FILE", bundle.CAFile)
+	t.Setenv("STRATA_TLS_SERVER_NAME", "monofs.internal")
+
+	creds, err := monoFSTransportCredentials()
+	if err != nil {
+		t.Fatalf("STRATA fallback credentials: %v", err)
+	}
+	info := creds.Info()
+	if info.SecurityProtocol != "tls" {
+		t.Fatalf("security protocol = %q, want tls", info.SecurityProtocol)
+	}
+	if info.ServerName != "monofs.internal" {
+		t.Fatalf("server name = %q, want monofs.internal", info.ServerName)
+	}
+}
+
+func TestMonoFSTransportCredentialsSTRATARequiredIgnoresPlaintextOptIn(t *testing.T) {
+	clearMonoFSTLSEnv(t)
+	bundle, err := pki.Generate(pki.Options{
+		Dir: t.TempDir(),
+		Services: []pki.Service{{
+			Name:      "monofs",
+			Namespace: "guardian",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("pki.Generate: %v", err)
+	}
+	t.Setenv("STRATA_TLS_MODE", "required")
+	t.Setenv("STRATA_TLS_CA_FILE", bundle.CAFile)
+	t.Setenv("GUARDIAN_MONOFS_ALLOW_PLAINTEXT", "true")
+
+	creds, err := monoFSTransportCredentials()
+	if err != nil {
+		t.Fatalf("credentials: %v", err)
+	}
+	if got := creds.Info().SecurityProtocol; got == "insecure" {
+		t.Fatal("STRATA_TLS_MODE=required must never fall back to plaintext")
 	}
 }
