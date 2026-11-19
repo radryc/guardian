@@ -78,6 +78,9 @@ func TestComputeAppliesOtelSidecar(t *testing.T) {
 	if !strings.Contains(config, "guardian/demo/api") {
 		t.Fatalf("collector config missing namespace:\n%s", config)
 	}
+	if !strings.Contains(config, "resource/guardian") || !strings.Contains(config, "guardian.partition") {
+		t.Fatalf("collector config missing partition upsert:\n%s", config)
+	}
 	if got := backend.lastService.Container.Env["OTEL_EXPORTER_OTLP_ENDPOINT"]; got != "http://localhost:4317" {
 		t.Fatalf("main container OTLP endpoint = %q", got)
 	}

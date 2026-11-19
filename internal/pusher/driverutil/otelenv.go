@@ -66,6 +66,15 @@ func ApplyOtelEnvWithServiceName(env map[string]string, in registry.AssetInput, 
 		}
 		attrs[key] = value
 	}
+	// Identity is authoritative. A workload may set its own
+	// OTEL_RESOURCE_ATTRIBUTES, but it must not be able to claim another
+	// partition/intent/asset.
+	force := func(key, value string) {
+		if strings.TrimSpace(value) == "" {
+			return
+		}
+		attrs[key] = value
+	}
 	if identity.Name != "" {
 		if explicitServiceName != "" && explicitServiceName != identity.Name {
 			setGenerated("service.alias", explicitServiceName)
@@ -77,16 +86,16 @@ func ApplyOtelEnvWithServiceName(env map[string]string, in registry.AssetInput, 
 			setGenerated("service.alias", override)
 		}
 	}
-	setGenerated("service.namespace", in.PartitionName)
-	setGenerated("guardian.partition", in.PartitionName)
-	setGenerated("guardian.intent", in.IntentName)
-	setGenerated("guardian.asset", in.Asset.Name)
-	setGenerated("guardian.asset.type", string(in.Asset.Type))
-	setGenerated("guardian.identity.kind", "managed")
-	setGenerated("guardian.pusher", in.PusherName)
-	setGenerated("guardian.provider", provider)
+	force("service.namespace", in.PartitionName)
+	force("guardian.partition", in.PartitionName)
+	force("guardian.intent", in.IntentName)
+	force("guardian.asset", in.Asset.Name)
+	force("guardian.asset.type", string(in.Asset.Type))
+	force("guardian.identity.kind", "managed")
+	force("guardian.pusher", in.PusherName)
+	force("guardian.provider", provider)
 	if strings.EqualFold(provider, "kubernetes") || strings.EqualFold(provider, "docker") {
-		setGenerated("guardian.cluster", strings.TrimSpace(in.Target.Cluster))
+		force("guardian.cluster", strings.TrimSpace(in.Target.Cluster))
 	}
 	aliasKeys := make([]string, 0, len(env))
 	for key := range env {
@@ -105,19 +114,19 @@ func ApplyOtelEnvWithServiceName(env map[string]string, in registry.AssetInput, 
 		}
 	}
 	if strings.EqualFold(provider, "kubernetes") {
-		setGenerated("k8s.cluster.name", strings.TrimSpace(in.Target.Cluster))
+		force("k8s.cluster.name", strings.TrimSpace(in.Target.Cluster))
 	}
 	if strings.EqualFold(provider, "aws") {
-		setGenerated("guardian.account", strings.TrimSpace(in.Target.Account))
-		setGenerated("guardian.region", strings.TrimSpace(in.Target.Region))
+		force("guardian.account", strings.TrimSpace(in.Target.Account))
+		force("guardian.region", strings.TrimSpace(in.Target.Region))
 	}
 	if identity.FullName != "" {
-		setGenerated("guardian.service.full_name", identity.FullName)
+		force("guardian.service.full_name", identity.FullName)
 		truncated := "false"
 		if identity.Truncated && serviceName == identity.Name {
 			truncated = "true"
 		}
-		setGenerated("guardian.service.truncated", truncated)
+		force("guardian.service.truncated", truncated)
 	}
 
 	env["OTEL_RESOURCE_ATTRIBUTES"] = formatOtelResourceAttrs(attrs)
@@ -157,16 +166,22 @@ func ApplyLBOtelEnv(env map[string]string, in registry.AssetInput) map[string]st
 		}
 		attrs[key] = value
 	}
-	setGenerated("service.namespace", in.PartitionName)
-	setGenerated("guardian.partition", in.PartitionName)
-	setGenerated("guardian.intent", in.IntentName)
-	setGenerated("guardian.asset", in.Asset.Name)
-	setGenerated("guardian.asset.type", string(in.Asset.Type))
-	setGenerated("guardian.identity.kind", "managed")
-	setGenerated("guardian.pusher", in.PusherName)
-	setGenerated("guardian.provider", "kubernetes")
-	setGenerated("guardian.cluster", strings.TrimSpace(in.Target.Cluster))
-	setGenerated("k8s.cluster.name", strings.TrimSpace(in.Target.Cluster))
+	force := func(key, value string) {
+		if strings.TrimSpace(value) == "" {
+			return
+		}
+		attrs[key] = value
+	}
+	force("service.namespace", in.PartitionName)
+	force("guardian.partition", in.PartitionName)
+	force("guardian.intent", in.IntentName)
+	force("guardian.asset", in.Asset.Name)
+	force("guardian.asset.type", string(in.Asset.Type))
+	force("guardian.identity.kind", "managed")
+	force("guardian.pusher", in.PusherName)
+	force("guardian.provider", "kubernetes")
+	force("guardian.cluster", strings.TrimSpace(in.Target.Cluster))
+	force("k8s.cluster.name", strings.TrimSpace(in.Target.Cluster))
 	if explicitOTELServiceName != "" && explicitOTELServiceName != identity.Name {
 		setGenerated("service.alias", explicitOTELServiceName)
 	}

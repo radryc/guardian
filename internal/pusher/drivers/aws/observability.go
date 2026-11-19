@@ -354,14 +354,35 @@ func otelCollectorConfig(in registry.AssetInput, spec *assetdefs.ObservabilitySp
 			metricExporters = append(metricExporters, "otlp")
 		}
 	}
+	processors := map[string]any{"batch": map[string]any{}}
+	if strings.TrimSpace(in.PartitionName) != "" {
+		// The collector is the trust boundary: upsert the identity so a
+		// workload cannot ship another partition's telemetry through it.
+		// The collector may serve multiple workloads in the intent; only the
+		// partition is authoritative here. Intent/asset come from each
+		// workload's OTEL_RESOURCE_ATTRIBUTES and are enforced by the pusher.
+		processors["resource/guardian"] = map[string]any{
+			"attributes": []any{
+				map[string]any{"key": "guardian.partition", "value": in.PartitionName, "action": "upsert"},
+			},
+		}
+	}
+	processorChain := func(extra ...string) []string {
+		chain := make([]string, 0, len(extra)+2)
+		if _, ok := processors["resource/guardian"]; ok {
+			chain = append(chain, "resource/guardian")
+		}
+		chain = append(chain, extra...)
+		chain = append(chain, "batch")
+		return chain
+	}
 	pipelines := map[string]any{
 		"metrics": map[string]any{
 			"receivers":  []string{"otlp"},
-			"processors": []string{"batch"},
+			"processors": processorChain(),
 			"exporters":  metricExporters,
 		},
 	}
-	processors := map[string]any{"batch": map[string]any{}}
 	if cloudwatchEnabled {
 		exporters["awscloudwatchlogs"] = map[string]any{
 			"region":          awsRegion(in),
@@ -370,7 +391,7 @@ func otelCollectorConfig(in registry.AssetInput, spec *assetdefs.ObservabilitySp
 		}
 		pipelines["logs"] = map[string]any{
 			"receivers":  []string{"otlp"},
-			"processors": []string{"batch"},
+			"processors": processorChain(),
 			"exporters":  []string{"awscloudwatchlogs"},
 		}
 	}
@@ -388,7 +409,7 @@ func otelCollectorConfig(in registry.AssetInput, spec *assetdefs.ObservabilitySp
 		}
 		pipelines["traces"] = map[string]any{
 			"receivers":  []string{"otlp"},
-			"processors": []string{"attributes/xray", "batch"},
+			"processors": processorChain("attributes/xray"),
 			"exporters":  []string{"awsxray"},
 		}
 	}

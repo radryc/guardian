@@ -269,7 +269,15 @@ func PartitionPoliciesDigest(policies []PartitionPolicy) string {
 // from imported partition ACLs. The partition files are validated again here
 // so a stored file written outside the repo importer cannot widen its scope.
 func CompileWithPartitions(base *policy.File, catalog *policy.Catalog, partitions []PartitionPolicy, now time.Time) (*policy.Policy, []policy.Issue, error) {
-	baseBundle, issues, err := policy.Compile(base, catalog, now)
+	return CompileWithRouting(base, catalog, partitions, nil, now)
+}
+
+// CompileWithRouting compiles the platform policy together with the
+// repo-owned partition ACLs and the platform routing definitions (shards and
+// placements). The routing definitions are embedded in the compiled bundle and
+// consumed by the federated SQL router.
+func CompileWithRouting(base *policy.File, catalog *policy.Catalog, partitions []PartitionPolicy, routing []policy.PartitionPolicy, now time.Time) (*policy.Policy, []policy.Issue, error) {
+	baseBundle, issues, err := policy.CompileWithPartitions(base, catalog, routing, now)
 	if err != nil {
 		return nil, issues, err
 	}

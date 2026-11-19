@@ -63,6 +63,7 @@ type Service struct {
 	rawDigest     string
 	catalogDigest string
 	partDigest    string
+	routingDigest string
 	lastErr       error
 }
 
@@ -173,12 +174,18 @@ func (s *Service) Refresh(ctx context.Context) error {
 	for _, problem := range partitionProblems {
 		s.logf("access policy: %s", problem)
 	}
+	routingPolicies, routingProblems := LoadRoutingPolicies(ctx, s.store, RoutingDir(s.rawPath))
+	for _, problem := range routingProblems {
+		s.logf("access policy: %s", problem)
+	}
 	rawDigest := digestBytes(raw)
 	catalogDigest := catalogDigest(catalog)
 	partDigest := PartitionPoliciesDigest(partitionPolicies)
+	routingDigest := RoutingPoliciesDigest(routingPolicies)
 
 	s.mu.RLock()
-	unchanged := s.policy != nil && rawDigest == s.rawDigest && catalogDigest == s.catalogDigest && partDigest == s.partDigest
+	unchanged := s.policy != nil && rawDigest == s.rawDigest && catalogDigest == s.catalogDigest &&
+		partDigest == s.partDigest && routingDigest == s.routingDigest
 	s.mu.RUnlock()
 	if unchanged {
 		s.setLastError(nil)
@@ -195,7 +202,7 @@ func (s *Service) Refresh(ctx context.Context) error {
 	for _, warning := range warnings {
 		s.logf("access policy: %s", warning)
 	}
-	compiled, issues, err := CompileWithPartitions(file, catalog, partitionPolicies, time.Now())
+	compiled, issues, err := CompileWithRouting(file, catalog, partitionPolicies, routingPolicies, time.Now())
 	for _, issue := range issues {
 		s.logf("access policy: %s: %s", issue.Severity, issue.Message)
 	}
@@ -212,6 +219,7 @@ func (s *Service) Refresh(ctx context.Context) error {
 	s.rawDigest = rawDigest
 	s.catalogDigest = catalogDigest
 	s.partDigest = partDigest
+	s.routingDigest = routingDigest
 	s.lastErr = nil
 	s.mu.Unlock()
 
