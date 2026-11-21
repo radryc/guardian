@@ -29,6 +29,12 @@
       <i data-lucide="sparkles" class="w-4 h-4"></i>
       <span>Ask</span>
     </button>
+    <label class="sr-only" for="displayProfileSelect">Display profile</label>
+    <select
+      id="displayProfileSelect"
+      class="px-2 py-1 mr-2 rounded-full text-[11px] font-semibold text-text-secondary bg-bg-elevated border border-border"
+      title="Display labels"
+    ></select>
     <span
       id="buildVersionStamp"
       class="inline-flex items-center gap-1 px-2 py-1 mr-2 rounded-full text-[10px] font-semibold text-text-secondary bg-bg-elevated border border-border"
@@ -97,7 +103,7 @@
       </button>
 
       <section id="sidebarPartitionSection" class="flex-1 min-h-0 overflow-y-auto px-2.5 pb-4">
-        <div class="px-0.5 mb-2 text-[10px] font-bold uppercase tracking-[0.1em] text-text-muted">Partitions</div>
+        <div class="px-0.5 mb-2 text-[10px] font-bold uppercase tracking-[0.1em] text-text-muted" data-display-key="partition">Partitions</div>
         <div class="flex gap-1.5 mb-2">
           <input id="partitionSearch" class="search-input flex-1" type="search" placeholder="Search partitions" />
           <button id="createPartitionButton" class="btn-ghost">New</button>
@@ -127,9 +133,9 @@
 
       <!-- Summary stat strip (overview only) -->
       <section id="summaryGrid" class="grid grid-cols-6 gap-px bg-border border-y border-border">
-        <article class="stat-card"><div class="stat-label">Partitions</div><div class="stat-value" id="summaryPartitions">-</div></article>
-        <article class="stat-card"><div class="stat-label">Intents</div><div class="stat-value" id="summaryIntents">-</div></article>
-        <article class="stat-card"><div class="stat-label">Assets</div><div class="stat-value" id="summaryAssets">-</div></article>
+        <article class="stat-card"><div class="stat-label" data-display-key="partition">Partitions</div><div class="stat-value" id="summaryPartitions">-</div></article>
+        <article class="stat-card"><div class="stat-label" data-display-key="intent">Intents</div><div class="stat-value" id="summaryIntents">-</div></article>
+        <article class="stat-card"><div class="stat-label" data-display-key="asset">Assets</div><div class="stat-value" id="summaryAssets">-</div></article>
         <article class="stat-card"><div class="stat-label">Healthy</div><div class="stat-value" id="summaryStable">-</div></article>
         <article class="stat-card"><div class="stat-label">Attention</div><div class="stat-value" id="summaryAttention">-</div></article>
         <article class="stat-card"><div class="stat-label">Failed</div><div class="stat-value" id="summaryFailed">-</div></article>
@@ -138,7 +144,7 @@
       <!-- App grid (overview only) -->
       <section id="appGridSection" class="px-6 py-5">
         <div class="flex items-center gap-2.5 mb-3.5 flex-wrap">
-          <span class="text-[11px] font-bold uppercase tracking-[0.09em] text-text-muted flex-1">Partitions</span>
+          <span class="text-[11px] font-bold uppercase tracking-[0.09em] text-text-muted flex-1" data-display-key="partition">Partitions</span>
           <div class="flex gap-1.5">
             <input id="appGridSearch" class="search-input w-44" type="search" placeholder="Filter partitions…" />
             <button id="overviewCreatePartitionButton" class="btn-ghost">New</button>
@@ -392,7 +398,7 @@
             </div>
             <div class="flex flex-wrap items-end gap-3 mb-3">
               <label class="grid gap-1 text-[12px] text-text-secondary">
-                <span>Partition</span>
+                <span data-display-key="partition">Partition</span>
                 <input id="scanPartitionName" class="search-input w-56" type="text" placeholder="aws-imports">
               </label>
               <label class="grid gap-1 text-[12px] text-text-secondary">
@@ -493,7 +499,7 @@
               <select id="repoPusher" class="search-input"></select>
             </label>
             <div class="grid gap-1 text-[12px] text-text-secondary md:col-span-3">
-              <span>Partitions</span>
+              <span data-display-key="partition">Partitions</span>
               <div id="repoPartitionPicker" class="grid gap-1 max-h-56 overflow-y-auto rounded border border-border p-2"></div>
               <p class="text-[11px] text-text-muted">Optional — bind partitions now or later. One repo can feed many partitions; each binding can set a stack selector and payload path.</p>
             </div>
