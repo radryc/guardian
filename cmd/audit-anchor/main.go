@@ -9,10 +9,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -37,6 +39,34 @@ type options struct {
 	loop             bool
 	interval         time.Duration
 	backfillDays     int
+	healthAddr       string
+}
+
+type anchorHealth struct {
+	mu          sync.Mutex
+	lastSuccess time.Time
+	lastError   string
+	lastDay     string
+}
+
+func (h *anchorHealth) success(day string) {
+	h.mu.Lock()
+	h.lastSuccess = time.Now().UTC()
+	h.lastDay = day
+	h.lastError = ""
+	h.mu.Unlock()
+}
+
+func (h *anchorHealth) failure(err error) {
+	h.mu.Lock()
+	h.lastError = err.Error()
+	h.mu.Unlock()
+}
+
+func (h *anchorHealth) snapshot() (time.Time, string, string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.lastSuccess, h.lastError, h.lastDay
 }
 
 func main() {
@@ -71,6 +101,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs.BoolVar(&opts.loop, "loop", false, "run forever, anchoring the previous UTC day")
 	fs.DurationVar(&opts.interval, "interval", 24*time.Hour, "loop interval")
 	fs.IntVar(&opts.backfillDays, "backfill-days", 0, "on start, anchor this many preceding days (loop only)")
+	fs.StringVar(&opts.healthAddr, "health-addr", "", "HTTP listen address for /healthz (for example :8099)")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -94,25 +125,40 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 	}
 
+	health := &anchorHealth{}
+	if strings.TrimSpace(opts.healthAddr) != "" {
+		go serveAnchorHealth(ctx, opts.healthAddr, health, opts.interval, stderr)
+	}
+
 	if !opts.loop {
 		day := opts.date
 		if strings.TrimSpace(day) == "" {
 			day = time.Now().UTC().Format("2006-01-02")
 		}
-		return anchorDay(ctx, &opts, day, stdout)
+		if err := anchorDay(ctx, &opts, day, stdout); err != nil {
+			health.failure(err)
+			return err
+		}
+		health.success(day)
+		return nil
 	}
 
 	// Backfill oldest-first, then anchor yesterday and sleep.
 	for i := opts.backfillDays; i >= 1; i-- {
 		day := time.Now().UTC().AddDate(0, 0, -i).Format("2006-01-02")
 		if err := anchorDay(ctx, &opts, day, stdout); err != nil {
+			health.failure(err)
 			return err
 		}
+		health.success(day)
 	}
 	for {
 		day := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
 		if err := anchorDay(ctx, &opts, day, stdout); err != nil {
+			health.failure(err)
 			fmt.Fprintf(stderr, "audit-anchor: %v\n", err)
+		} else {
+			health.success(day)
 		}
 		select {
 		case <-ctx.Done():
@@ -187,6 +233,41 @@ func anchorDay(ctx context.Context, opts *options, day string, stdout io.Writer)
 	}
 	opts.prevManifestHash = manifest.ManifestHash
 	return nil
+}
+
+func serveAnchorHealth(ctx context.Context, addr string, health *anchorHealth, interval time.Duration, stderr io.Writer) {
+	maxAge := 2 * interval
+	if maxAge < 26*time.Hour {
+		maxAge = 26 * time.Hour
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		last, lastErr, day := health.snapshot()
+		ok := !last.IsZero() && time.Since(last) <= maxAge
+		status := http.StatusOK
+		if !ok {
+			status = http.StatusServiceUnavailable
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":            ok,
+			"lastSuccessAt": last.Format(time.RFC3339),
+			"lastDay":       day,
+			"lastError":     lastErr,
+			"maxAge":        maxAge.String(),
+		})
+	})
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		fmt.Fprintf(stderr, "audit-anchor health server: %v\n", err)
+	}
 }
 
 func writeManifest(path string, manifest auditanchor.Manifest) error {
