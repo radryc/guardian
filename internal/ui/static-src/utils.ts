@@ -1,7 +1,9 @@
 // ── Fetch helpers ─────────────────────────────────────
+import { displayHeaders } from "./display";
+
 export async function fetchJSON(url: string, init?: RequestInit): Promise<any> {
   const res = await fetch(url, {
-    headers: { "Accept": "application/json", ...(init?.headers ?? {}) },
+    headers: { "Accept": "application/json", ...displayHeaders(), ...(init?.headers ?? {}) },
     ...init,
   });
   if (!res.ok) {

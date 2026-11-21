@@ -395,7 +395,12 @@ func (s *Server) serveWithDisplay(w http.ResponseWriter, r *http.Request, profil
 	s.serveWithAudit(buffer, r)
 	body := buffer.body.Bytes()
 	if buffer.status >= 200 && buffer.status < 300 && strings.Contains(buffer.header.Get("Content-Type"), "json") {
-		if mapped, mapErr := display.MapJSON(body, profile, display.SurfaceForPath(r.URL.Path)); mapErr == nil {
+		keepCanonical := strings.EqualFold(strings.TrimSpace(r.Header.Get(display.KeepCanonicalHeader)), "1") ||
+			strings.EqualFold(strings.TrimSpace(r.Header.Get(display.KeepCanonicalHeader)), "true")
+		if mapped, mapErr := display.MapJSONWithOptions(body, profile, display.MapOptions{
+			Surface:       display.SurfaceForPath(r.URL.Path),
+			KeepCanonical: keepCanonical,
+		}); mapErr == nil {
 			body = mapped
 		}
 	}

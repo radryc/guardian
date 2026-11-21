@@ -38,9 +38,11 @@ import { initRegistryPanel, renderRegistryPanel } from "./registry";
 import { initUnmanagedPanel, renderUnmanagedPanel } from "./unmanaged";
 import { initBuilderPanel } from "./builder";
 import { initSetsPanel, renderSets, selectedSetName } from "./sets";
+import { initDisplaySwitcher } from "./display";
 
 // ── Bootstrap ────────────────────────────────────────
 const state: AppState = createState();
+void initDisplaySwitcher();
 
 // Monotonic request tokens discard responses from a partition the user has
 // already navigated away from (out-of-order fetch completion).
