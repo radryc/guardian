@@ -1,6 +1,7 @@
 # Forge — repository workbench for Guardian partitions
 
-Status: proposed
+Status: proposed — step 1 (`internal/bundle`) and the initial `forge validate`
+slice are implemented
 Audience: engineers building or operating the partition authoring workflow
 Scope: repository-first authoring of Guardian partitions; CLI and local UI
 
@@ -25,6 +26,31 @@ Forge never mutates Guardian or MonoFS state. Its only publish action is a
 opens a real PR/MR, required checks run, a human merges, MonoFS re-ingests the
 merged ref, and Guardian pulls the result. Direct modification outside that
 path is denied.
+
+Authoring is also presentation-aware. The platform's display-key mapping
+(`monofs/pkg/display`) lets a user rename keys — never values — at the response
+boundary. Forge renders with it, authors repo-owned aliases for its own
+partitions, and guarantees that no display key ever reaches a manifest, a
+reference, or a PromQL expression. See [Display keys](#10-display-keys).
+
+### Current state
+
+| Slice | Status |
+| --- | --- |
+| `internal/bundle` shared loader (`guardianctl` now uses it) | Implemented |
+| `cmd/forge` + `forge validate` over a repository, partitions dir, or one partition | Implemented |
+| Layered checks: bundle load, v1 coverage (`FGE7001`), unresolved templates (`FGE3010`), alert rules (`FGE5001`–`FGE5005`) | Implemented |
+| MonoFS `ReportCheck` (GitHub + GitLab), pending check on publish, PR title/body, CODEOWNERS reviewers | Implemented |
+| Dogfood over `stratatools/partitions` | 18 partitions, 0 errors, 11 warnings |
+| `forge submit`, `status`, `revert`, `plan` (disk and live) | Implemented |
+| `forge schema`, `discover`, `repo init`, authoring commands | Implemented |
+| `forge policy check`, alert suggestion, display alias bind/lint | Implemented |
+| Embedded UI + loopback API (overview, assets, validate, alerts, submit, status) | Implemented |
+| Repo-managed write guard for `guardianctl` and the Guardian UI | Implemented |
+| Packaging (`make forge-cross`, goreleaser) and docs | Implemented |
+
+`forge validate` landed before the MonoFS check-reporting work because it is
+fully offline and independently useful in CI.
 
 ### The invariant
 
@@ -101,6 +127,7 @@ Forge is therefore complementary, not a second control center:
 | Publish | MonoFS workspace publish | MonoFS already pushes review branches and opens PRs/MRs. |
 | Approval | Real PR/MR at the forge | One sign-off sheet. Native `/api/merge-requests` is only for forge-less workspaces. |
 | CI | MonoFS pipeline engine | Runs on the PR head; reports a check back to the forge so merge is blocked. |
+| Display keys | Presentation only, via `monofs/pkg/display`; canonical in files | Users keep their vocabulary in labels while the repository stays unambiguous. Repo-owned aliases live in `repo.bindings[].display`. |
 | v1 assets | Kubernetes + Docker | Full validation coverage before adding AWS/GCP. |
 | First user | Platform team, dogfooding `stratatools/partitions` | Real fixtures, immediate value. |
 
@@ -128,6 +155,9 @@ Nothing below needs to be invented; Forge composes it.
 | MonoFS workspace policy | `monofs/internal/router/workspacepolicy` |
 | MonoFS pipeline | `monofs/internal/router/pipeline`, configs at `/.pipelines/*.yml` |
 | Guardian writer identity | `monofs/internal/router/guardian_principals.go` (`GuardianControlPlanePrincipalID = "guardiand"`) |
+| Display-key mapping | `monofs/pkg/display` (`Profile`, `CompiledProfile`, `Assignment`, `MapJSONWithOptions`, `Field`, `TranslateQuery`, `SurfaceForPath`) |
+| Display profile service | `guardian/internal/display` (`Service.Bundle`, `Service.Resolve`), `internal/ui/display.go`, `/api/display-profiles` |
+| Repo-owned display aliases | `internal/registry` (`RepoBinding.Display *DisplayBinding{Profile, Keys}`) |
 | Guarded filesystem writes | `internal/paths` (`NormalizeChecked`, `PartitionPathChecked`) |
 
 ---
@@ -149,6 +179,7 @@ flowchart TB
             AUT["author"]
             POL["policy"]
             ALR["alerts"]
+            DIS["display"]
             PLAN["plan"]
             PUB["publish"]
         end
@@ -162,6 +193,7 @@ flowchart TB
     SPA --> API --> Eng
     Eng <--> REPO
     PUB --> MONOFS
+    DIS -.profile bundle.-> GUARD
     PLAN -.read.-> GUARD
 ```
 
@@ -171,7 +203,7 @@ Two rules make the tool maintainable:
    functions. There is no second validator in TypeScript.
 2. **Read-only against the platform.** The only outbound mutation is
    `publish` → MonoFS. Guardian access is limited to read endpoints used by
-   `plan` and `status`.
+   `plan`, `status`, and `display`.
 
 ### Package layout
 
@@ -190,6 +222,7 @@ guardian/
     author/                     # comment-preserving yaml.v3 node edits
     policy/                     # guardrails + access authoring adapters
     alerts/                     # PromQL lint and rule suggestion
+    display/                    # profile resolution, MapJSON/Field, query aliases
     plan/                       # offline compile and live diff
     publish/                    # submitter over internal/workspacepub
     api/                        # loopback HTTP handlers
@@ -209,7 +242,7 @@ tool-side files.
 
 ```text
 <repo>/
-  .guardian/config.yaml          # RepoConfig (existing)
+  .guardian/config.yaml          # RepoConfig: bindings + repo-owned display aliases
   .forge.yaml                    # committed: defaults, environment map, policy ref
   .forge/                        # gitignored: profile.json, drafts/, cache/, lock
   partitions/<name>/
@@ -282,11 +315,13 @@ forge alert suggest --partition checkout --from-probes
 forge secret ref --partition checkout --intent api --env DATABASE_URL \
   --ref monofs-secret://checkout/db
 
-# policy
+# policy and presentation
 forge policy access add-group --name sre --partitions 'role=observability' \
   --role maintainer
 forge policy access who-can --subject sre@example.com --partition checkout
 forge policy check --file .forge/policy.yaml
+forge display bind --repo checkout --partition checkout --from asset --to service
+forge display lint --repo checkout
 
 # verify and propose
 forge validate --all --strict --format json
@@ -298,9 +333,20 @@ forge revert --partition checkout --to <merge-sha>
 # platform
 forge doctor
 forge schema --out schemas/
-forge pipeline install --file .monofs/pipelines/guardian-partition.yml
+forge pipeline install --file .monofs/pipelines/partition-pipeline.yml
 forge ui [--listen 127.0.0.1:0] [--no-open]
 ```
+
+Global flag:
+
+```bash
+forge --display-profile engineering status
+forge --display-profile engineering validate --partition checkout
+```
+
+`--display-profile` changes human-readable text only. `--format json` stays
+canonical so CI and scripts are stable; `--display-keys=apply` is the explicit
+opt-in for mapped JSON. The flag never changes which files are read or written.
 
 Key behaviours:
 
@@ -332,6 +378,7 @@ Served at `http://127.0.0.1:<ephemeral>/?token=<one-time>`. Loopback only.
 | **Plan** | Read-only diff: create/update/destroy/drift, topological order, blocked dependencies |
 | **Submit** | Change summary, commit message, branch, target; opens the PR/MR via MonoFS and shows the URL |
 | **Delivery chain** | Publish job → PR → checks → merge → ingest → Guardian import → reconcile, with drift |
+| **Display** | Profile switcher, canonical-key toggle, repo-owned alias editor, coverage preview, lint results |
 
 Interaction rules:
 
@@ -343,12 +390,212 @@ Interaction rules:
   rewriting.
 - **No apply affordance.** There is no deploy button. Submit opens a PR; merging
   is the deploy trigger.
+- **Display keys end at the pixels.** Labels and table headers may use the
+  user's vocabulary; forms write canonical keys, and the YAML pane is always
+  canonical. Details in [Display keys](#10-display-keys).
 
 ---
 
-## 10. Publish path
+## 10. Display keys
 
-### 10.1 What Forge calls
+The platform ships a presentation-only key mapping
+([`docs/display-key-mapping-design.md`](../../../docs/display-key-mapping-design.md),
+phases 1–4 implemented in `monofs/pkg/display` and `guardian/internal/display`).
+Users can rename **keys**, never values, at the presentation boundary.
+
+Forge must render with it, and must never let it reach repository content.
+
+### 10.1 Two different mechanisms
+
+| Mechanism | Lives in | Applies to | Forge role |
+| --- | --- | --- | --- |
+| Repo assignment aliases | `.guardian/config.yaml` → `repo.bindings[].display` (`registry.DisplayBinding{Profile, Keys}`) | The assigned partition only, for every caller | **Author and validate** — a committed repo artifact |
+| Display profile | `/.display/profiles/<id>.json`, compiled into `/.display/bundles/<version>.json` | Personal, team, or global presentation for one caller | **Read-only** — selected by header or flag |
+
+The latest implementation deliberately restricts key replacement and request
+aliases to repo assignments. A free-floating profile cannot alias request keys
+for a partition it does not own. Forge follows the same rule: it may write
+aliases only into the repo binding, never into a user profile.
+
+Profile lifecycle — create, update, set default, delete — stays with
+`guardianctl display` and `/api/display-profiles`. Forge consumes profiles in
+v1 and does not duplicate that management surface.
+
+### 10.2 Known keys and surfaces
+
+`display.KnownKeys`:
+
+```text
+partition  intent  asset
+guardian_partition  guardian_intent  guardian_asset  guardian_asset_type
+canonical_partition  canonical_intent  canonical_asset
+```
+
+`display.ReservedKeys` (never usable as a display key):
+`apiVersion`, `kind`, `canonical`, `view`, `displayProfile`, `__proto__`,
+`constructor`, `prototype`.
+
+Rules inherited from `display.Profile.Validate`:
+
+- Display keys must match `^[A-Za-z_][A-Za-z0-9_]*$` — valid as JSON keys, SQL
+  identifiers, and Prometheus/Loki label names.
+- Duplicate display keys within a profile are rejected.
+- `surfaces.sql`, `surfaces.metrics`, `surfaces.logs`, `surfaces.traces`
+  override the base map per surface.
+- `includeCanonical` adds `canonical_*` companions.
+- `X-Strata-Display-Keep-Canonical` adds the canonical key alongside the
+  display key, which is what the web UIs use.
+
+### 10.3 What is mapped, and what never is
+
+Mapped, at the response boundary only:
+
+- UI labels and table headers.
+- JSON keys in known DTOs and identity label maps (`labels`, `attributes`,
+  `metric`, `resource_attributes`).
+- Prometheus/Loki series label keys; Tempo known identity attributes.
+- SQL result column names.
+
+Never mapped:
+
+| Surface | Why |
+| --- | --- |
+| Manifest keys and values | Files are the API; canonical identity must survive round-trips |
+| Partition, intent, asset names; `dependsOn`; `joins` | They are graph identifiers, not labels |
+| Pusher names, namespaces, cluster names, target placement | Routing must be unambiguous |
+| `secretRef`, `existingSecret`, MonoFS secret paths | Refs are canonical addresses |
+| Alert `expr`, rule names, PromQL label names | Expressions execute against canonical metrics |
+| Diagnostic codes, `path` pointers, file paths | CI and golden tests depend on them |
+| Commit messages, branch names, PR titles and bodies | Shared artifacts read by many profiles |
+| Authorization, quota, audit, store keys | Never presentation |
+
+**Forge rule: a display key ends at the pixels.** If a mapped key would be
+written to a file, a ref, or an expression, that is `FGE8004`.
+
+### 10.4 Rendering boundary
+
+Forge's loopback API is the boundary, mirroring Guardian:
+
+1. Read `X-Strata-Display-Profile` (or `?displayProfile=`), the same way as
+   `displayRequestedProfile` in `internal/ui/server.go`.
+2. Resolve the profile from the platform bundle
+   (`GET /api/display-profiles/bundle`, cached, version-checked). Fall back to
+   canonical when absent, unavailable, or invalid.
+3. Apply `display.MapJSONWithOptions(raw, profile, MapOptions{Surface:
+   display.SurfaceForPath(path), KeepCanonical: true})` for UI responses.
+4. Use `display.Field(obj, "partition", profile)` in the SPA. No component may
+   hard-code `row.partition`.
+5. Use `Bundle.TranslateQuery` for request aliases — only for the partition the
+   assignment owns.
+6. Respond with `X-Strata-Display-Profile`, `X-Strata-Display-Version`,
+   `Vary: X-Strata-Display-Profile`, and `Cache-Control: private`.
+
+`KeepCanonical: true` matters for editing: labels show the user's vocabulary
+while forms, the YAML pane, and write paths keep using canonical fields.
+Export and "Copy as canonical" omit it.
+
+### 10.5 Authoring repo assignment aliases
+
+```yaml
+repo:
+  name: checkout
+  bindings:
+    - partition: checkout
+      display:
+        profile: engineering
+        keys:
+          asset: service
+          intent: deployment
+          guardian_asset: guardian_service
+```
+
+```bash
+forge display bind --repo checkout --partition checkout --from asset --to service
+forge display unbind --repo checkout --partition checkout --from asset
+forge display show --repo checkout --partition checkout
+forge display lint --repo checkout
+```
+
+Validation mirrors `display.Profile.Validate`. Because aliases are
+per-assignment, Forge can only author them for partitions listed in
+`repo.bindings`; aliasing outside that set is `FGE8002`.
+
+### 10.6 Editing experience
+
+- Form labels use the display key with the canonical key as a secondary hint:
+  `Service (asset)`.
+- The YAML pane, diagnostic paths, file names, and copy actions are always
+  canonical.
+- A **Display: Engineering** switcher persists to `?displayProfile=`.
+- A **Show canonical keys** toggle sends `X-Strata-Display-Keep-Canonical`,
+  matching the platform UIs.
+- When a non-canonical profile is active, a banner states: "Labels use
+  Engineering vocabulary. Files and diagnostics use canonical keys."
+- An unavailable or invalid profile falls back to canonical with a warning.
+  Presentation never blocks authoring.
+
+### 10.7 Diagnostics
+
+Diagnostics stay canonical; an optional cosmetic label is added for the UI:
+
+```json
+{
+  "code": "FGE3001",
+  "path": "spec.assets[0].dependsOn[0]",
+  "message": "asset \"api\" depends on unknown asset \"pg\"",
+  "displayLabel": "Service \"api\" depends on unknown Service \"pg\""
+}
+```
+
+CI, golden tests, and `--format json` consume canonical fields only.
+`displayLabel` is never parsed.
+
+### 10.8 Alerts
+
+PromQL labels remain canonical. A mapped key inside an expression is an error:
+
+```text
+FGE5010 display key "eng_service" used in PromQL; use canonical label "guardian_partition"
+```
+
+Response label maps may be renamed at read time; the expression never is.
+`forge alert suggest` always emits canonical labels.
+
+### 10.9 CLI semantics
+
+- `--display-profile <id>` affects human-readable text only.
+- `--format json` is always canonical, so CI and scripts stay stable.
+  `--display-keys=apply` is the explicit opt-in for mapped JSON.
+- `--display-profile` never changes which files are read or written.
+
+### 10.10 Validation codes
+
+| Code | Meaning |
+| --- | --- |
+| `FGE8001` | Unknown canonical key in a display binding |
+| `FGE8002` | Alias targets a partition not assigned to this repo |
+| `FGE8003` | Invalid display key: regex, reserved word, duplicate, or empty |
+| `FGE8004` | Display key leaked into a manifest, path, ref, or expression |
+| `FGE8005` | Referenced display profile is not available |
+| `FGE8006` | Per-surface key invalid for that surface (SQL identifier, Prometheus label) |
+
+### 10.11 Security
+
+- Presentation only. Forge never uses display keys for file resolution,
+  authorization, repo-managed checks, or publish targeting.
+- Reject `__proto__`, `constructor`, and `prototype` at the boundary; the
+  platform package already does, and Forge must not add a second unvalidated
+  path.
+- Mapping cannot name a partition the caller could not already see, because it
+  never changes values or authorization.
+- Profile content is untrusted input: validate before caching; never template or
+  evaluate it.
+
+---
+
+## 11. Publish path
+
+### 11.1 What Forge calls
 
 `internal/workspacepub.Publisher.Publish` already uploads a bundle and returns
 the PR URL:
@@ -386,7 +633,7 @@ It diffs the working tree against `BaseCommit`, builds `[]Operation`, and calls
 `Publish`. There is no git library, no forge token, and no branch naming logic
 in Forge.
 
-### 10.2 Two local modes, one call
+### 11.2 Two local modes, one call
 
 | Mode | Use | Behaviour |
 | --- | --- | --- |
@@ -396,7 +643,7 @@ in Forge.
 MonoFS FUSE is not assumed on Windows, but publishing is gRPC, so the path is
 identical.
 
-### 10.3 Idempotency and conflicts
+### 11.3 Idempotency and conflicts
 
 - `per_repo_branch` produces a deterministic review branch per repository, so
   re-submitting updates the existing PR instead of opening a duplicate.
@@ -406,18 +653,25 @@ identical.
 - One PR per repository per change set. A PR may touch several partitions; the
   pipeline and the PR body list all of them.
 
-### 10.4 Required MonoFS changes
+### 11.4 MonoFS changes
 
-| Change | Why | Where |
+| Change | Why | Status |
 | --- | --- | --- |
-| `ReportCheck(ctx, repoCloneURL, sha, name string, conclusion Conclusion, detailsURL string) error` on `PullRequestProvider`, implemented for GitHub and GitLab | Without it the forge never learns the pipeline result and merge is not blocked | `monofs/internal/router/workspacepr` |
-| Add `pull_request_title` (7) and `pull_request_body` (8) to `PublishWorkspaceRequest` | Today the PR body is generated from file operations only | `monofs/api/proto/monofs.proto`; `publishPullRequestBody` in `workspace_pr.go` |
-| Pass reviewers from `CODEOWNERS` through the existing `RequestReviewers` | Human review is part of the gate | `workspacepr`, `attachPublishPullRequest` |
-| Post a PR comment linking the MonoFS job, pipeline run, and Guardian partition | Traceability from forge to deploy | `workspacepr` |
+| `ReportCheck(ctx, CheckRequest) error` on `workspacepr.PullRequestProvider`, implemented for GitHub commit statuses and GitLab commit statuses | Without it the forge never learns the pipeline result and merge is not blocked | Implemented |
+| Add `pull_request_title` (7) and `pull_request_body` (8) to `PublishWorkspaceRequest`, plumbed through `workspacepub.PublishRequest` | Today the PR body is generated from file operations only | Implemented |
+| Pass reviewers from `CODEOWNERS` through the existing `RequestReviewers` | Human review is part of the gate | Already existed; wired for publish |
+| Report a `pending` check when the review branch is published | The gate appears on the PR before the pipeline finishes | Implemented |
+| Post a PR comment linking the MonoFS job, pipeline run, and Guardian partition | Traceability from forge to deploy | Not started |
 
-All four are additive. No existing behaviour changes.
+`ReportCheck` resolves per-repo tokens (`MONOFS_GITHUB_TOKEN_<OWNER>_<REPO>`)
+and supports self-hosted GitLab through `MONOFS_GITLAB_BASE_URL`. Without a
+token it is a no-op, so offline deployments keep working.
 
-### 10.5 Branch protection
+The pipeline's `name` must be `partition-pipeline`: MonoFS reports the final
+status as `monofs/<pipeline-name>`, which must match the pending check and the
+required check configured at the forge.
+
+### 11.5 Branch protection
 
 `forge doctor` verifies the following and fails if any is missing:
 
@@ -433,7 +687,7 @@ Single-maintainer repositories cannot self-approve. For those, the documented
 policy is **0 required approvals + required check**; `forge doctor` reports
 which mode is active so nobody assumes a gate that is not enforced.
 
-### 10.6 Merge and rollback
+### 11.6 Merge and rollback
 
 - Merge at the forge produces a push to the default branch. The MonoFS webhook
   handler (`pipeline/webhook.go`, `repoChangedHandler`) re-ingests the affected
@@ -445,7 +699,7 @@ which mode is active so nobody assumes a gate that is not enforced.
 
 ---
 
-## 11. Validation engine
+## 12. Validation engine
 
 | Layer | Checks | Implementation |
 | --- | --- | --- |
@@ -456,6 +710,7 @@ which mode is active so nobody assumes a gate that is not enforced.
 | 5 Cross-reference | `dependsOn`, `joins`, mounts, payload paths, image refs, uniqueness, cycles | New checks + `compiler/dag` |
 | 6 Policy | Access lint, guardrails, secret hygiene | `access lint`, guardrail evaluator, secret scanner |
 | 7 Alerts | PromQL parses, partition label matches, unique names, `for` vs scrape interval, annotations, severity | New checks + optional live PromQL |
+| 8 Display | Repo binding aliases are valid, per-assignment, collision-free, and never leak into files or expressions | `display.Profile.Validate` + leak scan |
 
 ### Diagnostic shape
 
@@ -484,6 +739,7 @@ Code families:
 | `FGE5xxx` | Alerts |
 | `FGE6xxx` | Security and secrets |
 | `FGE7xxx` | Environment, platform, and pipeline |
+| `FGE8xxx` | Display keys and profiles |
 
 Rules:
 
@@ -494,11 +750,11 @@ Rules:
 
 ---
 
-## 12. Policies
+## 13. Policies
 
 Three distinct concerns, one screen.
 
-### 12.1 Runtime policy
+### 13.1 Runtime policy
 
 Already in the schema (`internal/domain/partition`):
 
@@ -512,7 +768,7 @@ Already in the schema (`internal/domain/partition`):
 Forge edits these with validation and explains consequences, for example that
 `orphan` leaves live assets behind when the partition is removed.
 
-### 12.2 Access policy
+### 13.2 Access policy
 
 `access/base.yaml` (subjects, groups, selectors, scopes). Forge adds no format;
 it adds authoring and preview:
@@ -522,7 +778,7 @@ it adds authoring and preview:
 - Effective-access preview using the access compiler and `who-can` logic.
 - Lint output mapped to `FGE4xxx` diagnostics.
 
-### 12.3 Guardrail policy
+### 13.3 Guardrail policy
 
 Tool-side, committed at `.forge/policy.yaml`, evaluated by `forge validate`.
 
@@ -545,9 +801,13 @@ deny:
 This is how a platform team encodes "what good looks like" without changing
 Guardian. Violations are errors (`FGE4001`) and fail required checks.
 
+Display aliases are **not** policy. They are presentation and are authored
+separately through the repo binding — see [Display keys](#10-display-keys).
+Conflating the two would let presentation change what a permission check sees.
+
 ---
 
-## 13. Alerts
+## 14. Alerts
 
 Two surfaces:
 
@@ -584,7 +844,7 @@ metrics that exist.
 
 ---
 
-## 14. Enforcement
+## 15. Enforcement
 
 A documented policy that is not enforced will be bypassed. Five doors, five
 controls.
@@ -597,13 +857,19 @@ controls.
 | Foreign subtree change | `OwnershipGateEnabled` plus `CODEOWNERS` routes non-owners onto a review branch |
 | Non-Guardian writes to Guardian state | MonoFS write ACL: `/partitions/**` and `guardian-system` writable only by the `guardiand` principal |
 
-### 14.1 Repo-managed marker
+A sixth rule is specific to Forge: **display keys are never addresses.** File
+reads, writes, repo-managed checks, publish targeting, and authorization resolve
+canonical names only. A mapped key is accepted for display and, where the
+platform permits it, for request aliases scoped to an assigned partition — never
+for path resolution.
+
+### 15.1 Repo-managed marker
 
 A partition is repo-managed when it appears in Guardian's registry/`repoconfig`
 bindings. The marker is derived, not stored in the manifest, so it cannot be
 removed by editing a partition file.
 
-### 14.2 Break-glass
+### 15.2 Break-glass
 
 A single explicit exception path:
 
@@ -613,13 +879,13 @@ A single explicit exception path:
 - Visible in `forge status` as drift between the merged revision and Guardian's
   revision.
 
-### 14.3 Bootstrap exception
+### 15.3 Bootstrap exception
 
 `_bootstrap` and `guardianctl dev init` are exempt because nothing is deployed
 yet and there is no pipeline to merge through. This is the only documented
 exception and it is limited by name.
 
-### 14.4 Import boundary
+### 15.4 Import boundary
 
 `internal/forge` must not be able to reach a store writer. Enforced in CI:
 
@@ -631,7 +897,7 @@ Only read clients and `internal/workspacepub` are permitted.
 
 ---
 
-## 15. Cross-platform
+## 16. Cross-platform
 
 | Concern | Decision |
 | --- | --- |
@@ -649,7 +915,7 @@ Only read clients and `internal/workspacepub` are permitted.
 
 ---
 
-## 16. Security
+## 17. Security
 
 - **No secret values.** Only `secretRef` and `existingSecret`. The scanner flags
   PEM blocks, cloud keys, and high-entropy strings; `require.secretRefs` makes
@@ -664,30 +930,35 @@ Only read clients and `internal/workspacepub` are permitted.
 - **Platform auth.** Guardian access is read-only and reuses existing discovery
   and SSO tokens (`internal/clitoken`, `guardianctl auth`). MonoFS publish uses
   the caller's MonoFS principal; Forge never stores forge provider tokens.
+- **Display keys are presentation.** They never authorize, resolve paths, or
+  alter values. Profile content is validated with `display.Profile.Validate`
+  before use and never templated or evaluated.
 - **Auditability.** Every proposal carries workspace, job, pipeline run, PR,
-  commit, and author identity.
+  commit, and author identity. Audit records store canonical fields; the active
+  display profile is recorded as metadata only.
 
 ---
 
-## 17. Build order
+## 18. Build order
 
-| # | Deliverable | Acceptance |
+| # | Deliverable | Status |
 | --- | --- | --- |
-| 1 | Extract `internal/bundle`; guardianctl uses it | Existing tests green; golden round-trip over every `stratatools/partitions` directory |
-| 2 | MonoFS: `ReportCheck`, PR title/body fields, CODEOWNERS reviewers | A red pipeline blocks merge at the forge |
-| 3 | `internal/forge/publish` over `workspacepub`; `forge submit`, `forge status`, `forge revert` | A real PR is opened by MonoFS; Forge contains no git or forge client |
-| 4 | `forge schema`, layered `forge validate`, diagnostic codes, `docs/forge/` | `forge validate --all --strict` clean on `stratatools`, with documented `unsupported-v1` warnings |
-| 5 | Generated MonoFS pipeline config; `forge pipeline install`; `forge doctor` verifies branch protection | Red check blocks merge; `doctor` fails on an unenforced repo |
-| 6 | `discover`, authoring commands, comment-preserving writes | Generated `doctor` partition diffs explainably against the committed tree |
-| 7 | UI: overview, partition, intents and graph, asset editor, YAML pane, diagnostics | Round-trip invariant test passes; runs on Ubuntu 24.04 and Windows 11 |
-| 8 | UI: Submit via MonoFS, live job stream, delivery chain, plan preview | A partition change goes edit → merged PR without a terminal |
-| 9 | Guardrails, access authoring, alert builder and lint | A policy violation and a bad PromQL each fail required checks with the right code |
-| 10 | Enforcement: workspace policy, write ACL, repo-managed guard, `--break-glass` | Direct-write attempt denied in an integration test |
-| 11 | Packaging, Windows CI, docs | Clean install and `forge validate` on both OSes |
+| 1 | Extract `internal/bundle`; guardianctl uses it | Implemented; unit + `stratatools` dogfood tests |
+| 2 | MonoFS: `ReportCheck`, PR title/body, CODEOWNERS reviewers | Implemented; live gate needs deployment credentials |
+| 3 | `forge submit`, `status`, `revert` over `workspacepub` | Implemented; a real PR requires a configured MonoFS |
+| 4 | `forge schema`, layered `validate`, diagnostic codes, `docs/forge/` | Implemented |
+| 5 | Pipeline config, `pipeline install`, `doctor` branch-protection check | Implemented |
+| 6 | `discover`, authoring, comment-preserving writes | Implemented |
+| 7 | UI: overview, partition, assets, alerts, validate | Implemented; the dependency graph is table-based in v1 |
+| 8 | UI: submit, status, plan preview | Implemented; live job streaming is polled through `status` |
+| 9 | Display keys and repo alias authoring | Implemented for repo-owned aliases; user profiles are read-only |
+| 10 | Guardrails, alert generation and lint | Implemented; access authoring stays with `guardianctl access` |
+| 11 | Enforcement | Guardian-side guard + break-glass implemented; MonoFS policy/ACL documented in `docs/forge/enforcement.md` |
+| 12 | Packaging and docs | Makefile, goreleaser, cross-compile, docs |
 
 ---
 
-## 18. Definition of done
+## 19. Definition of done
 
 1. `forge validate --all --strict` on the real `stratatools` tree is clean;
    every remaining warning is `unsupported-v1` and documented.
@@ -709,10 +980,16 @@ Only read clients and `internal/workspacepub` are permitted.
 10. Rollback through revert produces a normal, reviewed change.
 11. `_bootstrap` / `dev init` remains the single documented exception.
 12. The same binary runs on Linux and Windows, and `forge ui` works on both.
+13. The UI renders under a non-canonical display profile: labels change, forms
+    write canonical keys, and no data accessor breaks.
+14. Repo-owned display aliases validate against `display.Profile.Validate` and
+    never alias a partition outside `repo.bindings`.
+15. A leak test proves a display key cannot reach a manifest, payload path,
+    secret ref, diagnostic path, or PromQL expression.
 
 ---
 
-## 19. Risks
+## 20. Risks
 
 | Risk | Mitigation |
 | --- | --- |
@@ -724,17 +1001,24 @@ Only read clients and `internal/workspacepub` are permitted.
 | Single-maintainer repos cannot approve | Documented 0-approval + required-check mode; surfaced by `doctor` |
 | Windows path, lock, and rename bugs | Windows in the CI matrix from the first PR |
 | MonoFS publish unavailable | `forge validate` and `plan` remain fully offline; submit fails closed |
+| Display keys leaking into files or PromQL | Layer-8 leak scan (`FGE8004`, `FGE5010`); canonical-only write paths and golden tests |
+| Profile drift between versions | Version-checked bundle with `X-Strata-Display-Version`; canonical fallback on miss |
+| Confusion between display and canonical names | Secondary canonical hint in forms, canonical YAML pane, explicit banner, "Copy as canonical" |
 
 ---
 
-## 20. Open items
+## 21. Open items
 
 - Confirm whether Guardian's repo-import loop can attribute the writer principal
   separately from the UI save path. If not, implement the app-level provenance
   guard first and the distinct-principal ACL second.
-- Decide the exact MonoFS pipeline config filename and installation path
-  (`/.pipelines/` naming convention) and document it in `forge pipeline install`.
-- Confirm the lint entry points for alerts: offline PromQL parser only, or an
-  optional live expression test against Doctor/Prometheus.
-- Decide whether `forge plan` should be added to the PR body by MonoFS (via the
-  new body field) or posted afterwards as a PR comment.
+- Confirm whether Guardian's repo-import loop can attribute its writer principal
+  separately from the UI save path. If not, use the provenance guard first.
+- Add offline PromQL parsing to `forge validate` (today alert checks cover
+  structure, labels, and annotations; expressions are not parsed).
+- Add a `forge access` group if access-policy authoring should move out of
+  `guardianctl access`.
+- Surface read-only user/team display profiles in the UI (repo-owned aliases are
+  already supported).
+- Add the GitHub Actions / GitLab CI matrix that runs `make forge-test` and the
+  cross-compile on Ubuntu and Windows.

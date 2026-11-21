@@ -417,6 +417,10 @@ func (f *fakeRouterClient) RegisterClient(_ context.Context, req *pb.RegisterCli
 	return &pb.RegisterClientResponse{Success: true, HeartbeatIntervalMs: 30000}, nil
 }
 
+func (f *fakeRouterClient) GetWorkspaceSyncJob(context.Context, *pb.GetWorkspaceSyncJobRequest, ...grpc.CallOption) (*pb.WorkspaceSyncJob, error) {
+	return &pb.WorkspaceSyncJob{}, nil
+}
+
 func (f *fakeRouterClient) UnregisterClient(context.Context, *pb.UnregisterClientRequest, ...grpc.CallOption) (*pb.UnregisterClientResponse, error) {
 	return &pb.UnregisterClientResponse{Success: true}, nil
 }

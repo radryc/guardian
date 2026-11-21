@@ -1351,6 +1351,11 @@ func (s *Server) saveBundle(ctx context.Context, partitionName string, req *Save
 	if err := paths.ValidatePartitionName(partitionName); err != nil {
 		return nil, err
 	}
+	if managed, repo, err := s.partitionRepoManaged(ctx, partitionName); err != nil {
+		return nil, err
+	} else if managed && !allowRepoManagedWrites() {
+		return nil, repoManagedWriteError(partitionName, repo)
+	}
 	req.Partition.APIVersion = defaultString(req.Partition.APIVersion, "guardian/v1alpha1")
 	req.Partition.Kind = defaultString(req.Partition.Kind, "Partition")
 	req.Partition.Metadata.Name = defaultString(req.Partition.Metadata.Name, partitionName)

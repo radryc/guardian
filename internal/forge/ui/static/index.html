@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Forge — Guardian partition workbench</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark">F</span>
+          <div>
+            <strong>Forge</strong>
+            <small>partition workbench</small>
+          </div>
+        </div>
+        <div class="repo" id="repoInfo">loading repository…</div>
+        <nav class="nav">
+          <button data-tab="overview" class="active">Overview</button>
+          <button data-tab="partition">Partition</button>
+          <button data-tab="assets">Assets</button>
+          <button data-tab="alerts">Alerts</button>
+          <button data-tab="validate">Validate</button>
+          <button data-tab="submit">Submit</button>
+          <button data-tab="status">Status</button>
+        </nav>
+        <div class="section-label">Partitions</div>
+        <div class="partition-list" id="partitionList"></div>
+        <div class="sidebar-foot">
+          <span id="displayBadge" class="badge hidden"></span>
+          <small>Forge never writes Guardian state. Changes go through MonoFS review.</small>
+        </div>
+      </aside>
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <h1 id="title">Overview</h1>
+            <p id="subtitle" class="muted"></p>
+          </div>
+          <div class="actions" id="topActions"></div>
+        </header>
+        <div id="toast" class="toast hidden"></div>
+        <section id="content" class="content"></section>
+      </main>
+    </div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

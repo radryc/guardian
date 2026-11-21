@@ -258,3 +258,35 @@ func TestPublishRequiresRepositoryResult(t *testing.T) {
 		t.Fatalf("expected missing result error, got %v", err)
 	}
 }
+
+func TestPublishForwardsPullRequestTitleAndBody(t *testing.T) {
+	router := &fakeRouter{publish: &fakePublishStream{events: publishedEvents()}}
+	publisher := New(router)
+
+	_, err := publisher.Publish(context.Background(), PublishRequest{
+		WorkspaceID:      "ws-1",
+		CommitMessage:    "checkout: add api intent",
+		PullRequestTitle: "checkout: add api intent",
+		PullRequestBody:  "## Plan\n- create Compute api\n",
+		Repository: Repository{
+			StorageID:   "strata",
+			DisplayPath: "github.com/example/strata",
+			RepoURL:     "https://github.com/example/strata.git",
+			Operations: []Operation{
+				{Kind: OperationUpsert, Path: "partitions/checkout/config.yaml", Content: []byte("kind: Partition\n")},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if router.lastReq == nil {
+		t.Fatal("publish request was not sent")
+	}
+	if got := router.lastReq.GetPullRequestTitle(); got != "checkout: add api intent" {
+		t.Fatalf("pull request title = %q", got)
+	}
+	if got := router.lastReq.GetPullRequestBody(); got != "## Plan\n- create Compute api\n" {
+		t.Fatalf("pull request body = %q", got)
+	}
+}

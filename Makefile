@@ -54,7 +54,8 @@ GUARDIAN_KUBE_CONTEXT ?=
 	pusher-k8s-build pusher-k8s-image-build pusher-k8s-up pusher-k8s-down pusher-k8s-logs \
 	pusher-gcp-build pusher-gcp-image-build \
 	dogfood-secret dogfood-push dogfood-up dogfood-deploy dogfood-status dogfood-stop dogfood-clean \
-	bootstrap bootstrap-down
+	bootstrap bootstrap-down \
+	forge-build forge-test forge-cross
 
 help:
 	@printf "Usage:\n"
@@ -67,6 +68,9 @@ help:
 	@printf "  make dogfood-stop     Stop the dogfood pusher and the make deploy-s3 stack\n"
 	@printf "  make dogfood-clean    Stop the dogfood pusher and clean the deploy-s3 stack\n"
 	@printf "  make ui-build         Compile the TypeScript Guardian UI into static/app.js\n"
+	@printf "  make forge-build      Build the Forge authoring CLI/UI binary\n"
+	@printf "  make forge-test       Run Forge package tests\n"
+	@printf "  make forge-cross      Cross-compile Forge for linux, windows, and darwin\n"
 	@printf "  make guardian-up      Build and run Guardian in Docker only\n"
 	@printf "  make pusher-docker-up Build and start the docker pusher against MonoFS\n"
 	@printf "  make pusher-docker-image-build Build the guardian-pusher-docker Docker image\n"
@@ -94,6 +98,19 @@ $(GUARDIAN_BIN_DIR):
 
 ui-build:
 	npm run build:ui
+
+forge-build:
+	go build -o bin/forge ./cmd/forge
+
+forge-test:
+	go test ./cmd/forge/... ./internal/forge/... ./internal/bundle/...
+
+forge-cross:
+	mkdir -p dist
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/forge-linux-amd64 ./cmd/forge
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o dist/forge-linux-arm64 ./cmd/forge
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o dist/forge-windows-amd64.exe ./cmd/forge
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o dist/forge-darwin-arm64 ./cmd/forge
 
 guardian-build:
 	@if [ ! -d "$(MONOFS_DIR)" ]; then echo "MonoFS repo not found at $(MONOFS_DIR)"; exit 1; fi

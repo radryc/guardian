@@ -82,6 +82,7 @@ type routerClient interface {
 	UnregisterClient(ctx context.Context, in *pb.UnregisterClientRequest, opts ...grpc.CallOption) (*pb.UnregisterClientResponse, error)
 	GetClusterInfo(ctx context.Context, in *pb.ClusterInfoRequest, opts ...grpc.CallOption) (*pb.ClusterInfoResponse, error)
 	ClientHeartbeat(ctx context.Context, in *pb.ClientHeartbeatRequest, opts ...grpc.CallOption) (*pb.ClientHeartbeatResponse, error)
+	GetWorkspaceSyncJob(ctx context.Context, in *pb.GetWorkspaceSyncJobRequest, opts ...grpc.CallOption) (*pb.WorkspaceSyncJob, error)
 }
 
 type ClientConfig struct {

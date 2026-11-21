@@ -46,6 +46,15 @@ func (l *liveRouter) PublishWorkspace(ctx context.Context, in *pb.PublishWorkspa
 	return router.PublishWorkspace(ctx, in, opts...)
 }
 
+// GetWorkspaceSyncJob returns the current state of a workspace sync job.
+func (c *GRPCClient) GetWorkspaceSyncJob(ctx context.Context, in *pb.GetWorkspaceSyncJobRequest, opts ...grpc.CallOption) (*pb.WorkspaceSyncJob, error) {
+	router := c.currentRouter()
+	if router == nil {
+		return nil, fmt.Errorf("monofs router connection is not available")
+	}
+	return router.GetWorkspaceSyncJob(ctx, in, opts...)
+}
+
 func (c *GRPCClient) currentRouter() routerClient {
 	c.mu.Lock()
 	defer c.mu.Unlock()
