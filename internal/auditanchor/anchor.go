@@ -27,6 +27,9 @@ const (
 	DefaultRetentionDays = 365
 )
 
+// GenesisPrevHash is the all-zero previous hash that starts every writer chain.
+const GenesisPrevHash = "0000000000000000000000000000000000000000000000000000000000000000"
+
 var emptySHA256 = func() string {
 	sum := sha256.Sum256(nil)
 	return hex.EncodeToString(sum[:])
@@ -257,10 +260,29 @@ func VerifyBundle(manifest Manifest, events []EventRecord, expectedPrevManifestH
 
 func verifyAndCollectEventHashes(events []EventRecord, strictChain bool) ([]string, error) {
 	hashes := make([]string, len(events))
-	var prevHash string
+	var (
+		prevHash      string
+		currentWriter string
+		expectedSeq   uint64
+	)
 	for i, ev := range events {
 		if err := verifyRawJSONFields(ev); err != nil {
 			return nil, fmt.Errorf("event %d: %w", i, err)
+		}
+		// Each writer has its own genesis -> head chain. ClickHouse rows are
+		// ordered by (writer_id, seq), so a writer change starts a new chain.
+		if i == 0 || ev.WriterID != currentWriter {
+			currentWriter = ev.WriterID
+			prevHash = ""
+			expectedSeq = 0
+			if ev.PrevHash != "" && strings.ToLower(strings.TrimSpace(ev.PrevHash)) != GenesisPrevHash {
+				return nil, fmt.Errorf("event %d: first event of writer %q has prevHash %q, want genesis", i, ev.WriterID, ev.PrevHash)
+			}
+		} else if ev.PrevHash != "" && strings.ToLower(strings.TrimSpace(ev.PrevHash)) != prevHash {
+			return nil, fmt.Errorf("event %d prevHash mismatch: got %q, want %q", i, ev.PrevHash, prevHash)
+		}
+		if ev.Sequence != expectedSeq {
+			return nil, fmt.Errorf("event %d seq mismatch for writer %q: got %d, want %d", i, ev.WriterID, ev.Sequence, expectedSeq)
 		}
 		recomputed, err := ComputeEventHash(ev)
 		if err != nil {
@@ -269,16 +291,9 @@ func verifyAndCollectEventHashes(events []EventRecord, strictChain bool) ([]stri
 		if ev.EventHash != "" && strings.ToLower(strings.TrimSpace(ev.EventHash)) != recomputed {
 			return nil, fmt.Errorf("event %d hash mismatch: got %q, want %q", i, ev.EventHash, recomputed)
 		}
-		if i > 0 {
-			if ev.PrevHash != "" && strings.ToLower(strings.TrimSpace(ev.PrevHash)) != prevHash {
-				return nil, fmt.Errorf("event %d prevHash mismatch: got %q, want %q", i, ev.PrevHash, prevHash)
-			}
-			if strictChain && events[i-1].EventHash != "" && strings.ToLower(strings.TrimSpace(ev.PrevHash)) != prevHash {
-				return nil, fmt.Errorf("event %d broken hash chain: prevHash %q does not match prior event hash %q", i, ev.PrevHash, prevHash)
-			}
-		}
 		hashes[i] = recomputed
 		prevHash = recomputed
+		expectedSeq++
 	}
 	return hashes, nil
 }
