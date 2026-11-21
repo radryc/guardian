@@ -979,6 +979,13 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 		reg.Register(img.Group, img.Name, img.Cmd)
 	}
 
+	// Display-profile commands (presentation-only key mapping)
+	if store != nil {
+		for _, d := range displayCommands(store, printer) {
+			reg.Register(d.group, d.name, d.cmd)
+		}
+	}
+
 	// Release command
 	reg.Register("release", "run", releaseCommand(printer))
 
