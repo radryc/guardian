@@ -395,7 +395,7 @@ func (s *Server) serveWithDisplay(w http.ResponseWriter, r *http.Request, profil
 	s.serveWithAudit(buffer, r)
 	body := buffer.body.Bytes()
 	if buffer.status >= 200 && buffer.status < 300 && strings.Contains(buffer.header.Get("Content-Type"), "json") {
-		if mapped, mapErr := display.MapJSON(body, profile, ""); mapErr == nil {
+		if mapped, mapErr := display.MapJSON(body, profile, display.SurfaceForPath(r.URL.Path)); mapErr == nil {
 			body = mapped
 		}
 	}
@@ -496,6 +496,10 @@ func (s *Server) emitRequestAudit(r *http.Request, status int) {
 		reason = fmt.Sprintf("status_%d", status)
 	}
 	id, _ := coreauthz.IdentityFromContext(r.Context())
+	detail := ""
+	if requested := displayRequestedProfile(r); requested != "" {
+		detail = "displayProfile=" + requested
+	}
 	ev := audit.Event{
 		Service:       "guardian",
 		Scope:         "ui",
@@ -514,6 +518,7 @@ func (s *Server) emitRequestAudit(r *http.Request, status int) {
 		RequestID:     r.Header.Get("X-Request-ID"),
 		SourceIP:      r.RemoteAddr,
 		UserAgent:     r.UserAgent(),
+		Detail:        detail,
 	}
 	_ = s.auditEmitter.EmitDurable(r.Context(), ev)
 }
