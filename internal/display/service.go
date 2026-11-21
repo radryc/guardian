@@ -232,6 +232,7 @@ func (s *Service) Bundle(ctx context.Context) (*display.Bundle, string, error) {
 	encoded, _ := json.Marshal(bundle)
 	sum := sha256.Sum256(encoded)
 	version := time.Now().UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(sum[:4])
+	bundle.Version = version
 
 	s.mu.Lock()
 	s.bundle = bundle

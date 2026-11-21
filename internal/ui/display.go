@@ -71,22 +71,23 @@ func (s *Server) handleDisplayProfileRoute(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusNotImplemented, fmt.Errorf("display profiles are not configured"))
 		return
 	}
-	subject := subjectFromRequest(r)
-	if subject == "" {
-		writeError(w, http.StatusForbidden, fmt.Errorf("authentication required"))
-		return
-	}
 	rest := strings.TrimPrefix(r.URL.Path, "/api/display-profiles/")
 	if rest == "" {
 		http.NotFound(w, r)
 		return
 	}
+	if rest == "bundle" {
+		s.handleDisplayBundle(w, r)
+		return
+	}
+	subject := subjectFromRequest(r)
+	if subject == "" {
+		writeError(w, http.StatusForbidden, fmt.Errorf("authentication required"))
+		return
+	}
 	switch rest {
 	case "effective":
 		s.handleDisplayEffective(w, r, subject)
-		return
-	case "bundle":
-		s.handleDisplayBundle(w, r)
 		return
 	}
 	id := strings.Trim(strings.Split(rest, "/")[0], "/")
@@ -169,6 +170,12 @@ func (s *Server) handleDisplayBundle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(display.VersionHeader, version)
 	w.Header().Set("ETag", `"`+version+`"`)
 	writeJSON(w, http.StatusOK, bundle)
+}
+
+// CanReadDisplayBundle reports whether the request carries the service token,
+// loopback identity, or an admin session allowed to read the bundle.
+func (s *Server) CanReadDisplayBundle(r *http.Request) bool {
+	return s.canReadDisplayBundle(r)
 }
 
 func (s *Server) canReadDisplayBundle(r *http.Request) bool {
