@@ -85,6 +85,17 @@ export async function initDisplaySwitcher(): Promise<void> {
   } catch {
     /* keep canonical-only */
   }
+  if (!currentDisplayProfile()) {
+    try {
+      const res = await fetch("/api/display-profiles/effective", { headers: { Accept: "application/json" } });
+      if (res.ok) {
+        const body = await res.json();
+        if (body.profile) await setDisplayProfile(body.profile);
+      }
+    } catch {
+      /* canonical */
+    }
+  }
   const active = currentDisplayProfile() || "canonical";
   select.value = active;
   select.addEventListener("change", () => {

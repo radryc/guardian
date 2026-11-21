@@ -228,10 +228,12 @@ func (s *Service) Bundle(ctx context.Context) (*display.Bundle, string, error) {
 					continue
 				}
 				bundle.Assignments = append(bundle.Assignments, display.Assignment{
-					Repo:      repo.Name,
-					Partition: binding.Partition,
-					Profile:   binding.Display.Profile,
-					Keys:      binding.Display.Keys,
+					Repo:             repo.Name,
+					Partition:        binding.Partition,
+					Profile:          binding.Display.Profile,
+					Keys:             binding.Display.Keys,
+					Surfaces:         binding.Display.Surfaces,
+					IncludeCanonical: binding.Display.IncludeCanonical,
 				})
 			}
 		}
@@ -265,6 +267,7 @@ func (s *Service) Bundle(ctx context.Context) (*display.Bundle, string, error) {
 	sum := sha256.Sum256(encoded)
 	version := time.Now().UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(sum[:4])
 	bundle.Version = version
+	display.SetBundleVersion(version)
 
 	s.mu.Lock()
 	s.bundle = bundle

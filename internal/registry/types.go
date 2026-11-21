@@ -146,8 +146,10 @@ type RepoBinding struct {
 
 // DisplayBinding is the repo-owned display profile for one assignment.
 type DisplayBinding struct {
-	Profile string            `json:"profile,omitempty" yaml:"profile,omitempty"`
-	Keys    map[string]string `json:"keys,omitempty" yaml:"keys,omitempty"`
+	Profile          string                       `json:"profile,omitempty" yaml:"profile,omitempty"`
+	Keys             map[string]string            `json:"keys,omitempty" yaml:"keys,omitempty"`
+	Surfaces         map[string]map[string]string `json:"surfaces,omitempty" yaml:"surfaces,omitempty"`
+	IncludeCanonical bool                         `json:"includeCanonical,omitempty" yaml:"includeCanonical,omitempty"`
 }
 
 // PayloadDir returns the MonoFS payload directory for this binding.
