@@ -59,3 +59,38 @@ jobs:
         with:
           repo-checkout: false
           work-dir: guardian
+
+  forge:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: guardian
+      - uses: actions/checkout@v7
+        with:
+          repository: radryc/kvs
+          path: kvs
+      - uses: actions/checkout@v7
+        with:
+          repository: radryc/monofs
+          path: monofs
+      - uses: actions/checkout@v7
+        with:
+          repository: radryc/cfg
+          path: cfg
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: guardian/go.mod
+          cache-dependency-path: guardian/go.sum
+      - name: Forge tests
+        working-directory: guardian
+        shell: bash
+        run: go test ./cmd/forge/... ./internal/forge/... ./internal/bundle/...
+      - name: Build forge
+        working-directory: guardian
+        shell: bash
+        run: go build ./cmd/forge

@@ -627,6 +627,7 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 	reg.Register("partition", "set-config", storeCommand(func() *command.Command {
 		flags := flag.NewFlagSet("partition set-config", flag.ContinueOnError)
 		filePath := flags.String("file", "", "partition manifest file")
+		breakGlass := flags.Bool("break-glass", false, "allow a direct write to a repo-managed partition (audited)")
 		return &command.Command{Description: "Create or update only the partition config from file", Flags: flags, Run: func(ctx context.Context, args []string) error {
 			if *filePath == "" {
 				return fmt.Errorf("--file is required")
@@ -640,6 +641,9 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 				return err
 			}
 			if err := validator.ValidatePartition(parsed); err != nil {
+				return err
+			}
+			if err := guardPartitionWrite(ctx, store, parsed.Metadata.Name, *breakGlass); err != nil {
 				return err
 			}
 			normalized, err := yaml.Marshal(parsed)

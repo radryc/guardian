@@ -53,7 +53,12 @@ type PublishRequest struct {
 	CommitMessage  string
 	AuthorName     string
 	AuthorEmail    string
-	Repository     Repository
+	// PullRequestTitle and PullRequestBody, when set, are used verbatim for the
+	// review request MonoFS opens. MonoFS still appends its job and repository
+	// traceability lines. Empty values fall back to the commit message.
+	PullRequestTitle string
+	PullRequestBody  string
+	Repository       Repository
 }
 
 // Repository is the bundle repository entry.
@@ -85,9 +90,12 @@ type Operation struct {
 
 // PublishResult is the outcome for the published repository.
 type PublishResult struct {
-	BundleID   string           `json:"bundleId"`
-	Repository RepositoryResult `json:"repository"`
-	Events     []string         `json:"events,omitempty"`
+	BundleID    string           `json:"bundleId"`
+	JobID       string           `json:"jobId,omitempty"`
+	JobState    string           `json:"jobState,omitempty"`
+	WorkspaceID string           `json:"workspaceId,omitempty"`
+	Repository  RepositoryResult `json:"repository"`
+	Events      []string         `json:"events,omitempty"`
 }
 
 // RepositoryResult mirrors the MonoFS workspace repository result.
@@ -163,12 +171,14 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishRe
 		AuthorName:              req.AuthorName,
 		AuthorEmail:             req.AuthorEmail,
 		RequestedBranchStrategy: strategy,
+		PullRequestTitle:        req.PullRequestTitle,
+		PullRequestBody:         req.PullRequestBody,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("start workspace publish: %w", err)
 	}
 
-	result := &PublishResult{BundleID: bundleID}
+	result := &PublishResult{BundleID: bundleID, WorkspaceID: req.WorkspaceID}
 	for {
 		event, recvErr := stream.Recv()
 		if recvErr == io.EOF {
@@ -179,6 +189,14 @@ func (p *Publisher) Publish(ctx context.Context, req PublishRequest) (*PublishRe
 		}
 		if message := strings.TrimSpace(event.GetMessage()); message != "" {
 			result.Events = append(result.Events, message)
+		}
+		if job := event.GetJob(); job != nil {
+			if job.GetJobId() != "" {
+				result.JobID = job.GetJobId()
+			}
+			if job.GetState() != pb.WorkspaceSyncState_WORKSPACE_SYNC_STATE_UNSPECIFIED {
+				result.JobState = job.GetState().String()
+			}
 		}
 		if repo := event.GetRepository(); repo != nil {
 			result.Repository = repositoryResult(repo)

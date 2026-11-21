@@ -23,6 +23,7 @@ model and trust boundaries.
 | --- | --- |
 | `guardiand` | Control plane: reconciler, result processor, observed collector, alerting, UI/API |
 | `guardianctl` | Operator CLI: partitions, intents, repos, pushers, AWS, images, bootstrap |
+| `forge` | Repository workbench: discover, author, validate, plan, and submit partition changes as reviewed PRs |
 | `guardian-pusher-k8s` | Kubernetes driver (client-go or kubectl), optional observed read API |
 | `guardian-pusher-docker` | Docker driver |
 | `guardian-pusher-aws` | AWS driver (CDK + SDK), account scans, observed read API (`:19090`) |
@@ -45,6 +46,24 @@ model and trust boundaries.
 - **Rollout / rollback** — spec changes on applied intents become deployment
   revisions; failed applies record a rollback and preserve the pushed manifest
   for retry, while operators can restore archived tags explicitly.
+
+### Authoring (Forge)
+
+Forge prepares the repository before Guardian sees it: it discovers workloads,
+authors partition manifests and assets, validates offline, and submits the change
+as a reviewed PR/MR through MonoFS. It never writes Guardian state.
+
+```bash
+make forge-build
+./bin/forge repo init --name acme-platform --source https://github.com/acme/platform
+./bin/forge discover --root .
+./bin/forge validate --root . --strict
+./bin/forge submit --root . --partition checkout --message "checkout: add api"
+./bin/forge ui --root .
+```
+
+See [docs/design/forge.md](docs/design/forge.md) for the design and
+[docs/forge/README.md](docs/forge/README.md) for the command reference.
 
 ### Secret mounts (`compute.secretMounts`)
 
@@ -110,6 +129,7 @@ externally (for example `tlsx install`).
 ```bash
 make ui-build                                        # TypeScript UI -> static assets
 go build -o guardianctl ./cmd/guardianctl            # CLI
+go build -o forge       ./cmd/forge                  # repository workbench (CLI + embedded UI)
 go build -o guardiand   ./cmd/guardiand              # daemon
 go build -o guardian-pusher-docker ./cmd/guardian-pusher-docker
 # container images need sibling build contexts:
