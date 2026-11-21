@@ -11,9 +11,9 @@ import (
 func TestServiceLifecycle(t *testing.T) {
 	ctx := context.Background()
 	svc := NewService(memory.New())
-	subject := "user:alice@example.com"
+	subjects := []string{"user:alice@example.com"}
 
-	created, err := svc.Create(ctx, subject, shared.Profile{
+	created, err := svc.Create(ctx, subjects, shared.Profile{
 		ID:    "engineering",
 		Scope: "personal",
 		Keys:  map[string]string{"partition": "eng_service", "intent": "deployment"},
@@ -21,11 +21,11 @@ func TestServiceLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if created.Owner != subject {
-		t.Fatalf("Owner = %q, want %q", created.Owner, subject)
+	if created.Owner != subjects[0] {
+		t.Fatalf("Owner = %q, want %q", created.Owner, subjects[0])
 	}
 
-	list, err := svc.List(ctx, subject, false)
+	list, err := svc.List(ctx, subjects, false)
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
@@ -33,22 +33,22 @@ func TestServiceLifecycle(t *testing.T) {
 		t.Fatalf("List() = %+v", list)
 	}
 
-	if err := svc.SetDefault(ctx, subject, "engineering"); err != nil {
+	if err := svc.SetDefault(ctx, subjects, "engineering"); err != nil {
 		t.Fatalf("SetDefault() error = %v", err)
 	}
 	bundle, _, err := svc.Bundle(ctx)
 	if err != nil {
 		t.Fatalf("Bundle() error = %v", err)
 	}
-	if bundle.Defaults[subject] != "engineering" {
+	if bundle.Defaults[subjects[0]] != "engineering" {
 		t.Fatalf("bundle defaults = %+v", bundle.Defaults)
 	}
-	profile, _, err := svc.Resolve(ctx, subject, "")
+	profile, _, err := svc.Resolve(ctx, subjects, "")
 	if err != nil || profile == nil || profile.ID != "engineering" {
 		t.Fatalf("Resolve() = %+v, %v", profile, err)
 	}
 
-	if _, err := svc.Get(ctx, "user:bob@example.com", "engineering", false); err == nil {
+	if _, err := svc.Get(ctx, []string{"user:bob@example.com"}, "engineering", false); err == nil {
 		t.Fatal("expected another user's personal profile to be invisible")
 	}
 }

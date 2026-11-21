@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	neturl "net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -367,6 +368,11 @@ func New(opts Options) (*Server, error) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.displayProfiles != nil {
+		if bundle, _, err := s.displayProfiles.Bundle(r.Context()); err == nil {
+			r.URL.RawQuery = neturl.Values(bundle.TranslateQuery(r.URL.Query())).Encode()
+		}
+	}
 	if profileID := displayRequestedProfile(r); profileID != "" && s.displayProfiles != nil &&
 		strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/api/display-profiles") {
 		s.serveWithDisplay(w, r, profileID)
@@ -386,7 +392,7 @@ func (s *Server) serveWithAudit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveWithDisplay(w http.ResponseWriter, r *http.Request, profileID string) {
-	profile, version, err := s.displayProfiles.Resolve(r.Context(), subjectFromRequest(r), profileID)
+	profile, version, err := s.displayProfiles.Resolve(r.Context(), subjectsFromRequest(r), profileID)
 	if err != nil || profile == nil {
 		s.serveWithAudit(w, r)
 		return

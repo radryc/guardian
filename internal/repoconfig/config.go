@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/radryc/guardian/internal/registry"
+	"github.com/radryc/monofs/pkg/display"
 	"gopkg.in/yaml.v3"
 )
 
@@ -114,9 +115,21 @@ func (c *Config) Validate() error {
 	if c.Repo.Partition != "" && !namePattern.MatchString(c.Repo.Partition) {
 		return fmt.Errorf("invalid partition name %q", c.Repo.Partition)
 	}
-	for _, binding := range c.Repo.Bindings {
+	for i := range c.Repo.Bindings {
+		binding := &c.Repo.Bindings[i]
 		if !namePattern.MatchString(strings.TrimSpace(binding.Partition)) {
 			return fmt.Errorf("invalid partition name %q in repo.bindings", binding.Partition)
+		}
+		if binding.Display == nil {
+			continue
+		}
+		profileID := strings.TrimSpace(binding.Display.Profile)
+		if profileID == "" {
+			profileID = c.Repo.Name + "-" + binding.Partition
+			binding.Display.Profile = profileID
+		}
+		if err := (&display.Profile{ID: profileID, Keys: binding.Display.Keys}).Validate(); err != nil {
+			return fmt.Errorf("repo.bindings[%d].display: %w", i, err)
 		}
 	}
 	if c.Repo.Name == "" && (c.Repo.Partition != "" || len(c.Repo.Bindings) > 0) {

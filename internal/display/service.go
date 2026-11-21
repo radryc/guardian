@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/radryc/guardian/internal/registry"
 	"github.com/radryc/guardian/pkg/guardianapi"
 	"github.com/radryc/monofs/pkg/display"
 )
@@ -42,7 +43,7 @@ func NewService(store guardianapi.Store) *Service {
 func ProfilePath(id string) string { return path.Join(profilesDir, id+".json") }
 
 // List returns the profiles visible to subject. Admins see every profile.
-func (s *Service) List(ctx context.Context, subject string, admin bool) ([]display.Profile, error) {
+func (s *Service) List(ctx context.Context, subjects []string, admin bool) ([]display.Profile, error) {
 	entries, err := s.store.ListDir(ctx, profilesDir)
 	if err != nil {
 		return nil, err
@@ -52,7 +53,7 @@ func (s *Service) List(ctx context.Context, subject string, admin bool) ([]displ
 		if entry.IsDir || !strings.HasSuffix(entry.Name, ".json") {
 			continue
 		}
-		profile, err := s.Get(ctx, subject, strings.TrimSuffix(entry.Name, ".json"), admin)
+		profile, err := s.Get(ctx, subjects, strings.TrimSuffix(entry.Name, ".json"), admin)
 		if err != nil {
 			continue
 		}
@@ -63,7 +64,7 @@ func (s *Service) List(ctx context.Context, subject string, admin bool) ([]displ
 }
 
 // Get returns one profile if the caller may read it.
-func (s *Service) Get(ctx context.Context, subject, id string, admin bool) (display.Profile, error) {
+func (s *Service) Get(ctx context.Context, subjects []string, id string, admin bool) (display.Profile, error) {
 	raw, err := s.store.ReadFile(ctx, ProfilePath(id))
 	if err != nil {
 		return display.Profile{}, err
@@ -72,14 +73,14 @@ func (s *Service) Get(ctx context.Context, subject, id string, admin bool) (disp
 	if err := json.Unmarshal(raw, &profile); err != nil {
 		return display.Profile{}, fmt.Errorf("decode display profile: %w", err)
 	}
-	if !canRead(profile, subject, admin) {
-		return display.Profile{}, fmt.Errorf("display profile %q is not visible to %q", id, subject)
+	if !canRead(profile, subjects, admin) {
+		return display.Profile{}, fmt.Errorf("display profile %q is not visible", id)
 	}
 	return profile, nil
 }
 
 // Create validates and stores a profile owned by subject.
-func (s *Service) Create(ctx context.Context, subject string, profile display.Profile, admin bool) (display.Profile, error) {
+func (s *Service) Create(ctx context.Context, subjects []string, profile display.Profile, admin bool) (display.Profile, error) {
 	if err := profile.Validate(); err != nil {
 		return display.Profile{}, err
 	}
@@ -90,12 +91,21 @@ func (s *Service) Create(ctx context.Context, subject string, profile display.Pr
 		return display.Profile{}, fmt.Errorf("only platform admins may create %s profiles", profile.Scope)
 	}
 	if profile.Scope == "personal" && profile.Owner == "" {
-		profile.Owner = subject
+		profile.Owner = primarySubject(subjects)
+	}
+	if profile.Scope == "team" {
+		profile.Owner = "team:" + profile.Team
+		if len(profile.Readers) == 0 {
+			profile.Readers = []string{profile.Owner}
+		}
+		if len(profile.Maintainers) == 0 {
+			profile.Maintainers = []string{"team:" + profile.Team + "-maintainers"}
+		}
 	}
 	if _, err := s.store.ReadFile(ctx, ProfilePath(profile.ID)); err == nil {
 		return display.Profile{}, fmt.Errorf("display profile %q already exists", profile.ID)
 	}
-	if err := s.write(ctx, subject, profile); err != nil {
+	if err := s.write(ctx, primarySubject(subjects), profile); err != nil {
 		return display.Profile{}, err
 	}
 	s.invalidate()
@@ -103,12 +113,12 @@ func (s *Service) Create(ctx context.Context, subject string, profile display.Pr
 }
 
 // Update replaces an existing profile after authorization.
-func (s *Service) Update(ctx context.Context, subject, id string, profile display.Profile, admin bool) (display.Profile, error) {
-	current, err := s.Get(ctx, subject, id, admin)
+func (s *Service) Update(ctx context.Context, subjects []string, id string, profile display.Profile, admin bool) (display.Profile, error) {
+	current, err := s.Get(ctx, subjects, id, admin)
 	if err != nil {
 		return display.Profile{}, err
 	}
-	if !canWrite(current, subject, admin) {
+	if !canWrite(current, subjects, admin) {
 		return display.Profile{}, fmt.Errorf("not authorized to update display profile %q", id)
 	}
 	profile.ID = id
@@ -121,7 +131,7 @@ func (s *Service) Update(ctx context.Context, subject, id string, profile displa
 	if err := profile.Validate(); err != nil {
 		return display.Profile{}, err
 	}
-	if err := s.write(ctx, subject, profile); err != nil {
+	if err := s.write(ctx, primarySubject(subjects), profile); err != nil {
 		return display.Profile{}, err
 	}
 	s.invalidate()
@@ -129,17 +139,17 @@ func (s *Service) Update(ctx context.Context, subject, id string, profile displa
 }
 
 // Delete removes a profile after authorization.
-func (s *Service) Delete(ctx context.Context, subject, id string, admin bool) error {
-	current, err := s.Get(ctx, subject, id, admin)
+func (s *Service) Delete(ctx context.Context, subjects []string, id string, admin bool) error {
+	current, err := s.Get(ctx, subjects, id, admin)
 	if err != nil {
 		return err
 	}
-	if !canWrite(current, subject, admin) {
+	if !canWrite(current, subjects, admin) {
 		return fmt.Errorf("not authorized to delete display profile %q", id)
 	}
 	_, err = s.store.DeletePaths(ctx, guardianapi.DeleteBatch{
 		Deletes: []guardianapi.PathDelete{{LogicalPath: ProfilePath(id)}},
-		Context: mutationContext(subject, "delete display profile"),
+		Context: mutationContext(primarySubject(subjects), "delete display profile"),
 	})
 	if err != nil {
 		return err
@@ -149,31 +159,36 @@ func (s *Service) Delete(ctx context.Context, subject, id string, admin bool) er
 }
 
 // Default returns the caller's default profile id, or "".
-func (s *Service) Default(ctx context.Context, subject string) (string, error) {
+func (s *Service) Default(ctx context.Context, subjects []string) (string, error) {
 	defaults, err := s.defaults(ctx)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(defaults[subject]), nil
+	for _, subject := range subjects {
+		if id := strings.TrimSpace(defaults[subject]); id != "" {
+			return id, nil
+		}
+	}
+	return "", nil
 }
 
 // SetDefault stores the caller's default profile.
-func (s *Service) SetDefault(ctx context.Context, subject, profileID string) error {
+func (s *Service) SetDefault(ctx context.Context, subjects []string, profileID string) error {
 	if strings.TrimSpace(profileID) == "" || profileID == "canonical" {
 		return fmt.Errorf("profile id is required")
 	}
-	if _, err := s.Get(ctx, subject, profileID, false); err != nil {
+	if _, err := s.Get(ctx, subjects, profileID, false); err != nil {
 		return err
 	}
 	defaults, err := s.defaults(ctx)
 	if err != nil {
 		return err
 	}
-	defaults[subject] = profileID
+	defaults[primarySubject(subjects)] = profileID
 	payload, _ := json.MarshalIndent(defaults, "", "  ")
 	_, err = s.store.UpsertFiles(ctx, guardianapi.MutationBatch{
 		Writes:  []guardianapi.PathWrite{{LogicalPath: defaultsPath, Content: append(payload, '\n')}},
-		Context: mutationContext(subject, "set default display profile"),
+		Context: mutationContext(primarySubject(subjects), "set default display profile"),
 	})
 	return err
 }
@@ -201,11 +216,26 @@ func (s *Service) Bundle(ctx context.Context) (*display.Bundle, string, error) {
 	}
 	s.mu.Unlock()
 
-	profiles, err := s.List(ctx, "system", true)
+	profiles, err := s.List(ctx, []string{"system"}, true)
 	if err != nil {
 		return nil, "", err
 	}
 	bundle := &display.Bundle{Profiles: []display.CompiledProfile{}, Defaults: map[string]string{}}
+	if repos, repoErr := registry.New(s.store).ListRepos(ctx); repoErr == nil {
+		for _, repo := range repos {
+			for _, binding := range repo.Bindings {
+				if binding.Display == nil || len(binding.Display.Keys) == 0 {
+					continue
+				}
+				bundle.Assignments = append(bundle.Assignments, display.Assignment{
+					Repo:      repo.Name,
+					Partition: binding.Partition,
+					Profile:   binding.Display.Profile,
+					Keys:      binding.Display.Keys,
+				})
+			}
+		}
+	}
 	if defaults, err := s.defaults(ctx); err == nil {
 		bundle.Defaults = defaults
 	}
@@ -217,9 +247,11 @@ func (s *Service) Bundle(ctx context.Context) (*display.Bundle, string, error) {
 		for _, reader := range profile.Readers {
 			subjects = append(subjects, reader)
 		}
+		subjects = append(subjects, profile.Maintainers...)
 		bundle.Profiles = append(bundle.Profiles, display.CompiledProfile{
 			ID:               profile.ID,
 			Subjects:         subjects,
+			Maintainers:      profile.Maintainers,
 			Keys:             profile.Keys,
 			Surfaces:         profile.Surfaces,
 			IncludeCanonical: profile.IncludeCanonical,
@@ -244,15 +276,15 @@ func (s *Service) Bundle(ctx context.Context) (*display.Bundle, string, error) {
 
 // Resolve returns the profile for a request. requested may be empty, in which
 // case the caller's default is used.
-func (s *Service) Resolve(ctx context.Context, subject, requested string) (*display.CompiledProfile, string, error) {
+func (s *Service) Resolve(ctx context.Context, subjects []string, requested string) (*display.CompiledProfile, string, error) {
 	bundle, version, err := s.Bundle(ctx)
 	if err != nil {
 		return nil, "", err
 	}
 	if strings.TrimSpace(requested) == "" {
-		requested, _ = s.Default(ctx, subject)
+		requested, _ = s.Default(ctx, subjects)
 	}
-	profile, ok := bundle.Profile(subject, requested)
+	profile, ok := bundle.ProfileFor(subjects, requested)
 	if !ok {
 		return nil, version, fmt.Errorf("display profile %q is not available", requested)
 	}
@@ -286,24 +318,44 @@ func mutationContext(subject, reason string) guardianapi.MutationContext {
 	}
 }
 
-func canRead(profile display.Profile, subject string, admin bool) bool {
-	if admin || profile.Scope == "global" {
-		return true
+func primarySubject(subjects []string) string {
+	for _, subject := range subjects {
+		if strings.TrimSpace(subject) != "" {
+			return strings.TrimSpace(subject)
+		}
 	}
-	if profile.Owner == subject {
-		return true
-	}
-	for _, reader := range profile.Readers {
-		if reader == subject {
+	return ""
+}
+
+func subjectMatches(candidates []string, subject string) bool {
+	for _, candidate := range candidates {
+		if candidate == "*" || candidate == subject {
 			return true
 		}
 	}
 	return false
 }
 
-func canWrite(profile display.Profile, subject string, admin bool) bool {
+func canRead(profile display.Profile, subjects []string, admin bool) bool {
 	if admin || profile.Scope == "global" {
 		return true
 	}
-	return profile.Owner == subject
+	for _, subject := range subjects {
+		if profile.Owner == subject || subjectMatches(profile.Readers, subject) || subjectMatches(profile.Maintainers, subject) {
+			return true
+		}
+	}
+	return false
+}
+
+func canWrite(profile display.Profile, subjects []string, admin bool) bool {
+	if admin || profile.Scope == "global" {
+		return true
+	}
+	for _, subject := range subjects {
+		if profile.Owner == subject || subjectMatches(profile.Maintainers, subject) {
+			return true
+		}
+	}
+	return false
 }

@@ -21,23 +21,23 @@ type displayCommand struct {
 
 func displayCommands(store guardianapi.Store, printer *output.Printer) []displayCommand {
 	svc := displaypkg.NewService(store)
-	subject := "guardianctl"
+	subjects := []string{"user:guardianctl"}
 	return []displayCommand{
-		{"display", "profiles", displayListCommand(svc, printer, subject)},
-		{"display", "create", displayCreateCommand(svc, printer, subject)},
-		{"display", "bind", displayBindCommand(svc, printer, subject)},
-		{"display", "show", displayShowCommand(svc, printer, subject)},
-		{"display", "use", displayUseCommand(svc, printer, subject)},
-		{"display", "preview", displayPreviewCommand(svc, printer, subject)},
+		{"display", "profiles", displayListCommand(svc, printer, subjects)},
+		{"display", "create", displayCreateCommand(svc, printer, subjects)},
+		{"display", "bind", displayBindCommand(svc, printer, subjects)},
+		{"display", "show", displayShowCommand(svc, printer, subjects)},
+		{"display", "use", displayUseCommand(svc, printer, subjects)},
+		{"display", "preview", displayPreviewCommand(svc, printer, subjects)},
 	}
 }
 
-func displayListCommand(svc *displaypkg.Service, printer *output.Printer, subject string) *command.Command {
+func displayListCommand(svc *displaypkg.Service, printer *output.Printer, subjects []string) *command.Command {
 	flags := flag.NewFlagSet("display profiles", flag.ContinueOnError)
 	flags.SetOutput(ioDiscard{})
 	admin := flags.Bool("admin", false, "include every profile")
 	return &command.Command{Description: "List display profiles", Flags: flags, Run: func(ctx context.Context, _ []string) error {
-		profiles, err := svc.List(ctx, subject, *admin)
+		profiles, err := svc.List(ctx, subjects, *admin)
 		if err != nil {
 			return err
 		}
@@ -52,7 +52,7 @@ func displayListCommand(svc *displaypkg.Service, printer *output.Printer, subjec
 	}}
 }
 
-func displayCreateCommand(svc *displaypkg.Service, printer *output.Printer, subject string) *command.Command {
+func displayCreateCommand(svc *displaypkg.Service, printer *output.Printer, subjects []string) *command.Command {
 	flags := flag.NewFlagSet("display create", flag.ContinueOnError)
 	flags.SetOutput(ioDiscard{})
 	id := flags.String("id", "", "profile id")
@@ -75,7 +75,7 @@ func displayCreateCommand(svc *displaypkg.Service, printer *output.Printer, subj
 			}
 			profile.Keys[strings.TrimSpace(canonical)] = strings.TrimSpace(value)
 		}
-		created, err := svc.Create(ctx, subject, profile, *scope != "personal")
+		created, err := svc.Create(ctx, subjects, profile, *scope != "personal")
 		if err != nil {
 			return err
 		}
@@ -88,7 +88,7 @@ func displayCreateCommand(svc *displaypkg.Service, printer *output.Printer, subj
 	}}
 }
 
-func displayBindCommand(svc *displaypkg.Service, printer *output.Printer, subject string) *command.Command {
+func displayBindCommand(svc *displaypkg.Service, printer *output.Printer, subjects []string) *command.Command {
 	flags := flag.NewFlagSet("display bind", flag.ContinueOnError)
 	flags.SetOutput(ioDiscard{})
 	profileID := flags.String("profile", "", "profile id")
@@ -98,7 +98,7 @@ func displayBindCommand(svc *displaypkg.Service, printer *output.Printer, subjec
 		if strings.TrimSpace(*profileID) == "" || strings.TrimSpace(*from) == "" || strings.TrimSpace(*to) == "" {
 			return fmt.Errorf("--profile, --from, and --to are required")
 		}
-		profile, err := svc.Get(ctx, subject, *profileID, false)
+		profile, err := svc.Get(ctx, subjects, *profileID, false)
 		if err != nil {
 			return err
 		}
@@ -106,7 +106,7 @@ func displayBindCommand(svc *displaypkg.Service, printer *output.Printer, subjec
 			profile.Keys = map[string]string{}
 		}
 		profile.Keys[*from] = *to
-		updated, err := svc.Update(ctx, subject, *profileID, profile, false)
+		updated, err := svc.Update(ctx, subjects, *profileID, profile, false)
 		if err != nil {
 			return err
 		}
@@ -119,12 +119,12 @@ func displayBindCommand(svc *displaypkg.Service, printer *output.Printer, subjec
 	}}
 }
 
-func displayShowCommand(svc *displaypkg.Service, printer *output.Printer, subject string) *command.Command {
+func displayShowCommand(svc *displaypkg.Service, printer *output.Printer, subjects []string) *command.Command {
 	flags := flag.NewFlagSet("display show", flag.ContinueOnError)
 	flags.SetOutput(ioDiscard{})
 	profileID := flags.String("profile", "", "profile id")
 	return &command.Command{Description: "Show a display profile", Flags: flags, Run: func(ctx context.Context, _ []string) error {
-		profile, err := svc.Get(ctx, subject, *profileID, false)
+		profile, err := svc.Get(ctx, subjects, *profileID, false)
 		if err != nil {
 			return err
 		}
@@ -139,12 +139,12 @@ func displayShowCommand(svc *displaypkg.Service, printer *output.Printer, subjec
 	}}
 }
 
-func displayUseCommand(svc *displaypkg.Service, printer *output.Printer, subject string) *command.Command {
+func displayUseCommand(svc *displaypkg.Service, printer *output.Printer, subjects []string) *command.Command {
 	flags := flag.NewFlagSet("display use", flag.ContinueOnError)
 	flags.SetOutput(ioDiscard{})
 	profileID := flags.String("profile", "", "profile id")
 	return &command.Command{Description: "Set the default display profile", Flags: flags, Run: func(ctx context.Context, _ []string) error {
-		if err := svc.SetDefault(ctx, subject, *profileID); err != nil {
+		if err := svc.SetDefault(ctx, subjects, *profileID); err != nil {
 			return err
 		}
 		printer.PrintText("default display profile: %s\n", *profileID)
@@ -152,13 +152,13 @@ func displayUseCommand(svc *displaypkg.Service, printer *output.Printer, subject
 	}}
 }
 
-func displayPreviewCommand(svc *displaypkg.Service, printer *output.Printer, subject string) *command.Command {
+func displayPreviewCommand(svc *displaypkg.Service, printer *output.Printer, subjects []string) *command.Command {
 	flags := flag.NewFlagSet("display preview", flag.ContinueOnError)
 	flags.SetOutput(ioDiscard{})
 	profileID := flags.String("profile", "", "profile id")
 	surface := flags.String("surface", "", "surface override: sql, metrics, logs, traces")
 	return &command.Command{Description: "Preview a profile against a sample response", Flags: flags, Run: func(ctx context.Context, _ []string) error {
-		profile, err := svc.Get(ctx, subject, *profileID, false)
+		profile, err := svc.Get(ctx, subjects, *profileID, false)
 		if err != nil {
 			return err
 		}

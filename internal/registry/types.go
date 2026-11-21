@@ -139,6 +139,15 @@ type RepoBinding struct {
 	// Account and Region override the repo/pusher values for this partition.
 	Account string `json:"account,omitempty" yaml:"account,omitempty"`
 	Region  string `json:"region,omitempty" yaml:"region,omitempty"`
+	// Display is the repo-owned presentation profile for this assignment.
+	// Request-key aliases are accepted only for the assigned partition.
+	Display *DisplayBinding `json:"display,omitempty" yaml:"display,omitempty"`
+}
+
+// DisplayBinding is the repo-owned display profile for one assignment.
+type DisplayBinding struct {
+	Profile string            `json:"profile,omitempty" yaml:"profile,omitempty"`
+	Keys    map[string]string `json:"keys,omitempty" yaml:"keys,omitempty"`
 }
 
 // PayloadDir returns the MonoFS payload directory for this binding.
