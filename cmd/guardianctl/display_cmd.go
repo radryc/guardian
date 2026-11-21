@@ -59,11 +59,13 @@ func displayCreateCommand(svc *displaypkg.Service, printer *output.Printer, subj
 	scope := flags.String("scope", "personal", "personal|team|global")
 	var keys stringListFlag
 	flags.Var(&keys, "key", "canonical=display key (repeatable)")
+	var readers stringListFlag
+	flags.Var(&readers, "reader", "subject or * that may use the profile (repeatable)")
 	return &command.Command{Description: "Create a display profile", Flags: flags, Run: func(ctx context.Context, _ []string) error {
 		if strings.TrimSpace(*id) == "" {
 			return fmt.Errorf("--id is required")
 		}
-		profile := display.Profile{ID: *id, Name: *name, Scope: *scope, Keys: map[string]string{}}
+		profile := display.Profile{ID: *id, Name: *name, Scope: *scope, Keys: map[string]string{}, Readers: readers}
 		for _, pair := range keys {
 			canonical, value, ok := strings.Cut(pair, "=")
 			if !ok {

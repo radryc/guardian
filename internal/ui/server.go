@@ -447,8 +447,10 @@ func displayRequestedProfile(r *http.Request) string {
 
 func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	s.applySecurityHeaders(w, r)
-	if !s.checkUIAuth(w, r) {
-		return
+	if r.URL.Path != "/api/display-profiles/bundle" || !s.canReadDisplayBundle(r) {
+		if !s.checkUIAuth(w, r) {
+			return
+		}
 	}
 	if !s.checkMutationOrigin(w, r) {
 		return

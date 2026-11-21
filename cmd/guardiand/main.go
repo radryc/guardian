@@ -521,7 +521,17 @@ func main() {
 			}
 		}
 		uiAuthenticator := coreauthz.NewAuthenticator(uiVerifier, nil, false)
-		var uiHandler http.Handler = uiAuthenticator.HTTPMiddleware(uiServer)
+		authenticatedUI := uiAuthenticator.HTTPMiddleware(uiServer)
+		var uiHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Doctor and the CLIs read the compiled display bundle with a
+			// service token; the browser authenticator would otherwise reject
+			// that machine call before the UI server can validate it.
+			if r.URL.Path == "/api/display-profiles/bundle" && uiServer.CanReadDisplayBundle(r) {
+				uiServer.ServeHTTP(w, r)
+				return
+			}
+			authenticatedUI.ServeHTTP(w, r)
+		})
 
 		// Browser login (Authorization Code + PKCE + session cookie) is enabled
 		// when OIDC verification is active and a client secret + redirect URL are
@@ -546,7 +556,7 @@ func main() {
 				// Machine pollers (MonoFS router, Doctor) authenticate with the
 				// internal token, not an OIDC session. Let the access-policy
 				// handler enforce that instead of the browser login wall.
-				ExemptPaths: []string{"/api/m2m", "/api/access/policy", "/health"},
+				ExemptPaths: []string{"/api/m2m", "/api/access/policy", "/api/display-profiles/bundle", "/health"},
 			}
 			if publicAuthURL != "" {
 				waCfg.Endpoints.AuthURL = publicAuthURL
