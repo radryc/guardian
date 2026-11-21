@@ -32,6 +32,7 @@ import (
 	"github.com/radryc/guardian/internal/paths"
 	"github.com/radryc/guardian/internal/versioning/revisions"
 	"github.com/radryc/guardian/pkg/guardianapi"
+	"github.com/radryc/monofs/pkg/audit"
 	coreauthz "github.com/radryc/monofs/pkg/authz"
 	"gopkg.in/yaml.v3"
 )
@@ -87,6 +88,9 @@ type Options struct {
 	// EnableHSTS emits Strict-Transport-Security even when TLS terminates at a
 	// proxy in front of Guardian.
 	EnableHSTS bool
+	// AuditEmitter records one access event per UI/API request (including
+	// denials) in the shared audit trail.
+	AuditEmitter audit.Emitter
 }
 
 type ClientConfig struct {
@@ -125,6 +129,7 @@ type Server struct {
 	allowLoopbackAnonymous   bool
 	trustedOrigins           []string
 	enableHSTS               bool
+	auditEmitter             audit.Emitter
 	index                    *template.Template
 	static                   http.Handler
 	mux                      http.Handler
@@ -341,6 +346,7 @@ func New(opts Options) (*Server, error) {
 		allowLoopbackAnonymous:   opts.AllowLoopbackAnonymous,
 		trustedOrigins:           append([]string(nil), opts.TrustedOrigins...),
 		enableHSTS:               opts.EnableHSTS,
+		auditEmitter:             opts.AuditEmitter,
 		index:                    index,
 		static:                   http.StripPrefix("/static/", http.FileServer(http.FS(staticRoot))),
 	}
@@ -355,6 +361,16 @@ func New(opts Options) (*Server, error) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.auditEmitter == nil {
+		s.serveHTTP(w, r)
+		return
+	}
+	recorder := &auditStatusRecorder{ResponseWriter: w}
+	s.serveHTTP(recorder, r)
+	s.emitRequestAudit(r, recorder.status)
+}
+
+func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	s.applySecurityHeaders(w, r)
 	if !s.checkUIAuth(w, r) {
 		return
@@ -367,6 +383,62 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mux.ServeHTTP(w, r)
+}
+
+type auditStatusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *auditStatusRecorder) WriteHeader(status int) {
+	if r.status == 0 {
+		r.status = status
+	}
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *auditStatusRecorder) Write(body []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(body)
+}
+
+func (s *Server) emitRequestAudit(r *http.Request, status int) {
+	if s.auditEmitter == nil {
+		return
+	}
+	action := audit.ActionRead
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+		action = audit.ActionWrite
+	}
+	decision := audit.DecisionAllow
+	reason := ""
+	if status >= http.StatusBadRequest {
+		decision = audit.DecisionDeny
+		reason = fmt.Sprintf("status_%d", status)
+	}
+	id, _ := coreauthz.IdentityFromContext(r.Context())
+	ev := audit.Event{
+		Service:       "guardian",
+		Scope:         "ui",
+		Action:        action,
+		Decision:      decision,
+		Reason:        reason,
+		ActorSubject:  id.Subject,
+		ActorClientID: id.ClientID,
+		Email:         id.Email,
+		Groups:        id.Groups,
+		Resource:      r.URL.Path,
+		ResourceType:  "http",
+		Method:        r.Method,
+		Path:          r.URL.Path,
+		Status:        status,
+		RequestID:     r.Header.Get("X-Request-ID"),
+		SourceIP:      r.RemoteAddr,
+		UserAgent:     r.UserAgent(),
+	}
+	_ = s.auditEmitter.EmitDurable(r.Context(), ev)
 }
 
 // authorizeMutation applies the repo-managed access policy to every mutating

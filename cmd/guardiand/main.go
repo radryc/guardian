@@ -44,6 +44,7 @@ import (
 	unmanagedpkg "github.com/radryc/guardian/internal/unmanaged"
 	"github.com/radryc/guardian/internal/workspacepub"
 	"github.com/radryc/guardian/pkg/guardianapi"
+	"github.com/radryc/monofs/pkg/audit"
 	coreauthz "github.com/radryc/monofs/pkg/authz"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
@@ -407,6 +408,23 @@ func main() {
 	}
 	go accessService.Run(context.Background())
 
+	auditEmitter, auditErr := audit.NewServiceEmitter(audit.ConfigFromEnv("guardian"))
+	if auditErr != nil {
+		log.Fatalf("configure audit emitter: %v", auditErr)
+	}
+	var uiAudit audit.Emitter
+	if auditEmitter != nil {
+		uiAudit = auditEmitter
+		defer func() {
+			closeCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := auditEmitter.Close(closeCtx); err != nil {
+				log.Printf("audit emitter close failed: %v", err)
+			}
+		}()
+		log.Printf("guardian audit emitter enabled: wal=%s", auditEmitter.WALPath())
+	}
+
 	// The reconciler serves both human requests and internal scheduler ticks.
 	// Internal work is attributed to the guardiand policy client, which the ACL
 	// grants explicitly; removing that client makes automation fail closed
@@ -460,6 +478,7 @@ func main() {
 			AllowLoopbackAnonymous:  allowLoopbackAnonymous,
 			TrustedOrigins:          trustedOriginList,
 			EnableHSTS:              enableHSTS,
+			AuditEmitter:            uiAudit,
 			// Auto-deploy is on by default; guardian.autoDeployOnIngest=false
 			// keeps merges manual.
 			DisableAutoDeployOnIngest: !cfg.Guardian.AutoDeployOnIngest,
