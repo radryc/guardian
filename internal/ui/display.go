@@ -12,7 +12,7 @@ import (
 	"github.com/radryc/monofs/pkg/display"
 )
 
-func subjectFromRequest(r *http.Request) string {
+func subjectsFromRequest(r *http.Request) []string {
 	id, _ := coreauthz.IdentityFromContext(r.Context())
 	who := strings.TrimSpace(id.Email)
 	if who == "" {
@@ -22,9 +22,26 @@ func subjectFromRequest(r *http.Request) string {
 		who = strings.TrimSpace(id.ClientID)
 	}
 	if who == "" {
-		return ""
+		return nil
 	}
-	return "user:" + who
+	out := []string{"user:" + who}
+	for _, group := range id.Groups {
+		group = strings.TrimSpace(group)
+		if group == "" {
+			continue
+		}
+		out = append(out, group, "team:"+group)
+	}
+	return out
+}
+
+func primaryDisplaySubject(subjects []string) string {
+	for _, subject := range subjects {
+		if strings.TrimSpace(subject) != "" {
+			return subject
+		}
+	}
+	return ""
 }
 
 func (s *Server) displayAdmin(r *http.Request) bool {
@@ -36,14 +53,14 @@ func (s *Server) handleDisplayProfiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, fmt.Errorf("display profiles are not configured"))
 		return
 	}
-	subject := subjectFromRequest(r)
-	if subject == "" {
+	subjects := subjectsFromRequest(r)
+	if len(subjects) == 0 {
 		writeError(w, http.StatusForbidden, fmt.Errorf("authentication required"))
 		return
 	}
 	switch r.Method {
 	case http.MethodGet:
-		profiles, err := s.displayProfiles.List(r.Context(), subject, s.displayAdmin(r))
+		profiles, err := s.displayProfiles.List(r.Context(), subjects, s.displayAdmin(r))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -55,7 +72,7 @@ func (s *Server) handleDisplayProfiles(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		created, err := s.displayProfiles.Create(r.Context(), subject, profile, s.displayAdmin(r))
+		created, err := s.displayProfiles.Create(r.Context(), subjects, profile, s.displayAdmin(r))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -80,14 +97,14 @@ func (s *Server) handleDisplayProfileRoute(w http.ResponseWriter, r *http.Reques
 		s.handleDisplayBundle(w, r)
 		return
 	}
-	subject := subjectFromRequest(r)
-	if subject == "" {
+	subjects := subjectsFromRequest(r)
+	if len(subjects) == 0 {
 		writeError(w, http.StatusForbidden, fmt.Errorf("authentication required"))
 		return
 	}
 	switch rest {
 	case "effective":
-		s.handleDisplayEffective(w, r, subject)
+		s.handleDisplayEffective(w, r, subjects)
 		return
 	}
 	id := strings.Trim(strings.Split(rest, "/")[0], "/")
@@ -97,7 +114,7 @@ func (s *Server) handleDisplayProfileRoute(w http.ResponseWriter, r *http.Reques
 	}
 	switch r.Method {
 	case http.MethodGet:
-		profile, err := s.displayProfiles.Get(r.Context(), subject, id, s.displayAdmin(r))
+		profile, err := s.displayProfiles.Get(r.Context(), subjects, id, s.displayAdmin(r))
 		if err != nil {
 			writeError(w, http.StatusNotFound, err)
 			return
@@ -109,14 +126,14 @@ func (s *Server) handleDisplayProfileRoute(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		updated, err := s.displayProfiles.Update(r.Context(), subject, id, profile, s.displayAdmin(r))
+		updated, err := s.displayProfiles.Update(r.Context(), subjects, id, profile, s.displayAdmin(r))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, updated)
 	case http.MethodDelete:
-		if err := s.displayProfiles.Delete(r.Context(), subject, id, s.displayAdmin(r)); err != nil {
+		if err := s.displayProfiles.Delete(r.Context(), subjects, id, s.displayAdmin(r)); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -126,15 +143,15 @@ func (s *Server) handleDisplayProfileRoute(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-func (s *Server) handleDisplayEffective(w http.ResponseWriter, r *http.Request, subject string) {
+func (s *Server) handleDisplayEffective(w http.ResponseWriter, r *http.Request, subjects []string) {
 	switch r.Method {
 	case http.MethodGet:
-		id, err := s.displayProfiles.Default(r.Context(), subject)
+		id, err := s.displayProfiles.Default(r.Context(), subjects)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"profile": id, "subject": subject})
+		writeJSON(w, http.StatusOK, map[string]string{"profile": id, "subject": primaryDisplaySubject(subjects)})
 	case http.MethodPut:
 		var body struct {
 			Profile string `json:"profile"`
@@ -143,7 +160,7 @@ func (s *Server) handleDisplayEffective(w http.ResponseWriter, r *http.Request, 
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		if err := s.displayProfiles.SetDefault(r.Context(), subject, body.Profile); err != nil {
+		if err := s.displayProfiles.SetDefault(r.Context(), subjects, body.Profile); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
