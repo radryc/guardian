@@ -128,7 +128,12 @@ func (c *Config) Validate() error {
 			profileID = c.Repo.Name + "-" + binding.Partition
 			binding.Display.Profile = profileID
 		}
-		if err := (&display.Profile{ID: profileID, Keys: binding.Display.Keys}).Validate(); err != nil {
+		if err := (&display.Profile{
+			ID:               profileID,
+			Keys:             binding.Display.Keys,
+			Surfaces:         binding.Display.Surfaces,
+			IncludeCanonical: binding.Display.IncludeCanonical,
+		}).Validate(); err != nil {
 			return fmt.Errorf("repo.bindings[%d].display: %w", i, err)
 		}
 	}

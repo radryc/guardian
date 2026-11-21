@@ -1,6 +1,7 @@
 package output
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,11 +9,16 @@ import (
 	"text/tabwriter"
 
 	cliformat "github.com/radryc/guardian/internal/cli/format"
+	"github.com/radryc/monofs/pkg/display"
 )
 
 type Printer struct {
-	Format cliformat.Format
-	Writer io.Writer
+	Format                  cliformat.Format
+	Writer                  io.Writer
+	DisplayProfile          string
+	DisplayKeys             map[string]string
+	DisplaySurfaces         map[string]map[string]string
+	DisplayIncludeCanonical bool
 }
 
 func (p *Printer) PrintMutation(r cliformat.MutationResult) {
@@ -28,10 +34,27 @@ func (p *Printer) PrintMutation(r cliformat.MutationResult) {
 }
 
 func (p *Printer) PrintJSON(v any) {
-	writer := p.writer()
-	enc := json.NewEncoder(writer)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(v)
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	if len(p.DisplayKeys) > 0 {
+		mapped, mapErr := display.MapJSONWithOptions(raw, &display.CompiledProfile{
+			ID:               p.DisplayProfile,
+			Keys:             p.DisplayKeys,
+			Surfaces:         p.DisplaySurfaces,
+			IncludeCanonical: p.DisplayIncludeCanonical,
+		}, display.MapOptions{})
+		if mapErr == nil {
+			raw = mapped
+		}
+	}
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, raw, "", "  "); err != nil {
+		return
+	}
+	buf.WriteByte('\n')
+	_, _ = p.writer().Write(buf.Bytes())
 }
 
 func (p *Printer) PrintText(format string, args ...any) {

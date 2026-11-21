@@ -24,6 +24,7 @@ import (
 	"github.com/radryc/guardian/internal/compiler/manifest"
 	"github.com/radryc/guardian/internal/compiler/planner"
 	"github.com/radryc/guardian/internal/compiler/validator"
+	displaypkg "github.com/radryc/guardian/internal/display"
 	assetdomain "github.com/radryc/guardian/internal/domain/asset"
 	assetdefs "github.com/radryc/guardian/internal/domain/assets"
 	historydomain "github.com/radryc/guardian/internal/domain/history"
@@ -107,6 +108,7 @@ func main() {
 	guardianURL := rootFlags.String("guardian-url", firstNonEmptyEnv("GUARDIAN_URL", "GUARDIAN_API_URL"), "Guardian UI/API base URL used to auto-discover MonoFS access for local port-forwards, load balancers, or ingress")
 	guardianDiscoveryToken := rootFlags.String("guardian-discovery-token", firstNonEmptyEnv("GUARDIAN_DISCOVERY_TOKEN", "GUARDIAN_CLIENT_DISCOVERY_TOKEN"), "token for authenticated Guardian discovery when the UI is exposed beyond loopback")
 	formatFlag := rootFlags.String("format", string(cliformat.FormatText), "output format: text|json")
+	displayProfileFlag := rootFlags.String("display-profile", "", "presentation profile applied to JSON output")
 	if err := rootFlags.Parse(os.Args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			os.Exit(0)
@@ -138,6 +140,17 @@ func main() {
 		}()
 	}
 	printer := &output.Printer{Format: cliformat.Format(*formatFlag), Writer: os.Stdout}
+	if *displayProfileFlag != "" && store != nil {
+		if profile, err := displaypkg.NewService(store).Get(ctx, []string{"user:guardianctl"}, *displayProfileFlag, true); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		} else {
+			printer.DisplayProfile = profile.ID
+			printer.DisplayKeys = profile.Keys
+			printer.DisplaySurfaces = profile.Surfaces
+			printer.DisplayIncludeCanonical = profile.IncludeCanonical
+		}
+	}
 	reg := registerCommands(store, printer)
 	if err := reg.Run(ctx, rootFlags.Args()); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -627,6 +640,7 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 	reg.Register("partition", "set-config", storeCommand(func() *command.Command {
 		flags := flag.NewFlagSet("partition set-config", flag.ContinueOnError)
 		filePath := flags.String("file", "", "partition manifest file")
+		breakGlass := flags.Bool("break-glass", false, "allow a direct write to a repo-managed partition (audited)")
 		return &command.Command{Description: "Create or update only the partition config from file", Flags: flags, Run: func(ctx context.Context, args []string) error {
 			if *filePath == "" {
 				return fmt.Errorf("--file is required")
@@ -640,6 +654,9 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 				return err
 			}
 			if err := validator.ValidatePartition(parsed); err != nil {
+				return err
+			}
+			if err := guardPartitionWrite(ctx, store, parsed.Metadata.Name, *breakGlass); err != nil {
 				return err
 			}
 			normalized, err := yaml.Marshal(parsed)

@@ -373,9 +373,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			r.URL.RawQuery = neturl.Values(bundle.TranslateQuery(r.URL.Query())).Encode()
 		}
 	}
-	if profileID := displayRequestedProfile(r); profileID != "" && s.displayProfiles != nil &&
+	if s.displayProfiles != nil &&
 		strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/api/display-profiles") {
-		s.serveWithDisplay(w, r, profileID)
+		// An explicit header/query wins; otherwise resolve the caller's default.
+		// serveWithDisplay falls back to canonical when no profile resolves.
+		s.serveWithDisplay(w, r, displayRequestedProfile(r))
 		return
 	}
 	s.serveWithAudit(w, r)
@@ -1350,6 +1352,11 @@ func (s *Server) saveBundle(ctx context.Context, partitionName string, req *Save
 	}
 	if err := paths.ValidatePartitionName(partitionName); err != nil {
 		return nil, err
+	}
+	if managed, repo, err := s.partitionRepoManaged(ctx, partitionName); err != nil {
+		return nil, err
+	} else if managed && !allowRepoManagedWrites() {
+		return nil, repoManagedWriteError(partitionName, repo)
 	}
 	req.Partition.APIVersion = defaultString(req.Partition.APIVersion, "guardian/v1alpha1")
 	req.Partition.Kind = defaultString(req.Partition.Kind, "Partition")
