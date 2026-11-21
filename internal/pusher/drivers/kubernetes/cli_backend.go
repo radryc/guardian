@@ -378,6 +378,11 @@ func (b *CLIBackend) DeleteNetworkPolicy(ctx context.Context, namespace, name st
 // supplied as YAML bytes. When namespace is non-empty it is passed to kubectl,
 // otherwise each document's own namespace is honoured.
 func (b *CLIBackend) ApplyManifest(ctx context.Context, namespace string, manifest []byte) error {
+	if strings.TrimSpace(namespace) != "" {
+		if err := b.ensureNamespace(ctx, namespace); err != nil {
+			return fmt.Errorf("ensure namespace %q: %w", namespace, err)
+		}
+	}
 	args := b.baseArgs()
 	if strings.TrimSpace(namespace) != "" {
 		args = append(args, "-n", namespace)

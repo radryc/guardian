@@ -41,7 +41,7 @@ sequenceDiagram
     CLI->>S: Upsert payload files (secrets/** allowed by push)
     CLI->>S: DeletePaths(files removed locally, if --remove-missing)
     CLI->>S: Write .state/events/partition.pushed.json
-    alt --reconcile (default behavior for push)
+    alt --force (force reconcile after push)
         CLI->>REC: ReconcilePartition
     end
 ```
@@ -185,6 +185,15 @@ When an intent exists in state but not in the manifest list:
 If a DESTROY result is lost, the next deletion reconcile treats the task as
 dead after `staleTaskAfter` and queues a fresh DESTROY. This prevents the
 partition from being wedged by a crashed pusher.
+
+### 2.6 Virtual set sync
+
+`SyncPartitionConfig` applies a partition's declared `spec.sets` membership
+before compile. Membership is additive, and a partition explicitly removed with
+`sets unassign` (or the UI Unassign action) is recorded in the set's
+`excludedPartitions`, so the declaration does not re-add it on the next cycle.
+Manually assigning the partition again removes the exclusion. Removing a
+partition also clears the primary-set pointer when it named that set.
 
 ---
 
@@ -356,7 +365,8 @@ Key semantics:
 
 ### 5.1 Requesting deletion
 
-`partition delete <name>` (CLI) or `DELETE /api/partitions/{name}` (UI):
+`partition delete --partition <name>` (CLI) or
+`DELETE /api/partitions/{name}` (UI):
 
 1. Verifies the partition config exists.
 2. Writes `.deletion.json` with the requested policy, requester, and timestamp.
@@ -443,8 +453,8 @@ flowchart LR
 1. Derive the tag from archived asset versions.
 2. Find archived intents matching the tag.
 3. Write their manifests back to `/partitions/<p>/intents/`.
-4. Optionally reconcile/wait (CLI flags).
 
+The command has no reconcile/wait flags; run `partition reconcile` afterwards.
 This is not a full snapshot restore: it only overwrites intents that existed in
 that tag and leaves newer intents in place. It does not validate the restored
 manifests before writing them.
@@ -716,16 +726,18 @@ sequenceDiagram
 
     CLI->>G: GET /api/client-config
     alt loopback or X-Guardian-Discovery-Token
-        G-->>CLI: monofs.routerAddr + token
-        CLI->>S: gRPC with bearer token
+        G-->>CLI: monofs.routerAddr (token omitted)
+        CLI->>S: gRPC with GUARDIAN_MONOFS_TOKEN / --monofs-token
     else denied
         G-->>CLI: 403
     end
 ```
 
-If no configuration is present, the CLI falls back to
-`127.0.0.1:9090` / `guardian-dev-token`. This is convenient for development and
-dangerous for production.
+The response never includes the MonoFS token by default; discovery supplies
+only the router address and external-address preference. If no token is
+configured, the CLI errors unless `--allow-dev-token` is set, in which case it
+falls back to `127.0.0.1:9090` / `guardian-dev-token`. That fallback is
+convenient for development and dangerous for production.
 
 ### 14.2 OIDC device login
 
@@ -738,8 +750,10 @@ metadata. The token helper does not refresh and ignores JWT expiry/audience.
 When OIDC verification is enabled and a client secret + redirect URL are
 configured, `guardiand` mounts `/auth/login`, `/auth/callback`, and
 `/auth/logout`. Identity is resolved from the `monofs_session` cookie or a
-bearer token. `GUARDIAN_REQUIRE_UI_AUTH=true` turns the login wall on; by default
-it is observe-only.
+bearer token. `GUARDIAN_REQUIRE_UI_AUTH` defaults to `true`: browser sessions
+must log in when the web authenticator is mounted, and non-browser clients must
+present a verifiable identity for mutations (loopback is exempt only with
+`--allow-loopback-anonymous`).
 
 ### 14.4 Control-plane deploy authorization
 

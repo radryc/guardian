@@ -3,6 +3,7 @@ package monofs
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -75,11 +76,43 @@ func (a *Adapter) ReadFileVersioned(ctx context.Context, logicalPath string) ([]
 }
 
 func (a *Adapter) ReadFile(ctx context.Context, logicalPath string) ([]byte, error) {
+	// Guardian-managed paths have an authoritative version record. Read them
+	// through the router's consistent path (content+version) instead of a raw
+	// node read: a node can briefly answer NotFound while a just-committed
+	// write is still being applied, and the router serves the committed bytes
+	// (including its recent-content cache) for that version.
+	if isGuardianManagedPath(logicalPath) {
+		if client, ok := a.client.(versionedMonoFSClient); ok {
+			content, _, found, err := client.ReadPathVersioned(ctx, a.token, logicalPath)
+			if err != nil {
+				return nil, err
+			}
+			if !found {
+				return nil, os.ErrNotExist
+			}
+			return content, nil
+		}
+	}
 	mapped, err := mapLogicalToPhysicalChecked(logicalPath)
 	if err != nil {
 		return nil, err
 	}
 	return a.client.ReadFile(ctx, mapped)
+}
+
+// isGuardianManagedPath reports whether the logical path lives in a namespace
+// backed by Guardian version records. Repo display paths (/.repos/...) are
+// plain MonoFS content and keep using the raw read.
+func isGuardianManagedPath(logicalPath string) bool {
+	for _, prefix := range []string{
+		"/partitions", "/.queues", "/.archive", "/.scans",
+		"/.registry", "/.access", "/.templates",
+	} {
+		if logicalPath == prefix || strings.HasPrefix(logicalPath, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Adapter) ListDir(ctx context.Context, logicalDir string) ([]guardianapi.DirEntry, error) {

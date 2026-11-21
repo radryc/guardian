@@ -35,8 +35,13 @@ type Set struct {
 	Labels      map[string]string `json:"labels,omitempty"`
 	Pinned      bool              `json:"pinned,omitempty"`
 	Partitions  []string          `json:"partitions,omitempty"`
-	CreatedAt   time.Time         `json:"createdAt"`
-	UpdatedAt   time.Time         `json:"updatedAt"`
+	// ExcludedPartitions records partitions that were explicitly unassigned.
+	// It stops config-declared membership (spec.sets) from re-adding a
+	// partition on the next reconcile. Manually adding the partition back
+	// clears the exclusion.
+	ExcludedPartitions []string  `json:"excludedPartitions,omitempty"`
+	CreatedAt          time.Time `json:"createdAt"`
+	UpdatedAt          time.Time `json:"updatedAt"`
 }
 
 type Store struct {
@@ -222,10 +227,13 @@ func (s *Store) AddPartitions(ctx context.Context, id string, add []string, remo
 		}
 	}
 	keep := make([]string, 0, len(set.Partitions))
+	removed := make([]string, 0, len(removeSet))
 	for _, name := range set.Partitions {
-		if !removeSet[name] {
-			keep = append(keep, name)
+		if removeSet[name] {
+			removed = append(removed, name)
+			continue
 		}
+		keep = append(keep, name)
 	}
 	seen := map[string]bool{}
 	for _, name := range keep {
@@ -241,9 +249,20 @@ func (s *Store) AddPartitions(ctx context.Context, id string, add []string, remo
 	}
 	sort.Strings(keep)
 	set.Partitions = keep
+	// Explicitly adding a partition clears any previous unassign tombstone.
+	set.ExcludedPartitions = pruneExcluded(set.ExcludedPartitions, keep)
 	updated, err := s.Update(ctx, set)
 	if err != nil {
 		return nil, err
+	}
+	for _, name := range removed {
+		if seen[name] {
+			// Removed and re-added in the same call: keep the primary record.
+			continue
+		}
+		if err := s.clearPrimaryIfSet(ctx, id, name); err != nil {
+			return nil, err
+		}
 	}
 	if primary {
 		for _, name := range keep {
@@ -255,10 +274,62 @@ func (s *Store) AddPartitions(ctx context.Context, id string, add []string, remo
 	return updated, nil
 }
 
+// RemovePartitions removes partition memberships from a set. It is idempotent:
+// partitions that are not members are ignored. Removing a partition records an
+// exclusion so config-declared membership (spec.sets) cannot silently add it
+// back on the next reconcile; manually adding the partition back clears the
+// exclusion. When the set was the removed partition's primary set, the primary
+// record is cleared so the partition no longer points at a set that does not
+// contain it.
+func (s *Store) RemovePartitions(ctx context.Context, id string, remove []string) (*Set, error) {
+	set, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	removeSet := map[string]bool{}
+	for _, name := range remove {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			removeSet[name] = true
+		}
+	}
+	if len(removeSet) == 0 {
+		return set, nil
+	}
+	keep := make([]string, 0, len(set.Partitions))
+	removed := make([]string, 0, len(removeSet))
+	for _, name := range set.Partitions {
+		if removeSet[name] {
+			removed = append(removed, name)
+			continue
+		}
+		keep = append(keep, name)
+	}
+	set.Partitions = keep
+	// Record every requested name so an unassign of a partition that is not a
+	// member yet also blocks a later config-driven re-add.
+	excluded := append([]string(nil), set.ExcludedPartitions...)
+	for name := range removeSet {
+		excluded = append(excluded, name)
+	}
+	set.ExcludedPartitions = pruneExcluded(excluded, keep)
+	updated, err := s.Update(ctx, set)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range removed {
+		if err := s.clearPrimaryIfSet(ctx, id, name); err != nil {
+			return nil, err
+		}
+	}
+	return updated, nil
+}
+
 // SyncPartitionConfig applies the set membership declared by a partition
 // manifest. Membership is additive: sets that already contain the partition
-// are left alone, and manually-added memberships are preserved. A missing set
-// is created using the reference as its display name so a partition config can
+// are left alone, and manually-added memberships are preserved. A partition
+// explicitly removed with RemovePartitions is not re-added. A missing set is
+// created using the reference as its display name so a partition config can
 // define its own grouping without a separate seed step.
 func (s *Store) SyncPartitionConfig(ctx context.Context, partition string, refs []string, primary string) error {
 	partition = strings.TrimSpace(partition)
@@ -274,6 +345,11 @@ func (s *Store) SyncPartitionConfig(ctx context.Context, partition string, refs 
 		set, err := s.resolveOrCreate(ctx, ref)
 		if err != nil {
 			return err
+		}
+		// An explicit `sets unassign` is sticky: do not let spec.sets re-add
+		// the partition until an operator assigns it again.
+		if containsString(set.ExcludedPartitions, partition) {
+			continue
 		}
 		isPrimary := primary != "" && (ref == primary || set.ID == primary || set.Name == primary)
 		if err := s.ensureMembership(ctx, set.ID, partition, isPrimary); err != nil {
@@ -344,6 +420,24 @@ func (s *Store) SetPrimary(ctx context.Context, setID, partition string) error {
 	_, err = s.store.UpsertFiles(ctx, guardianapi.MutationBatch{
 		Writes:  []guardianapi.PathWrite{{LogicalPath: paths.SetPrimaryRecord(partition), Content: payload}},
 		Context: guardianapi.MutationContext{PrincipalID: "guardiand", Reason: "set primary virtual set"},
+	})
+	return err
+}
+
+// clearPrimaryIfSet deletes the partition's primary-set record when it points
+// at setID. Partitions may belong to several sets, so a record pointing at a
+// different set is left alone.
+func (s *Store) clearPrimaryIfSet(ctx context.Context, setID, partition string) error {
+	current, err := s.PrimarySet(ctx, partition)
+	if err != nil {
+		return err
+	}
+	if current != setID {
+		return nil
+	}
+	_, err = s.store.DeletePaths(ctx, guardianapi.DeleteBatch{
+		Deletes: []guardianapi.PathDelete{{LogicalPath: paths.SetPrimaryRecord(partition)}},
+		Context: guardianapi.MutationContext{PrincipalID: "guardiand", Reason: "clear primary virtual set"},
 	})
 	return err
 }
@@ -419,6 +513,7 @@ func (s *Set) Normalize() {
 	s.Description = strings.TrimSpace(s.Description)
 	s.ParentID = strings.TrimSpace(s.ParentID)
 	s.Partitions = normalizeList(s.Partitions)
+	s.ExcludedPartitions = pruneExcluded(s.ExcludedPartitions, s.Partitions)
 	if s.Labels == nil {
 		s.Labels = map[string]string{}
 	}
@@ -446,6 +541,24 @@ func normalizeList(values []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// pruneExcluded normalizes exclusions and drops any partition that is still a
+// member, so membership always wins over a stale tombstone.
+func pruneExcluded(excluded, members []string) []string {
+	member := make(map[string]bool, len(members))
+	for _, name := range members {
+		member[strings.TrimSpace(name)] = true
+	}
+	out := make([]string, 0, len(excluded))
+	for _, name := range excluded {
+		name = strings.TrimSpace(name)
+		if name == "" || member[name] {
+			continue
+		}
+		out = append(out, name)
+	}
+	return normalizeList(out)
 }
 
 func slugify(value string) string {

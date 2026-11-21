@@ -40,8 +40,10 @@ func RoutingDefaultsPath(dir string) string { return path.Join(dir, RoutingDefau
 // environment. Missing data is not an error: older packs keep using the
 // default single-backend path.
 func LoadRoutingPolicies(ctx context.Context, store guardianapi.ReadStore, dir string) ([]policy.PartitionPolicy, []error) {
-	dir = strings.Trim(strings.TrimSpace(dir), "/")
-	if dir == "" {
+	// Keep the leading slash: the MonoFS store routes "/.access/..." paths;
+	// trimming it makes every read fail with "unsupported guardian logical path".
+	dir = strings.TrimRight(strings.TrimSpace(dir), "/")
+	if dir == "" || dir == "/" {
 		return nil, nil
 	}
 	var problems []error

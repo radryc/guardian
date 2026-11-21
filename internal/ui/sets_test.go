@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/radryc/guardian/internal/paths"
+	setstore "github.com/radryc/guardian/internal/sets"
 	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
@@ -70,6 +71,9 @@ func TestSetsAPI(t *testing.T) {
 	rec = registryRequest(t, srv, http.MethodPost, "/api/sets/"+childID+"/partitions", map[string]any{"remove": []string{"demo-deploy"}})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("remove partition: %d %s", rec.Code, rec.Body.String())
+	}
+	if primary, err := setstore.New(store).PrimarySet(ctx, "demo-deploy"); err != nil || primary != "" {
+		t.Fatalf("primary after remove = %q, err = %v, want cleared", primary, err)
 	}
 	if rec = registryRequest(t, srv, http.MethodDelete, "/api/sets/"+childID, nil); rec.Code != http.StatusOK {
 		t.Fatalf("delete child: %d %s", rec.Code, rec.Body.String())

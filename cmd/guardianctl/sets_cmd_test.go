@@ -162,3 +162,55 @@ func TestSetsCLILifecycle(t *testing.T) {
 		t.Fatalf("delete empty: %v", err)
 	}
 }
+
+func TestSetsUnassignCLI(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	storeSets := setstore.New(store)
+	set, err := storeSets.Create(ctx, &setstore.Set{Name: "Core"})
+	if err != nil {
+		t.Fatalf("create set: %v", err)
+	}
+	if _, err := storeSets.AddPartitions(ctx, set.ID, []string{"p1", "p2"}, nil, true); err != nil {
+		t.Fatalf("seed membership: %v", err)
+	}
+	printer := &output.Printer{Writer: io.Discard}
+	run := func(cmd *command.Command, args []string) error {
+		if err := cmd.Flags.Parse(args); err != nil {
+			t.Fatalf("parse %s: %v", cmd.Description, err)
+		}
+		return cmd.Run(ctx, cmd.Flags.Args())
+	}
+
+	// Flag form.
+	if err := run(setsUnassignCommand(store, printer), []string{"--set", set.ID, "--partition", "p1"}); err != nil {
+		t.Fatalf("unassign flag: %v", err)
+	}
+	got, err := storeSets.Get(ctx, set.ID)
+	if err != nil {
+		t.Fatalf("get set: %v", err)
+	}
+	if len(got.Partitions) != 1 || got.Partitions[0] != "p2" {
+		t.Fatalf("partitions after flag unassign = %v, want [p2]", got.Partitions)
+	}
+	if primary, err := storeSets.PrimarySet(ctx, "p1"); err != nil || primary != "" {
+		t.Fatalf("primary p1 = %q, err = %v, want cleared", primary, err)
+	}
+
+	// Positional form.
+	if err := run(setsUnassignCommand(store, printer), []string{"--set", "Core", "p2"}); err != nil {
+		t.Fatalf("unassign positional: %v", err)
+	}
+	got, _ = storeSets.Get(ctx, set.ID)
+	if len(got.Partitions) != 0 {
+		t.Fatalf("partitions after positional unassign = %v, want empty", got.Partitions)
+	}
+	if primary, err := storeSets.PrimarySet(ctx, "p2"); err != nil || primary != "" {
+		t.Fatalf("primary p2 = %q, err = %v, want cleared", primary, err)
+	}
+
+	// No targets is a usage error, not a silent no-op.
+	if err := run(setsUnassignCommand(store, printer), []string{"--set", set.ID}); err == nil {
+		t.Fatal("expected an error when no partitions are supplied")
+	}
+}

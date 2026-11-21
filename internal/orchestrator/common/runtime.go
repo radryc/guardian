@@ -53,6 +53,16 @@ func scanPartitionRuntime(ctx context.Context, store guardianapi.ReadStore, part
 			intentName := entry.Name[:len(entry.Name)-5]
 			state, err := LoadIntentState(ctx, store, partition, intentName)
 			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					// A state file listed by ListDir can be briefly unreadable
+					// while MonoFS applies a concurrent write. Skipping it keeps
+					// the rest of the aggregate usable; failing the whole scan
+					// surfaced as "Compiled / waiting for first reconcile" on
+					// every reconcile cycle, even though the partition was
+					// healthy. The reconciler recreates a genuinely missing
+					// state on its next pass.
+					continue
+				}
 				return nil, err
 			}
 			runtime.Intents[intentName] = state

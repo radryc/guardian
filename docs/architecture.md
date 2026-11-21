@@ -175,7 +175,7 @@ client and root context.
 
 1. Parse flags (`--config`, `--reconcile-interval`, `--ui-listen`,
    `--oidc-*`, `--require-ui-auth`, `--allow-loopback-anonymous`,
-   `--trusted-origins`, `--enable-hsts`).
+   `--allow-unpoliced-mutations`, `--trusted-origins`, `--enable-hsts`).
 2. Load defaults (`internal/config`), optionally overlay YAML, then apply
    environment variables (`envconfig.go` plus direct overrides in `main.go`).
 3. Configure OpenTelemetry; mirror standard logs to OTLP when enabled.
@@ -184,19 +184,23 @@ client and root context.
    - in-memory otherwise (useful for tests, not for production).
 5. Construct the dispatcher, compliance publisher, result processor, and
    reconciler.
-6. Optionally wire the compiled access-policy service (`internal/access`) as
-   the reconciler's `AuthorizeModify` guard when `GUARDIAN_ACCESS_ENFORCE=true`.
-7. Start the UI/API server and the optional access-policy, repo-import, and
-   unmanaged services.
+6. Build the compiled access-policy service (`internal/access`) and always wire
+   its `AuthorizeModify` check into the reconciler. The service is permissive
+   only when no policy path is configured and `--allow-unpoliced-mutations` is
+   set; enforcement is controlled by `GUARDIAN_ACCESS_ENFORCE`.
+7. Start the UI/API server, the access-policy refresh loop, and the optional
+   repo-import and unmanaged services.
 8. Start the reconciler, observed collector, onboarding controller, alerting
    evaluator, partition watcher, and result processor.
 9. Block until SIGINT/SIGTERM, then wait for goroutines and close the store,
    compliance publisher, and telemetry.
 
-Important coupling: the access-policy service, repo-import loop, unmanaged
-service, and client discovery are only started when the UI listen address is
-non-empty. `repoImportEnabled: true` therefore has no effect on a headless
-daemon. This is recorded as a finding rather than an intentional design.
+Important coupling: the repo-import loop, unmanaged service, and client
+discovery are only started when the UI listen address is non-empty, so
+`repoImportEnabled: true` has no effect on a headless daemon. The access-policy
+service and its refresh loop run regardless of the UI listen address because the
+reconciler depends on them. This is recorded as a finding rather than an
+intentional design.
 
 ---
 
@@ -239,6 +243,7 @@ internal/
 ├── observedgen/               cloud assembly -> intents
 ├── historyquery/              release/deployment/rollout queries
 ├── access/                    repo-managed ACL compilation and decisions
+├── auditanchor/               anchored audit manifest verification
 ├── alerting/, notify/         partition failure alerts and webhooks
 ├── compliance/                archive/state mirror to S3
 ├── repoimport/, repoconfig/   repo bundle import and .guardian/config.yaml
@@ -246,7 +251,7 @@ internal/
 ├── bootstrap/                 dev cluster bootstrap helpers
 ├── clock/, keyedmutex/        injectable clock seam and per-key locking
 ├── metrics/, telemetry/       OTel-backed metrics shim, traces, logs
-├── config/, paths/, buildinfo/, versioning/
+├── config/, paths/, buildinfo/, versioning/, tlsxutil/
 └── domain/...
 pkg/guardianapi/               store/API interfaces shared by commands
 ```
@@ -332,8 +337,8 @@ name: api
 version: v1.2.3            # optional pin
 dependsOn: [db]
 payload:
-  kubernetes: payloads/kubernetes/api.yaml
-  aws: payloads/aws/api.yaml
+  kubernetes: /partitions/<p>/payloads/kubernetes/api.yaml
+  aws: /partitions/<p>/payloads/aws/api.yaml
 properties: {...}           # typed per asset; validated against catalog
 skip: false
 flowMetricGroups: [checkout]
@@ -345,22 +350,23 @@ The canonical asset types are declared in
 
 | Type | Purpose | Primary drivers |
 |---|---|---|
-| `Compute` | Long-lived service/worker/daemon | Docker, Kubernetes, AWS ECS, local |
+| `Compute` | Long-lived service/worker/daemon | Docker, Kubernetes, AWS ECS, GCP Cloud Run |
 | `ImageBuild` | Build/publish an OCI image | Kubernetes BuildKit; Docker/registry existence checks; `guardianctl image` pipeline |
 | `CDKStack` | Bring-your-own TypeScript CDK app | AWS |
-| `Database` | Database (legacy alias for SQLDatabase) | all pushers that support SQLDatabase |
-| `SQLDatabase` | Managed SQL database | Docker, Kubernetes, AWS (Aurora) |
-| `Volume` | Persistent volume | Docker, Kubernetes, AWS (EFS) |
-| `Config` | Non-secret configuration file(s) | all |
-| `Network` | Network boundary | Kubernetes, AWS |
-| `Secret` | Secret value delivery | all |
-| `LoadBalancer` | L4/L7 load balancer | Kubernetes, AWS |
+| `Database` | Database (legacy alias for SQLDatabase) | Docker, Kubernetes, AWS, GCP |
+| `SQLDatabase` | Managed SQL database | Docker, Kubernetes, AWS (Aurora), GCP Cloud SQL |
+| `Volume` | Persistent volume | Docker, Kubernetes, AWS (EFS), GCP Filestore. In Kubernetes, an unpinned storage class is left to the API-server default and is not drift; manifest applies ensure the namespace exists |
+| `Config` | Non-secret configuration file(s) | Docker, Kubernetes, AWS (SSM Parameter Store) |
+| `Network` | Network boundary | Kubernetes, AWS, GCP |
+| `Secret` | Secret value delivery | Docker, Kubernetes, AWS, GCP |
+| `LoadBalancer` | L4/L7 load balancer | Kubernetes, AWS, GCP |
 | `TraefikRoute` | Routing metadata | Docker, Kubernetes |
-| `ObjectStore` | Object bucket | Docker/MinIO, AWS S3 |
-| `Observability` | Telemetry sidecar/agent/config | Docker, Kubernetes, AWS, local |
+| `ObjectStore` | Object bucket | Docker/MinIO, AWS S3, GCP GCS |
+| `Observability` | Telemetry sidecar/agent/config | Docker, Kubernetes, AWS, GCP |
 | `Probe` | HTTP/TCP/DNS/TLS/gRPC check or journey | all pushers |
 | `K8sResource` | Raw Kubernetes manifest | Kubernetes only |
 | `AWSResource` (internal) | Fallback raw CloudFormation resource | AWS |
+| `ObservedResource` (internal) | Read-only inventory observation from provider APIs | GCP and Kubernetes observed collectors |
 | `GeneratedStack` (internal) | Synthetic asset carrying a generated CDK stack | AWS |
 
 The **UI catalog** (`internal/domain/assets/catalog.go`) supplies default
@@ -404,16 +410,16 @@ Tasks are JSON documents at `/.queues/<pusher>/<taskID>.json`:
 }
 ```
 
-Pushers claim via `/.claims/<taskID>.json` (CAS on creation, lease renewal) and
-write `/\<pusher\>/.results/<taskID>.json` with outputs, drift, health,
-apply-readiness, asset observations, errors, and logs.
+Pushers claim via `/.queues/<pusher>/.claims/<taskID>.json` (CAS on creation,
+lease renewal) and write `/.queues/<pusher>/.results/<taskID>.json` with
+outputs, drift, health, apply-readiness, asset observations, errors, and logs.
 
 ### 5.6 Release, deployment, history, archive
 
 - **ReleaseRecord** — the latest successful apply per intent, stored in
   `/partitions/<p>/.state/releases.json` (authoritative pointer).
 - **DeploymentRecord** — historical deployment view, derived from the archive.
-- **Archive** — `/ .archive/<p>/<intent>/<revision>/{manifest.yaml,state.json,logs.ndjson}`.
+- **Archive** — `/.archive/<p>/<intent>/<revision>/{manifest.yaml,state.json,logs.ndjson}`.
 - **Events** — `.state/events/<id>.json`, pruned to 250 per partition.
 
 There are two overlapping history representations (`ReleaseRecord` and
@@ -440,6 +446,7 @@ MonoFS paths (`guardian/` and `guardian-system/`). See
 | `/partitions/<p>/.state/events/<id>.json` | Dispatcher | Event timeline |
 | `/partitions/<p>/.state/releases.json` | Dispatcher | Latest release pointer per intent |
 | `/partitions/<p>/.state/tasks/<task>.json` | Dispatcher | Immutable audit copy of every queued task |
+| `/partitions/<p>/.state/tasks/.chain.json` | Dispatcher | HMAC-SHA256 chain over the task-spec archive |
 | `/partitions/<p>/.state/repo-import.json` | Repo importer | Ownership manifest used for safe pruning |
 | `/partitions/<p>/.deletion.json` | CLI/UI | Deferred deletion marker |
 | `/partitions/<p>/.observed/<i>/*.json` | Observed collector | Snapshots and observed events |
@@ -452,7 +459,7 @@ MonoFS paths (`guardian/` and `guardian-system/`). See
 | `/.registry/onboarding/<pusher>/<stack>.json` | Onboard controller | Last onboarding descriptor |
 | `/.registry/dashboards/<p>.json` | Dashboard generator | Grafana dashboard |
 | `/.registry/probes/<pusher>/<p>.json` | Probe runner | Latest probe snapshot |
-| `/.registry/sets/<id>.json` | CLI/UI | Virtual sets |
+| `/.registry/sets/<id>.json` | CLI/UI | Virtual sets, including `excludedPartitions` written by `sets unassign` |
 | `/.registry/set-primary/<p>.json` | CLI/UI | Primary set pointer |
 | `/.scans/<pusher>/requests/<id>.json` | CLI/UI | AWS scan request |
 | `/.scans/<pusher>/.claims/<id>.json` | Scan runner | Scan lease |
@@ -462,10 +469,20 @@ MonoFS paths (`guardian/` and `guardian-system/`). See
 | `/.templates/aws/**` | Operator | CDK template overlays |
 | `/.repos/<display-path>/**` | Repo publisher | Read-only repo mirror |
 
-The MonoFS adapter rejects unknown top-level namespaces. `normalize` uses
-`path.Join` + `path.Clean`, so `..` is collapsed rather than rejected; callers
-that accept user-supplied names must validate them before constructing paths
-(see the security document).
+The MonoFS adapter rejects unknown top-level namespaces. `paths.normalize`
+treats its first component as the root and clamps a `..` that would resolve
+above it; `NormalizeChecked`/`PartitionPathChecked` return `ErrPathEscapesRoot`
+for callers that need a hard rejection. Callers that accept user-supplied names
+should still validate them before constructing paths (see the security
+document).
+
+Guardian-managed namespaces (`/partitions`, `/.queues`, `/.archive`,
+`/.scans`, `/.registry`, `/.access`, `/.templates`) are read through the
+router's versioned content path so a just-committed write is not missed; a
+missing version maps to `os.ErrNotExist`. Repo display paths (`/.repos/**`) are
+plain MonoFS content and keep the raw node read. Every router/node RPC carries
+`authorization: Bearer` using the cached CLI login token when present, otherwise
+the configured cluster token.
 
 ---
 
@@ -593,10 +610,10 @@ idempotency keys.
 
 `internal/access` compiles a repo-managed ACL (`access.yaml`) against the live
 partition catalog at `/.access`, producing a policy bundle served to MonoFS and
-Doctor. It supports three modes: disabled (permissive), observe (log denials,
-do not enforce), and enforce (filter reads, authorize UI mutations via
-`CanModify`/`IsAdmin`, and fail closed for non-admins when no policy is
-loaded).
+Doctor. It supports three modes: disabled (reads unfiltered; mutations require
+the unpoliced opt-in), observe (log denials, do not filter), and enforce (filter
+reads, authorize UI mutations via `CanModify`/`IsAdmin`, and fail closed when no
+policy is loaded).
 
 Partition bundles may also ship `guardian/partitions/<partition>/access.yaml`.
 The repo importer validates it and stores it at
@@ -706,11 +723,11 @@ Details:
 ```go
 type AssetDriver interface {
     Type() string
-    Validate(ctx, task, asset) error
-    Check(ctx, task, asset) (CheckResult, error)
-    Diff(ctx, task, asset) (DriftReport, error)
-    Apply(ctx, task, asset) (ApplyResult, error)
-    Destroy(ctx, task, asset) error
+    Validate(props map[string]any) error
+    Check(ctx context.Context, in AssetInput) error
+    Diff(ctx context.Context, in AssetInput) (DriftReport, error)
+    Apply(ctx context.Context, in AssetInput) (AssetResult, error)
+    Destroy(ctx context.Context, in AssetInput) error
 }
 ```
 
@@ -872,7 +889,7 @@ It embeds a vanilla TypeScript SPA (no framework) compiled to
 | Client/access | `/api/client-config`, `/api/access/policy`, `/api/access/explain` |
 | Partitions | `GET/PUT/DELETE /api/partitions/{name}`, `/topology`, `/rollouts`, `/history`, `/validate`, `/reconcile`, `/intents/{i}/activity` |
 | Scans | `/api/scans`, `/api/scans/{id}`, `/api/scans/{id}/bundle` |
-| Pushers | `/api/pushers`, `/api/pushers/{name}`, `/summary`, `/api/m2m/pushers*` |
+| Pushers | `/api/pushers`, `/api/pushers/{name}`, `/summary`, `/api/m2m/pushers*`. UI responses redact pusher tokens unless the caller is an authenticated admin; M2M responses redact them unless `includeTokens=1` is combined with the internal token |
 | Repos | `/api/repos`, `/api/repos/{name}`, `/ingest`, `/bindings`, `/notify` |
 | Sets | `/api/sets`, `/api/sets/{id}`, `/move`, `/partitions` |
 | Probes/obs | `/api/probes`, `/api/probes/{id}`, `/api/observability/identities` |
@@ -880,14 +897,17 @@ It embeds a vanilla TypeScript SPA (no framework) compiled to
 | Federation | `/api/m2m/federation/partitions` |
 | M2M aliases | `/api/m2m/overview`, `/api/m2m/partitions*` |
 
-The daemon wraps the mux with OIDC bearer verification (observe mode by
-default) and optional browser login. In addition, every mutating request passes
+The daemon wraps the mux with OIDC bearer verification (the transport
+authenticator itself is observe-mode; mutation enforcement is separate) and
+optional browser login. In addition, every mutating request passes
 through `Server.authorizeMutation`: partition mutations require
 `access.CanModify` on the target, set membership requires `access.CanModify` on
 every added/removed partition, registry/repo/scan and set-metadata mutations
-require `access.IsAdmin`, and the check is a no-op only when the access policy is
-disabled. Reads use access-policy filtering. Anonymous deployments are still
-possible when neither login nor an access policy is configured.
+require `access.IsAdmin` (creating an empty set requires `CanModifyAny`), and
+the check is a no-op only when the access policy is disabled *and*
+`--allow-unpoliced-mutations` is set. Reads use access-policy filtering.
+Anonymous reads remain possible when neither login nor an access policy is
+configured; anonymous mutations are rejected by default.
 
 ### 11.2 Frontend
 
@@ -919,14 +939,16 @@ Root flags must precede the command group.
 Connection modes:
 
 1. **Guardian discovery** — `GUARDIAN_API_URL`/`GUARDIAN_URL` points at the
-   Guardian UI; `GET /api/client-config` returns the MonoFS router/token. A
-   non-loopback endpoint requires `GUARDIAN_CLIENT_DISCOVERY_TOKEN`.
+   Guardian UI; `GET /api/client-config` returns the MonoFS router and external
+   address preference. It does not return the MonoFS token, so the CLI still
+   needs `GUARDIAN_MONOFS_TOKEN`/`--monofs-token`. A non-loopback endpoint
+   requires `GUARDIAN_CLIENT_DISCOVERY_TOKEN`.
 2. **Direct MonoFS** — `GUARDIAN_MONOFS_ROUTER` + `GUARDIAN_MONOFS_TOKEN`.
 3. **Local store directory** — `GUARDIAN_STORE_DIR`, no auth.
 
 Command groups: `auth`, `partition`, `intent`, `asset`, `store`, `filesystem`,
-`aws`, `sets`, `pusher`, `probe`, `observability`, `repo`, `template`,
-`access`, `notify`, `dev`, `image`, `release`.
+`aws`, `gcp`, `sets`, `pusher`, `probe`, `observability`, `repo`, `template`,
+`access`, `notify`, `audit`, `dev`, `image`, `release`.
 
 The CLI writes directly to MonoFS as principal `guardianctl`; it does not go
 through the daemon. This means it bypasses the UI access policy. See the
@@ -970,7 +992,16 @@ delete. `secrets/**` is ignored and inline `Secret.value` is rejected.
 `stratatools/deploy/bootstrap` tree, apply them with `kubectl`, build sibling
 repo images, create a kind cluster/registry, and deploy MonoFS, lb-edge,
 Guardian, and a host Docker pusher. This tooling is development-only and
-expects the sibling `stratatools` checkout for its bootstrap tree.
+expects the sibling `stratatools` checkout for its bootstrap tree; MonoFS image
+builds also pass a sibling `sqlagregator` checkout as a build context
+(`SQLAGREGATOR_REPO_DIR` overrides the default).
+
+Bootstrap reuses the MonoFS, client-discovery, GCP read, Kubernetes read, and
+archive-HMAC values already stored in the `monofs-secrets`/`guardian-secrets`
+Secrets instead of rotating them on every deploy; it generates a value only when
+none exists. When mTLS is enabled it makes the `guardian-pusher-docker`
+certificate directory traversable and its key group-readable, and mounts that
+directory into the host-side Docker pusher.
 
 ### 13.3 Packaging
 
@@ -1083,8 +1114,9 @@ Known deviations (details in the internal docs):
   leases/CAS).
 - Compiled plans are not the execution source of truth; tasks re-parse raw
   YAML.
-- Access policy guards UI mutations, but CLI/pusher tokens bypass it and
-  anonymous deployments are still possible without a login wall.
+- Access policy guards UI mutations, but CLI/pusher tokens bypass it. Anonymous
+  reads remain possible without a login wall; mutations are rejected by
+  default and can be reopened only with the loopback/unpoliced opt-ins.
 - Secret values are redacted from results/state/UI, but queue files still carry
   them in flight and the model is not reference-only by default.
 - Some native AWS drivers do not create working resources (Aurora without

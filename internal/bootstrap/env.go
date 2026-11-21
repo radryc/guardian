@@ -22,7 +22,17 @@ func ComputeEnv(cfg *Config) (Env, error) {
 	env := make(Env)
 
 	// --- Secrets ---
-	monofsToken := os.Getenv("MONOFS_TOKEN")
+	// Reuse the token already deployed on the cluster. Generating a fresh one
+	// on every `dev deploy`/`dev init` rotates the guardian/origin token but
+	// leaves the already-running storage pods on the old value, which makes
+	// every MonoFS client fail with "invalid token".
+	monofsToken := strings.TrimSpace(os.Getenv("MONOFS_TOKEN"))
+	if monofsToken == "" {
+		monofsToken = strings.TrimSpace(KubectlGetSecretData(cfg.Storage.Namespace, "monofs-secrets", "monofs-token"))
+	}
+	if monofsToken == "" {
+		monofsToken = strings.TrimSpace(KubectlGetSecretData(cfg.Guardian.Namespace, "guardian-secrets", "monofs-token"))
+	}
 	if monofsToken == "" {
 		tok, err := generateToken(32)
 		if err != nil {
@@ -49,7 +59,10 @@ func ComputeEnv(cfg *Config) (Env, error) {
 		minioSK = "minioadmin"
 	}
 
-	clientDiscoveryToken := os.Getenv("CLIENT_DISCOVERY_TOKEN")
+	clientDiscoveryToken := strings.TrimSpace(os.Getenv("CLIENT_DISCOVERY_TOKEN"))
+	if clientDiscoveryToken == "" {
+		clientDiscoveryToken = strings.TrimSpace(KubectlGetSecretData(cfg.Guardian.Namespace, "guardian-secrets", "client-discovery-token"))
+	}
 	if clientDiscoveryToken == "" {
 		tok, err := generateToken(32)
 		if err != nil {
@@ -58,7 +71,10 @@ func ComputeEnv(cfg *Config) (Env, error) {
 		clientDiscoveryToken = tok
 	}
 
-	gcpReadToken := os.Getenv("GCP_READ_TOKEN")
+	gcpReadToken := strings.TrimSpace(os.Getenv("GCP_READ_TOKEN"))
+	if gcpReadToken == "" {
+		gcpReadToken = strings.TrimSpace(KubectlGetSecretData(cfg.Guardian.Namespace, "guardian-secrets", "gcp-read-token"))
+	}
 	if gcpReadToken == "" {
 		tok, err := generateToken(32)
 		if err != nil {
@@ -67,7 +83,10 @@ func ComputeEnv(cfg *Config) (Env, error) {
 		gcpReadToken = tok
 	}
 
-	k8sReadToken := os.Getenv("K8S_READ_TOKEN")
+	k8sReadToken := strings.TrimSpace(os.Getenv("K8S_READ_TOKEN"))
+	if k8sReadToken == "" {
+		k8sReadToken = strings.TrimSpace(KubectlGetSecretData(cfg.Guardian.Namespace, "guardian-secrets", "k8s-read-token"))
+	}
 	if k8sReadToken == "" {
 		tok, err := generateToken(32)
 		if err != nil {
@@ -76,7 +95,20 @@ func ComputeEnv(cfg *Config) (Env, error) {
 		k8sReadToken = tok
 	}
 
+	archiveHMACKey := strings.TrimSpace(os.Getenv("GUARDIAN_ARCHIVE_HMAC_KEY"))
+	if archiveHMACKey == "" {
+		archiveHMACKey = strings.TrimSpace(KubectlGetSecretData(cfg.Guardian.Namespace, "guardian-secrets", "archive-hmac-key"))
+	}
+	if archiveHMACKey == "" {
+		tok, err := generateToken(32)
+		if err != nil {
+			return nil, fmt.Errorf("generating archive HMAC key: %w", err)
+		}
+		archiveHMACKey = tok
+	}
+
 	env["MONOFS_TOKEN_B64"] = b64(monofsToken)
+	env["ARCHIVE_HMAC_KEY_B64"] = b64(archiveHMACKey)
 	env["GCP_READ_TOKEN_B64"] = b64(gcpReadToken)
 	env["K8S_READ_TOKEN_B64"] = b64(k8sReadToken)
 	env["MONOFS_ENCRYPTION_KEY_B64"] = b64(encKey)

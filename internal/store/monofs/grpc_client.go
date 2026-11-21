@@ -49,14 +49,18 @@ const nodeFailureCooldown = 10 * time.Second
 // the connection, which aborts in-flight operations such as APPLY tasks.
 const defaultGRPCKeepaliveTime = 5 * time.Minute
 
-// cliBearerCreds attaches the cached `guardianctl login` token (if any) as an
-// Authorization: Bearer header on outgoing RPCs, so human CLI calls carry an
-// SSO identity. It is a no-op when no token is cached (machines/services keep
-// using their own token mechanism).
-type cliBearerCreds struct{}
+// cliBearerCreds attaches an Authorization: Bearer header on outgoing RPCs.
+// A cached `guardianctl login` token wins so human CLI calls carry their SSO
+// identity; otherwise the configured MonoFS token (break-glass/cluster token)
+// is used. The router's gRPC authenticator requires this metadata even though
+// the token is also repeated in request fields.
+type cliBearerCreds struct{ fallback string }
 
-func (cliBearerCreds) GetRequestMetadata(_ context.Context, _ ...string) (map[string]string, error) {
+func (c cliBearerCreds) GetRequestMetadata(_ context.Context, _ ...string) (map[string]string, error) {
 	if tok := clitoken.Bearer(); tok != "" {
+		return map[string]string{"authorization": "Bearer " + tok}, nil
+	}
+	if tok := strings.TrimSpace(c.fallback); tok != "" {
 		return map[string]string{"authorization": "Bearer " + tok}, nil
 	}
 	return nil, nil
@@ -320,12 +324,12 @@ func monoFSTransportCredentials() (credentials.TransportCredentials, error) {
 	return credentials.NewTLS(tlsConfig), nil
 }
 
-func dialRouter(addr string, creds credentials.TransportCredentials) (*grpc.ClientConn, error) {
+func dialRouter(addr string, creds credentials.TransportCredentials, token string) (*grpc.ClientConn, error) {
 	return grpc.NewClient(
 		addr,
 		grpc.WithTransportCredentials(creds),
 		grpcx.IPv4DialerOption(),
-		grpc.WithPerRPCCredentials(cliBearerCreds{}),
+		grpc.WithPerRPCCredentials(cliBearerCreds{fallback: token}),
 		grpc.WithStatsHandler(monoFSClientStatsHandler()),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                defaultGRPCKeepaliveTime,
@@ -398,7 +402,7 @@ func NewGRPCClient(ctx context.Context, cfg ClientConfig) (*GRPCClient, error) {
 			}
 		}
 
-		conn, err := dialRouter(cfg.RouterAddr, transportCreds)
+		conn, err := dialRouter(cfg.RouterAddr, transportCreds, cfg.Token)
 		if err != nil {
 			lastErr = fmt.Errorf("connect to monofs router: %w", err)
 			continue
@@ -1384,7 +1388,7 @@ func (c *GRPCClient) reconnectRouter(ctx context.Context) error {
 
 	oldConn := c.routerConn
 
-	newConn, err := dialRouter(c.routerAddr, c.transportCreds)
+	newConn, err := dialRouter(c.routerAddr, c.transportCreds, c.token)
 	if err != nil {
 		return fmt.Errorf("reconnect to monofs router: %w", err)
 	}

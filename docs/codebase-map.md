@@ -43,7 +43,8 @@ Legend:
 | `partition_assignments.go` | Shows repo/pusher assignment for a partition. |
 | `partition_validate_local.go` | Validates a local bundle offline (YAML, schema, payload references) without a store. |
 | `repo_cmd.go` | Registers repos, seeds bindings, syncs/applies/ingests repo partitions, sends notify, imports from local checkout or MonoFS source. |
-| `sets_cmd.go` | Creates/updates/lists virtual sets and membership. |
+| `sets_cmd.go` | Creates/updates/lists virtual sets and membership, including `sets unassign` and its sticky `excludedPartitions`. |
+| `audit.go` | `audit verify`: verifies an anchored audit manifest and WAL event chain offline. |
 | `template_cmd.go` | Lists/shows embedded CDK templates and their metadata. |
 | `release.go` | Orchestrates image release → tag/stamp/push → reconcile/wait, or a hard-coded “all” list. |
 | `probe_cmd.go` | Lists/shows probe snapshots. |
@@ -73,7 +74,8 @@ Legend:
 | `partition_push_test.go` | Push event writing for new/updated partitions. |
 | `repo_cmd_test.go` | Repo seed/binding registration. |
 | `repo_partition_import_test.go` | Import happy path, inline-secret rejection, configured partition path, display logical path, local checkout/store mapping. |
-| `sets_cmd_test.go` | Idempotent ensure and CLI lifecycle. |
+| `sets_cmd_test.go` | Idempotent ensure, assign/unassign lifecycle, and CLI registration. |
+| `audit_test.go`, `archive_testenv_test.go` | Audit-manifest verification and archive test-environment helpers. |
 
 ### 1.3 Pusher binaries
 
@@ -83,6 +85,7 @@ Legend:
 | `cmd/guardian-pusher-aws/main_test.go` | Loopback listen-address classification test. |
 | `cmd/guardian-pusher-gcp/main.go` | GCP worker: OpenTofu + GCP SDK drivers, flags/env, telemetry, MonoFS/FS store, runtime with project/region `CanHandle`, Cloud Asset Inventory observer, read API (`:19091` default), graceful shutdown. |
 | `cmd/guardian-pusher-gcp/readapi.go` | HTTP server setup for the GCP read API (TLS/mTLS, bearer token/scopes, rate/body limits). |
+| `cmd/guardian-pusher-gcp/readapi_test.go` | Read-API config validation tests. |
 | `cmd/guardian-pusher-docker/main.go` | Docker worker: CLI backend, driver registration, runtime, probes, state dir, telemetry. |
 | `cmd/guardian-pusher-docker/main_test.go` | Tests Docker driver host/port parsing (`parseAddHosts`). |
 | `cmd/guardian-pusher-k8s/main.go` | Kubernetes worker: client-go or kubectl backend selection, driver registration, runtime, probes, telemetry. |
@@ -105,8 +108,10 @@ Legend:
 |---|---|
 | `catalog.go` | Loads partition names/labels into the policy catalog and computes a digest for change detection. |
 | `partition.go` | Validates and stores repo-owned per-partition `access.yaml` files and provenance sidecars under `/.access/partitions`. |
-| `service.go` | Compiles `/.access` ACL + imports against the catalog; staged disabled/observe/enforce modes; `CanSee`, `IsAdmin`, `CanModify`, `FilterPartitions`, `Explain`, `PolicyJSON`, background refresh. |
+| `routing.go` | Loads per-partition routing/shard/placement policies from `/.access/envs/<env>/routing`; preserves the leading slash for MonoFS reads. |
+| `service.go` | Compiles `/.access` ACL + imports against the catalog; staged disabled/observe/enforce modes; `CanSee`, `IsAdmin`, `CanModify`, `CanModifyAny`, `FilterPartitions`, `Explain`, `PolicyJSON`, background refresh. |
 | `partition_test.go` | Repo-owned per-partition `access.yaml` validation, scope restrictions, and provenance tests. |
+| `routing_test.go` | Routing-policy loading and leading-slash path tests. |
 | `service_test.go` | Visibility, observe mode, fail-closed, disabled permissive, roles, explain/JSON. |
 
 ## 3. `internal/alerting`
@@ -182,9 +187,12 @@ Legend:
 |---|---|
 | `config.go` | Dev bootstrap config schema/defaults, template rendering inputs, env-derived values, image names, namespaces. |
 | `deploy.go` | Renders/applies Kubernetes templates, builds/loads images, creates namespaces/registry, deploys MonoFS/Guardian/pusher. |
-| `env.go` | Computes bootstrap environment (tokens, encryption key, S3/MinIO settings), fetcher/OTel wiring, URL stamping helpers. |
+| `env.go` | Computes bootstrap environment (tokens, encryption key, S3/MinIO settings), reusing deployed `monofs-secrets`/`guardian-secrets` values when present; fetcher/OTel wiring, URL stamping helpers. |
+| `mtls.go` | Generates the mTLS bundle, writes 0600 keys, and relaxes the host Docker pusher's cert directory/key permissions. |
+| `mtls_inject.go` | Patches bootstrap Deployments with generated mTLS Secrets and `STRATA_TLS_MODE=optional`. |
 | `deploy_test.go` | Bootstrap deploy/render unit tests. |
 | `env_test.go` | Config/env computations and OTel wiring tests. |
+| `mtls_test.go` | mTLS bundle and injection tests. |
 
 ## 11. `internal/buildinfo`
 
@@ -328,7 +336,7 @@ actions the generated stack needs.
 | `k8sresource.go` | K8sResource spec: raw manifests, namespace, prune/ownership flags. |
 | `awsresource.go` | AWSResource fallback spec: CFN type/properties/existing flag. |
 | `observedresource.go` | ObservedResource spec for report-only observed resources. |
-| `secret_test.go`, `probe_test.go`, `imagebuild_test.go`, `awsresource_test.go`, `traefikroute_test.go`, `compute_dynamic_hostname_test.go`, `registry_test.go` | Per-type validation, dynamic hostname, secret ref, and catalog tests. |
+| `secret_test.go`, `probe_test.go`, `imagebuild_test.go`, `awsresource_test.go`, `traefikroute_test.go`, `compute_dynamic_hostname_test.go`, `compute_secret_mount_test.go`, `registry_test.go` | Per-type validation, dynamic hostname, secret-ref/mount, and catalog tests. |
 
 ### 20.3 Other domain packages
 
@@ -389,6 +397,7 @@ actions the generated stack needs.
 | `resolver.go` | Static + registry endpoint resolution with TTL cache. |
 | `resources.go` | Build/merge resource observations and synthetic asset names from templates, changed keys, live resources. |
 | `collector_test.go` | In-sync/drift/diff-failed, inventory, source upload, no queueing. |
+| `client_tls_test.go` | Observed read-API client TLS upgrade/mTLS tests. |
 | `resolver_test.go` | Static/registry precedence, non-AWS skip, fallback. |
 | `resources_test.go` | Status mapping, added/removed, dedupe, changed parser. |
 | `summary_test.go` | Drift summary merge/truncation. |
@@ -421,7 +430,7 @@ actions the generated stack needs.
 | File | What it does |
 |---|---|
 | `common.go` | Shared helpers: load state, outputs, dependency health, in-flight detection, status preservation, task building from manifests, generated-stack substitution, clones. |
-| `runtime.go` | Loads a partition runtime (partition + all intent states) and normalizes metrics/status. |
+| `runtime.go` | Loads a partition runtime (partition + all intent states), skips state files that are briefly unreadable during a MonoFS write, and normalizes metrics/status. |
 | `runtime_metrics.go` | OTel-backed counters (`internal/metrics`) for runtime loads and intent state counts. |
 | `common_test.go` | Status transitions, generated-stack substitution, authoritative state scan. |
 | `generated_test.go` | CDK task building. |
@@ -554,7 +563,7 @@ actions the generated stack needs.
 | `envconflict.go` | Detects duplicate/conflicting container environment variable keys. |
 | `observe.go` | Converts live Kubernetes objects into observed resource inventories. |
 | `envconflict_test.go` | Environment variable conflict detection tests. |
-| `drivers.go` | All Kubernetes drivers + registration + decoders/naming/manifests inputs. |
+| `drivers.go` | All Kubernetes drivers + registration + decoders/naming/manifests inputs. Volume drift treats an unpinned storage class as API-server default rather than drift. |
 | `manifest.go` | Pure manifest builders: ConfigMap, PVC, Service, NetworkPolicy, Deployment, inline ConfigMap. |
 | `network.go` | Network asset → NetworkPolicy; Compute joins by label. |
 | `payload.go` | Loads/merges `payload.k8s.yaml`/`payload.kubernetes.yaml`. |
@@ -576,7 +585,10 @@ actions the generated stack needs.
 |---|---|
 | `drivers.go` | Registers the 8 GCP asset drivers (`Network`, `ObjectStore`, `Secret`, `Compute`, `SQLDatabase`, `Volume`, `LoadBalancer`, `Observability`). |
 | `blueprints.go` | Embedded OpenTofu HCL blueprints (`embed.FS`) copied into per-intent workspaces. |
+| `secret.go` | Secret Manager Secret driver (inline/`secretRef`/`existingSecret`) and Cloud Run secret mounts. |
+| `secret_mount_test.go` | Secret Manager mount wiring tests. |
 | `opentofu_backend.go` | Driver backend bridging asset specs to OpenTofu workspaces and state. |
+| `opentofu/backend.go` | State bucket/prefix config, per-asset workspace/state prefixes, workspace locks. |
 | `opentofu/workspace.go` | Per-intent OpenTofu workspace materialization and GCS/KMS backend config. |
 | `opentofu/runner.go` | Executes `tofu init/plan/apply/output/destroy` with `flock` locking. |
 | `opentofu/plan.go` | Parses `tofu plan`/`show` JSON for drift detection. |
@@ -671,8 +683,8 @@ actions the generated stack needs.
 
 | File | What it does |
 |---|---|
-| `sets.go` | Virtual set store: CRUD, hierarchy, partition membership, primary set, access-filtered views. |
-| `sets_test.go` | CRUD/membership/validation. |
+| `sets.go` | Virtual set store: CRUD, hierarchy, partition membership (`AddPartitions`/`RemovePartitions`), sticky `excludedPartitions`, primary-set cleanup, access-filtered views. |
+| `sets_test.go` | CRUD/membership/validation, unassign exclusions, and primary-set cleanup. |
 
 ## 33. `internal/store`
 
@@ -684,13 +696,14 @@ actions the generated stack needs.
 | `memory/conformance_test.go` | Runs `storetest` conformance suite against `store/memory`. |
 | `memory/store_test.go` | CRUD/watch/CAS. |
 | `storetest/conformance.go` | Shared store conformance suite: round-trip, CAS conflicts, tombstones, paging, version history. |
-| `monofs/adapter.go` | Maps Guardian logical namespace to physical MonoFS paths; implements Store; event remap; paged/stat/watch fallbacks. |
-| `monofs/grpc_client.go` | MonoFS gRPC client: router/node dialing, register/heartbeat, upsert streaming, delete/list versions/get, file/dir reads, watch, topology refresh, retries. |
+| `monofs/adapter.go` | Maps Guardian logical namespace to physical MonoFS paths; implements Store; routes Guardian-managed reads through the router's versioned content path and keeps raw reads for `/.repos`; event remap; paged/stat/watch fallbacks. |
+| `monofs/grpc_client.go` | MonoFS gRPC client: router/node dialing, register/heartbeat, upsert streaming, delete/list versions/get, versioned guardian-path reads, file/dir reads, watch, topology refresh, retries; per-RPC bearer uses the cached CLI login token, else the cluster token. |
 | `monofs/open.go` | Builds GRPC client + adapter. |
 | `monofs/publisher.go` | Workspace publisher bound to the live router. |
 | `monofs/adapter_test.go` | Logical/physical mapping and traversal (build tag `monofs`). |
 | `monofs/adapter_runtime_test.go` | Adapter runtime behavior. |
 | `monofs/grpc_client_test.go` | Register/watch/topology/retry helpers. |
+| `monofs/tls_test.go` | MonoFS TLS/plaintext transport configuration tests. |
 
 ## 34. `internal/telemetry`
 
@@ -715,12 +728,12 @@ actions the generated stack needs.
 | `registry.go` | Pusher/repo CRUD handlers, repo ingest/notify/bindings, repo partition import, assembly resolution, inline-secret rejection. |
 | `repo_import_loop.go` | Periodic sharded/leased repo import and auto-deploy. |
 | `scan.go` | AWS scan request/list/get/bundle endpoints; result lookup; draft generation. |
-| `sets.go` | Virtual set CRUD/membership/move with access-filtered views. |
+| `sets.go` | Virtual set CRUD/membership/move with access-filtered views; unassign requests go through `RemovePartitions`. |
 | `unmanaged.go` | Unmanaged stack detect/associate handlers. |
 | `probes.go` | Probe list/detail from the projection cache, filters, ETag. |
 | `observability.go` | Projection cache for identities/probes (watch invalidation + TTL), ETag JSON writer, identities endpoint. |
 | `federation_feed.go` | Paginated M2M federation partition feed with account/region/provider derivation. |
-| `pushers_m2m.go` | M2M pusher list/detail with `requireM2MAccess`. |
+| `pushers_m2m.go` | M2M pusher list/detail with `requireM2MAccess`; tokens stay redacted unless the caller presents the internal token with `includeTokens=1`. |
 | `flow_evaluator.go` | Default flow-state evaluator from observations; timestamp selection. |
 | `flow_metrics_evaluator.go` | Prometheus text parser + MonoFS flow counter deltas + cached snapshot/fallback. |
 | `assignments_test.go` | Assignment derivation, queue-pusher registration, native fallback. |
@@ -749,7 +762,7 @@ actions the generated stack needs.
 |---|---|
 | `main.ts` | SPA entry: global state, URL/query routing, polling, overview/detail/history/rollout/topology rendering, badges, themes, diagnostics, refresh interval. |
 | `builder.ts` | Visual partition/intent/asset editor: palette, canvas, connectors, inspector, client/server validation, drafts/templates, pusher migration, undo/redo, tutorial. |
-| `sets.ts` | Set tree/cards/page, health rollup, set editor/picker/delete, repo association. |
+| `sets.ts` | Set tree/cards/page, health rollup, set editor/picker/delete, assign/unassign membership, repo association. |
 | `scan.ts` | Scan create/list/detail/bundle preview/save, polling, stack selection. |
 | `registry.ts` | Pusher/repo registration forms, binding pickers, ingest/delete/assign. |
 | `unmanaged.ts` | Unmanaged stack table and associate prompt. |
@@ -796,17 +809,20 @@ served template is `internal/ui/templates/index.html`. Generated outputs
 | `internal/metrics/metrics_test.go` | Tests for the OTel-backed Prometheus-shaped metrics shim (`CounterVec`, `GaugeVec`). |
 | `internal/gcpobserve/observer.go` | Cloud Asset Inventory observer for GCP projects and Cloud Run revisions. |
 | `internal/gcpobserve/observer_test.go`, `observer_integration_test.go` | GCP observer unit and integration tests. |
-| `internal/gcpread/client.go`, `reader.go`, `handler.go` | GCP read API client, Cloud Monitoring/Logging/Trace reader, and `/v1/gcp/*` HTTP handler. |
+| `internal/gcpread/client.go`, `reader.go`, `handler.go` | GCP read API client (Cloud Logging entries keep trace/span IDs), Cloud Monitoring/Logging/Trace reader, and `/v1/gcp/*` HTTP handler. |
 | `internal/gcpread/client_test.go`, `gcpread_integration_test.go` | GCP read API client and integration tests. |
 | `internal/gcpscan/scanner.go`, `scanner_test.go` | GCP project inventory scanner and unit tests. |
 | `internal/gcpsetup/setup.go` | GCP WIF pool/provider, `guardian-deployer` SA, KMS key, and GCS state bucket setup. |
 | `internal/k8sobserve/` | Kubernetes live resource inventory for `/v1/k8s/observed/stacks`. |
 | `internal/k8sread/` | Kubernetes read-only resource API handler and client. |
+| `internal/auditanchor/anchor.go`, `anchor_test.go` | Anchored audit manifest hashing/verification and tests; used by `guardianctl audit verify`. |
+| `internal/tlsxutil/tlsxutil.go`, `tlsxutil_test.go` | Bridges the legacy `GUARDIAN_UI_TLS_*`/MonoFS TLS variables to the shared `STRATA_TLS_*` contract. |
 
 ## 40. Coverage notes
 
 - Every `.go` and `.ts` file under `cmd/`, `internal/`, `pkg/`, and `tools/`
-  is listed above (429 files total).
+  is covered above (540 files total, including tests); `vite.config.ts` is a
+  UI build input.
 - `internal/cdkgen/embed/templates/aws/v1/**/policy.yaml` and `catalog.yaml`
   are data assets, not code; they are described in
   [architecture](architecture.md#102-cdk-generation).

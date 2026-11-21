@@ -277,6 +277,53 @@ func TestKubernetesSecretAssetDiffWhenOutputsMissing(t *testing.T) {
 	}
 }
 
+func TestKubernetesVolumeDefaultedStorageClassIsInSync(t *testing.T) {
+	ctx := context.Background()
+	backend := NewBackend()
+	driver := &VolumeDriver{baseDriver{backend: backend}}
+	in := registry.AssetInput{
+		PartitionName: "agent",
+		IntentName:    "agent",
+		Target:        targetdomain.Placement{Cluster: "k8s-main", Namespace: "agent"},
+		Asset: taskdomain.AbstractAsset{
+			Type: "Volume",
+			Name: "lagent-data",
+			Properties: map[string]any{
+				"size":       "5Gi",
+				"accessMode": "ReadWriteOnce",
+			},
+		},
+	}
+
+	result, err := driver.Apply(ctx, in)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	name := result.Outputs["name"]
+	if name == "" {
+		t.Fatalf("apply did not return a claim name: %+v", result.Outputs)
+	}
+
+	// The API server defaults spec.storageClassName when the intent does not
+	// pin a class. That must not be reported as drift.
+	claim, ok, err := backend.GetClaim(ctx, "agent", name)
+	if err != nil || !ok {
+		t.Fatalf("get claim: ok=%v err=%v", ok, err)
+	}
+	claim.StorageClass = "standard"
+	if err := backend.UpsertClaim(ctx, claim); err != nil {
+		t.Fatalf("seed defaulted claim: %v", err)
+	}
+
+	drift, err := driver.Diff(ctx, in)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if drift.Status != "InSync" {
+		t.Fatalf("drift = %+v, want InSync for a defaulted storage class", drift)
+	}
+}
+
 func TestKubernetesVolumeObserveExisting(t *testing.T) {
 	ctx := context.Background()
 	backend := NewBackend()

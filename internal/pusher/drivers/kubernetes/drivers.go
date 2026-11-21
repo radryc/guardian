@@ -122,7 +122,16 @@ func (d *VolumeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 		return inSyncDrift(in.Asset.Name, "kubernetes volume is in sync"), nil
 	}
 	hash := hashWithPayload(driverutil.AssetHash(in), payload)
-	if !ok || claim.Hash != hash || claim.Size != firstNonEmpty(payload.Size, firstNonEmpty(spec.Size, "1Gi")) || claim.AccessMode != firstNonEmpty(payload.AccessMode, firstNonEmpty(spec.AccessMode, "ReadWriteOnce")) || claim.StorageClass != firstNonEmpty(payload.StorageClass, spec.Class) {
+	if !ok || claim.Hash != hash ||
+		claim.Size != firstNonEmpty(payload.Size, firstNonEmpty(spec.Size, "1Gi")) ||
+		claim.AccessMode != firstNonEmpty(payload.AccessMode, firstNonEmpty(spec.AccessMode, "ReadWriteOnce")) {
+		return changedDrift(in.Asset.Name, "kubernetes volume differs"), nil
+	}
+	// An empty desired storage class means "let the cluster choose". The API
+	// server defaults spec.storageClassName on the claim, so comparing it to
+	// the empty desired value reports drift on every pass forever (the field is
+	// also immutable after creation). Only compare when the intent pins a class.
+	if desiredClass := firstNonEmpty(payload.StorageClass, spec.Class); desiredClass != "" && claim.StorageClass != desiredClass {
 		return changedDrift(in.Asset.Name, "kubernetes volume differs"), nil
 	}
 	return inSyncDrift(in.Asset.Name, "kubernetes volume is in sync"), nil

@@ -114,10 +114,15 @@ func BuildMonoFSImages(ctx context.Context, cfg *Config, dryRun bool) error {
 	if monofsDir == "" {
 		monofsDir = filepath.Join(findRoot(), "..", "monofs")
 	}
+	sqlagDir := os.Getenv("SQLAGREGATOR_REPO_DIR")
+	if sqlagDir == "" {
+		sqlagDir = filepath.Join(findRoot(), "..", "sqlagregator")
+	}
 
 	for _, t := range targets {
 		fmt.Fprintf(os.Stderr, "=== building %s (%s) ===\n", t.target, t.tag)
-		if err := Run(ctx, dryRun, "docker", "build", "-t", t.tag, "--target", t.target, monofsDir); err != nil {
+		if err := Run(ctx, dryRun, "docker", "build", "-t", t.tag, "--target", t.target,
+			"--build-context", "sqlagregator="+sqlagDir, monofsDir); err != nil {
 			return fmt.Errorf("building monofs %s: %w", t.target, err)
 		}
 	}
@@ -126,7 +131,8 @@ func BuildMonoFSImages(ctx context.Context, cfg *Config, dryRun bool) error {
 	// DuckDB requires CGO/glibc while the storage server image is Alpine.
 	fmt.Fprintf(os.Stderr, "=== building logquery (%s) ===\n", img.LogQuery)
 	logqueryDockerfile := filepath.Join(monofsDir, "Dockerfile.logquery")
-	if err := Run(ctx, dryRun, "docker", "build", "-t", img.LogQuery, "-f", logqueryDockerfile, monofsDir); err != nil {
+	if err := Run(ctx, dryRun, "docker", "build", "-t", img.LogQuery, "-f", logqueryDockerfile,
+		"--build-context", "sqlagregator="+sqlagDir, monofsDir); err != nil {
 		return fmt.Errorf("building monofs logquery: %w", err)
 	}
 

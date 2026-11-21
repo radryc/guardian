@@ -101,6 +101,9 @@ externally (for example `tlsx install`).
 - Docker (BuildKit) for container builds and the docker pusher; kubectl and a
   cluster for the k8s pusher; Node + `aws-cdk` + credentials for the AWS
   pusher.
+- A sibling `sqlagregator` checkout (or `SQLAGREGATOR_REPO_DIR`) for the
+  `dev`/bootstrap MonoFS and logquery image builds; those builds pass it as a
+  named build context.
 
 ## Build
 
@@ -220,8 +223,9 @@ to opt out.
 To size a fixed rate, divide the number of partitions by the sweep window:
 50 partitions over 5 minutes = `50/300 = 0.17` starts/sec.
 
-The pusher's own `--max-concurrency` still bounds how many tasks execute at
-once; lower it too if your registry limits concurrent pushes.
+Where exposed, the pusher's own `--max-concurrency` still bounds how many
+tasks execute at once; lower it too if your registry limits concurrent pushes
+(the Docker pusher does not expose this flag).
 
 Each pusher also accepts `--task-timeout` (default `0` = disabled) to cancel a
 single task after a fixed duration and write a failed result. Set it below
@@ -233,8 +237,10 @@ treats the task as dead and queues a replacement.
 `guardianctl` can connect three ways:
 
 1. **Guardian discovery** — `GUARDIAN_API_URL` (or `GUARDIAN_URL`) points at
-   the Guardian UI/API; the CLI learns the MonoFS router and token from
-   `GET /api/client-config`. If the endpoint is not loopback-only, also set
+   the Guardian UI/API; the CLI learns the MonoFS router from
+   `GET /api/client-config`. That response does not include the MonoFS token,
+   so supply it separately with `GUARDIAN_MONOFS_TOKEN` or `--monofs-token`. If
+   the endpoint is not loopback-only, also set
    `GUARDIAN_CLIENT_DISCOVERY_TOKEN` (`GUARDIAN_DISCOVERY_TOKEN` is accepted
    too).
 2. **Direct MonoFS** — `GUARDIAN_MONOFS_ROUTER` + `GUARDIAN_MONOFS_TOKEN`.
@@ -245,7 +251,7 @@ Useful commands:
 ```bash
 ./guardianctl partition list
 ./guardianctl partition push --dir ./partitions/my-partition    # write desired state
-./guardianctl partition reconcile --partition my-partition      # queue one cycle (async)
+./guardianctl partition reconcile --partition my-partition      # run one cycle (queues work)
 ./guardianctl partition wait --partition my-partition           # block until healthy
 ./guardianctl partition delete --partition my-partition [--wait|--force]
 ./guardianctl intent list --partition my-partition
@@ -255,16 +261,16 @@ Useful commands:
 ./guardianctl partition rollback --partition my-partition --tag <tag>
 ```
 
-In a Kubernetes deployment the two secrets usually come from
-`guardian-configs-secrets`:
+In a Kubernetes deployment both values usually come from the bootstrap
+`guardian-secrets` Secret in the Guardian namespace:
 
 ```bash
 export GUARDIAN_CLIENT_DISCOVERY_TOKEN="$(
-  kubectl -n guardian-configs get secret guardian-configs-secrets \
+  kubectl -n guardian get secret guardian-secrets \
     -o jsonpath='{.data.client-discovery-token}' | base64 -d
 )"
 export GUARDIAN_MONOFS_TOKEN="$(
-  kubectl -n guardian-configs get secret guardian-configs-secrets \
+  kubectl -n guardian get secret guardian-secrets \
     -o jsonpath='{.data.monofs-token}' | base64 -d
 )"
 ```
@@ -288,7 +294,7 @@ repo maps to `/partitions/<name>/...` in the store.
 ## AWS
 
 ```bash
-./guardianctl aws setup --profile prod-admin --account <id> --region <r>
+./guardianctl aws setup --profile prod-admin --region <r>
 ./guardianctl aws pusher-deploy --dir ../aws --profile prod-admin --account <id> --region <r>
 ./guardianctl pusher add --account <id> --region <r> --url http://guardian-awsread:19090
 ./guardianctl aws scan --pusher aws-<id> --partition my-partition

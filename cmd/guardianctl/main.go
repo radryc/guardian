@@ -205,6 +205,15 @@ func resolveStoreConfig(ctx context.Context, req autoStoreRequest) (resolvedStor
 	if resolved.monofsPrincipalID == "" {
 		resolved.monofsPrincipalID = "guardianctl"
 	}
+	// Explicit flags win over environment/discovery defaults. Assign them
+	// before the "token is required" check below, otherwise --monofs-token is
+	// rejected even though it was provided on the command line.
+	if v := strings.TrimSpace(req.monofsRouter); v != "" {
+		resolved.monofsRouter = v
+	}
+	if v := strings.TrimSpace(req.monofsToken); v != "" {
+		resolved.monofsToken = v
+	}
 	if strings.TrimSpace(req.storeDir) != "" && strings.TrimSpace(req.monofsRouter) != "" {
 		return resolvedStoreConfig{}, fmt.Errorf("provide at most one of --store-dir or --monofs-router")
 	}
@@ -660,6 +669,7 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 	reg.Register("sets", "move", storeCommand(setsMoveCommand(store, printer)))
 	reg.Register("sets", "delete", storeCommand(setsDeleteCommand(store, printer)))
 	reg.Register("sets", "assign", storeCommand(setsAssignCommand(store, printer)))
+	reg.Register("sets", "unassign", storeCommand(setsUnassignCommand(store, printer)))
 	reg.Register("sets", "ensure", storeCommand(setsEnsureCommand(store, printer)))
 	reg.Register("partition", "assignments", storeCommand(partitionAssignmentsCommand(store, printer)))
 	reg.Register("pusher", "add", storeCommand(pusherAddCommand(store, printer)))

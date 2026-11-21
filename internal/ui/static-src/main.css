@@ -2342,6 +2342,7 @@ h1, h2, h3 { color: var(--strata-text); }
 .set-table-wrap .table th, .set-table-wrap .table td { padding-left: 8px; padding-right: 8px; }
 .set-table-wrap .table td:first-child { min-width: 112px; }
 .set-table-wrap .app-name { white-space: nowrap; }
+.set-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; white-space: nowrap; }
 .set-table-more { padding: 9px 12px; color: var(--ui-faint); font-size: 10.5px; border-top: 1px solid var(--ui-border); }
 .health-rollup-bar { margin: 4px 0 7px; }
 .rollup-legend { display: grid; gap: 5px; }

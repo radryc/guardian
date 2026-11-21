@@ -142,3 +142,71 @@ func TestM2MOverviewRequiresInternalToken(t *testing.T) {
 		t.Fatalf("authorized status = %d, body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestM2MPushersRevealTokensForFederationController(t *testing.T) {
+	store := memory.New()
+	srv, err := New(Options{AllowUnpolicedMutations: true,
+		Store:             store,
+		PrincipalID:       "test-ui",
+		AccessPolicyToken: "internal-token",
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := registry.New(store).PutPusher(context.Background(), &registry.Pusher{
+		Name:           "aws-test",
+		Account:        "123456789012",
+		Region:         "us-east-1",
+		ObservedAPIURL: "http://pusher:19090",
+		Token:          "pusher-token",
+	}); err != nil {
+		t.Fatalf("PutPusher() error = %v", err)
+	}
+
+	decode := func(rec *httptest.ResponseRecorder) []m2mPusher {
+		t.Helper()
+		var page struct {
+			Pushers []m2mPusher `json:"pushers"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+			t.Fatalf("decode pushers: %v", err)
+		}
+		if len(page.Pushers) == 0 {
+			t.Fatal("no pushers returned")
+		}
+		return page.Pushers
+	}
+	do := func(path string, headers map[string]string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		for key, value := range headers {
+			req.Header.Set(key, value)
+		}
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, body=%s", path, rec.Code, rec.Body.String())
+		}
+		return rec
+	}
+
+	// Generic machine listing stays redacted: the controller must opt in.
+	pushers := decode(do("/api/m2m/pushers", map[string]string{"X-Guardian-Internal-Token": "internal-token"}))
+	if pushers[0].Token != "" {
+		t.Fatalf("token leaked without includeTokens=1: %#v", pushers[0])
+	}
+
+	// The federation controller opts in and receives the credential.
+	pushers = decode(do("/api/m2m/pushers?includeTokens=1", map[string]string{"X-Guardian-Internal-Token": "internal-token"}))
+	if pushers[0].Token != "pusher-token" {
+		t.Fatalf("token = %q, want pusher-token", pushers[0].Token)
+	}
+
+	// The includeTokens flag alone is not enough; the caller must authenticate.
+	req := httptest.NewRequest(http.MethodGet, "/api/m2m/pushers?includeTokens=1", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("unauthenticated includeTokens request status = %d", rec.Code)
+	}
+}

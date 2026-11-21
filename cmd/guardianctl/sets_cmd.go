@@ -121,6 +121,9 @@ func setsShowCommand(store guardianapi.Store, printer *output.Printer) *command.
 		}
 		printer.PrintText("id:          %s\nname:        %s\nparent:      %s\ndescription: %s\npinned:      %t\npartitions:  %s\n",
 			set.ID, set.Name, set.ParentID, set.Description, set.Pinned, strings.Join(set.Partitions, ", "))
+		if len(set.ExcludedPartitions) > 0 {
+			printer.PrintText("excluded:    %s\n", strings.Join(set.ExcludedPartitions, ", "))
+		}
 		if len(set.Labels) > 0 {
 			printer.PrintText("labels:      ")
 			first := true
@@ -261,6 +264,32 @@ func setsAssignCommand(store guardianapi.Store, printer *output.Printer) *comman
 			return err
 		}
 		return printSet(printer, updated, "updated")
+	}}
+}
+
+func setsUnassignCommand(store guardianapi.Store, printer *output.Printer) *command.Command {
+	flags := flag.NewFlagSet("sets unassign", flag.ContinueOnError)
+	flags.SetOutput(ioDiscard{})
+	setRef := flags.String("set", "", "set id or name")
+	var partitions stringListFlag
+	flags.Var(&partitions, "partition", "partition to remove (repeatable; trailing positional names are also accepted)")
+	return &command.Command{Description: "Remove partitions from a virtual set", Flags: flags, Run: func(ctx context.Context, args []string) error {
+		set, err := resolveSet(ctx, store, *setRef)
+		if err != nil {
+			return err
+		}
+		// Accept partitions as flags or as trailing positional arguments so
+		// `sets unassign --set core monofs doctor` works as expected.
+		remove := append([]string(nil), partitions...)
+		remove = append(remove, args...)
+		if len(remove) == 0 {
+			return fmt.Errorf("at least one --partition (or positional partition) is required")
+		}
+		updated, err := setstore.New(store).RemovePartitions(ctx, set.ID, remove)
+		if err != nil {
+			return err
+		}
+		return printSet(printer, updated, "unassigned")
 	}}
 }
 

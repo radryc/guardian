@@ -1079,7 +1079,8 @@ func deployDockerPusher(ctx context.Context, cfg *bootstrap.Config, dryRun bool)
 	// Host-side pushers run outside the cluster; mount their generated
 	// certificate so MonoFS gRPC uses the local mTLS CA.
 	mtlsDir := bootstrap.MTLSDir()
-	if _, err := os.Stat(filepath.Join(mtlsDir, "guardian-pusher-docker", "tls.crt")); err == nil {
+	pusherCerts := filepath.Join(mtlsDir, "guardian-pusher-docker")
+	if _, err := os.Stat(filepath.Join(pusherCerts, "tls.crt")); err == nil {
 		args = append(args,
 			"-v", fmt.Sprintf("%s:%s:ro", filepath.Join(mtlsDir, "guardian-pusher-docker"), "/certs"),
 			"-e", "GUARDIAN_MONOFS_TLS=true",
@@ -1103,6 +1104,9 @@ func deployDockerPusher(ctx context.Context, cfg *bootstrap.Config, dryRun bool)
 		groupIDs = append(groupIDs, gid)
 	}
 	if gid, ok := fileGroupID(stateDir); ok {
+		groupIDs = append(groupIDs, gid)
+	}
+	if gid, ok := fileGroupID(pusherCerts); ok {
 		groupIDs = append(groupIDs, gid)
 	}
 	seen := make(map[int]bool, len(groupIDs))

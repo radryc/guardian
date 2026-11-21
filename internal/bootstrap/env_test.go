@@ -236,3 +236,29 @@ func TestNodeTemplateIncludesLogQuerySidecar(t *testing.T) {
 		}
 	}
 }
+
+func TestNodeTemplateWiresClusterToken(t *testing.T) {
+	cfg := DefaultConfig()
+	env, err := ComputeEnv(&cfg)
+	if err != nil {
+		t.Fatalf("ComputeEnv: %v", err)
+	}
+	storageDir, _ := TemplateDirs()
+	rendered, err := RenderTemplate(
+		filepath.Join(storageDir, "deploy-node.yaml"),
+		env,
+		ComputeNodeEnv(&cfg, "a"),
+	)
+	if err != nil {
+		t.Fatalf("RenderTemplate: %v", err)
+	}
+	for _, want := range []string{
+		"--kvs-allow-unauthenticated",
+		"name: MONOFS_TOKEN",
+		"key: monofs-token",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered node manifest is missing %q", want)
+		}
+	}
+}

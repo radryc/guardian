@@ -459,6 +459,9 @@ func (c *ClientBackend) GetPodEvents(ctx context.Context, namespace, podName str
 // server-side apply. When namespace is non-empty it is applied to documents
 // that do not carry their own namespace.
 func (c *ClientBackend) ApplyManifest(ctx context.Context, namespace string, manifest []byte) error {
+	if err := c.ensureNamespace(ctx, namespace); err != nil {
+		return fmt.Errorf("ensure namespace %q: %w", namespace, err)
+	}
 	decoder := utilyaml.NewYAMLOrJSONDecoder(bytes.NewReader(manifest), 4096)
 	for {
 		var obj map[string]any

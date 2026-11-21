@@ -81,7 +81,7 @@ Trust boundaries:
 
 | Boundary | What crosses it | Current control |
 |---|---|---|
-| Browser → `guardiand` | Bearer/session identity, mutations | OIDC verification in observe mode; optional login wall (`--require-ui-auth`); `authorizeMutation` (`CanModify`/`IsAdmin`) when access policy enabled; mutations fail closed while no enforcing policy is loaded unless `--allow-unpoliced-mutations` (`GUARDIAN_ALLOW_UNPOLICED_MUTATIONS`, default false) is set; CSP and `Origin`/`Referer` checks |
+| Browser → `guardiand` | Bearer/session identity, mutations | OIDC verification; anonymous mutations rejected by default (`--require-ui-auth`, default true) unless `--allow-loopback-anonymous`; `authorizeMutation` (`CanModify`/`IsAdmin`) when access policy enabled; mutations fail closed while no enforcing policy is loaded unless `--allow-unpoliced-mutations` (`GUARDIAN_ALLOW_UNPOLICED_MUTATIONS`, default false) is also set; CSP and `Origin`/`Referer` checks |
 | CI/repo → MonoFS | Desired-state YAML, access policy | MonoFS token/principal; no signature on `repo notify` |
 | `guardianctl` → MonoFS | Desired state, registry, tasks | MonoFS bearer token; no Guardian-side authorization |
 | `guardiand` → MonoFS | All runtime state, queues | MonoFS token; writable control-plane role |
@@ -134,24 +134,26 @@ metadata and is also used for REST-style version calls.
    The last argument means **observe mode**: unauthenticated requests are still
    allowed through; identity is attached when present.
 4. Optionally wraps with `WebAuthenticator` when an OIDC client secret and
-   redirect URL are configured. Browser login is enabled; `RequireLogin` is
-   only true when `GUARDIAN_REQUIRE_UI_AUTH=true` (or `MONOFS_OIDC_ISSUER` / an access policy is configured).
+   redirect URL are configured. `RequireLogin` follows
+   `GUARDIAN_REQUIRE_UI_AUTH`, which defaults to true.
 
 Consequences:
 
-- Default: anyone who can reach the UI can read and mutate.
-- With `GUARDIAN_REQUIRE_UI_AUTH=true`: `/api/m2m/*` and `/api/access/policy`
-  are login-exempt; `/api/m2m/*` routes enforce `requireM2MAccess`.
-- `/api/client-config` is not login-exempt, so enabling the login wall can
-  break token-based CLI discovery (the CLI sends a discovery token, not a
-  browser session).
+- Default: anonymous reads are allowed; anonymous mutations are rejected.
+  Reopening them requires `--allow-loopback-anonymous` (loopback callers) and,
+  while no policy is enforcing, `--allow-unpoliced-mutations`.
+- `/api/m2m/*` and `/api/access/policy` are login-exempt and perform their own
+  token checks; `/api/m2m/*` routes enforce `requireM2MAccess`.
+- `/api/client-config` is not login-exempt, so an active login wall can break
+  token-based CLI discovery (the CLI sends a discovery token, not a browser
+  session).
 
 ### 3.3 CLI authentication
 
 Two independent tracks:
 
 1. **MonoFS token** — the actual store credential (`GUARDIAN_MONOFS_TOKEN` or
-   discovery).
+   `--monofs-token`). Discovery supplies the router but not the token.
 2. **OIDC device flow** — `guardianctl auth login` caches an ID/access token in
    `~/.config/guardianctl/token.json` and attaches it to gRPC metadata.
 
@@ -163,7 +165,8 @@ an identity hint, not a short-lived credential.
 
 - `/api/m2m/pushers*`, `/api/m2m/federation/partitions`, `/api/m2m/overview`,
   and `/api/m2m/partitions*` use `requireM2MAccess`: internal token, admin role,
-  or loopback.
+  or loopback. Pusher tokens stay redacted unless the request also presents the
+  internal token and `includeTokens=1`.
 - The AWS and GCP pusher read APIs support TLS/mTLS, scoped bearer tokens
   (`--awsread-scopes` / `--read-scopes`), rotating token files
   (`--awsread-token-file` / `--read-token-file`), and per-caller rate limits.
@@ -217,16 +220,19 @@ Implemented decisions:
   mutation (bundle save, delete, reconcile, validate, activity) and for set
   membership changes (add/remove partitions).
 - `IsAdmin` — used for registry/repo/scan/unmanaged mutations and set metadata
-  (create/rename/move/delete). It also gates raw pusher bearer tokens: they are
-  redacted for every non-admin caller, including when the policy is disabled or
-  observe-only; authenticated admins may still read them.
+  (create/rename/move/delete). UI pusher tokens are redacted for every non-admin
+  caller, including when the policy is disabled or observe-only; authenticated
+  admins may still read them. The M2M pusher endpoints additionally reveal
+  tokens to the `GUARDIAN_ACCESS_POLICY_TOKEN` internal token when
+  `includeTokens=1` is present.
 - `FilterPartitions` — read filtering.
 
 Still not implemented:
 
-- Authentication by default. Authorization only runs when an identity exists
-  and the access policy is enabled; a deployment without OIDC/login and without
-  an access policy remains open by network placement.
+- Authentication for reads. Mutations are rejected by default without a
+  verifiable identity, but reads remain open by network placement, and a
+  deployment without OIDC/login cannot authenticate non-loopback mutation
+  clients until the loopback/unpoliced opt-ins are used.
 - Authorization on `guardianctl` writes (it writes directly to MonoFS).
 - Authorization on pusher task execution beyond queue routing.
 - Per-tenant scoping inside a single MonoFS namespace.
@@ -241,21 +247,23 @@ loaded; the historical permissive behaviour is available only with the explicit
 | Operation | UI auth | access.CanSee | access.CanModify/IsAdmin | Control-plane guard | MonoFS token |
 |---|---|---|---|---|---|
 | Read partition | Observe-mode OIDC | Yes | — | — | — |
-| Save bundle | Observe-mode OIDC | No | `CanModify` | No | Required indirectly |
-| Delete partition | Observe-mode OIDC | No | `CanModify` | No | Required indirectly |
-| Reconcile | Observe-mode OIDC | No | `CanModify` | Yes (optional, anonymous bypass) | Required indirectly |
-| Register pusher/repo | Observe-mode OIDC | No | `IsAdmin` | No | Required indirectly |
-| Add/remove set partitions | Observe-mode OIDC | No | `CanModify` on every added/removed partition | No | Required indirectly |
-| Create scan/set/unmanaged association | Observe-mode OIDC | No | `IsAdmin` | No | Required indirectly |
-| Read pusher token | Observe-mode OIDC | No | Permissioned by network/token | No | — |
+| Save bundle | OIDC (mutations require identity) | No | `CanModify` | No | Required indirectly |
+| Delete partition | OIDC (mutations require identity) | No | `CanModify` | No | Required indirectly |
+| Reconcile | OIDC or loopback opt-in | No | `CanModify` | Yes (`AuthorizeModify`, fail-closed unless unpoliced opt-in) | Required indirectly |
+| Register pusher/repo | OIDC (mutations require identity) | No | `IsAdmin` | No | Required indirectly |
+| Add/remove set partitions | OIDC (mutations require identity) | No | `CanModify` on every added/removed partition | No | Required indirectly |
+| Create scan/set/unmanaged association | OIDC (mutations require identity) | No | `IsAdmin` | No | Required indirectly |
+| Read pusher token | OIDC/admin for UI; internal token + `includeTokens=1` for M2M | No | `IsAdmin` (UI) / internal token (M2M) | No | — |
 | M2M overview/partitions | M2M token/admin/loopback | — | `requireM2MAccess` | — | — |
 | CLI partition push | None | No | No | No | Yes |
 | Pusher claim/result | None | No | No | No | Yes |
 
-The remaining exposure is authentication: an anonymous caller on a deployment
-with no login wall is still anonymous. The mutation guard prevents a
-low-privilege *authenticated* user from editing a partition they cannot see,
-and prevents self-service registry changes unless the policy says otherwise.
+The remaining exposure is authentication of reads and of deployments that
+explicitly opt into loopback/unpoliced mutations: anonymous callers can still
+read, and `--allow-loopback-anonymous` or `--allow-unpoliced-mutations` reopens
+mutations. The mutation guard prevents a low-privilege *authenticated* user from
+editing a partition they cannot see, and prevents self-service registry changes
+unless the policy says otherwise.
 
 ---
 
@@ -265,9 +273,9 @@ and prevents self-service registry changes unless the policy says otherwise.
 
 | Secret | Storage | Exposure |
 |---|---|---|
-| MonoFS token | Config file, env, entrypoint temp config, `/api/client-config` | Process argv in containers, world-readable temp file, UI endpoint |
+| MonoFS token | Config file, env, entrypoint temp config | Process argv in containers, world-readable temp file. `/api/client-config` returns the router but omits the token |
 | OIDC client secret | Env (`MONOFS_OIDC_CLIENT_SECRET`) | Process env |
-| Pusher observed-API token | `/.registry/pushers/*.json` (`token` or `tokenEnv`) | UI API returns it; store readers can read it |
+| Pusher observed-API token | `/.registry/pushers/*.json` (`token` or `tokenEnv`) | UI reveals it only to authenticated admins; M2M only with internal token + `includeTokens=1`; store readers can read it |
 | Repo source credentials | `Repo.Source` URL | UI/CLI list |
 | Webhook signing secret | Config/env | Process env |
 | AWS credentials | Ambient SDK/instance role; static env for CLI backend | Child process env (including npm) |
@@ -283,8 +291,9 @@ and prevents self-service registry changes unless the policy says otherwise.
 - Secret drivers emit `valueHash` for drift detection. The runtime redacts
   `value`/`asset.value` before writing the task result and scrubs the value from
   logs/errors; the result processor redacts again before state/archive writes.
-- Kubernetes still injects resolved secrets as literal environment values in
-  the pod spec (no `Secret` object, no `secretKeyRef`, no `imagePullSecrets`).
+- Kubernetes creates/adopts a `Secret` object and mounts it as a volume
+  (optionally one key via `subPath`); it still has no `imagePullSecrets`
+  handling for Compute images.
 - Docker still passes secrets as `-e KEY=VALUE` on the CLI, exposing them in
   process argv and `docker inspect`; config/inline files are written `0644`.
 - AWS Secrets Manager values are redacted in outputs; the `Secret` Destroy
@@ -332,8 +341,9 @@ and prevents self-service registry changes unless the policy says otherwise.
 - The local FS store writes files `0644` and keeps every version forever.
 - Bootstrap-generated token files are `0644`; shared encryption keys are
   `0644`.
-- Kubernetes `Secret` assets become plain env values in Deployments, so they
-  are stored in the pod spec and etcd as ordinary strings.
+- Kubernetes `Secret` assets are ordinary Kubernetes Secrets referenced by
+  volume; the pod spec names the Secret, and etcd protection depends on the
+  cluster's encryption configuration.
 
 ### 6.3 Audit
 
@@ -357,7 +367,7 @@ and prevents self-service registry changes unless the policy says otherwise.
 
 | Listener | Default | Auth | Notes |
 |---|---|---|---|
-| Guardian UI/API | `guardian.uiListenAddress`; bootstrap uses `:8090` | OIDC observe-mode; optional login wall (`--require-ui-auth`) | CSP, security headers, `Origin`/`Referer` checks; static directory listing under `/static/` |
+| Guardian UI/API | `guardian.uiListenAddress`; bootstrap uses `:8090` | OIDC; anonymous mutations rejected by default (`--require-ui-auth`), loopback opt-in available | CSP, security headers, `Origin`/`Referer` checks; static directory listing under `/static/` |
 | AWS read API | `127.0.0.1:19090` (loopback default) | Scoped bearer token (`--awsread-token` / `--awsread-token-file`); empty disables auth on loopback only | Optional TLS/mTLS, per-caller rate limits, body limits, server timeouts; `/v1/aws/observed/diff` disabled by default (`--awsread-enable-diff=false`) |
 | Pusher metrics/OTLP | exporter-dependent | Usually none | Depends on collector configuration |
 | MonoFS | deployment-specific | Token | Outside Guardian's code |
@@ -433,22 +443,22 @@ remaining unaudited callers.
 
 | ID | Threat | Current control | Gap / impact | Severity |
 |---|---|---|---|---|
-| T1 | Anonymous user reaches UI and deletes/modifies partitions | Network placement; observe-mode OIDC | No handler authz; default login off | Critical |
-| T2 | User with limited access modifies a partition they cannot see | `CanModify` on every UI mutation when access policy is enabled | Residual: no authn when policy/login disabled; CLI bypasses UI | High |
+| T1 | Anonymous user reaches UI and deletes/modifies partitions | Network placement; anonymous mutations rejected by default; access-policy `CanModify` | Residual: reads open; loopback/unpoliced opt-ins reopen mutations | Critical |
+| T2 | User with limited access modifies a partition they cannot see | `CanModify` on every UI mutation when access policy is enabled | Residual: unpoliced/loopback opt-in deployments; CLI bypasses UI | High |
 | T3 | Compromised pusher spoofs a result (APPLY for DIFF, arbitrary outputs) | Result validated against queued task op/partition/intent/pusher | Residual: a pusher can rewrite the task file first | High |
 | T4 | Pusher result path traversal deletes other partitions | Queue identity validated; traversal names rejected at CLI/UI/repo boundaries | Residual: other name-to-path callers not audited | Critical |
-| T5 | Attacker reads pusher tokens | `/api/pushers` returns token; store readable | Token grants observed API access | High |
+| T5 | Attacker reads pusher tokens | UI redacts unless admin; M2M requires internal token + `includeTokens=1`; store remains readable to token holders | Token grants observed API access | High |
 | T6 | Attacker exfiltrates env secrets via pusher registration | `TokenEnv` + attacker `observedApiUrl` | UI can set both; observed client sends token to URL | High |
 | T7 | AWS read API abused to read logs/traces/templates | Loopback default; scoped tokens + rotation; TLS/mTLS; rate/body limits | Residual: plain HTTP on loopback by default; empty token allowed on loopback | Medium |
 | T8 | RCE on AWS pusher via observed diff | Disabled by default (`--awsread-enable-diff=false`); requires `diff` scope | Residual: `appCommand` + npm install when explicitly enabled | High |
 | T9 | AWS credential theft via CDK app | Assumed role | Static creds in child env; malicious package scripts | Critical |
-| T10 | Secret values leak into state/results/logs | Partial UI masking | Plaintext outputs, 0644 files, argv, no redaction | High |
+| T10 | Secret values leak into state/results/logs | Results/state/UI redact Secret values (`valueHash` remains); logs scrubbed | Queue files, Docker argv/env, and staged 0644 files still carry plaintext while in flight | High |
 | T11 | Cross-tenant path traversal via names | Shared validation on UI/CLI/repo/result boundaries | Residual: observed collector and other path builders not fully audited | High |
 | T12 | IAM privilege escalation via generated roles | Per-intent role | `Resource:"*"`, `iam:CreateRole/AttachRolePolicy/PassRole` | High |
 | T13 | Supply-chain compromise of pusher image | Non-root `USER guardian`; `go.sum` preserved; CI vet/vuln scan | Residual: no SBOM or image signing in CI | Medium |
 | T14 | Denial of service by scan/refresh loops | Timeouts in some calls | Unbounded listings, 500-stack refresh, no rate limit | Medium |
 | T15 | Webhook replay/forgery | HMAC body | No timestamp/nonce; secret may be in config | Medium |
-| T16 | Deploy guard bypass | Optional enforce | Anonymous identity allowed; errors disable; CLI bypasses | High |
+| T16 | Deploy guard bypass | Enforcing access policy; anonymous mutations rejected by default | Loopback/unpoliced opt-ins; CLI bypasses | High |
 | T17 | Stale/partial listing triggers mass DESTROY | Reconcile treats missing intents as removed | MonoFS partial listings reported as success | High |
 | T18 | Log/telemetry data exfiltration | OTLP endpoint config | Insecure transport by default; all stderr mirrored | Medium |
 
@@ -464,8 +474,9 @@ concrete controls.
    execute without an authenticated identity and an explicit role check on the
    target partition. Default to deny.
 2. **Do not ship the store credential through discovery.** `/api/client-config`
-   must return a short-lived, scoped, auditable credential — or be removed in
-   favor of an authenticated proxy.
+   must not return the long-lived store token; return a short-lived, scoped,
+   auditable credential, or omit the token (the current behavior) in favor of
+   an authenticated proxy.
 3. **Make the control-plane guard fail closed.** Missing grants/evaluator must
    deny, and anonymous automation must use a distinct service identity.
 4. **Validate result provenance.** The processor must verify task ID, op,

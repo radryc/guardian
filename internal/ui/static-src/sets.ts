@@ -75,7 +75,7 @@ export function initSetsPanel(options: SetsOptions): void {
     if (target) opts.onOpenSet(target.dataset.openSet ?? "");
   });
   document.getElementById("setPage")?.addEventListener("click", (event) => {
-    const target = (event.target as HTMLElement).closest<HTMLElement>("[data-set-action],[data-set-partition],[data-open-set]");
+    const target = (event.target as HTMLElement).closest<HTMLElement>("[data-set-action],[data-set-partition],[data-set-remove],[data-open-set]");
     if (!target) return;
     if (target.dataset.openSet !== undefined) {
       opts.onOpenSet(target.dataset.openSet);
@@ -85,8 +85,13 @@ export function initSetsPanel(options: SetsOptions): void {
       opts.onSelectPartition(target.dataset.setPartition);
       return;
     }
+    if (target.dataset.setRemove) {
+      unassignPartition(opts.getSelectedSet(), target.dataset.setRemove).catch(opts.onError);
+      return;
+    }
     const action = target.dataset.setAction;
     if (action === "add") openPartitionPicker(opts.getSelectedSet());
+    if (action === "unassign") openUnassignPicker(opts.getSelectedSet());
     if (action === "new") openSetEditor();
     if (action === "edit") openSetEditor(currentSet());
     if (action === "subset") openSetEditor(undefined, opts.getSelectedSet());
@@ -286,7 +291,10 @@ function renderSetPage(): void {
         <div class="path-cell">${escapeHtml(path)}</div>
       </td>
       <td>${native ? `<span class="assign-ok">Native ✓</span>` : platformSet ? `<span class="assign-none">Native</span>` : `<span class="assign-ok">Assigned ✓</span>`}</td>
-      <td><button class="btn-secondary" style="padding:2px 8px;font-size:10px;" data-set-partition="${escapeAttr(name)}">Open →</button></td>
+      <td><div class="set-row-actions">
+        <button class="btn-secondary" style="padding:2px 8px;font-size:10px;" data-set-partition="${escapeAttr(name)}">Open →</button>
+        ${set.id === "ungrouped" ? "" : `<button class="btn-ghost" style="padding:2px 8px;font-size:10px;" data-set-remove="${escapeAttr(name)}">Unassign</button>`}
+      </div></td>
     </tr>`;
   }).join("");
   const childCards = children.map((child) => `<button class="subset-card" data-open-set="${escapeAttr(child.id)}">
@@ -313,6 +321,7 @@ function renderSetPage(): void {
               <button class="btn-primary" data-set-action="new">Create a set</button>
             ` : `
               <button class="btn-primary" data-set-action="add">Add partitions</button>
+              ${partitions.length ? `<button class="btn-secondary" data-set-action="unassign">Unassign</button>` : ""}
               <button class="btn-secondary" data-set-action="subset">New subset</button>
               <button class="btn-secondary" data-set-action="edit">Edit set</button>
               <button class="btn-ghost" data-set-action="pin">${set.pinned ? "★ Pinned" : "☆ Pin"}</button>
@@ -332,7 +341,7 @@ function renderSetPage(): void {
           ${children.length ? `<section class="card"><div class="card-header"><h2 class="card-title">Subsets</h2></div><div class="subset-grid">${childCards}</div></section>` : ""}
           <section class="card">
             <div class="card-header"><div class="flex items-center gap-2"><h2 class="card-title">Partitions</h2><span class="pill">${partitions.length}</span></div><p class="muted">Only partitions in this set are listed here.</p></div>
-            ${visible.length ? `<div class="set-table-wrap"><table class="table"><thead><tr><th>Application</th><th>Status</th><th>Source / MonoFS path</th><th>Assignment</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="empty-state">${children.length ? "No direct partitions. Open a subset to see its partitions." : set.id === "ungrouped" ? "No ungrouped partitions." : `This set has no partitions yet. <button class="btn-secondary" data-set-action="add">Add partitions</button>`}</div>`}
+            ${visible.length ? `<div class="set-table-wrap"><table class="table"><thead><tr><th>Application</th><th>Status</th><th>Source / MonoFS path</th><th>Assignment</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="empty-state">${children.length ? "No direct partitions. Open a subset to see its partitions." : set.id === "ungrouped" ? "No ungrouped partitions." : `This set has no partitions yet. <button class="btn-secondary" data-set-action="add">Add partitions</button>`}</div>`}
             ${partitions.length > visible.length ? `<div class="set-table-more">Showing 1–${visible.length} of ${partitions.length}. Use the set picker to search.</div>` : ""}
           </section>
         </div>
@@ -593,6 +602,56 @@ async function savePartitions(setId: string, initiallySelected: Set<string>): Pr
   });
   closeModal();
   opts.onToast("Set members updated.", "success");
+  await refreshSets();
+}
+
+function openUnassignPicker(setId: string): void {
+  if (!setId || setId === "ungrouped") return;
+  const set = sets.find((candidate) => candidate.id === setId);
+  if (!set) return;
+  const members = [...(set.partitions ?? [])].sort();
+  if (!members.length) {
+    opts.onToast("This set has no partitions to unassign.", "info");
+    return;
+  }
+  const rows = members.map((name) => `<label class="set-picker-row"><input type="checkbox" value="${escapeAttr(name)}"> <span>${escapeHtml(name)}</span></label>`).join("");
+  openModal(`<div class="set-modal-head"><h2>Unassign partitions from ${escapeHtml(set.name)}</h2><button class="btn-ghost" data-modal-close>×</button></div>
+    <div class="set-modal-body">
+      <input id="setUnassignSearch" class="input" placeholder="Search partitions…">
+      <div class="set-picker-list" id="setUnassignList">${rows}</div>
+    </div>
+    <div class="set-modal-actions"><button class="btn-ghost" data-modal-close>Cancel</button><button class="btn-primary" id="setUnassignSave">Unassign selected</button></div>`);
+  document.getElementById("setUnassignSearch")?.addEventListener("input", (event) => {
+    const query = (event.target as HTMLInputElement).value.toLowerCase();
+    document.querySelectorAll<HTMLElement>("#setUnassignList .set-picker-row").forEach((row) => {
+      row.style.display = row.textContent?.toLowerCase().includes(query) ? "" : "none";
+    });
+  });
+  document.getElementById("setUnassignSave")?.addEventListener("click", () => {
+    const names = [...document.querySelectorAll<HTMLInputElement>("#setUnassignList input[type=checkbox]:checked")].map((input) => input.value);
+    if (!names.length) {
+      opts.onToast("Select at least one partition.", "error");
+      return;
+    }
+    unassignPartitions(setId, names).catch(opts.onError);
+  });
+}
+
+async function unassignPartition(setId: string, name: string): Promise<void> {
+  if (!setId || setId === "ungrouped" || !name) return;
+  if (!window.confirm(`Remove "${name}" from this set?`)) return;
+  await unassignPartitions(setId, [name]);
+}
+
+async function unassignPartitions(setId: string, names: string[]): Promise<void> {
+  if (!setId || setId === "ungrouped" || !names.length) return;
+  await fetchJSON(`/api/sets/${encodeURIComponent(setId)}/partitions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ remove: names }),
+  });
+  closeModal();
+  opts.onToast(`Unassigned ${names.length} partition${names.length === 1 ? "" : "s"} from the set.`, "success");
   await refreshSets();
 }
 

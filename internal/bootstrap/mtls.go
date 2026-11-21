@@ -100,6 +100,13 @@ func EnsureMTLS(ctx context.Context, dir string, rotateLeaves, newCA, dryRun boo
 	if err != nil {
 		return fmt.Errorf("mtls: generate certificates: %w", err)
 	}
+	// The host-side Docker pusher runs as the image's non-root guardian user
+	// with the host group added. Make just its cert directory traversable and
+	// the private key group-readable so it can present the mTLS client cert.
+	if svc, ok := bundle.Services["guardian-pusher-docker"]; ok {
+		_ = os.Chmod(filepath.Join(bundle.Dir, "guardian-pusher-docker"), 0o750)
+		_ = os.Chmod(svc.KeyFile, 0o640)
+	}
 
 	namespaces := map[string]struct{}{}
 	for _, svc := range bundle.Services {
