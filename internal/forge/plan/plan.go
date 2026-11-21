@@ -161,7 +161,7 @@ func liveOperations(ctx context.Context, opts Options, b *bundle.Bundle) ([]Oper
 }
 
 func relPrefix(gitRoot, partitionDir string) (string, error) {
-	prefix, err := filepath.Rel(gitRoot, partitionDir)
+	prefix, err := filepath.Rel(publish.CanonicalPath(gitRoot), publish.CanonicalPath(partitionDir))
 	if err != nil {
 		return "", err
 	}

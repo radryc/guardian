@@ -37,6 +37,19 @@ func GitRoot(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// CanonicalPath resolves a path to its absolute, long form. Windows can return
+// an 8.3 short path from the OS while git reports the long path; resolving
+// symlinks and getting the final path makes them comparable.
+func CanonicalPath(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	return filepath.Clean(path)
+}
+
 // ResolveBaseRef picks the comparison ref for a changed-file submission.
 func ResolveBaseRef(ctx context.Context, gitRoot, preferred string) string {
 	if strings.TrimSpace(preferred) != "" {
@@ -53,14 +66,8 @@ func ResolveBaseRef(ctx context.Context, gitRoot, preferred string) string {
 // BuildOperations turns a partition directory into MonoFS publish operations.
 // Paths are relative to the git root so they land in the repository tree.
 func BuildOperations(ctx context.Context, opts OperationOptions) ([]workspacepub.Operation, error) {
-	partitionDir, err := filepath.Abs(opts.PartitionDir)
-	if err != nil {
-		return nil, err
-	}
-	root, err := filepath.Abs(opts.Root)
-	if err != nil {
-		return nil, err
-	}
+	partitionDir := CanonicalPath(opts.PartitionDir)
+	root := CanonicalPath(opts.Root)
 
 	gitRoot, err := GitRoot(ctx, root)
 	if err != nil {
@@ -68,6 +75,8 @@ func BuildOperations(ctx context.Context, opts OperationOptions) ([]workspacepub
 			return nil, fmt.Errorf("changed mode requires a git repository: %w (use --all to submit the partition tree)", err)
 		}
 		gitRoot = root
+	} else {
+		gitRoot = CanonicalPath(gitRoot)
 	}
 	prefix, err := filepath.Rel(gitRoot, partitionDir)
 	if err != nil {
