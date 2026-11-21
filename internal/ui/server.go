@@ -24,6 +24,7 @@ import (
 
 	"github.com/radryc/guardian/internal/access"
 	"github.com/radryc/guardian/internal/buildinfo"
+	displaypkg "github.com/radryc/guardian/internal/display"
 	historydomain "github.com/radryc/guardian/internal/domain/history"
 	intentdomain "github.com/radryc/guardian/internal/domain/intent"
 	"github.com/radryc/guardian/internal/historyquery"
@@ -34,6 +35,7 @@ import (
 	"github.com/radryc/guardian/pkg/guardianapi"
 	"github.com/radryc/monofs/pkg/audit"
 	coreauthz "github.com/radryc/monofs/pkg/authz"
+	"github.com/radryc/monofs/pkg/display"
 	"gopkg.in/yaml.v3"
 )
 
@@ -91,6 +93,8 @@ type Options struct {
 	// AuditEmitter records one access event per UI/API request (including
 	// denials) in the shared audit trail.
 	AuditEmitter audit.Emitter
+	// DisplayProfiles stores presentation-only display-key profiles.
+	DisplayProfiles *displaypkg.Service
 }
 
 type ClientConfig struct {
@@ -130,6 +134,7 @@ type Server struct {
 	trustedOrigins           []string
 	enableHSTS               bool
 	auditEmitter             audit.Emitter
+	displayProfiles          *displaypkg.Service
 	index                    *template.Template
 	static                   http.Handler
 	mux                      http.Handler
@@ -347,6 +352,7 @@ func New(opts Options) (*Server, error) {
 		trustedOrigins:           append([]string(nil), opts.TrustedOrigins...),
 		enableHSTS:               opts.EnableHSTS,
 		auditEmitter:             opts.AuditEmitter,
+		displayProfiles:          opts.DisplayProfiles,
 		index:                    index,
 		static:                   http.StripPrefix("/static/", http.FileServer(http.FS(staticRoot))),
 	}
@@ -361,6 +367,15 @@ func New(opts Options) (*Server, error) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if profileID := displayRequestedProfile(r); profileID != "" && s.displayProfiles != nil &&
+		strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/api/display-profiles") {
+		s.serveWithDisplay(w, r, profileID)
+		return
+	}
+	s.serveWithAudit(w, r)
+}
+
+func (s *Server) serveWithAudit(w http.ResponseWriter, r *http.Request) {
 	if s.auditEmitter == nil {
 		s.serveHTTP(w, r)
 		return
@@ -368,6 +383,66 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	recorder := &auditStatusRecorder{ResponseWriter: w}
 	s.serveHTTP(recorder, r)
 	s.emitRequestAudit(r, recorder.status)
+}
+
+func (s *Server) serveWithDisplay(w http.ResponseWriter, r *http.Request, profileID string) {
+	profile, version, err := s.displayProfiles.Resolve(r.Context(), subjectFromRequest(r), profileID)
+	if err != nil || profile == nil {
+		s.serveWithAudit(w, r)
+		return
+	}
+	buffer := &bufferedResponse{header: make(http.Header)}
+	s.serveWithAudit(buffer, r)
+	body := buffer.body.Bytes()
+	if buffer.status >= 200 && buffer.status < 300 && strings.Contains(buffer.header.Get("Content-Type"), "json") {
+		if mapped, mapErr := display.MapJSON(body, profile, ""); mapErr == nil {
+			body = mapped
+		}
+	}
+	for key, values := range buffer.header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.Header().Del("Content-Length")
+	w.Header().Set(display.HeaderName, profile.ID)
+	if version != "" {
+		w.Header().Set(display.VersionHeader, version)
+	}
+	w.Header().Add("Vary", display.HeaderName)
+	w.Header().Set("Cache-Control", "private")
+	status := buffer.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+type bufferedResponse struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (b *bufferedResponse) Header() http.Header { return b.header }
+func (b *bufferedResponse) WriteHeader(status int) {
+	if b.status == 0 {
+		b.status = status
+	}
+}
+func (b *bufferedResponse) Write(data []byte) (int, error) {
+	if b.status == 0 {
+		b.status = http.StatusOK
+	}
+	return b.body.Write(data)
+}
+
+func displayRequestedProfile(r *http.Request) string {
+	if value := strings.TrimSpace(r.Header.Get(display.HeaderName)); value != "" {
+		return value
+	}
+	return strings.TrimSpace(r.URL.Query().Get(display.QueryParam))
 }
 
 func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
@@ -598,6 +673,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/aws/unmanaged/", s.handleUnmanagedRoute)
 	mux.HandleFunc("/api/sets", s.handleSets)
 	mux.HandleFunc("/api/sets/", s.handleSetRoute)
+	mux.HandleFunc("/api/display-profiles", s.handleDisplayProfiles)
+	mux.HandleFunc("/api/display-profiles/", s.handleDisplayProfileRoute)
 	return mux
 }
 

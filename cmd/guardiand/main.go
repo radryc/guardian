@@ -25,6 +25,7 @@ import (
 	"github.com/radryc/guardian/internal/buildinfo"
 	"github.com/radryc/guardian/internal/compliance"
 	"github.com/radryc/guardian/internal/config"
+	displaypkg "github.com/radryc/guardian/internal/display"
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
 	"github.com/radryc/guardian/internal/notify"
 	observedpkg "github.com/radryc/guardian/internal/observed"
@@ -408,6 +409,8 @@ func main() {
 	}
 	go accessService.Run(context.Background())
 
+	displayProfiles := displaypkg.NewService(store)
+
 	auditEmitter, auditErr := audit.NewServiceEmitter(audit.ConfigFromEnv("guardian"))
 	if auditErr != nil {
 		log.Fatalf("configure audit emitter: %v", auditErr)
@@ -479,6 +482,7 @@ func main() {
 			TrustedOrigins:          trustedOriginList,
 			EnableHSTS:              enableHSTS,
 			AuditEmitter:            uiAudit,
+			DisplayProfiles:         displayProfiles,
 			// Auto-deploy is on by default; guardian.autoDeployOnIngest=false
 			// keeps merges manual.
 			DisableAutoDeployOnIngest: !cfg.Guardian.AutoDeployOnIngest,
