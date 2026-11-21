@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
@@ -38,6 +37,7 @@ import (
 	"github.com/radryc/guardian/internal/store/memory"
 	monofsstore "github.com/radryc/guardian/internal/store/monofs"
 	"github.com/radryc/guardian/internal/telemetry"
+	"github.com/radryc/guardian/internal/tlsxutil"
 	"github.com/radryc/guardian/internal/versioning/revisions"
 	"github.com/radryc/guardian/pkg/guardianapi"
 )
@@ -118,6 +118,9 @@ func main() {
 	flag.BoolVar(&observedOnly, "observed-only", false, "run only the observed-state API and event consumer (no MonoFS task queue)")
 	flag.StringVar(&onboardingSSMPrefix, "onboarding-ssm-prefix", "", "SSM parameter prefix containing customer onboarding descriptors (empty disables)")
 	flag.Parse()
+	if monofsToken == "" {
+		monofsToken = strings.TrimSpace(os.Getenv("GUARDIAN_MONOFS_TOKEN"))
+	}
 
 	if account == "" {
 		flag.Usage()
@@ -223,9 +226,11 @@ func main() {
 		sdkBackend := awsdriver.NewAWSBackend("", region, false)
 		composite := awsdriver.NewCompositeBackend(backend, sdkBackend)
 		reg := registry.New()
-		awsdriver.RegisterWithOptions(reg, composite, secrets.NewStoreResolver(store), awsdriver.Options{
+		if err := awsdriver.RegisterWithOptions(reg, composite, secrets.NewStoreResolver(store), awsdriver.Options{
 			ExecutionRoleMode: cfnExecutionRole,
-		})
+		}); err != nil {
+			log.Fatalf("register aws drivers: %v", err)
+		}
 		runtimeRunner = &runtimepkg.Runtime{
 			QueuePath:               paths.QueueDir(pusherName),
 			WorkerID:                workerID,
@@ -378,8 +383,12 @@ func main() {
 		if (strings.TrimSpace(awsReadTLSCert) == "") != (strings.TrimSpace(awsReadTLSKey) == "") {
 			log.Fatalf("AWS read API TLS requires both --awsread-tls-cert and --awsread-tls-key")
 		}
-		if !loopback && strings.TrimSpace(awsReadTLSCert) == "" && !awsReadAllowPlaintext {
-			log.Fatalf("AWS read API is listening on %s without TLS; configure --awsread-tls-cert/--awsread-tls-key or pass --awsread-allow-plaintext for a trusted network", awsReadAddr)
+		readTLS, readTLSEnabled, err := awsReadTLSConfig(awsReadTLSCert, awsReadTLSKey, awsReadTLSClientCA)
+		if err != nil {
+			log.Fatalf("configure AWS read API TLS: %v", err)
+		}
+		if !loopback && !readTLSEnabled && !awsReadAllowPlaintext {
+			log.Fatalf("AWS read API is listening on %s without TLS; configure --awsread-tls-cert/--awsread-tls-key, STRATA_TLS_* or pass --awsread-allow-plaintext for a trusted network", awsReadAddr)
 		}
 		// The read API must query the target account, not the management
 		// account that hosts the fleet task. Assume the per-account role once
@@ -426,10 +435,6 @@ func main() {
 		if strings.TrimSpace(awsReadTokenFile) != "" {
 			readHandler.WithTokenFile(awsReadTokenFile)
 		}
-		readTLS, err := awsReadTLSConfig(awsReadTLSCert, awsReadTLSKey, awsReadTLSClientCA)
-		if err != nil {
-			log.Fatalf("configure AWS read API TLS: %v", err)
-		}
 		readServer := &http.Server{
 			Addr:              awsReadAddr,
 			Handler:           readHandler,
@@ -441,14 +446,19 @@ func main() {
 		}
 		goroutines++
 		go func() {
-			log.Printf("aws read API listening on %s (tls=%t, diff=%t, scopes=%s)", awsReadAddr, readTLS != nil, awsReadEnableDiff, strings.TrimSpace(awsReadScopes))
+			log.Printf("aws read API listening on %s (tls=%t, diff=%t, scopes=%s)", awsReadAddr, readTLSEnabled, awsReadEnableDiff, strings.TrimSpace(awsReadScopes))
 			go func() {
 				<-ctx.Done()
 				_ = readServer.Shutdown(context.Background())
 			}()
 			var serveErr error
 			if readTLS != nil {
-				serveErr = readServer.ListenAndServeTLS(awsReadTLSCert, awsReadTLSKey)
+				listener, listenErr := net.Listen("tcp", awsReadAddr)
+				if listenErr != nil {
+					readErr <- listenErr
+					return
+				}
+				serveErr = readServer.Serve(tls.NewListener(listener, readTLS))
 			} else {
 				serveErr = readServer.ListenAndServe()
 			}
@@ -525,30 +535,17 @@ func splitCSV(value string) []string {
 	return out
 }
 
-func awsReadTLSConfig(certFile, keyFile, clientCAFile string) (*tls.Config, error) {
-	if strings.TrimSpace(certFile) == "" && strings.TrimSpace(keyFile) == "" {
-		return nil, nil
+func awsReadTLSConfig(certFile, keyFile, clientCAFile string) (*tls.Config, bool, error) {
+	tlsCfg, enabled, err := tlsxutil.ServerTLSConfigHTTP(tlsxutil.LegacyServer{
+		CertFile:          certFile,
+		KeyFile:           keyFile,
+		CAFile:            clientCAFile,
+		RequireClientCert: strings.TrimSpace(clientCAFile) != "",
+	})
+	if err != nil {
+		return nil, false, err
 	}
-	if strings.TrimSpace(certFile) == "" || strings.TrimSpace(keyFile) == "" {
-		return nil, fmt.Errorf("both certificate and key are required")
-	}
-	if _, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
-		return nil, fmt.Errorf("load certificate: %w", err)
-	}
-	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
-	if strings.TrimSpace(clientCAFile) != "" {
-		content, err := os.ReadFile(clientCAFile)
-		if err != nil {
-			return nil, fmt.Errorf("read client CA: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(content) {
-			return nil, fmt.Errorf("parse client CA bundle")
-		}
-		cfg.ClientCAs = pool
-		cfg.ClientAuth = tls.RequireAndVerifyClientCert
-	}
-	return cfg, nil
+	return tlsCfg, enabled, nil
 }
 
 func splitRegions(region string) []string {

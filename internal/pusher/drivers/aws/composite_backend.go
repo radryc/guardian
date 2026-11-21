@@ -143,3 +143,5 @@ func (b *CompositeBackend) UpsertLogGroup(ctx context.Context, group LogGroup) e
 func (b *CompositeBackend) GetLogGroup(ctx context.Context, name string) (LogGroup, bool, error) {
 	return b.SDK.GetLogGroup(ctx, name)
 }
+
+var _ BackendAPI = (*CompositeBackend)(nil)

@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/radryc/monofs/pkg/repowatch"
 	"github.com/radryc/guardian/internal/registry"
 	"github.com/radryc/guardian/internal/store/memory"
+	"github.com/radryc/monofs/pkg/repowatch"
 )
 
 func TestSyncRepoBundlesShardFiltersRepos(t *testing.T) {

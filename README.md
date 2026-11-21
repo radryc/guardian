@@ -5,8 +5,8 @@
 Guardian is a declarative deployment control plane. Desired state lives in
 MonoFS as partitions and intents; Guardian compiles them into typed assets,
 computes drift, and queues tasks; pusher workers claim those tasks and execute
-DIFF → CHECK → APPLY (or DESTROY) against Kubernetes, Docker, AWS, or a local
-backend.
+DIFF → CHECK → APPLY (or DESTROY) against Kubernetes, Docker, AWS, GCP, or a
+local backend.
 
 Guardian has no database of its own: **MonoFS is the store and the message
 bus**. Partitions, intents, runtime state, queues, archives, and the platform
@@ -23,9 +23,10 @@ model and trust boundaries.
 | --- | --- |
 | `guardiand` | Control plane: reconciler, result processor, observed collector, alerting, UI/API |
 | `guardianctl` | Operator CLI: partitions, intents, repos, pushers, AWS, images, bootstrap |
-| `guardian-pusher-k8s` | Kubernetes driver (client-go or kubectl) |
+| `guardian-pusher-k8s` | Kubernetes driver (client-go or kubectl), optional observed read API |
 | `guardian-pusher-docker` | Docker driver |
 | `guardian-pusher-aws` | AWS driver (CDK + SDK), account scans, observed read API (`:19090`) |
+| `guardian-pusher-gcp` | GCP driver (OpenTofu + SDK), Cloud Asset Inventory, GCP read API (`:19091`) |
 | `guardian-pusher-local` | In-process reference drivers for dev/dogfood |
 | `guardian-docker` | Inspect/diff guardian-labelled Docker resources |
 
@@ -45,6 +46,47 @@ model and trust boundaries.
   revisions; failed applies record a rollback and preserve the pushed manifest
   for retry, while operators can restore archived tags explicitly.
 
+### Secret mounts (`compute.secretMounts`)
+
+The asset surface is provider-agnostic: a Compute mounts a **Secret asset**.
+Drivers resolve that asset to the native resource underneath.
+
+```yaml
+assets:
+  - type: Secret
+    name: router-tls
+    properties:
+      # either provide a value/secretRef (Guardian creates it)...
+      secretRef: monofs-secret://shared/router-tls
+      key: tls.crt
+      # ...or adopt one created outside Guardian:
+      # existingSecret: strata-tls-monofs-router
+
+  - type: Compute
+    name: router
+    dependsOn: [router-tls]
+    properties:
+      image: monofs-router:latest
+      secretMounts:
+        - secret: router-tls              # Secret asset name
+          path: /var/run/secrets/strata-tls
+          readOnly: true
+        - secret: router-tls
+          path: /etc/tls/tls.crt
+          file: tls.crt                   # optional single-file mount
+```
+
+| Provider | Implementation underneath |
+| :--- | :--- |
+| Kubernetes | Creates/adopts a `Secret` and mounts it (directory, or one key via `subPath`). |
+| GCP Cloud Run | Uses the Secret Manager secret and mounts it as a secret volume. |
+| AWS ECS | ECS has no secret-file volume; injects the Secrets Manager reference as a task secret env var. |
+| Docker | Rejected: use an env secret or a regular Volume. |
+
+The intent never mentions a K8s Secret name, GCP secret ID, or AWS ARN.
+Adoption (`existingSecret`) is the escape hatch when the secret is provisioned
+externally (for example `tlsx install`).
+
 ## Prerequisites
 
 - Go 1.26.10 (see `go.mod`).
@@ -59,6 +101,9 @@ model and trust boundaries.
 - Docker (BuildKit) for container builds and the docker pusher; kubectl and a
   cluster for the k8s pusher; Node + `aws-cdk` + credentials for the AWS
   pusher.
+- A sibling `sqlagregator` checkout (or `SQLAGREGATOR_REPO_DIR`) for the
+  `dev`/bootstrap MonoFS and logquery image builds; those builds pass it as a
+  named build context.
 
 ## Build
 
@@ -71,7 +116,56 @@ go build -o guardian-pusher-docker ./cmd/guardian-pusher-docker
 make guardian-build                                  # guardiand image
 make pusher-docker-image-build
 make pusher-k8s-image-build
+make pusher-gcp-image-build
 ```
+
+## Transport security (`STRATA_TLS_*`)
+
+Every Guardian process reads the shared `STRATA_TLS_*` contract from
+[`github.com/radryc/tlsx`](../tlsx). `STRATA_TLS_MODE` defaults to `off`, so
+existing plaintext deployments keep working unchanged.
+
+| Env | Meaning |
+| --- | --- |
+| `STRATA_TLS_MODE` | `off` (default, plaintext), `optional` (TLS when certs exist), `required` (TLS only, fail closed) |
+| `STRATA_TLS_CERT_FILE` | PEM server/workload certificate (default `/var/run/secrets/strata-tls/tls.crt`) |
+| `STRATA_TLS_KEY_FILE` | PEM private key (default `/var/run/secrets/strata-tls/tls.key`) |
+| `STRATA_TLS_CA_FILE` | CA bundle used to verify peers (default `/var/run/secrets/strata-tls/ca.crt`) |
+| `STRATA_TLS_SERVER_NAME` | Override the name clients verify in the server certificate |
+| `STRATA_TLS_REQUIRE_CLIENT_CERT` | `true` (default) verifies client certificates for mTLS servers |
+| `STRATA_TLS_ALLOWED_SPIFFE_IDS` | Comma-separated SPIFFE URI SAN allowlist for accepted clients |
+| `STRATA_TLS_EXPECTED_SPIFFE_IDS` | Comma-separated SPIFFE URI SAN allowlist for accepted servers |
+
+Where the contract applies:
+
+- **guardiand UI/API**: terminates TLS itself. `GUARDIAN_UI_TLS_CERT_FILE` and
+  `GUARDIAN_UI_TLS_KEY_FILE` still work; set `GUARDIAN_UI_TLS_CA_FILE` (or
+  `STRATA_TLS_CA_FILE`) to require and verify client certificates.
+- **Pusher read APIs** (`guardian-pusher-aws`, `-gcp`, `-k8s`): server TLS and
+  optional mTLS. The existing `--awsread-tls-*` / `--read-tls-*` flags are
+  retained; `STRATA_TLS_*` is preferred whenever the mode is not `off`. The
+  advertised observed API URL switches to `https://` when TLS is active.
+- **MonoFS gRPC clients**: `STRATA_TLS_*` supplies any setting
+  `GUARDIAN_MONOFS_TLS_*` does not define. The guardian token is still never
+  sent over plaintext unless `GUARDIAN_MONOFS_ALLOW_PLAINTEXT=true` is set
+  explicitly with the mode off.
+- **Observed-state HTTP clients**: `http://` pusher URLs are upgraded to
+  `https://` when the mode is `required`, using the configured CA and client
+  certificate.
+
+Local PKI for development can be generated with `tlsx`:
+
+```bash
+go run github.com/radryc/tlsx/cmd/tlsx gen --dir .tls --reuse-ca
+go run github.com/radryc/tlsx/cmd/tlsx env --dir .tls --service guardian --mode required
+# mount .tls/<service> read-only at /var/run/secrets/strata-tls
+export STRATA_TLS_MODE=required
+export STRATA_TLS_CERT_FILE=/var/run/secrets/strata-tls/tls.crt
+export STRATA_TLS_KEY_FILE=/var/run/secrets/strata-tls/tls.key
+export STRATA_TLS_CA_FILE=/var/run/secrets/strata-tls/ca.crt
+```
+
+Unset `STRATA_TLS_MODE` (or set it to `off`) to return to plaintext.
 
 ## Quick start
 
@@ -129,8 +223,9 @@ to opt out.
 To size a fixed rate, divide the number of partitions by the sweep window:
 50 partitions over 5 minutes = `50/300 = 0.17` starts/sec.
 
-The pusher's own `--max-concurrency` still bounds how many tasks execute at
-once; lower it too if your registry limits concurrent pushes.
+Where exposed, the pusher's own `--max-concurrency` still bounds how many
+tasks execute at once; lower it too if your registry limits concurrent pushes
+(the Docker pusher does not expose this flag).
 
 Each pusher also accepts `--task-timeout` (default `0` = disabled) to cancel a
 single task after a fixed duration and write a failed result. Set it below
@@ -142,8 +237,10 @@ treats the task as dead and queues a replacement.
 `guardianctl` can connect three ways:
 
 1. **Guardian discovery** — `GUARDIAN_API_URL` (or `GUARDIAN_URL`) points at
-   the Guardian UI/API; the CLI learns the MonoFS router and token from
-   `GET /api/client-config`. If the endpoint is not loopback-only, also set
+   the Guardian UI/API; the CLI learns the MonoFS router from
+   `GET /api/client-config`. That response does not include the MonoFS token,
+   so supply it separately with `GUARDIAN_MONOFS_TOKEN` or `--monofs-token`. If
+   the endpoint is not loopback-only, also set
    `GUARDIAN_CLIENT_DISCOVERY_TOKEN` (`GUARDIAN_DISCOVERY_TOKEN` is accepted
    too).
 2. **Direct MonoFS** — `GUARDIAN_MONOFS_ROUTER` + `GUARDIAN_MONOFS_TOKEN`.
@@ -154,7 +251,7 @@ Useful commands:
 ```bash
 ./guardianctl partition list
 ./guardianctl partition push --dir ./partitions/my-partition    # write desired state
-./guardianctl partition reconcile --partition my-partition      # queue one cycle (async)
+./guardianctl partition reconcile --partition my-partition      # run one cycle (queues work)
 ./guardianctl partition wait --partition my-partition           # block until healthy
 ./guardianctl partition delete --partition my-partition [--wait|--force]
 ./guardianctl intent list --partition my-partition
@@ -164,16 +261,16 @@ Useful commands:
 ./guardianctl partition rollback --partition my-partition --tag <tag>
 ```
 
-In a Kubernetes deployment the two secrets usually come from
-`guardian-configs-secrets`:
+In a Kubernetes deployment both values usually come from the bootstrap
+`guardian-secrets` Secret in the Guardian namespace:
 
 ```bash
 export GUARDIAN_CLIENT_DISCOVERY_TOKEN="$(
-  kubectl -n guardian-configs get secret guardian-configs-secrets \
+  kubectl -n guardian get secret guardian-secrets \
     -o jsonpath='{.data.client-discovery-token}' | base64 -d
 )"
 export GUARDIAN_MONOFS_TOKEN="$(
-  kubectl -n guardian-configs get secret guardian-configs-secrets \
+  kubectl -n guardian get secret guardian-secrets \
     -o jsonpath='{.data.monofs-token}' | base64 -d
 )"
 ```
@@ -197,7 +294,7 @@ repo maps to `/partitions/<name>/...` in the store.
 ## AWS
 
 ```bash
-./guardianctl aws setup --profile prod-admin --account <id> --region <r>
+./guardianctl aws setup --profile prod-admin --region <r>
 ./guardianctl aws pusher-deploy --dir ../aws --profile prod-admin --account <id> --region <r>
 ./guardianctl pusher add --account <id> --region <r> --url http://guardian-awsread:19090
 ./guardianctl aws scan --pusher aws-<id> --partition my-partition

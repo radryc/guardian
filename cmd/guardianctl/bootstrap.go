@@ -31,6 +31,7 @@ func devCommands() []bootstrapReg {
 		{Group: "dev", Name: "build", Cmd: devBuildCommand()},
 		{Group: "dev", Name: "deploy", Cmd: devDeployCommand()},
 		{Group: "dev", Name: "init", Cmd: devInitCommand()},
+		{Group: "dev", Name: "mtls", Cmd: devMTLSCommand()},
 		{Group: "dev", Name: "stop", Cmd: devStopCommand()},
 		{Group: "dev", Name: "destroy", Cmd: devDestroyCommand()},
 		{Group: "dev", Name: "status", Cmd: devStatusCommand()},
@@ -248,10 +249,18 @@ func devInitCommand() *command.Command {
 				}
 			}
 
+			fmt.Println("=== generating mTLS certificates ===")
+			if err := bootstrap.EnsureMTLS(ctx, bootstrap.MTLSDir(), false, false, *dryRun); err != nil {
+				return err
+			}
+
 			storageDir, guardianDir := bootstrap.TemplateDirs()
 
 			fmt.Println("=== deploying storage ===")
 			if err := deployStorageTemplates(ctx, cfg, env, storageDir, *dryRun); err != nil {
+				return err
+			}
+			if err := bootstrap.InjectMTLS(ctx, cfg, *dryRun); err != nil {
 				return err
 			}
 			if err := waitStorageDeployments(ctx, cfg, *dryRun); err != nil {
@@ -317,9 +326,29 @@ func devInitCommand() *command.Command {
 			if err := deployGuardianTemplates(ctx, cfg, env, guardianDir, *dryRun); err != nil {
 				return err
 			}
+			if err := bootstrap.InjectMTLS(ctx, cfg, *dryRun); err != nil {
+				return err
+			}
 
 			fmt.Println("=== dev init complete ===")
 			return nil
+		},
+	}
+}
+
+func devMTLSCommand() *command.Command {
+	flags := flag.NewFlagSet("dev mtls", flag.ContinueOnError)
+	flags.SetOutput(ioDiscard{})
+	dir := flags.String("dir", "", "certificate directory (default: $STRATA_MTLS_DIR or ~/.strata/mtls)")
+	rotate := flags.Bool("rotate", false, "reissue leaf certificates under the existing CA")
+	newCA := flags.Bool("new-ca", false, "create a new CA and reissue all leaf certificates")
+	dryRun := flags.Bool("dry-run", false, "print actions without executing")
+
+	return &command.Command{
+		Description: "Generate local mTLS certificates and install the strata-tls-* Secrets",
+		Flags:       flags,
+		Run: func(ctx context.Context, args []string) error {
+			return bootstrap.EnsureMTLS(ctx, *dir, *rotate, *newCA, *dryRun)
 		},
 	}
 }
@@ -802,8 +831,16 @@ func deployStorageTemplates(ctx context.Context, cfg *bootstrap.Config, env boot
 	createMinioBucket(ctx, cfg.Storage.Namespace, dryRun)
 
 	// Fetchers are recreated one at a time so blob reads retain redundancy.
+	// fetcher-a owns v2 pack compaction; CAS makes duplicate runs safe, but a
+	// single compactor avoids doing the work twice in the demo.
 	if err := applyEachWait("deploy-fetcher.yaml",
-		func(s string) bootstrap.Env { return bootstrap.Env{"SUFFIX": s} },
+		func(s string) bootstrap.Env {
+			compact := "false"
+			if s == "a" {
+				compact = "true"
+			}
+			return bootstrap.Env{"SUFFIX": s, "FETCHER_COMPACT_ENABLED": compact}
+		},
 		fetcherSuffixes,
 		func(ctx context.Context, s string) error {
 			return bootstrap.WaitForDeploymentTimeout(ctx, ns, "fetcher-"+s, fetcherRolloutTimeout, dryRun)
@@ -854,10 +891,9 @@ func deployStorageTemplates(ctx context.Context, cfg *bootstrap.Config, env boot
 		return err
 	}
 
-	// LB-edge deployments
-	if err := apply("deploy-lb-k8s-agent.yaml", nil); err != nil {
-		return err
-	}
+	// LB-edge deployments. The k8s agent is reconciled by the lb-agent
+	// partition; bootstrapping a second, zero-replica copy only creates a
+	// confusing unmanaged placeholder.
 	if err := apply("deploy-lb-port-sync.yaml", nil); err != nil {
 		return err
 	}
@@ -966,6 +1002,7 @@ func deployGuardianTemplates(ctx context.Context, cfg *bootstrap.Config, env boo
 	bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "svc-guardian-ui.yaml"), env, nil, dryRun)
 	bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "deploy-guardiand.yaml"), env, nil, dryRun)
 	bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "deploy-pusher-k8s.yaml"), env, nil, dryRun)
+	bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "pvc-buildkitd.yaml"), env, nil, dryRun)
 	bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "deploy-buildkitd.yaml"), env, nil, dryRun)
 	bootstrap.ApplyTemplate(ctx, filepath.Join(guardianDir, "svc-buildkitd.yaml"), env, nil, dryRun)
 
@@ -1037,8 +1074,28 @@ func deployDockerPusher(ctx context.Context, cfg *bootstrap.Config, dryRun bool)
 		"-e", fmt.Sprintf("GUARDIAN_PUSHER_NAME=%s", cfg.Guardian.Pushers.Docker.Name),
 		"-e", "GUARDIAN_CLUSTER=docker-main",
 		"-e", fmt.Sprintf("GUARDIAN_MONOFS_ROUTER=%s", router),
-		"-e", fmt.Sprintf("GUARDIAN_MONOFS_TOKEN=%s", token),
 		"-e", "GUARDIAN_MONOFS_USE_EXTERNAL_ADDRESSES=true",
+	}
+	// Host-side pushers run outside the cluster; mount their generated
+	// certificate so MonoFS gRPC uses the local mTLS CA.
+	mtlsDir := bootstrap.MTLSDir()
+	pusherCerts := filepath.Join(mtlsDir, "guardian-pusher-docker")
+	if _, err := os.Stat(filepath.Join(pusherCerts, "tls.crt")); err == nil {
+		args = append(args,
+			"-v", fmt.Sprintf("%s:%s:ro", filepath.Join(mtlsDir, "guardian-pusher-docker"), "/certs"),
+			"-e", "GUARDIAN_MONOFS_TLS=true",
+			"-e", "GUARDIAN_MONOFS_TLS_CA_FILE=/certs/ca.crt",
+			"-e", "GUARDIAN_MONOFS_TLS_CLIENT_CERT_FILE=/certs/tls.crt",
+			"-e", "GUARDIAN_MONOFS_TLS_CLIENT_KEY_FILE=/certs/tls.key",
+		)
+	}
+	// Pass the MonoFS token through the Docker client environment rather than
+	// `-e NAME=value`, which would expose it in argv and in the command trace.
+	if token != "" {
+		if err := os.Setenv("GUARDIAN_MONOFS_TOKEN", token); err != nil {
+			return fmt.Errorf("set GUARDIAN_MONOFS_TOKEN: %w", err)
+		}
+		args = append(args, "-e", "GUARDIAN_MONOFS_TOKEN")
 	}
 	// The pusher runs as the image's non-root guardian user, so grant it the
 	// socket's and state directory's owning groups.
@@ -1047,6 +1104,9 @@ func deployDockerPusher(ctx context.Context, cfg *bootstrap.Config, dryRun bool)
 		groupIDs = append(groupIDs, gid)
 	}
 	if gid, ok := fileGroupID(stateDir); ok {
+		groupIDs = append(groupIDs, gid)
+	}
+	if gid, ok := fileGroupID(pusherCerts); ok {
 		groupIDs = append(groupIDs, gid)
 	}
 	seen := make(map[int]bool, len(groupIDs))

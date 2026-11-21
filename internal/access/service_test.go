@@ -56,6 +56,9 @@ users:
   admin@example.com:
     partitions: ["*"]
     role: admin
+  scoped-admin@example.com:
+    partitions: [aws-x]
+    role: admin
 groups:
   sre:
     partitions: ["*"]
@@ -135,13 +138,25 @@ func TestCanSeePartitions(t *testing.T) {
 	}
 }
 
-func TestObserveModeAllows(t *testing.T) {
+func TestObserveModeAllowsReadsButDeniesMutationsByDefault(t *testing.T) {
 	svc := newTestService(t, false, true)
 	if !svc.CanSee(ctxFor("foo@example.com"), "k8s-z") {
-		t.Fatal("observe mode must not filter")
+		t.Fatal("observe mode must not filter reads")
 	}
-	if !svc.CanModify(ctxFor("foo@example.com"), "k8s-z") {
-		t.Fatal("observe mode must not gate modify")
+	if svc.CanModify(ctxFor("foo@example.com"), "k8s-z") {
+		t.Fatal("observe mode without an enforcing policy must deny mutations by default")
+	}
+	if svc.CanModifyAny(ctxFor("foo@example.com")) {
+		t.Fatal("observe mode must deny shared mutations by default")
+	}
+
+	optIn := newTestService(t, false, true)
+	optIn.allowUnpoliced = true
+	if !optIn.CanModify(ctxFor("foo@example.com"), "k8s-z") {
+		t.Fatal("explicit opt-in must preserve permissive observe-mode mutations")
+	}
+	if !optIn.CanModifyAny(ctxFor("foo@example.com")) {
+		t.Fatal("explicit opt-in must preserve permissive observe-mode set creation")
 	}
 }
 
@@ -158,7 +173,7 @@ func TestFailClosedWhenNotReady(t *testing.T) {
 	}
 }
 
-func TestDisabledIsPermissive(t *testing.T) {
+func TestDisabledAllowsReadsButDeniesMutationsByDefault(t *testing.T) {
 	svc := NewService(Options{
 		Store:    memory.New(),
 		RawPath:  "",
@@ -170,10 +185,31 @@ func TestDisabledIsPermissive(t *testing.T) {
 		t.Fatal("service without RawPath must be disabled")
 	}
 	if !svc.CanSee(ctxFor("foo@example.com"), "anything") {
-		t.Fatal("disabled service must allow everything")
+		t.Fatal("disabled service must allow all reads")
 	}
 	if !svc.CanSee(coreauthz.ContextWithIdentity(context.Background(), coreauthz.Identity{}), "anything") {
 		t.Fatal("disabled service must allow anonymous reads")
+	}
+	if svc.CanModify(ctxFor("foo@example.com"), "anything") {
+		t.Fatal("disabled service must deny mutations unless unpoliced mutations are allowed")
+	}
+	if err := svc.AuthorizeModify(ctxFor("foo@example.com"), "anything"); err == nil {
+		t.Fatal("disabled service must deny AuthorizeModify unless unpoliced mutations are allowed")
+	}
+
+	optIn := NewService(Options{
+		Store:          memory.New(),
+		RawPath:        "",
+		Enforce:        true,
+		AllowUnpoliced: true,
+		Interval:       time.Minute,
+		Logf:           func(string, ...any) {},
+	})
+	if !optIn.CanModify(ctxFor("foo@example.com"), "anything") {
+		t.Fatal("explicit opt-in must allow mutations without a policy")
+	}
+	if err := optIn.AuthorizeModify(ctxFor("foo@example.com"), "anything"); err != nil {
+		t.Fatalf("explicit opt-in must allow AuthorizeModify: %v", err)
 	}
 }
 
@@ -245,5 +281,43 @@ func TestPolicyJSONIncludesPartitionQuota(t *testing.T) {
 	defaults := pol.QuotaDefaults()
 	if defaults.Query == nil || defaults.Query.RequestsPerSecond != 5 {
 		t.Fatalf("defaults = %#v, want rps 5", defaults)
+	}
+}
+
+func TestAuthorizeModify(t *testing.T) {
+	svc := newTestService(t, true, true)
+
+	if err := svc.AuthorizeModify(ctxFor("admin@example.com"), "k8s-z"); err != nil {
+		t.Fatalf("global admin: %v", err)
+	}
+	if err := svc.AuthorizeModify(ctxFor("sre@example.com", "sre"), "aws-x"); err != nil {
+		t.Fatalf("maintainer: %v", err)
+	}
+	if err := svc.AuthorizeModify(ctxFor("scoped-admin@example.com"), "aws-x"); err != nil {
+		t.Fatalf("scoped admin on its partition: %v", err)
+	}
+	if err := svc.AuthorizeModify(ctxFor("scoped-admin@example.com"), "k8s-z"); err == nil {
+		t.Fatal("scoped admin must not modify partitions it does not list")
+	}
+	if err := svc.AuthorizeModify(ctxFor("foo@example.com"), "aws-x"); err == nil {
+		t.Fatal("viewer must not modify")
+	}
+	if err := svc.AuthorizeModify(context.Background(), "aws-x"); err == nil {
+		t.Fatal("anonymous must not modify under enforcement")
+	}
+
+	observe := newTestService(t, false, true)
+	if err := observe.AuthorizeModify(context.Background(), "aws-x"); err == nil {
+		t.Fatal("observe mode without opt-in must fail closed for mutations")
+	}
+	observeOptIn := newTestService(t, false, true)
+	observeOptIn.allowUnpoliced = true
+	if err := observeOptIn.AuthorizeModify(context.Background(), "aws-x"); err != nil {
+		t.Fatalf("observe mode with opt-in must be permissive: %v", err)
+	}
+
+	notLoaded := newTestService(t, true, false)
+	if err := notLoaded.AuthorizeModify(ctxFor("admin@example.com"), "aws-x"); err == nil {
+		t.Fatal("enforcing without a loaded policy must fail closed")
 	}
 }

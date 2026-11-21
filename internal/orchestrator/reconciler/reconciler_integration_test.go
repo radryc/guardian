@@ -755,6 +755,10 @@ type blockingConfigReadStore struct {
 }
 
 func (s *blockingConfigReadStore) ReadFile(ctx context.Context, logicalPath string) ([]byte, error) {
+	return s.Store.ReadFile(ctx, logicalPath)
+}
+
+func (s *blockingConfigReadStore) ReadFileVersioned(ctx context.Context, logicalPath string) ([]byte, guardianapi.FileVersion, bool, error) {
 	if strings.HasPrefix(logicalPath, "/partitions/") && strings.HasSuffix(logicalPath, "/config.yaml") {
 		s.mu.Lock()
 		s.concurrentReads++
@@ -773,11 +777,11 @@ func (s *blockingConfigReadStore) ReadFile(ctx context.Context, logicalPath stri
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, guardianapi.FileVersion{}, false, ctx.Err()
 		case <-timer.C:
 		}
 	}
-	return s.Store.ReadFile(ctx, logicalPath)
+	return s.Store.ReadFileVersioned(ctx, logicalPath)
 }
 
 func (s *blockingConfigReadStore) MaxConcurrentReads() int {

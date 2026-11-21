@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -22,7 +23,8 @@ const (
 
 // WebhookNotifier POSTs a JSON alert to an HTTP endpoint. When a secret is
 // configured it signs the body with HMAC-SHA256 and sets
-// X-Guardian-Signature: sha256=<hex>.
+// X-Guardian-Signature: sha256=<hex> as well as replay-protected
+// X-Guardian-Timestamp and X-Guardian-Signature-V2: sha256=<hmac(ts+"."+body)>.
 type WebhookNotifier struct {
 	ChannelName string
 	URL         string
@@ -91,10 +93,18 @@ func (w *WebhookNotifier) post(ctx context.Context, payload []byte) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "guardian-notifier")
+	timestamp := strconv.FormatInt(time.Now().UTC().Unix(), 10)
+	req.Header.Set("X-Guardian-Timestamp", timestamp)
 	if w.Secret != "" {
 		mac := hmac.New(sha256.New, []byte(w.Secret))
 		mac.Write(payload)
 		req.Header.Set("X-Guardian-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+
+		macV2 := hmac.New(sha256.New, []byte(w.Secret))
+		macV2.Write([]byte(timestamp))
+		macV2.Write([]byte("."))
+		macV2.Write(payload)
+		req.Header.Set("X-Guardian-Signature-V2", "sha256="+hex.EncodeToString(macV2.Sum(nil)))
 	}
 	resp, err := w.HTTP.Do(req)
 	if err != nil {

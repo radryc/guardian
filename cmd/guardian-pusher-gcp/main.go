@@ -19,6 +19,7 @@ import (
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
 	"github.com/radryc/guardian/internal/gcpscan"
 	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/tlsxutil"
 	gcpdriver "github.com/radryc/guardian/internal/pusher/drivers/gcp"
 	"github.com/radryc/guardian/internal/pusher/drivers/gcp/opentofu"
 	"github.com/radryc/guardian/internal/pusher/probes"
@@ -90,6 +91,9 @@ func main() {
 	flag.BoolVar(&readDisabled, "read-disabled", false, "disable the GCP read API")
 	flag.BoolVar(&readAllowPlaintext, "read-allow-plaintext", false, "allow the read API to listen on a non-loopback address without TLS")
 	flag.Parse()
+	if monofsToken == "" {
+		monofsToken = strings.TrimSpace(os.Getenv("GUARDIAN_MONOFS_TOKEN"))
+	}
 
 	if project == "" || (storeDir == "") == (monofsRouter == "") {
 		flag.Usage()
@@ -185,7 +189,9 @@ func main() {
 	}
 
 	reg := registry.New()
-	gcpdriver.Register(reg, backend, secrets.NewStoreResolver(store))
+	if err := gcpdriver.Register(reg, backend, secrets.NewStoreResolver(store)); err != nil {
+		log.Fatalf("register gcp drivers: %v", err)
+	}
 
 	runtime := &runtimepkg.Runtime{
 		QueuePath:               paths.QueueDir(pusherName),
@@ -237,8 +243,8 @@ func main() {
 	observedAPIURL := strings.TrimSpace(os.Getenv("GUARDIAN_OBSERVED_API_URL"))
 	if observedAPIURL == "" && !readDisabled {
 		observedAPIURL = advertisedReadURL(readAddr)
-		if observedAPIURL != "" && strings.TrimSpace(readTLSCert) != "" {
-			observedAPIURL = "https" + strings.TrimPrefix(observedAPIURL, "http")
+		if observedAPIURL != "" && readAPIUsesTLS(readTLSCert, readTLSKey, readTLSClientCA) {
+			observedAPIURL = tlsxutil.UpgradeURL(observedAPIURL, true)
 		}
 	}
 	registrationToken := readToken

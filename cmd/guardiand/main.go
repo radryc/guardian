@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -21,7 +22,6 @@ import (
 
 	"github.com/radryc/guardian/internal/access"
 	"github.com/radryc/guardian/internal/alerting"
-	guardauthz "github.com/radryc/guardian/internal/authz"
 	"github.com/radryc/guardian/internal/buildinfo"
 	"github.com/radryc/guardian/internal/compliance"
 	"github.com/radryc/guardian/internal/config"
@@ -39,6 +39,7 @@ import (
 	"github.com/radryc/guardian/internal/store/memory"
 	monofsstore "github.com/radryc/guardian/internal/store/monofs"
 	"github.com/radryc/guardian/internal/telemetry"
+	"github.com/radryc/guardian/internal/tlsxutil"
 	uiuipkg "github.com/radryc/guardian/internal/ui"
 	unmanagedpkg "github.com/radryc/guardian/internal/unmanaged"
 	"github.com/radryc/guardian/internal/workspacepub"
@@ -67,10 +68,9 @@ func main() {
 	var authzOIDCIssuer string
 	var authzOIDCAudience string
 	var authzOIDCJWKSURL string
-	var authzGrantsPath string
-	var authzEnforceDeploy bool
 	var requireUIAuth bool
 	var allowLoopbackAnonymous bool
+	var allowUnpolicedMutations bool
 	var trustedOrigins string
 	var enableHSTS bool
 	flag.StringVar(&configPath, "config", "", "path to guardian config file")
@@ -79,10 +79,9 @@ func main() {
 	flag.StringVar(&authzOIDCIssuer, "oidc-issuer", "", "OIDC issuer URL for SSO token verification on the Guardian UI (observe mode when empty)")
 	flag.StringVar(&authzOIDCAudience, "oidc-audience", "", "Expected OIDC audience for SSO tokens")
 	flag.StringVar(&authzOIDCJWKSURL, "oidc-jwks-url", "", "OIDC JWKS URL (discovered from issuer when empty)")
-	flag.StringVar(&authzGrantsPath, "authz-grants-path", "", "Path to the shared authz grant store JSON (control-plane deploy authorization)")
-	flag.BoolVar(&authzEnforceDeploy, "authz-enforce-deploy", false, "Require the maintainer/admin role on a partition for human-initiated deploy/reconcile")
-	flag.BoolVar(&requireUIAuth, "require-ui-auth", false, "Reject anonymous Guardian UI/API mutations")
+	flag.BoolVar(&requireUIAuth, "require-ui-auth", true, "Reject anonymous Guardian UI/API mutations")
 	flag.BoolVar(&allowLoopbackAnonymous, "allow-loopback-anonymous", false, "Allow anonymous loopback mutations for local development")
+	flag.BoolVar(&allowUnpolicedMutations, "allow-unpoliced-mutations", false, "Allow mutations while no enforcing access policy is loaded (local/bootstrap only)")
 	flag.StringVar(&trustedOrigins, "trusted-origins", "", "Comma-separated extra origins allowed to submit browser mutations")
 	flag.BoolVar(&enableHSTS, "enable-hsts", false, "Emit Strict-Transport-Security even when TLS terminates upstream")
 	flag.Parse()
@@ -97,39 +96,35 @@ func main() {
 	if authzOIDCJWKSURL == "" {
 		authzOIDCJWKSURL = strings.TrimSpace(os.Getenv("MONOFS_OIDC_JWKS_URL"))
 	}
-	if !authzEnforceDeploy && strings.EqualFold(strings.TrimSpace(os.Getenv("GUARDIAN_AUTHZ_ENFORCE_DEPLOY")), "true") {
-		authzEnforceDeploy = true
-	}
 
 	accessPolicyConfigured := strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_POLICY_PATH")) != "" ||
 		strings.EqualFold(strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_ENFORCE")), "true")
-	if !flagProvided("require-ui-auth") {
-		if raw := strings.TrimSpace(os.Getenv("GUARDIAN_REQUIRE_UI_AUTH")); raw != "" {
-			parsed, parseErr := strconv.ParseBool(raw)
-			if parseErr != nil {
-				log.Fatalf("invalid GUARDIAN_REQUIRE_UI_AUTH value %q: %v", raw, parseErr)
-			}
-			requireUIAuth = parsed
-		} else {
-			requireUIAuth = strings.TrimSpace(authzOIDCIssuer) != "" || accessPolicyConfigured
-		}
-	}
-	if !flagProvided("allow-loopback-anonymous") {
-		if raw := strings.TrimSpace(os.Getenv("GUARDIAN_ALLOW_LOOPBACK_ANONYMOUS")); raw != "" {
-			parsed, parseErr := strconv.ParseBool(raw)
-			if parseErr != nil {
-				log.Fatalf("invalid GUARDIAN_ALLOW_LOOPBACK_ANONYMOUS value %q: %v", raw, parseErr)
-			}
-			allowLoopbackAnonymous = parsed
-		} else {
-			// Local development remains usable while OIDC is not configured.
-			// Once an identity provider exists, anonymous loopback mutations are
-			// off unless the operator explicitly turns them back on.
-			allowLoopbackAnonymous = !requireUIAuth || strings.TrimSpace(authzOIDCIssuer) == ""
-		}
+	var authResolveErr error
+	requireUIAuth, allowLoopbackAnonymous, authResolveErr = resolveUIAuthSettings(
+		flagProvided("require-ui-auth"),
+		requireUIAuth,
+		flagProvided("allow-loopback-anonymous"),
+		allowLoopbackAnonymous,
+	)
+	if authResolveErr != nil {
+		log.Fatalf("%v", authResolveErr)
 	}
 	if !flagProvided("require-ui-auth") && requireUIAuth && !accessPolicyConfigured && strings.TrimSpace(authzOIDCIssuer) == "" {
-		log.Printf("guardian ui: authentication is required but no OIDC/access policy is configured; only loopback mutations are allowed")
+		if allowLoopbackAnonymous {
+			log.Printf("guardian ui: authentication is required but no OIDC/access policy is configured; only loopback mutations are allowed")
+		} else {
+			log.Printf("guardian ui: authentication is required (fail-closed) and no OIDC/access policy is configured; anonymous mutations are rejected")
+		}
+	}
+	if !flagProvided("allow-unpoliced-mutations") {
+		var allowErr error
+		allowUnpolicedMutations, allowErr = envBool("GUARDIAN_ALLOW_UNPOLICED_MUTATIONS", false)
+		if allowErr != nil {
+			log.Fatalf("%v", allowErr)
+		}
+	}
+	if allowUnpolicedMutations {
+		log.Printf("guardian ui: WARNING unpoliced mutations are enabled; mutations are allowed without an enforcing access policy (local/bootstrap only)")
 	}
 	if !flagProvided("trusted-origins") {
 		trustedOrigins = strings.TrimSpace(os.Getenv("GUARDIAN_TRUSTED_ORIGINS"))
@@ -277,8 +272,19 @@ func main() {
 		taskArchiveAge = parsed
 	}
 	dispatcher.SetTaskArchiveRetention(taskArchiveKeep, taskArchiveAge)
-	compliancePublisher := compliance.NewNoop()
-	if cfg.Compliance.S3Bucket != "" {
+	complianceDisabled, complianceSetupErr := resolveCompliancePublisherMode(cfg.Compliance.S3Bucket)
+	if complianceSetupErr != nil {
+		log.Fatalf("%v", complianceSetupErr)
+	}
+	var compliancePublisher compliance.Publisher
+	if complianceDisabled {
+		log.Printf("compliance: ALERT compliance publisher disabled by GUARDIAN_COMPLIANCE_DISABLED=true; audit evidence will not be exported")
+		compliancePublisher = compliance.NewNoop()
+	} else {
+		complianceFailClosed, failClosedErr := resolveComplianceFailClosed()
+		if failClosedErr != nil {
+			log.Fatalf("%v", failClosedErr)
+		}
 		complianceConfig := compliance.Config{
 			S3Bucket:             cfg.Compliance.S3Bucket,
 			S3Region:             cfg.Compliance.S3Region,
@@ -289,6 +295,11 @@ func main() {
 			SSEKMSKeyID:          cfg.Compliance.SSEKMSKeyID,
 			ObjectLockMode:       cfg.Compliance.ObjectLockMode,
 			MaxRetries:           cfg.Compliance.MaxRetries,
+			FailClosed:           complianceFailClosed,
+			OnError: func(err error) {
+				log.Printf("compliance: delivery failed bucket=%s prefix=%s fail_closed=%t err=%v",
+					cfg.Compliance.S3Bucket, cfg.Compliance.S3Prefix, complianceFailClosed, err)
+			},
 		}
 		if raw := strings.TrimSpace(cfg.Compliance.ObjectLockRetainUntil); raw != "" {
 			retainUntil, parseErr := time.Parse(time.RFC3339, raw)
@@ -297,6 +308,11 @@ func main() {
 			}
 			complianceConfig.ObjectLockRetainUntil = retainUntil
 		}
+		retainDuration, retainErr := resolveComplianceRetention(cfg.Compliance.ObjectLockRetainDuration)
+		if retainErr != nil {
+			log.Fatalf("%v", retainErr)
+		}
+		complianceConfig.ObjectLockRetainDuration = retainDuration
 		if raw := strings.TrimSpace(cfg.Compliance.RetryBaseDelay); raw != "" {
 			delay, parseErr := time.ParseDuration(raw)
 			if parseErr != nil {
@@ -365,26 +381,42 @@ func main() {
 		log.Printf("guardian reconciler sharding enabled: index=%d count=%d", shardIndex, shardCount)
 	}
 
-	// Control-plane deploy authorization (authz epic E2). Trusted automation
-	// (no identity in context) is always allowed; human-initiated reconciles that
-	// carry an SSO identity must hold the maintainer/admin role on the partition.
-	if deployGuard, guardErr := guardauthz.LoadGuardWithInline(strings.TrimSpace(authzGrantsPath), strings.TrimSpace(os.Getenv("MONOFS_AUTHZ_GRANTS_JSON")), authzEnforceDeploy); guardErr != nil {
-		if authzEnforceDeploy {
-			log.Fatalf("guardian: control-plane authz is enforced but grants could not be loaded: %v", guardErr)
+	// Repo-managed access policy is the single authorization source. It is
+	// shared by UI reads/mutations, the /api/access/policy endpoint, and the
+	// reconciler's partition-modify guard. Disabled unless
+	// GUARDIAN_ACCESS_POLICY_PATH is set.
+	accessService := access.NewService(access.Options{
+		Store:          store,
+		RawPath:        strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_POLICY_PATH")),
+		Enforce:        strings.EqualFold(strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_ENFORCE")), "true"),
+		AllowUnpoliced: allowUnpolicedMutations,
+		Interval:       guardianAccessInterval(),
+		Logf: func(format string, args ...any) {
+			log.Printf(format, args...)
+		},
+	})
+	if accessService.Enabled() {
+		// Load synchronously so the reconciler authorizer is never called with
+		// an empty policy during the first scheduling pass.
+		if err := accessService.Refresh(context.Background()); err != nil {
+			log.Printf("guardian access policy initial load failed: %v", err)
 		}
-		log.Printf("guardian: control-plane authz disabled: %v", guardErr)
-	} else {
-		recon.SetAuthorizer(func(actx context.Context, partition string) error {
-			id, ok := coreauthz.IdentityFromContext(actx)
-			if !ok || id.IsAnonymous() {
-				return nil // trusted automation / service principal
-			}
-			return deployGuard.AuthorizeModify(actx, partition)
-		})
-		if authzEnforceDeploy {
-			log.Printf("guardian: control-plane deploy authorization enabled (grants=%s)", authzGrantsPath)
-		}
+		log.Printf("guardian access policy loaded: path=%s enforce=%t",
+			strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_POLICY_PATH")),
+			strings.EqualFold(strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_ENFORCE")), "true"))
 	}
+	go accessService.Run(context.Background())
+
+	// The reconciler serves both human requests and internal scheduler ticks.
+	// Internal work is attributed to the guardiand policy client, which the ACL
+	// grants explicitly; removing that client makes automation fail closed
+	// instead of bypassing authorization.
+	recon.SetAuthorizer(func(actx context.Context, partition string) error {
+		if id, ok := coreauthz.IdentityFromContext(actx); !ok || id.IsAnonymous() {
+			actx = coreauthz.ContextWithIdentity(actx, coreauthz.Identity{ClientID: "guardiand"})
+		}
+		return accessService.AuthorizeModify(actx, partition)
+	})
 	watcher := &watcherpkg.Watcher{}
 	var wg sync.WaitGroup
 
@@ -410,42 +442,24 @@ func main() {
 			Resolver:  observedResolver,
 			Publisher: publisher,
 		}
-		// Repo-managed access policy: load the raw ACL published under
-		// /.access, compile it against the live partition catalog, and hand it
-		// to the UI for read filtering and the /api/access/policy endpoint.
-		// Disabled unless GUARDIAN_ACCESS_POLICY_PATH is set.
-		accessService := access.NewService(access.Options{
-			Store:    store,
-			RawPath:  strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_POLICY_PATH")),
-			Enforce:  strings.EqualFold(strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_ENFORCE")), "true"),
-			Interval: guardianAccessInterval(),
-			Logf: func(format string, args ...any) {
-				log.Printf(format, args...)
-			},
-		})
-		go accessService.Run(context.Background())
-		if accessService.Enabled() {
-			log.Printf("guardian access policy enabled (path=%s enforce=%t)",
-				strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_POLICY_PATH")),
-				strings.EqualFold(strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_ENFORCE")), "true"))
-		}
 		uiServer, err := uiuipkg.New(uiuipkg.Options{
-			Store:                  store,
-			Dispatcher:             dispatcher,
-			PrincipalID:            cfg.Guardian.PrincipalID,
-			Pushers:                pusherNames(cfg.Pushers),
-			StaleTaskAfter:         staleTaskDuration,
-			EnableFlowTopology:     cfg.Guardian.EnableFlowTopology,
-			FlowEvaluator:          flowEvaluator,
-			ClientConfig:           clientConfig,
-			ClientConfigToken:      cfg.Guardian.ClientDiscoveryToken,
-			Unmanaged:              unmanagedService,
-			Access:                 accessService,
-			AccessPolicyToken:      strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_POLICY_TOKEN")),
-			RequireAuthentication:  requireUIAuth,
-			AllowLoopbackAnonymous: allowLoopbackAnonymous,
-			TrustedOrigins:         trustedOriginList,
-			EnableHSTS:             enableHSTS,
+			Store:                   store,
+			Dispatcher:              dispatcher,
+			PrincipalID:             cfg.Guardian.PrincipalID,
+			Pushers:                 pusherNames(cfg.Pushers),
+			StaleTaskAfter:          staleTaskDuration,
+			EnableFlowTopology:      cfg.Guardian.EnableFlowTopology,
+			FlowEvaluator:           flowEvaluator,
+			ClientConfig:            clientConfig,
+			ClientConfigToken:       cfg.Guardian.ClientDiscoveryToken,
+			Unmanaged:               unmanagedService,
+			Access:                  accessService,
+			AllowUnpolicedMutations: allowUnpolicedMutations,
+			AccessPolicyToken:       strings.TrimSpace(os.Getenv("GUARDIAN_ACCESS_POLICY_TOKEN")),
+			RequireAuthentication:   requireUIAuth,
+			AllowLoopbackAnonymous:  allowLoopbackAnonymous,
+			TrustedOrigins:          trustedOriginList,
+			EnableHSTS:              enableHSTS,
 			// Auto-deploy is on by default; guardian.autoDeployOnIngest=false
 			// keeps merges manual.
 			DisableAutoDeployOnIngest: !cfg.Guardian.AutoDeployOnIngest,
@@ -474,7 +488,7 @@ func main() {
 				Audience: strings.TrimSpace(authzOIDCAudience),
 				JWKSURL:  strings.TrimSpace(authzOIDCJWKSURL),
 			}); verr != nil {
-				if strings.EqualFold(strings.TrimSpace(os.Getenv("MONOFS_AUTHZ_ENFORCE_UI")), "true") {
+				if requireUIAuth {
 					log.Fatalf("guardian ui: OIDC verification is enforced but setup failed: %v", verr)
 				}
 				log.Printf("guardian ui: OIDC verifier disabled: %v", verr)
@@ -505,7 +519,7 @@ func main() {
 				RedirectURL:   redirectURL,
 				EndSessionURL: strings.TrimSpace(os.Getenv("MONOFS_OIDC_END_SESSION_URL")),
 				Verifier:      uiVerifier,
-				RequireLogin:  strings.EqualFold(strings.TrimSpace(os.Getenv("MONOFS_AUTHZ_ENFORCE_UI")), "true"),
+				RequireLogin:  requireUIAuth,
 				// Machine pollers (MonoFS router, Doctor) authenticate with the
 				// internal token, not an OIDC session. Let the access-policy
 				// handler enforce that instead of the browser login wall.
@@ -520,19 +534,49 @@ func main() {
 				uiHandler = wa.Handler(uiServer)
 				if publicAuthURL != "" {
 					log.Printf("guardian ui: browser login enabled (redirect=%s, auth_url=%s, require_login=%v)",
-						redirectURL, publicAuthURL, strings.EqualFold(strings.TrimSpace(os.Getenv("MONOFS_AUTHZ_ENFORCE_UI")), "true"))
+						redirectURL, publicAuthURL, requireUIAuth)
 				} else {
 					log.Printf("guardian ui: browser login enabled (redirect=%s, require_login=%v)",
-						redirectURL, strings.EqualFold(strings.TrimSpace(os.Getenv("MONOFS_AUTHZ_ENFORCE_UI")), "true"))
+						redirectURL, requireUIAuth)
 				}
 			}
 		}
 		httpServer := &http.Server{
-			Addr:    cfg.Guardian.UIListenAddress,
-			Handler: otelhttp.NewHandler(uiHandler, "guardian.ui"),
+			Addr:              cfg.Guardian.UIListenAddress,
+			Handler:           otelhttp.NewHandler(uiHandler, "guardian.ui"),
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      60 * time.Second,
+			IdleTimeout:       120 * time.Second,
 		}
-		runHTTPServer(ctx, &wg, httpServer)
-		log.Printf("guardian ui listening on %s", cfg.Guardian.UIListenAddress)
+		// TLS terminates directly in guardiand when a certificate and key are
+		// provided; otherwise plain HTTP is kept for deployments that terminate
+		// TLS at an ingress/proxy.
+		//
+		// STRATA_TLS_* is the shared contract and is preferred whenever
+		// STRATA_TLS_MODE is not "off". The legacy GUARDIAN_UI_TLS_* variables
+		// keep working unchanged (including as a fallback in STRATA mode).
+		uiTLSCertFile := strings.TrimSpace(os.Getenv("GUARDIAN_UI_TLS_CERT_FILE"))
+		uiTLSKeyFile := strings.TrimSpace(os.Getenv("GUARDIAN_UI_TLS_KEY_FILE"))
+		uiTLSCAFile := strings.TrimSpace(os.Getenv("GUARDIAN_UI_TLS_CA_FILE"))
+		if (uiTLSCertFile == "") != (uiTLSKeyFile == "") {
+			log.Fatalf("guardian ui: GUARDIAN_UI_TLS_CERT_FILE and GUARDIAN_UI_TLS_KEY_FILE must be set together")
+		}
+		uiTLSConfig, uiTLSEnabled, err := tlsxutil.ServerTLSConfigHTTP(tlsxutil.LegacyServer{
+			CertFile:          uiTLSCertFile,
+			KeyFile:           uiTLSKeyFile,
+			CAFile:            uiTLSCAFile,
+			RequireClientCert: uiTLSCAFile != "",
+		})
+		if err != nil {
+			log.Fatalf("guardian ui: configure TLS: %v", err)
+		}
+		runHTTPServer(ctx, &wg, httpServer, uiTLSConfig)
+		if uiTLSEnabled {
+			log.Printf("guardian ui listening on %s (TLS)", cfg.Guardian.UIListenAddress)
+		} else {
+			log.Printf("guardian ui listening on %s", cfg.Guardian.UIListenAddress)
+		}
 	}
 	run := func(name string, fn func(context.Context) error) {
 		wg.Add(1)
@@ -720,10 +764,103 @@ func flagProvided(name string) bool {
 	return provided
 }
 
-func runHTTPServer(ctx context.Context, wg *sync.WaitGroup, server *http.Server) {
+func envBool(key string, fallback bool) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("invalid %s value %q: %w", key, raw, err)
+	}
+	return parsed, nil
+}
+
+// resolveCompliancePublisherMode decides whether the compliance publisher is
+// explicitly disabled. A deployment that neither configures an S3 bucket nor
+// opts into disabling compliance fails closed instead of silently dropping
+// audit evidence through a no-op publisher.
+func resolveCompliancePublisherMode(bucket string) (bool, error) {
+	disabled, err := envBool("GUARDIAN_COMPLIANCE_DISABLED", false)
+	if err != nil {
+		return false, err
+	}
+	if disabled {
+		return true, nil
+	}
+	if strings.TrimSpace(bucket) == "" {
+		return false, fmt.Errorf("compliance: ALERT no compliance publisher configured (compliance.s3Bucket is empty); set it or explicitly disable with GUARDIAN_COMPLIANCE_DISABLED=true")
+	}
+	return false, nil
+}
+
+// resolveComplianceFailClosed defaults to fail-closed: a delivery failure must
+// surface rather than be dropped, unless the operator explicitly opts out.
+func resolveComplianceFailClosed() (bool, error) {
+	return envBool("GUARDIAN_COMPLIANCE_FAIL_CLOSED", true)
+}
+
+func resolveUIAuthSettings(requireFlagSet, requireFlagVal, allowLoopbackFlagSet, allowLoopbackFlagVal bool) (bool, bool, error) {
+	requireUIAuth := requireFlagVal
+	if !requireFlagSet {
+		var err error
+		requireUIAuth, err = envBool("GUARDIAN_REQUIRE_UI_AUTH", true)
+		if err != nil {
+			return false, false, err
+		}
+	}
+	allowLoopbackAnonymous := allowLoopbackFlagVal
+	if !allowLoopbackFlagSet {
+		var err error
+		allowLoopbackAnonymous, err = envBool("GUARDIAN_ALLOW_LOOPBACK_ANONYMOUS", false)
+		if err != nil {
+			return false, false, err
+		}
+	}
+	return requireUIAuth, allowLoopbackAnonymous, nil
+}
+
+func resolveComplianceRetention(cfgValue string) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv("GUARDIAN_COMPLIANCE_OBJECT_LOCK_RETENTION"))
+	if raw == "" {
+		raw = strings.TrimSpace(cfgValue)
+	}
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid GUARDIAN_COMPLIANCE_OBJECT_LOCK_RETENTION value %q: %w", raw, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("invalid GUARDIAN_COMPLIANCE_OBJECT_LOCK_RETENTION value %q: duration must be positive", raw)
+	}
+	return d, nil
+}
+
+func applyHTTPServerTimeouts(server *http.Server) {
 	if server == nil {
 		return
 	}
+	if server.ReadHeaderTimeout == 0 {
+		server.ReadHeaderTimeout = 10 * time.Second
+	}
+	if server.ReadTimeout == 0 {
+		server.ReadTimeout = 30 * time.Second
+	}
+	if server.WriteTimeout == 0 {
+		server.WriteTimeout = 60 * time.Second
+	}
+	if server.IdleTimeout == 0 {
+		server.IdleTimeout = 120 * time.Second
+	}
+}
+
+func runHTTPServer(ctx context.Context, wg *sync.WaitGroup, server *http.Server, tlsConfig *tls.Config) {
+	if server == nil {
+		return
+	}
+	applyHTTPServerTimeouts(server)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -735,7 +872,16 @@ func runHTTPServer(ctx context.Context, wg *sync.WaitGroup, server *http.Server)
 				log.Printf("shutdown ui server: %v", err)
 			}
 		}()
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		listener, err := net.Listen("tcp", server.Addr)
+		if err != nil {
+			log.Printf("ui-server stopped: %v", err)
+			return
+		}
+		if tlsConfig != nil {
+			server.TLSConfig = tlsConfig
+			listener = tls.NewListener(listener, tlsConfig)
+		}
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Printf("ui-server stopped: %v", err)
 		}
 	}()

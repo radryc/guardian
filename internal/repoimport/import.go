@@ -24,10 +24,12 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/radryc/guardian/internal/access"
 	"github.com/radryc/guardian/internal/compiler/manifest"
 	assetdomain "github.com/radryc/guardian/internal/domain/asset"
 	intentdomain "github.com/radryc/guardian/internal/domain/intent"
 	"github.com/radryc/guardian/internal/paths"
+	"github.com/radryc/guardian/internal/repoconfig"
 	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
@@ -177,6 +179,10 @@ func Import(ctx context.Context, source Source, store guardianapi.Store, opts Op
 	if sourceID == "" {
 		sourceID = strings.TrimSpace(opts.RepoName)
 	}
+	displayPath := repoconfig.DisplayPathFromSource(sourceID)
+	if displayPath == "" {
+		displayPath = repoconfig.DisplayPathFromSource(opts.RepoName)
+	}
 	if opts.Prune && strings.TrimSpace(opts.Partition) == "" && sourceID != "" {
 		current := make(map[string]struct{}, len(partitions))
 		for _, partition := range partitions {
@@ -207,7 +213,7 @@ func Import(ctx context.Context, source Source, store guardianapi.Store, opts Op
 	deletes := make([]guardianapi.PathDelete, 0)
 	manifests := make([]guardianapi.PathWrite, 0, len(partitions))
 	for _, partition := range partitions {
-		partitionWrites, warnings, err := collectPartition(ctx, source, partition, partitionBundlePath(partition, opts.PartitionPath))
+		partitionWrites, warnings, err := collectPartition(ctx, source, partition, partitionBundlePath(partition, opts.PartitionPath), opts.RepoName, sourceID, displayPath)
 		if err != nil {
 			return nil, fmt.Errorf("partition %s: %w", partition, err)
 		}
@@ -235,7 +241,12 @@ func Import(ctx context.Context, source Source, store guardianapi.Store, opts Op
 			if loadErr == nil && previous.Source == sourceID {
 				prefix := paths.PartitionRoot(partition) + "/"
 				for _, owned := range previous.Files {
-					if desired[owned] || !strings.HasPrefix(owned, prefix) {
+					if desired[owned] {
+						continue
+					}
+					if !strings.HasPrefix(owned, prefix) &&
+						owned != paths.AccessPartitionPolicy(partition) &&
+						owned != paths.AccessPartitionMeta(partition) {
 						continue
 					}
 					deletes = append(deletes, guardianapi.PathDelete{LogicalPath: owned})
@@ -390,7 +401,7 @@ func hasPartitionManifest(ctx context.Context, source Source, partition string, 
 
 // collectPartition reads one partition bundle and returns the canonical
 // store writes plus non-fatal warnings.
-func collectPartition(ctx context.Context, source Source, partition, root string) ([]guardianapi.PathWrite, []string, error) {
+func collectPartition(ctx context.Context, source Source, partition, root, repoName, sourceID, displayPath string) ([]guardianapi.PathWrite, []string, error) {
 	if err := validateRepoPath(root); err != nil {
 		return nil, nil, err
 	}
@@ -399,7 +410,7 @@ func collectPartition(ctx context.Context, source Source, partition, root string
 		return nil, nil, err
 	}
 
-	writes := make([]guardianapi.PathWrite, 0, 8)
+	writes := make([]guardianapi.PathWrite, 0, 10)
 	warnings := make([]string, 0)
 
 	for _, entry := range entries {
@@ -443,6 +454,33 @@ func collectPartition(ctx context.Context, source Source, partition, root string
 				LogicalPath: paths.PartitionConfig(partition),
 				Content:     raw,
 			})
+		case access.PartitionPolicyFileName:
+			raw, err := source.ReadFile(ctx, root+"/"+entry.Name)
+			if err != nil {
+				return nil, nil, err
+			}
+			if _, err := access.ValidatePartitionPolicy(raw, partition, displayPath); err != nil {
+				return nil, nil, fmt.Errorf("partition %s %s: %w", partition, entry.Name, err)
+			}
+			meta, err := json.MarshalIndent(access.PartitionPolicyMeta{
+				Partition:   partition,
+				Repo:        repoName,
+				Source:      sourceID,
+				DisplayPath: displayPath,
+			}, "", "  ")
+			if err != nil {
+				return nil, nil, fmt.Errorf("partition %s %s metadata: %w", partition, entry.Name, err)
+			}
+			writes = append(writes,
+				guardianapi.PathWrite{
+					LogicalPath: paths.AccessPartitionPolicy(partition),
+					Content:     raw,
+				},
+				guardianapi.PathWrite{
+					LogicalPath: paths.AccessPartitionMeta(partition),
+					Content:     append(meta, '\n'),
+				},
+			)
 		default:
 			warnings = append(warnings, fmt.Sprintf("partition %s: ignoring unsupported file %s", partition, entry.Name))
 		}

@@ -12,6 +12,7 @@ import (
 	pb "github.com/radryc/monofs/api/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -28,7 +29,7 @@ func TestRegisterUsesRouterSuccessResponse(t *testing.T) {
 			HeartbeatIntervalMs: 45000,
 		},
 	}
-	client := &GRPCClient{
+	client := &GRPCClient{transportCreds: insecure.NewCredentials(),
 		clientID:    "guardian-control-plane-1",
 		token:       "secret-token",
 		principalID: "guardian",
@@ -83,7 +84,7 @@ func TestRegisterRejectsUnsuccessfulResponse(t *testing.T) {
 			Message: "guardian_config with auth_token required for guardian-* clients",
 		},
 	}
-	client := &GRPCClient{
+	client := &GRPCClient{transportCreds: insecure.NewCredentials(),
 		clientID:   "guardian-cli-1",
 		token:      "secret-token",
 		rpcTimeout: time.Second,
@@ -108,7 +109,7 @@ func TestSendHeartbeatReRegistersWhenRequested(t *testing.T) {
 			ShouldRegister: true,
 		},
 	}
-	client := &GRPCClient{
+	client := &GRPCClient{transportCreds: insecure.NewCredentials(),
 		clientID:    "guardian-pusher-local-1",
 		token:       "secret-token",
 		principalID: "guardian-pusher",
@@ -131,7 +132,7 @@ func TestHealthyNodesFallsBackToCachedNodesWhenClusterRefreshFails(t *testing.T)
 	t.Parallel()
 
 	router := &fakeRouterClient{clusterInfoErr: context.DeadlineExceeded}
-	client := &GRPCClient{
+	client := &GRPCClient{transportCreds: insecure.NewCredentials(),
 		rpcTimeout: time.Second,
 		router:     router,
 		nodeClients: map[string]pb.MonoFSClient{
@@ -155,7 +156,7 @@ func TestHealthyNodesPreservesCachedNodesWhenRouterReportsNone(t *testing.T) {
 	t.Parallel()
 
 	router := &fakeRouterClient{clusterInfoResp: &pb.ClusterInfoResponse{}}
-	client := &GRPCClient{
+	client := &GRPCClient{transportCreds: insecure.NewCredentials(),
 		rpcTimeout: time.Second,
 		router:     router,
 		nodeClients: map[string]pb.MonoFSClient{
@@ -179,7 +180,7 @@ func TestHealthyNodesUsesFreshCacheWithoutRefreshingCluster(t *testing.T) {
 	t.Parallel()
 
 	router := &fakeRouterClient{clusterInfoErr: context.DeadlineExceeded}
-	client := &GRPCClient{
+	client := &GRPCClient{transportCreds: insecure.NewCredentials(),
 		rpcTimeout: time.Second,
 		router:     router,
 		nodeClients: map[string]pb.MonoFSClient{
@@ -210,7 +211,7 @@ func TestWatchUsesLogicalPrefixes(t *testing.T) {
 		}},
 	}
 	router := &fakeRouterClient{watchStream: stream}
-	client := &GRPCClient{
+	client := &GRPCClient{transportCreds: insecure.NewCredentials(),
 		token:      "secret-token",
 		rpcTimeout: time.Second,
 		router:     router,
@@ -240,7 +241,7 @@ func TestRefreshNodesReplacesConnectionWhenAddressChanges(t *testing.T) {
 		Address: "127.0.0.1:19001",
 		Healthy: true,
 	}}}}
-	client := &GRPCClient{
+	client := &GRPCClient{transportCreds: insecure.NewCredentials(),
 		rpcTimeout:  time.Second,
 		router:      router,
 		nodeConns:   map[string]*grpc.ClientConn{},
@@ -280,7 +281,7 @@ func TestRefreshNodesReplacesConnectionWhenAddressChanges(t *testing.T) {
 func TestInvalidateNodeOnTransportErrorQuarantinesNode(t *testing.T) {
 	t.Parallel()
 
-	client := &GRPCClient{
+	client := &GRPCClient{transportCreds: insecure.NewCredentials(),
 		nodeConns:   map[string]*grpc.ClientConn{"node-a": nil},
 		nodeClients: map[string]pb.MonoFSClient{"node-a": nil},
 		nodeAddrs:   map[string]string{"node-a": "127.0.0.1:19001"},
@@ -307,7 +308,7 @@ func TestInvalidateNodeOnTransportErrorQuarantinesNode(t *testing.T) {
 func TestPreferAvailableNodesSkipsCoolingNode(t *testing.T) {
 	t.Parallel()
 
-	client := &GRPCClient{
+	client := &GRPCClient{transportCreds: insecure.NewCredentials(),
 		nodeFailedUntil: map[string]time.Time{
 			"node-a": time.Now().Add(time.Minute),
 		},
@@ -488,6 +489,7 @@ func (r *startupRetryRouter) RegisterClient(context.Context, *pb.RegisterClientR
 }
 
 func TestNewGRPCClientRetriesTransientRouterStartup(t *testing.T) {
+	t.Setenv("GUARDIAN_MONOFS_ALLOW_PLAINTEXT", "true")
 	oldBase := initRetryBase
 	initRetryBase = 10 * time.Millisecond
 	t.Cleanup(func() { initRetryBase = oldBase })

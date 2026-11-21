@@ -109,7 +109,6 @@ func TestWriteReleaseIsMonotonicAndIsNoOpForEqualOrOlder(t *testing.T) {
 	}
 
 	// Same CreatedAt → no-op (no second write).
-	guardianWritesTotal.Reset()
 	if err := dispatch.WriteRelease(ctx, &releasedomain.ReleaseRecord{
 		DeploymentRevision: "dep_other",
 		Partition:          "lolipop",

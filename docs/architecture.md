@@ -54,6 +54,7 @@ flowchart LR
         K8S[guardian-pusher-k8s]
         DOCKER[guardian-pusher-docker]
         AWS[guardian-pusher-aws]
+        GCP[guardian-pusher-gcp]
         LOCAL[guardian-pusher-local]
     end
 
@@ -61,6 +62,7 @@ flowchart LR
         K[Kubernetes]
         D[Docker]
         A[AWS accounts]
+        G[GCP projects]
     end
 
     OP --> UI
@@ -75,13 +77,16 @@ flowchart LR
     QUEUE --> K8S
     QUEUE --> DOCKER
     QUEUE --> AWS
+    QUEUE --> GCP
     QUEUE --> LOCAL
     K8S --> K
     DOCKER --> D
     AWS --> A
+    GCP --> G
     K8S --> QUEUE
     DOCKER --> QUEUE
     AWS --> QUEUE
+    GCP --> QUEUE
     RES --> STATE
     RES --> ARCHIVE
     RES --> REG
@@ -151,11 +156,12 @@ last-writer-wins when replicas overlap.
 
 | Binary | Source | Role | Listens | Store access |
 |---|---|---|---|---|
-| `guardiand` | `cmd/guardiand` | Control plane: reconciler, watcher, dispatcher, result processor, observed collector, onboarding, alerting, access policy, UI/API | UI/API (`guardian.uiListenAddress`, commonly `:8090`), `/metrics` on same server | MonoFS (writable) or in-memory |
-| `guardianctl` | `cmd/guardianctl` | Operator CLI: partitions, intents, assets, repos, sets, pushers, AWS setup, images, bootstrap | none | MonoFS (direct), local FS, or discovery via guardian |
-| `guardian-pusher-k8s` | `cmd/guardian-pusher-k8s` | Kubernetes task worker | none (metrics/telemetry exporter only) | MonoFS or local FS |
+| `guardiand` | `cmd/guardiand` | Control plane: reconciler, watcher, dispatcher, result processor, observed collector, onboarding, alerting, access policy, UI/API | UI/API (`guardian.uiListenAddress`, commonly `:8090`) | MonoFS (writable) or in-memory |
+| `guardianctl` | `cmd/guardianctl` | Operator CLI: partitions, intents, assets, repos, sets, pushers, AWS/GCP setup, images, bootstrap | none | MonoFS (direct), local FS, or discovery via guardian |
+| `guardian-pusher-k8s` | `cmd/guardian-pusher-k8s` | Kubernetes task worker and optional observed read API | optional K8s read API (`--read-addr`) | MonoFS or local FS |
 | `guardian-pusher-docker` | `cmd/guardian-pusher-docker` | Docker task worker | none | MonoFS or local FS |
 | `guardian-pusher-aws` | `cmd/guardian-pusher-aws` | AWS task worker, account scanner, observed-state API, CloudFormation event consumer | AWS read API `:19090` by default | MonoFS or local FS; memory in `--observed-only` mode |
+| `guardian-pusher-gcp` | `cmd/guardian-pusher-gcp` | GCP task worker (OpenTofu + SDK), Cloud Asset Inventory observer, GCP read API | GCP read API `:19091` by default | MonoFS or local FS |
 | `guardian-pusher-local` | `cmd/guardian-pusher-local` | In-process reference drivers for dev/dogfood | none | local FS or MonoFS |
 | `guardian-docker` | `cmd/guardian-docker` | Inspect local Docker resources and diff them against desired state | none | read-only FS/MonoFS |
 
@@ -168,28 +174,33 @@ client and root context.
 `cmd/guardiand/main.go` is the composition root:
 
 1. Parse flags (`--config`, `--reconcile-interval`, `--ui-listen`,
-   `--oidc-*`, `--authz-*`).
+   `--oidc-*`, `--require-ui-auth`, `--allow-loopback-anonymous`,
+   `--allow-unpoliced-mutations`, `--trusted-origins`, `--enable-hsts`).
 2. Load defaults (`internal/config`), optionally overlay YAML, then apply
-   environment variables (`envconfig.go` plus a few direct overrides in
-   `main.go`).
+   environment variables (`envconfig.go` plus direct overrides in `main.go`).
 3. Configure OpenTelemetry; mirror standard logs to OTLP when enabled.
 4. Open the store:
    - MonoFS when `monofs.apiEndpoint` is set;
    - in-memory otherwise (useful for tests, not for production).
 5. Construct the dispatcher, compliance publisher, result processor, and
    reconciler.
-6. Optionally install the control-plane deploy authorizer.
-7. Start the UI/API server and the optional access-policy, repo-import, and
-   unmanaged services.
+6. Build the compiled access-policy service (`internal/access`) and always wire
+   its `AuthorizeModify` check into the reconciler. The service is permissive
+   only when no policy path is configured and `--allow-unpoliced-mutations` is
+   set; enforcement is controlled by `GUARDIAN_ACCESS_ENFORCE`.
+7. Start the UI/API server, the access-policy refresh loop, and the optional
+   repo-import and unmanaged services.
 8. Start the reconciler, observed collector, onboarding controller, alerting
    evaluator, partition watcher, and result processor.
 9. Block until SIGINT/SIGTERM, then wait for goroutines and close the store,
    compliance publisher, and telemetry.
 
-Important coupling: the access-policy service, repo-import loop, unmanaged
-service, and client discovery are only started when the UI listen address is
-non-empty. `repoImportEnabled: true` therefore has no effect on a headless
-daemon. This is recorded as a finding rather than an intentional design.
+Important coupling: the repo-import loop, unmanaged service, and client
+discovery are only started when the UI listen address is non-empty, so
+`repoImportEnabled: true` has no effect on a headless daemon. The access-policy
+service and its refresh loop run regardless of the UI listen address because the
+reconciler depends on them. This is recorded as a finding rather than an
+intentional design.
 
 ---
 
@@ -210,29 +221,37 @@ internal/
 ├── pusher/
 │   ├── runtime/               task claim/execute/result loop
 │   ├── registry/              asset driver registry
-│   ├── drivers/               docker, kubernetes, aws, probe, driverutil
+│   ├── drivers/               docker, kubernetes, aws, gcp, probe, driverutil
 │   ├── probes/                synthetic checks and journeys
 │   └── secrets/               monofs-secret:// resolution
-├── store/                     Store interface implementations: memory, fs, monofs
+├── store/                     Store interface implementations: memory, fs, monofs, storetest
 ├── registry/                  platform records: pushers, repos, bindings
 ├── awsread/                   AWS observability read API (:19090)
 ├── awsscan/                   account scan queue + scanner
 ├── awsobserve/                CloudFormation event mirror + observed state
 ├── awsgen/                    scan result -> partition draft
 ├── awssetup/                  IAM roles, policies, Roles Anywhere, CDK bootstrap
+├── gcpread/                   GCP observability read API (:19091)
+├── gcpscan/                   GCP project inventory scanner
+├── gcpobserve/                Cloud Asset Inventory observer
+├── gcpsetup/                  GCP WIF pool/provider, deployer SA, KMS, state bucket
+├── k8sread/                   Kubernetes read-only resource API
+├── k8sobserve/                Kubernetes live resource inventory
 ├── cdkgen/                    TypeScript CDK app generation + embedded templates
 ├── cdktemplate/               CloudFormation template inventory/diff/relations
 ├── observed/                  observed-intent collection + drift
 ├── observedgen/               cloud assembly -> intents
 ├── historyquery/              release/deployment/rollout queries
 ├── access/                    repo-managed ACL compilation and decisions
-├── authz/                     control-plane deploy authorization guard
+├── auditanchor/               anchored audit manifest verification
 ├── alerting/, notify/         partition failure alerts and webhooks
 ├── compliance/                archive/state mirror to S3
 ├── repoimport/, repoconfig/   repo bundle import and .guardian/config.yaml
 ├── sets/, onboarding/, unmanaged/, onboard/
 ├── bootstrap/                 dev cluster bootstrap helpers
-├── telemetry/, config/, paths/, buildinfo/, versioning/
+├── clock/, keyedmutex/        injectable clock seam and per-key locking
+├── metrics/, telemetry/       OTel-backed metrics shim, traces, logs
+├── config/, paths/, buildinfo/, versioning/, tlsxutil/
 └── domain/...
 pkg/guardianapi/               store/API interfaces shared by commands
 ```
@@ -318,8 +337,8 @@ name: api
 version: v1.2.3            # optional pin
 dependsOn: [db]
 payload:
-  kubernetes: payloads/kubernetes/api.yaml
-  aws: payloads/aws/api.yaml
+  kubernetes: /partitions/<p>/payloads/kubernetes/api.yaml
+  aws: /partitions/<p>/payloads/aws/api.yaml
 properties: {...}           # typed per asset; validated against catalog
 skip: false
 flowMetricGroups: [checkout]
@@ -331,22 +350,23 @@ The canonical asset types are declared in
 
 | Type | Purpose | Primary drivers |
 |---|---|---|
-| `Compute` | Long-lived service/worker/daemon | Docker, Kubernetes, AWS ECS, local |
+| `Compute` | Long-lived service/worker/daemon | Docker, Kubernetes, AWS ECS, GCP Cloud Run |
 | `ImageBuild` | Build/publish an OCI image | Kubernetes BuildKit; Docker/registry existence checks; `guardianctl image` pipeline |
 | `CDKStack` | Bring-your-own TypeScript CDK app | AWS |
-| `Database` | Database (legacy alias for SQLDatabase) | all pushers that support SQLDatabase |
-| `SQLDatabase` | Managed SQL database | Docker, Kubernetes, AWS (Aurora) |
-| `Volume` | Persistent volume | Docker, Kubernetes, AWS (EFS) |
-| `Config` | Non-secret configuration file(s) | all |
-| `Network` | Network boundary | Kubernetes, AWS |
-| `Secret` | Secret value delivery | all |
-| `LoadBalancer` | L4/L7 load balancer | Kubernetes, AWS |
+| `Database` | Database (legacy alias for SQLDatabase) | Docker, Kubernetes, AWS, GCP |
+| `SQLDatabase` | Managed SQL database | Docker, Kubernetes, AWS (Aurora), GCP Cloud SQL |
+| `Volume` | Persistent volume | Docker, Kubernetes, AWS (EFS), GCP Filestore. In Kubernetes, an unpinned storage class is left to the API-server default and is not drift; manifest applies ensure the namespace exists |
+| `Config` | Non-secret configuration file(s) | Docker, Kubernetes, AWS (SSM Parameter Store) |
+| `Network` | Network boundary | Kubernetes, AWS, GCP |
+| `Secret` | Secret value delivery | Docker, Kubernetes, AWS, GCP |
+| `LoadBalancer` | L4/L7 load balancer | Kubernetes, AWS, GCP |
 | `TraefikRoute` | Routing metadata | Docker, Kubernetes |
-| `ObjectStore` | Object bucket | Docker/MinIO, AWS S3 |
-| `Observability` | Telemetry sidecar/agent/config | Docker, Kubernetes, AWS, local |
+| `ObjectStore` | Object bucket | Docker/MinIO, AWS S3, GCP GCS |
+| `Observability` | Telemetry sidecar/agent/config | Docker, Kubernetes, AWS, GCP |
 | `Probe` | HTTP/TCP/DNS/TLS/gRPC check or journey | all pushers |
 | `K8sResource` | Raw Kubernetes manifest | Kubernetes only |
 | `AWSResource` (internal) | Fallback raw CloudFormation resource | AWS |
+| `ObservedResource` (internal) | Read-only inventory observation from provider APIs | GCP and Kubernetes observed collectors |
 | `GeneratedStack` (internal) | Synthetic asset carrying a generated CDK stack | AWS |
 
 The **UI catalog** (`internal/domain/assets/catalog.go`) supplies default
@@ -390,16 +410,16 @@ Tasks are JSON documents at `/.queues/<pusher>/<taskID>.json`:
 }
 ```
 
-Pushers claim via `/.claims/<taskID>.json` (CAS on creation, lease renewal) and
-write `/\<pusher\>/.results/<taskID>.json` with outputs, drift, health,
-apply-readiness, asset observations, errors, and logs.
+Pushers claim via `/.queues/<pusher>/.claims/<taskID>.json` (CAS on creation,
+lease renewal) and write `/.queues/<pusher>/.results/<taskID>.json` with
+outputs, drift, health, apply-readiness, asset observations, errors, and logs.
 
 ### 5.6 Release, deployment, history, archive
 
 - **ReleaseRecord** — the latest successful apply per intent, stored in
   `/partitions/<p>/.state/releases.json` (authoritative pointer).
 - **DeploymentRecord** — historical deployment view, derived from the archive.
-- **Archive** — `/ .archive/<p>/<intent>/<revision>/{manifest.yaml,state.json,logs.ndjson}`.
+- **Archive** — `/.archive/<p>/<intent>/<revision>/{manifest.yaml,state.json,logs.ndjson}`.
 - **Events** — `.state/events/<id>.json`, pruned to 250 per partition.
 
 There are two overlapping history representations (`ReleaseRecord` and
@@ -426,6 +446,7 @@ MonoFS paths (`guardian/` and `guardian-system/`). See
 | `/partitions/<p>/.state/events/<id>.json` | Dispatcher | Event timeline |
 | `/partitions/<p>/.state/releases.json` | Dispatcher | Latest release pointer per intent |
 | `/partitions/<p>/.state/tasks/<task>.json` | Dispatcher | Immutable audit copy of every queued task |
+| `/partitions/<p>/.state/tasks/.chain.json` | Dispatcher | HMAC-SHA256 chain over the task-spec archive |
 | `/partitions/<p>/.state/repo-import.json` | Repo importer | Ownership manifest used for safe pruning |
 | `/partitions/<p>/.deletion.json` | CLI/UI | Deferred deletion marker |
 | `/partitions/<p>/.observed/<i>/*.json` | Observed collector | Snapshots and observed events |
@@ -438,7 +459,7 @@ MonoFS paths (`guardian/` and `guardian-system/`). See
 | `/.registry/onboarding/<pusher>/<stack>.json` | Onboard controller | Last onboarding descriptor |
 | `/.registry/dashboards/<p>.json` | Dashboard generator | Grafana dashboard |
 | `/.registry/probes/<pusher>/<p>.json` | Probe runner | Latest probe snapshot |
-| `/.registry/sets/<id>.json` | CLI/UI | Virtual sets |
+| `/.registry/sets/<id>.json` | CLI/UI | Virtual sets, including `excludedPartitions` written by `sets unassign` |
 | `/.registry/set-primary/<p>.json` | CLI/UI | Primary set pointer |
 | `/.scans/<pusher>/requests/<id>.json` | CLI/UI | AWS scan request |
 | `/.scans/<pusher>/.claims/<id>.json` | Scan runner | Scan lease |
@@ -448,10 +469,20 @@ MonoFS paths (`guardian/` and `guardian-system/`). See
 | `/.templates/aws/**` | Operator | CDK template overlays |
 | `/.repos/<display-path>/**` | Repo publisher | Read-only repo mirror |
 
-The MonoFS adapter rejects unknown top-level namespaces. `normalize` uses
-`path.Join` + `path.Clean`, so `..` is collapsed rather than rejected; callers
-that accept user-supplied names must validate them before constructing paths
-(see the security document).
+The MonoFS adapter rejects unknown top-level namespaces. `paths.normalize`
+treats its first component as the root and clamps a `..` that would resolve
+above it; `NormalizeChecked`/`PartitionPathChecked` return `ErrPathEscapesRoot`
+for callers that need a hard rejection. Callers that accept user-supplied names
+should still validate them before constructing paths (see the security
+document).
+
+Guardian-managed namespaces (`/partitions`, `/.queues`, `/.archive`,
+`/.scans`, `/.registry`, `/.access`, `/.templates`) are read through the
+router's versioned content path so a just-committed write is not missed; a
+missing version maps to `os.ErrNotExist`. Repo display paths (`/.repos/**`) are
+plain MonoFS content and keep the raw node read. Every router/node RPC carries
+`authorization: Bearer` using the cached CLI login token when present, otherwise
+the configured cluster token.
 
 ---
 
@@ -520,18 +551,20 @@ owns `/.registry/probes`, and alerting owns `notifications.json`.) It provides:
 - Cached partition runtime, release log, event history, and generated-payload
   fingerprints.
 - Compliance mirroring hooks for state/archive writes.
-- Prometheus metrics for writes, bytes, skipped writes, deletes, and status
-  gauges.
+- OpenTelemetry metrics (`internal/metrics`) for writes, bytes, skipped writes,
+  deletes, and status gauges.
 
-`WriteRelease` is a read-modify-write of the whole release map under a local
-mutex but without `ExpectedVersionID`, so multiple replicas can lose entries.
+`UpdateIntentState` uses CAS (`ExpectedVersionID`); `WriteRelease` is still a
+read-modify-write of the whole release map under a local mutex without
+`ExpectedVersionID`, so multiple replicas can lose entries.
 
 ### 7.4 Result processor
 
 `internal/orchestrator/results.Processor` consumes `TaskResult` documents:
 
-- Validates that the result's task ID matches the intent's `LastTaskID`
-  (unless the state has an empty task ID).
+- Validates partition/intent/pusher/task ID, requires the queued task, and
+  compares task ID, operation, partition, intent, and target pusher against it
+  (plus `IntentState.TargetPusher`).
 - Switches on the result operation:
   - `CHECK`: record readiness/health; on success optionally queue APPLY.
   - `DIFF`: record drift; if changed, queue APPLY (unless read-only/locked).
@@ -542,13 +575,11 @@ mutex but without `ExpectedVersionID`, so multiple replicas can lose entries.
   `CheckFailed`, `DiffFailed`), and preserve enough information for retry.
 - Cleans up the queue task, claim, and result files.
 
-The processor trusts the pusher's result: it does not verify the operation,
-partition, intent, or target against the queued task. This is a security and
-integrity gap (see security doc).
-
 ### 7.5 Observed collector
 
-`internal/observed` periodically polls each pusher's observed read API:
+`internal/observed` periodically polls each pusher's observed read API (AWS
+`/v1/aws/observed/stacks`, GCP `/v1/gcp/observed/stacks`, Kubernetes
+`/v1/k8s/observed/stacks`):
 
 - Resolves pusher endpoints from static config plus `/.registry/pushers`.
 - Refreshes each observed stack, optionally runs CloudFormation drift
@@ -562,8 +593,8 @@ integrity gap (see security doc).
 `internal/alerting` polls partition runtimes, classifies failures by event and
 severity, applies fail threshold/cooldown/repeat rules, and sends JSON webhooks
 with an HMAC-SHA256 signature. State is persisted in `notifications.json` per
-partition. Delivery is at-most-once per evaluation with limited retry; partial
-channel success suppresses retry until the repeat interval.
+partition using CAS (`ExpectedVersionID`), with per-channel retry and
+idempotency keys.
 
 ### 7.7 Onboarding and unmanaged adoption
 
@@ -579,10 +610,21 @@ channel success suppresses retry until the repeat interval.
 
 `internal/access` compiles a repo-managed ACL (`access.yaml`) against the live
 partition catalog at `/.access`, producing a policy bundle served to MonoFS and
-Doctor. It supports three modes: disabled (permissive), observe (log denials,
-do not enforce), and enforce (filter reads, fail closed for non-admins when no
-policy is loaded). The UI currently applies it to partition GETs only; mutation
-authorization is not wired.
+Doctor. It supports three modes: disabled (reads unfiltered; mutations require
+the unpoliced opt-in), observe (log denials, do not filter), and enforce (filter
+reads, authorize UI mutations via `CanModify`/`IsAdmin`, and fail closed when no
+policy is loaded).
+
+Partition bundles may also ship `guardian/partitions/<partition>/access.yaml`.
+The repo importer validates it and stores it at
+`/.access/partitions/<partition>.yaml` plus a small `…​.json` provenance sidecar;
+the policy service and `guardianctl access publish` append its grants to the
+compiled bundle. Repo-owned files are deliberately narrow: they may only grant
+the named partition in `partitions`, `logs`, and `traces`, and `monofs` patterns
+must resolve to the owning repository. Imports, defaults, selectors, quotas,
+`aws_bindings`, clients, deny rules, wildcards, cross-partition scopes, and
+subtree `monofs` patterns are rejected. The platform ACL remains the authority
+for defaults and cross-partition grants.
 
 ---
 
@@ -681,11 +723,11 @@ Details:
 ```go
 type AssetDriver interface {
     Type() string
-    Validate(ctx, task, asset) error
-    Check(ctx, task, asset) (CheckResult, error)
-    Diff(ctx, task, asset) (DriftReport, error)
-    Apply(ctx, task, asset) (ApplyResult, error)
-    Destroy(ctx, task, asset) error
+    Validate(props map[string]any) error
+    Check(ctx context.Context, in AssetInput) error
+    Diff(ctx context.Context, in AssetInput) (DriftReport, error)
+    Apply(ctx context.Context, in AssetInput) (AssetResult, error)
+    Destroy(ctx context.Context, in AssetInput) error
 }
 ```
 
@@ -711,8 +753,8 @@ asset: some operations go to CDK, others to the SDK.
 `internal/pusher/probes` runs independently of task execution. It discovers
 targets from manifests/state or onboarding descriptors and executes HTTP, TCP,
 DNS, TLS, gRPC, and multi-step journeys. Results are written as a latest
-snapshot per partition and exported through OTLP/HTTP. There is no probe result
-history in MonoFS.
+snapshot plus bounded per-probe history (`internal/pusher/probes/store.go`) and
+exported through OTLP/HTTP. Storeless mode safely skips snapshot persistence.
 
 ---
 
@@ -760,9 +802,15 @@ POST /v1/aws/observed/refresh
 POST /v1/aws/observed/diff
 ```
 
-Authentication is a single static bearer token; an empty token disables auth.
-There is no TLS, scoping, rate limiting, or pagination. This is a significant
-security exposure; see [security architecture](security-architecture.md).
+Authentication uses a bearer token (`--awsread-token` or rotating
+`--awsread-token-file`) with configurable scopes (`--awsread-scopes`, default
+`read`; `diff`, `admin`), per-caller rate limits (`--awsread-rate-limit`),
+request body limits (`--awsread-max-body-bytes`), and server timeouts. TLS/mTLS
+is supported via `--awsread-tls-cert`, `--awsread-tls-key`, and
+`--awsread-tls-client-ca`; non-loopback plaintext requires
+`--awsread-allow-plaintext`. `/v1/aws/observed/diff` is disabled by default
+(`--awsread-enable-diff=false`). See
+[security architecture](security-architecture.md).
 
 ### 10.2 CDK generation
 
@@ -837,11 +885,11 @@ It embeds a vanilla TypeScript SPA (no framework) compiled to
 
 | Area | Endpoints |
 |---|---|
-| Meta | `/`, `/health`, `/metrics`, `/api/v1/status/buildinfo`, `/api/catalog`, `/api/me`, `/api/overview` |
+| Meta | `/`, `/health`, `/api/v1/status/buildinfo`, `/api/catalog`, `/api/me`, `/api/overview` |
 | Client/access | `/api/client-config`, `/api/access/policy`, `/api/access/explain` |
 | Partitions | `GET/PUT/DELETE /api/partitions/{name}`, `/topology`, `/rollouts`, `/history`, `/validate`, `/reconcile`, `/intents/{i}/activity` |
 | Scans | `/api/scans`, `/api/scans/{id}`, `/api/scans/{id}/bundle` |
-| Pushers | `/api/pushers`, `/api/pushers/{name}`, `/summary`, `/api/m2m/pushers*` |
+| Pushers | `/api/pushers`, `/api/pushers/{name}`, `/summary`, `/api/m2m/pushers*`. UI responses redact pusher tokens unless the caller is an authenticated admin; M2M responses redact them unless `includeTokens=1` is combined with the internal token |
 | Repos | `/api/repos`, `/api/repos/{name}`, `/ingest`, `/bindings`, `/notify` |
 | Sets | `/api/sets`, `/api/sets/{id}`, `/move`, `/partitions` |
 | Probes/obs | `/api/probes`, `/api/probes/{id}`, `/api/observability/identities` |
@@ -849,13 +897,17 @@ It embeds a vanilla TypeScript SPA (no framework) compiled to
 | Federation | `/api/m2m/federation/partitions` |
 | M2M aliases | `/api/m2m/overview`, `/api/m2m/partitions*` |
 
-The daemon wraps the mux with OIDC bearer verification (observe mode by
-default) and optional browser login. In addition, every mutating request passes
+The daemon wraps the mux with OIDC bearer verification (the transport
+authenticator itself is observe-mode; mutation enforcement is separate) and
+optional browser login. In addition, every mutating request passes
 through `Server.authorizeMutation`: partition mutations require
-`access.CanModify` on the target, registry/repo/set/scan mutations require
-`access.IsAdmin`, and the check is a no-op only when the access policy is
-disabled. Reads use access-policy filtering. Anonymous deployments are still
-possible when neither login nor an access policy is configured.
+`access.CanModify` on the target, set membership requires `access.CanModify` on
+every added/removed partition, registry/repo/scan and set-metadata mutations
+require `access.IsAdmin` (creating an empty set requires `CanModifyAny`), and
+the check is a no-op only when the access policy is disabled *and*
+`--allow-unpoliced-mutations` is set. Reads use access-policy filtering.
+Anonymous reads remain possible when neither login nor an access policy is
+configured; anonymous mutations are rejected by default.
 
 ### 11.2 Frontend
 
@@ -865,8 +917,10 @@ possible when neither login nor an access policy is configured.
   connectors, inspector, validation, drafts, templates, undo/redo.
 - `sets.ts`, `scan.ts`, `registry.ts`, `unmanaged.ts`, `topology.ts`,
   `state.ts`, `utils.ts` — feature modules.
-- Rendering is string templates + `innerHTML` with manual escaping; there is no
-  CSP and no CSRF token.
+- Rendering is string templates + `innerHTML` with manual escaping;
+  `internal/ui/security.go` sets CSP, `X-Content-Type-Options`,
+  `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, optional
+  HSTS (`--enable-hsts`), and `Origin`/`Referer` validation on browser mutations.
 
 ### 11.3 Server-side projections
 
@@ -885,14 +939,16 @@ Root flags must precede the command group.
 Connection modes:
 
 1. **Guardian discovery** — `GUARDIAN_API_URL`/`GUARDIAN_URL` points at the
-   Guardian UI; `GET /api/client-config` returns the MonoFS router/token. A
-   non-loopback endpoint requires `GUARDIAN_CLIENT_DISCOVERY_TOKEN`.
+   Guardian UI; `GET /api/client-config` returns the MonoFS router and external
+   address preference. It does not return the MonoFS token, so the CLI still
+   needs `GUARDIAN_MONOFS_TOKEN`/`--monofs-token`. A non-loopback endpoint
+   requires `GUARDIAN_CLIENT_DISCOVERY_TOKEN`.
 2. **Direct MonoFS** — `GUARDIAN_MONOFS_ROUTER` + `GUARDIAN_MONOFS_TOKEN`.
 3. **Local store directory** — `GUARDIAN_STORE_DIR`, no auth.
 
 Command groups: `auth`, `partition`, `intent`, `asset`, `store`, `filesystem`,
-`aws`, `sets`, `pusher`, `probe`, `observability`, `repo`, `template`,
-`access`, `notify`, `dev`, `image`, `release`.
+`aws`, `gcp`, `sets`, `pusher`, `probe`, `observability`, `repo`, `template`,
+`access`, `notify`, `audit`, `dev`, `image`, `release`.
 
 The CLI writes directly to MonoFS as principal `guardianctl`; it does not go
 through the daemon. This means it bypasses the UI access policy. See the
@@ -913,7 +969,10 @@ supported sources are:
 
 `guardianctl repo add/seed/sync/apply/ingest/notify` registers and imports
 repos. `guardiand` also runs a sharded, optionally leased repo-import loop.
-Import maps:
+The loop discovers repo-authored bundles directly under
+`/.repos/**/guardian/partitions` even when no `repo add` entry exists, so
+`monofs-admin ingest` (or MonoFS git auto-refresh) is enough to create and
+deploy a partition. Changed bundles are auto-deployed. Import maps:
 
 ```text
 guardian/partitions/<p>/partition.yaml|config.yaml -> /partitions/<p>/config.yaml
@@ -933,15 +992,25 @@ delete. `secrets/**` is ignored and inline `Secret.value` is rejected.
 `stratatools/deploy/bootstrap` tree, apply them with `kubectl`, build sibling
 repo images, create a kind cluster/registry, and deploy MonoFS, lb-edge,
 Guardian, and a host Docker pusher. This tooling is development-only and
-expects the sibling `stratatools` checkout for its bootstrap tree.
+expects the sibling `stratatools` checkout for its bootstrap tree; MonoFS image
+builds also pass a sibling `sqlagregator` checkout as a build context
+(`SQLAGREGATOR_REPO_DIR` overrides the default).
+
+Bootstrap reuses the MonoFS, client-discovery, GCP read, Kubernetes read, and
+archive-HMAC values already stored in the `monofs-secrets`/`guardian-secrets`
+Secrets instead of rotating them on every deploy; it generates a value only when
+none exists. When mTLS is enabled it makes the `guardian-pusher-docker`
+certificate directory traversable and its key group-readable, and mounts that
+directory into the host-side Docker pusher.
 
 ### 13.3 Packaging
 
 - `Dockerfile` builds `guardiand` and the entrypoint writes a temporary config.
-- `Dockerfile.pusher-{aws,docker,k8s}` build each pusher.
-- `Makefile` has build/test/dogfood targets; several lifecycle targets are
-  declared but empty.
-- Images run as root and mount the Docker socket for the Docker pusher.
+- `Dockerfile.pusher-{aws,docker,gcp,k8s}` build each pusher.
+- `Makefile` has build/test/dogfood/lifecycle targets (`guardian-up/down/logs`,
+  `pusher-docker-*`, `pusher-k8s-*`, `pusher-gcp-*`, `deploy-s3`, `dogfood-*`).
+- All container images run as non-root (`USER guardian`); the Docker pusher
+  mounts the Docker socket.
 
 ---
 
@@ -951,7 +1020,9 @@ expects the sibling `stratatools` checkout for its bootstrap tree.
   `OTEL_EXPORTER_OTLP_ENDPOINT` (or equivalent) is set.
 - `internal/telemetry` builds resource attributes (service, version, VCS
   revision, branch, build date) and mirrors `log` output to OTLP.
-- `guardiand` exposes Prometheus metrics on the UI server at `/metrics`.
+- All Guardian metrics use OpenTelemetry (`internal/metrics` provides a
+  Prometheus-shaped shim backed by OTel instruments); the legacy `/metrics`
+  scrape endpoint on the UI server was removed.
 - Runtime metrics include partition/intent status gauges, queue/task counters,
   asset health/readiness observations, and dispatcher write counters.
 - Pusher runtime metrics cover task counters, task duration histograms, in-flight
@@ -1038,17 +1109,19 @@ Invariants the code intends to preserve:
 
 Known deviations (details in the internal docs):
 
-- No leader election for core loops; state writes lack CAS.
+- No leader election for core loops (`guardiand` reconciler supports
+  deterministic sharding, but `WriteRelease` and non-reconciler loops lack
+  leases/CAS).
 - Compiled plans are not the execution source of truth; tasks re-parse raw
   YAML.
-- Access policy now guards UI mutations, but CLI/pusher tokens bypass it and
-  anonymous deployments are still possible without a login wall.
+- Access policy guards UI mutations, but CLI/pusher tokens bypass it. Anonymous
+  reads remain possible without a login wall; mutations are rejected by
+  default and can be reopened only with the loopback/unpoliced opt-ins.
 - Secret values are redacted from results/state/UI, but queue files still carry
-  them in flight and the model is not reference-only.
-- Some AWS drivers do not create working resources (Aurora without instances,
-  EFS without mount targets, Network without subnets).
-- The AWS read API now defaults to loopback but is still plaintext HTTP.
-- Build/release packaging is incomplete.
+  them in flight and the model is not reference-only by default.
+- Some native AWS drivers do not create working resources (Aurora without
+  instances, EFS without mount targets, Network without subnets);
+  `GUARDIAN_NATIVE_AWS_STRICT=true` rejects them in favor of `implementation: cdk`.
 
 These are not small implementation details; they define the current security
 and reliability posture. The [security architecture](security-architecture.md)

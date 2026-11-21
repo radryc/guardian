@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	pb "github.com/radryc/monofs/api/proto"
 	"github.com/radryc/guardian/internal/workspacepub"
+	pb "github.com/radryc/monofs/api/proto"
 	"google.golang.org/grpc"
 )
 

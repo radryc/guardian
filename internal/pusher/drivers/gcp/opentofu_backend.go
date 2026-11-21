@@ -145,3 +145,5 @@ func (b *OpenTofuBackend) Get(ctx context.Context, req StackRequest) (StackState
 	}
 	return StackState{Exists: true, Outputs: outputs, Resources: resources}, nil
 }
+
+var _ BackendAPI = (*OpenTofuBackend)(nil)

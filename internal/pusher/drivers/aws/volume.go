@@ -7,7 +7,6 @@ import (
 
 	assetdefs "github.com/radryc/guardian/internal/domain/assets"
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
-	orchestratorcommon "github.com/radryc/guardian/internal/orchestrator/common"
 	"github.com/radryc/guardian/internal/pusher/driverutil"
 	"github.com/radryc/guardian/internal/pusher/registry"
 )
@@ -38,7 +37,7 @@ func (d *VolumeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 	}
 
 	adopted := volumeAdopted(spec)
-	fsID := loadSavedOutput(ctx, in, in.Asset.Name+".efsId")
+	fsID := in.Outputs[in.Asset.Name+".efsId"]
 	if adopted {
 		fsID = strings.TrimSpace(spec.ExistingID)
 	}
@@ -50,7 +49,7 @@ func (d *VolumeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 	}
 
 	hash := driverutil.CompositeHash(in)
-	fs, ok, err := d.backend.GetFileSystem(ctx, fsID)
+	fs, ok, err := d.fileSystemBackend().GetFileSystem(ctx, fsID)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -83,7 +82,7 @@ func (d *VolumeDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 
 	if volumeAdopted(spec) {
 		fsID := strings.TrimSpace(spec.ExistingID)
-		if _, ok, err := d.backend.GetFileSystem(ctx, fsID); err != nil {
+		if _, ok, err := d.fileSystemBackend().GetFileSystem(ctx, fsID); err != nil {
 			return registry.AssetResult{}, err
 		} else if !ok {
 			return registry.AssetResult{}, fmt.Errorf("adopted EFS filesystem %s not found", fsID)
@@ -95,7 +94,7 @@ func (d *VolumeDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 	creationToken := awsEFSName(in, in.Asset.Name)
 	tags := awsTags(in, hash)
 
-	fsID, err := d.backend.UpsertFileSystem(ctx, FileSystem{
+	fsID, err := d.fileSystemBackend().UpsertFileSystem(ctx, FileSystem{
 		ID:        creationToken,
 		Name:      creationToken,
 		Hash:      hash,
@@ -121,22 +120,11 @@ func (d *VolumeDriver) Destroy(ctx context.Context, in registry.AssetInput) erro
 	if volumeAdopted(spec) {
 		return nil
 	}
-	fsID := loadSavedOutput(ctx, in, in.Asset.Name+".efsId")
+	fsID := in.Outputs[in.Asset.Name+".efsId"]
 	if fsID == "" {
 		return nil
 	}
-	return d.backend.DeleteFileSystem(ctx, fsID)
-}
-
-func loadSavedOutput(ctx context.Context, in registry.AssetInput, key string) string {
-	if in.Store == nil {
-		return ""
-	}
-	state, err := orchestratorcommon.LoadIntentState(ctx, in.Store, in.PartitionName, in.IntentName)
-	if err != nil {
-		return ""
-	}
-	return state.Outputs[key]
+	return d.fileSystemBackend().DeleteFileSystem(ctx, fsID)
 }
 
 func decodeVolume(in registry.AssetInput) (*assetdefs.VolumeSpec, error) {

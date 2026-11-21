@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import * as cdk from 'aws-cdk-lib';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 
@@ -226,6 +227,26 @@ export function buildSecrets(scope: Construct, asset: string, configParams: any)
         String(paramName),
       );
       secrets[configName] = ecs.Secret.fromSsmParameter(parameter);
+    }
+  }
+  return secrets;
+}
+
+export function buildSecretRefs(scope: Construct, asset: string, secretRefs: any): Record<string, ecs.Secret> {
+  const secrets: Record<string, ecs.Secret> = {};
+  if (secretRefs && typeof secretRefs === 'object') {
+    for (const [envName, value] of Object.entries(secretRefs)) {
+      const ref = value as any;
+      const name = String(ref?.name || '');
+      if (!name) {
+        continue;
+      }
+      const secret = secretsmanager.Secret.fromSecretNameV2(
+        scope,
+        `Secret${constructId(asset)}${constructId(envName)}`,
+        name,
+      );
+      secrets[envName] = ecs.Secret.fromSecretsManager(secret);
     }
   }
   return secrets;

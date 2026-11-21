@@ -13,6 +13,7 @@ import (
 
 func newSecurityTestServer(t *testing.T, opts Options) *Server {
 	t.Helper()
+	opts.AllowUnpolicedMutations = true
 	opts.Store = memory.New()
 	opts.PrincipalID = "security-test"
 	srv, err := New(opts)
@@ -88,6 +89,52 @@ func TestLoopbackAnonymousMutationAllowedOnlyWhenConfigured(t *testing.T) {
 	strict.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("strict status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestLoopbackAnonymousRejectedWithForwardingHeaders(t *testing.T) {
+	srv := newSecurityTestServer(t, Options{RequireAuthentication: true, AllowLoopbackAnonymous: true})
+
+	for _, hdr := range []struct {
+		name  string
+		value string
+	}{
+		{name: "X-Forwarded-For", value: "203.0.113.10"},
+		{name: "Forwarded", value: "for=203.0.113.10"},
+	} {
+		t.Run(hdr.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPut, "/api/partitions/demo/bundle", strings.NewReader(`{}`))
+			req.RemoteAddr = "127.0.0.1:1234"
+			req.Header.Set(hdr.name, hdr.value)
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d when %s is set", rec.Code, http.StatusUnauthorized, hdr.name)
+			}
+		})
+	}
+}
+
+func TestRequestIsLoopback(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/client-config", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	if !requestIsLoopback(req) {
+		t.Fatal("expected 127.0.0.1:1234 without forwarding headers to be loopback")
+	}
+
+	req.Header.Set("X-Forwarded-For", "198.51.100.1")
+	if requestIsLoopback(req) {
+		t.Fatal("expected request with X-Forwarded-For not to be treated as loopback")
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/api/client-config", nil)
+	req2.RemoteAddr = "[::1]:1234"
+	if !requestIsLoopback(req2) {
+		t.Fatal("expected [::1]:1234 without forwarding headers to be loopback")
+	}
+	req2.Header.Set("Forwarded", "for=198.51.100.1")
+	if requestIsLoopback(req2) {
+		t.Fatal("expected request with Forwarded not to be treated as loopback")
 	}
 }
 

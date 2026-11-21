@@ -80,6 +80,10 @@ var catalogTemplates = map[string]CatalogTemplate{
 			CatalogHint{Path: "configMounts[].path", Title: "Config mount path", Description: "Absolute destination path for rendered config files."},
 			CatalogHint{Path: "configMounts[].file", Title: "Config file", Description: "Optional single filename from the Config asset to mount with subPath."},
 			CatalogHint{Path: "configMounts[].readOnly", Title: "Read-only config", Description: "Mount rendered config files as read-only."},
+			CatalogHint{Path: "secretMounts[].secret", Title: "Secret asset", Description: "Secret asset mounted into the workload. Drivers resolve it to the provider secret underneath."},
+			CatalogHint{Path: "secretMounts[].path", Title: "Secret mount path", Description: "Absolute destination. With file set, one key is mounted at this path; otherwise the secret is mounted as a directory."},
+			CatalogHint{Path: "secretMounts[].file", Title: "Secret file", Description: "Optional key from the Secret asset to mount as a single file."},
+			CatalogHint{Path: "secretMounts[].readOnly", Title: "Read-only secret", Description: "Mount the secret as read-only where the provider supports file mounts."},
 			CatalogHint{Path: "hostBindMounts[].source", Title: "Host source path", Description: "Absolute host path on the pusher node."},
 			CatalogHint{Path: "hostBindMounts[].target", Title: "Host bind target", Description: "Destination path inside the workload."},
 			CatalogHint{Path: "hostBindMounts[].readOnly", Title: "Read-only host bind", Description: "Expose the host path to the workload as read-only."},
@@ -212,6 +216,8 @@ var catalogTemplates = map[string]CatalogTemplate{
 		Hints: hints(secretCatalogFields(),
 			CatalogHint{Path: "value", Title: "Inline value", Description: "Secret content stored directly in manifest properties (development only)."},
 			CatalogHint{Path: "secretRef", Title: "Secret reference", Description: "Reference to a Guardian secret file, for example monofs-secret://shared/encryption-key."},
+			CatalogHint{Path: "existingSecret", Title: "Existing secret", Description: "Adopt a provider secret created outside Guardian (K8s Secret name, GCP secret ID, AWS Secrets Manager name/ARN)."},
+			CatalogHint{Path: "key", Title: "Secret key", Description: "Field name used when the secret is materialized as a file; defaults to value."},
 		),
 	},
 	assetdomain.TypeLoadBalancer: {
@@ -548,6 +554,7 @@ func computeCatalogFields() []CatalogField {
 		{Path: "ports", Title: "Ports JSON", Control: "json", Description: "Listener definitions, optional host or service exposure, and dynamic hostname routing."},
 		{Path: "volumeMounts", Title: "Volume mounts JSON", Control: "json", Description: "Volume assets mounted into the workload filesystem."},
 		{Path: "configMounts", Title: "Config mounts JSON", Control: "json", Description: "Config assets rendered into files inside the workload."},
+		{Path: "secretMounts", Title: "Secret mounts JSON", Control: "json", Description: "Secret assets mounted into the workload; drivers resolve them to native secrets."},
 		{Path: "hostBindMounts", Title: "Host bind mounts JSON", Control: "json", Description: "Host filesystem paths bound into the workload."},
 	}
 }
@@ -578,6 +585,8 @@ func volumeCatalogFields() []CatalogField {
 		{Path: "class", Title: "Storage class", Control: "text", Description: "Storage class or backend driver selection."},
 		{Path: "accessMode", Title: "Access mode", Control: "select", Options: []string{"ReadWriteOnce", "ReadWriteMany", "ReadOnlyMany"}, Description: "How many readers or writers may mount the volume."},
 		{Path: "ephemeral", Title: "Ephemeral", Control: "boolean", Description: "Create scratch storage removed alongside the workload."},
+		{Path: "observeExisting", Title: "Observe existing", Control: "boolean", Description: "Adopt a volume that already exists outside Guardian; it is only checked for existence and is never modified or deleted."},
+		{Path: "existingID", Title: "Existing volume name or ID", Control: "text", Description: "Name of the pre-existing volume to adopt when observeExisting is set (Kubernetes claim name, AWS file system ID, GCP disk name). Defaults to the asset name."},
 	}
 }
 
@@ -608,6 +617,8 @@ func secretCatalogFields() []CatalogField {
 	return []CatalogField{
 		{Path: "secretRef", Title: "Secret reference", Control: "text", Placeholder: "monofs-secret://shared/encryption-key", Description: "Secret reference resolved by Guardian at apply time."},
 		{Path: "value", Title: "Inline value", Control: "text", Description: "Inline secret material for local development only."},
+		{Path: "existingSecret", Title: "Existing secret", Control: "text", Description: "Adopt a provider secret created outside Guardian."},
+		{Path: "key", Title: "Secret key", Control: "text", Placeholder: "value", Description: "File key used when mounting this secret."},
 	}
 }
 

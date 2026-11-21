@@ -57,7 +57,7 @@ func (d *ObservabilityDriver) Diff(ctx context.Context, in registry.AssetInput) 
 	}
 	switch observabilityMode(spec) {
 	case "gateway", "auto", "collector":
-		svc, ok, err := d.backend.GetService(ctx, in.Target.Cluster, gatewayServiceName(in))
+		svc, ok, err := d.serviceBackend().GetService(ctx, in.Target.Cluster, gatewayServiceName(in))
 		if err != nil {
 			return taskdomain.DriftReport{}, err
 		}
@@ -110,8 +110,8 @@ func (d *ObservabilityDriver) applyGateway(ctx context.Context, in registry.Asse
 	}
 	hash := driverutil.CompositeHash(in)
 	logGroup := observabilityLogGroup(in)
-	_ = d.backend.UpsertLogGroup(ctx, LogGroup{Name: logGroup, Hash: hash, Tags: awsTags(in, hash)})
-	taskRole, err := d.backend.EnsureObservabilityTaskRole(ctx)
+	_ = d.logBackend().UpsertLogGroup(ctx, LogGroup{Name: logGroup, Hash: hash, Tags: awsTags(in, hash)})
+	taskRole, err := d.serviceBackend().EnsureObservabilityTaskRole(ctx)
 	if err != nil {
 		return registry.AssetResult{}, fmt.Errorf("ensure observability task role: %w", err)
 	}
@@ -152,7 +152,7 @@ func (d *ObservabilityDriver) applyGateway(ctx context.Context, in registry.Asse
 			}},
 		},
 	}
-	if err := d.backend.UpsertService(ctx, svc); err != nil {
+	if err := d.serviceBackend().UpsertService(ctx, svc); err != nil {
 		return registry.AssetResult{}, fmt.Errorf("upsert otel gateway: %w", err)
 	}
 	return registry.AssetResult{Outputs: map[string]string{
@@ -175,7 +175,7 @@ func (d *ObservabilityDriver) Destroy(ctx context.Context, in registry.AssetInpu
 	}
 	switch observabilityMode(spec) {
 	case "gateway", "auto", "collector":
-		return d.backend.DeleteService(ctx, in.Target.Cluster, gatewayServiceName(in))
+		return d.serviceBackend().DeleteService(ctx, in.Target.Cluster, gatewayServiceName(in))
 	default:
 		return nil
 	}
@@ -354,14 +354,35 @@ func otelCollectorConfig(in registry.AssetInput, spec *assetdefs.ObservabilitySp
 			metricExporters = append(metricExporters, "otlp")
 		}
 	}
+	processors := map[string]any{"batch": map[string]any{}}
+	if strings.TrimSpace(in.PartitionName) != "" {
+		// The collector is the trust boundary: upsert the identity so a
+		// workload cannot ship another partition's telemetry through it.
+		// The collector may serve multiple workloads in the intent; only the
+		// partition is authoritative here. Intent/asset come from each
+		// workload's OTEL_RESOURCE_ATTRIBUTES and are enforced by the pusher.
+		processors["resource/guardian"] = map[string]any{
+			"attributes": []any{
+				map[string]any{"key": "guardian.partition", "value": in.PartitionName, "action": "upsert"},
+			},
+		}
+	}
+	processorChain := func(extra ...string) []string {
+		chain := make([]string, 0, len(extra)+2)
+		if _, ok := processors["resource/guardian"]; ok {
+			chain = append(chain, "resource/guardian")
+		}
+		chain = append(chain, extra...)
+		chain = append(chain, "batch")
+		return chain
+	}
 	pipelines := map[string]any{
 		"metrics": map[string]any{
 			"receivers":  []string{"otlp"},
-			"processors": []string{"batch"},
+			"processors": processorChain(),
 			"exporters":  metricExporters,
 		},
 	}
-	processors := map[string]any{"batch": map[string]any{}}
 	if cloudwatchEnabled {
 		exporters["awscloudwatchlogs"] = map[string]any{
 			"region":          awsRegion(in),
@@ -370,7 +391,7 @@ func otelCollectorConfig(in registry.AssetInput, spec *assetdefs.ObservabilitySp
 		}
 		pipelines["logs"] = map[string]any{
 			"receivers":  []string{"otlp"},
-			"processors": []string{"batch"},
+			"processors": processorChain(),
 			"exporters":  []string{"awscloudwatchlogs"},
 		}
 	}
@@ -388,7 +409,7 @@ func otelCollectorConfig(in registry.AssetInput, spec *assetdefs.ObservabilitySp
 		}
 		pipelines["traces"] = map[string]any{
 			"receivers":  []string{"otlp"},
-			"processors": []string{"attributes/xray", "batch"},
+			"processors": processorChain("attributes/xray"),
 			"exporters":  []string{"awsxray"},
 		}
 	}

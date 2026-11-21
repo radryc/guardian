@@ -3,7 +3,14 @@ set -eu
 
 : "${GUARDIAN_MONOFS_ROUTER:=localhost:9090}"
 : "${GUARDIAN_MONOFS_CLIENT_API_ENDPOINT:=}"
-: "${GUARDIAN_MONOFS_TOKEN:=guardian-dev-token}"
+if [ -z "${GUARDIAN_MONOFS_TOKEN:-}" ]; then
+  if [ "${GUARDIAN_ALLOW_DEV_TOKEN:-false}" = "true" ]; then
+    GUARDIAN_MONOFS_TOKEN="guardian-dev-token"
+  else
+    echo "GUARDIAN_MONOFS_TOKEN is required; set GUARDIAN_ALLOW_DEV_TOKEN=true only for isolated local development" >&2
+    exit 1
+  fi
+fi
 : "${GUARDIAN_MONOFS_PRINCIPAL:=guardiand}"
 : "${GUARDIAN_MONOFS_MOUNT_PATH:=/}"
 : "${GUARDIAN_MONOFS_USE_EXTERNAL_ADDRESSES:=false}"

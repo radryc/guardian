@@ -13,10 +13,7 @@ import (
 
 	assetdomain "github.com/radryc/guardian/internal/domain/asset"
 	assetdefs "github.com/radryc/guardian/internal/domain/assets"
-	statedomain "github.com/radryc/guardian/internal/domain/state"
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
-	orchestratorcommon "github.com/radryc/guardian/internal/orchestrator/common"
-	"github.com/radryc/guardian/internal/paths"
 	probepkg "github.com/radryc/guardian/internal/pusher/drivers/probe"
 	"github.com/radryc/guardian/internal/pusher/driverutil"
 	"github.com/radryc/guardian/internal/pusher/registry"
@@ -43,12 +40,12 @@ type SQLDatabaseDriver struct {
 type ObservabilityDriver struct{ baseDriver }
 type K8sResourceDriver struct{ baseDriver }
 
-func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resolver) {
+func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resolver) error {
 	if reg == nil {
-		return
+		return errors.New("kubernetesdriver: registry is required")
 	}
 	if backend == nil {
-		backend = NewBackend()
+		return errors.New("kubernetesdriver: backend is required")
 	}
 	if resolver == nil {
 		resolver = secrets.NoopResolver{}
@@ -68,6 +65,7 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 	reg.Register(&K8sResourceDriver{base})
 	reg.Register(&NetworkDriver{base})
 	reg.Register(probepkg.New())
+	return nil
 }
 
 func (d *VolumeDriver) Type() string                         { return "Volume" }
@@ -112,13 +110,28 @@ func (d *VolumeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 	if ephemeral {
 		return inSyncDrift(in.Asset.Name, "ephemeral volume is in sync"), nil
 	}
-	name := claimName(in, in.Asset.Name)
-	hash := hashWithPayload(driverutil.AssetHash(in), payload)
-	claim, ok, err := d.backend.GetClaim(namespace(in), name)
+	name := volumeClaimName(in, spec, in.Asset.Name)
+	claim, ok, err := d.backend.GetClaim(ctx, namespace(in), name)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	if !ok || claim.Hash != hash || claim.Size != firstNonEmpty(payload.Size, firstNonEmpty(spec.Size, "1Gi")) || claim.AccessMode != firstNonEmpty(payload.AccessMode, firstNonEmpty(spec.AccessMode, "ReadWriteOnce")) || claim.StorageClass != firstNonEmpty(payload.StorageClass, spec.Class) {
+	if spec.ObserveExisting {
+		if !ok {
+			return changedDrift(in.Asset.Name, "kubernetes volume differs"), nil
+		}
+		return inSyncDrift(in.Asset.Name, "kubernetes volume is in sync"), nil
+	}
+	hash := hashWithPayload(driverutil.AssetHash(in), payload)
+	if !ok || claim.Hash != hash ||
+		claim.Size != firstNonEmpty(payload.Size, firstNonEmpty(spec.Size, "1Gi")) ||
+		claim.AccessMode != firstNonEmpty(payload.AccessMode, firstNonEmpty(spec.AccessMode, "ReadWriteOnce")) {
+		return changedDrift(in.Asset.Name, "kubernetes volume differs"), nil
+	}
+	// An empty desired storage class means "let the cluster choose". The API
+	// server defaults spec.storageClassName on the claim, so comparing it to
+	// the empty desired value reports drift on every pass forever (the field is
+	// also immutable after creation). Only compare when the intent pins a class.
+	if desiredClass := firstNonEmpty(payload.StorageClass, spec.Class); desiredClass != "" && claim.StorageClass != desiredClass {
 		return changedDrift(in.Asset.Name, "kubernetes volume differs"), nil
 	}
 	return inSyncDrift(in.Asset.Name, "kubernetes volume is in sync"), nil
@@ -143,9 +156,19 @@ func (d *VolumeDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 	if ephemeral {
 		return registry.AssetResult{Outputs: map[string]string{"kind": "emptyDir"}}, nil
 	}
+	name := volumeClaimName(in, spec, in.Asset.Name)
+	if spec.ObserveExisting {
+		_, ok, err := d.backend.GetClaim(ctx, namespace(in), name)
+		if err != nil {
+			return registry.AssetResult{}, err
+		}
+		if !ok {
+			return registry.AssetResult{}, fmt.Errorf("observed volume %s is missing", name)
+		}
+		return registry.AssetResult{Outputs: map[string]string{"name": name}}, nil
+	}
 	hash := hashWithPayload(driverutil.AssetHash(in), payload)
-	name := claimName(in, in.Asset.Name)
-	if err := d.backend.UpsertClaim(PersistentVolumeClaim{
+	if err := d.backend.UpsertClaim(ctx, PersistentVolumeClaim{
 		Namespace:    namespace(in),
 		Name:         name,
 		Hash:         hash,
@@ -163,7 +186,14 @@ func (d *VolumeDriver) Destroy(ctx context.Context, in registry.AssetInput) erro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return d.backend.DeleteClaim(namespace(in), claimName(in, in.Asset.Name))
+	spec, err := decodeVolume(in)
+	if err != nil {
+		return err
+	}
+	if spec.ObserveExisting {
+		return nil
+	}
+	return d.backend.DeleteClaim(ctx, namespace(in), volumeClaimName(in, spec, in.Asset.Name))
 }
 
 func (d *ConfigDriver) Check(ctx context.Context, in registry.AssetInput) error { return ctx.Err() }
@@ -183,7 +213,7 @@ func (d *ConfigDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 	hash := hashWithPayload(driverutil.AssetHash(in), files.HashStruct())
 	name := configMapName(in, in.Asset.Name)
 	data, binaryData := splitConfigFileSet(files)
-	cm, ok, err := d.backend.GetConfigMap(namespace(in), name)
+	cm, ok, err := d.backend.GetConfigMap(ctx, namespace(in), name)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -208,7 +238,7 @@ func (d *ConfigDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 	hash := hashWithPayload(driverutil.AssetHash(in), files.HashStruct())
 	name := configMapName(in, in.Asset.Name)
 	data, binaryData := splitConfigFileSet(files)
-	if err := d.backend.UpsertConfigMap(ConfigMap{
+	if err := d.backend.UpsertConfigMap(ctx, ConfigMap{
 		Namespace:  namespace(in),
 		Name:       name,
 		Hash:       hash,
@@ -225,7 +255,7 @@ func (d *ConfigDriver) Destroy(ctx context.Context, in registry.AssetInput) erro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return d.backend.DeleteConfigMap(namespace(in), configMapName(in, in.Asset.Name))
+	return d.backend.DeleteConfigMap(ctx, namespace(in), configMapName(in, in.Asset.Name))
 }
 
 func splitConfigFileSet(files driverutil.ConfigFileSet) (map[string]string, map[string]string) {
@@ -261,19 +291,15 @@ func (d *SecretDriver) Diff(ctx context.Context, in registry.AssetInput) (taskdo
 			return taskdomain.DriftReport{}, err
 		}
 	}
-	state, err := orchestratorcommon.LoadIntentState(ctx, in.Store, in.PartitionName, in.IntentName)
-	if err != nil {
-		return changedDrift(in.Asset.Name, "secret outputs pending"), nil
-	}
 	hash := digest.ContentHash([]byte(value))
-	if stored := strings.TrimSpace(state.Outputs[in.Asset.Name+".valueHash"]); stored != "" {
+	if stored := strings.TrimSpace(in.Outputs[in.Asset.Name+".valueHash"]); stored != "" {
 		if stored != hash {
 			return changedDrift(in.Asset.Name, "secret outputs differ"), nil
 		}
-	} else if strings.TrimSpace(state.Outputs[in.Asset.Name+".value"]) != strings.TrimSpace(value) {
+	} else if strings.TrimSpace(in.Outputs[in.Asset.Name+".value"]) != strings.TrimSpace(value) {
 		return changedDrift(in.Asset.Name, "secret outputs differ"), nil
 	}
-	if strings.TrimSpace(spec.SecretRef) != "" && strings.TrimSpace(state.Outputs[in.Asset.Name+".secretRef"]) != strings.TrimSpace(spec.SecretRef) {
+	if strings.TrimSpace(spec.SecretRef) != "" && strings.TrimSpace(in.Outputs[in.Asset.Name+".secretRef"]) != strings.TrimSpace(spec.SecretRef) {
 		return changedDrift(in.Asset.Name, "secret reference differs"), nil
 	}
 	return inSyncDrift(in.Asset.Name, "secret asset is in sync"), nil
@@ -294,7 +320,50 @@ func (d *SecretDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 			return registry.AssetResult{}, err
 		}
 	}
-	outputs := map[string]string{"value": value, "valueHash": digest.ContentHash([]byte(value))}
+	key := strings.TrimSpace(spec.Key)
+	if key == "" {
+		key = "value"
+	}
+	if adopted := strings.TrimSpace(spec.ExistingSecret); adopted != "" {
+		outputs := map[string]string{
+			"value":     value,
+			"valueHash": digest.ContentHash([]byte(value)),
+			"name":      adopted,
+			"key":       key,
+		}
+		if spec.SecretRef != "" {
+			outputs["secretRef"] = spec.SecretRef
+		}
+		return registry.AssetResult{Outputs: outputs}, nil
+	}
+	name := secretObjectName(in, in.Asset.Name)
+	manifest, err := json.Marshal(map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Secret",
+		"metadata": map[string]any{
+			"name":      name,
+			"namespace": namespace(in),
+			"labels": map[string]string{
+				"app.kubernetes.io/managed-by": "guardian",
+				"guardian.partition":           in.PartitionName,
+				"guardian.intent":              in.IntentName,
+			},
+		},
+		"type":       "Opaque",
+		"stringData": map[string]string{key: value},
+	})
+	if err != nil {
+		return registry.AssetResult{}, fmt.Errorf("encode secret manifest: %w", err)
+	}
+	if err := d.backend.ApplyManifest(ctx, namespace(in), manifest); err != nil {
+		return registry.AssetResult{}, fmt.Errorf("apply secret %s: %w", name, err)
+	}
+	outputs := map[string]string{
+		"value":     value,
+		"valueHash": digest.ContentHash([]byte(value)),
+		"name":      name,
+		"key":       key,
+	}
 	if spec.SecretRef != "" {
 		outputs["secretRef"] = spec.SecretRef
 	}
@@ -302,7 +371,17 @@ func (d *SecretDriver) Apply(ctx context.Context, in registry.AssetInput) (regis
 }
 
 func (d *SecretDriver) Destroy(ctx context.Context, in registry.AssetInput) error {
-	return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	spec, err := decodeSecret(in)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(spec.ExistingSecret) != "" {
+		return nil
+	}
+	return d.backend.DeleteSecret(ctx, namespace(in), secretObjectName(in, in.Asset.Name))
 }
 
 func (d *ComputeDriver) Check(ctx context.Context, in registry.AssetInput) error {
@@ -313,7 +392,7 @@ func (d *ComputeDriver) Check(ctx context.Context, in registry.AssetInput) error
 	if err != nil {
 		return err
 	}
-	deployment, ok, err := d.backend.GetDeployment(namespace(in), computeDeploymentName(in, spec))
+	deployment, ok, err := d.backend.GetDeployment(ctx, namespace(in), computeDeploymentName(in, spec))
 	if err != nil {
 		return err
 	}
@@ -376,7 +455,7 @@ func (d *ComputeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskd
 	hash := hashWithPayload(computeHash(in, spec), payload)
 	deploymentName := computeDeploymentName(in, spec)
 	serviceName := computeServiceName(in, spec)
-	deployment, ok, err := d.backend.GetDeployment(namespace(in), deploymentName)
+	deployment, ok, err := d.backend.GetDeployment(ctx, namespace(in), deploymentName)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -385,7 +464,7 @@ func (d *ComputeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskd
 			return changedDrift(in.Asset.Name, "kubernetes deployment differs"), nil
 		}
 		if len(spec.Ports) > 0 {
-			service, serviceOK, err := d.backend.GetService(namespace(in), serviceName)
+			service, serviceOK, err := d.backend.GetService(ctx, namespace(in), serviceName)
 			if err != nil {
 				return taskdomain.DriftReport{}, err
 			}
@@ -404,7 +483,7 @@ func (d *ComputeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskd
 		return changedDrift(in.Asset.Name, "kubernetes deployment differs"), nil
 	}
 	if len(spec.Ports) > 0 {
-		service, ok, err := d.backend.GetService(namespace(in), serviceName)
+		service, ok, err := d.backend.GetService(ctx, namespace(in), serviceName)
 		if err != nil {
 			return taskdomain.DriftReport{}, err
 		}
@@ -425,7 +504,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	}
 	if spec.ObserveExisting {
 		deploymentName := computeDeploymentName(in, spec)
-		deployment, ok, err := d.backend.GetDeployment(namespace(in), deploymentName)
+		deployment, ok, err := d.backend.GetDeployment(ctx, namespace(in), deploymentName)
 		if err != nil {
 			return registry.AssetResult{}, err
 		}
@@ -435,7 +514,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 		outputs := map[string]string{"id": deploymentName, "image": deployment.Container.Image}
 		if len(spec.Ports) > 0 {
 			svcName := computeServiceName(in, spec)
-			svc, ok, err := d.backend.GetService(namespace(in), svcName)
+			svc, ok, err := d.backend.GetService(ctx, namespace(in), svcName)
 			if err != nil {
 				return registry.AssetResult{}, err
 			}
@@ -500,7 +579,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 		}
 	}
 	markDeploymentReady(&deployment)
-	if err := d.backend.UpsertDeployment(deployment); err != nil {
+	if err := d.backend.UpsertDeployment(ctx, deployment); err != nil {
 		return registry.AssetResult{}, err
 	}
 	outputs := map[string]string{"id": computeDeploymentName(in, spec), "image": deployment.Container.Image}
@@ -510,7 +589,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	}
 	if len(ports) > 0 {
 		name := computeServiceName(in, spec)
-		if err := d.backend.UpsertService(Service{
+		if err := d.backend.UpsertService(ctx, Service{
 			Namespace:   namespace(in),
 			Name:        name,
 			Hash:        hash,
@@ -540,10 +619,10 @@ func (d *ComputeDriver) Destroy(ctx context.Context, in registry.AssetInput) err
 	if spec.ObserveExisting {
 		return nil
 	}
-	if err := d.backend.DeleteDeployment(namespace(in), computeDeploymentName(in, spec)); err != nil {
+	if err := d.backend.DeleteDeployment(ctx, namespace(in), computeDeploymentName(in, spec)); err != nil {
 		return err
 	}
-	return d.backend.DeleteService(namespace(in), computeServiceName(in, spec))
+	return d.backend.DeleteService(ctx, namespace(in), computeServiceName(in, spec))
 }
 
 func (d *TraefikRouteDriver) Check(ctx context.Context, in registry.AssetInput) error {
@@ -568,16 +647,9 @@ func (d *TraefikRouteDriver) Diff(ctx context.Context, in registry.AssetInput) (
 	if in.Store == nil {
 		return changedDrift(in.Asset.Name, "Traefik route metadata pending"), nil
 	}
-	state, err := orchestratorcommon.LoadIntentState(ctx, in.Store, in.PartitionName, in.IntentName)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return changedDrift(in.Asset.Name, "Traefik route metadata pending"), nil
-		}
-		return taskdomain.DriftReport{}, err
-	}
-	if strings.TrimSpace(state.Outputs[in.Asset.Name+".hostname"]) != strings.TrimSpace(spec.Hostname) ||
-		strings.TrimSpace(state.Outputs[in.Asset.Name+".target"]) != strings.TrimSpace(spec.Target) ||
-		strings.TrimSpace(state.Outputs[in.Asset.Name+".portName"]) != strings.TrimSpace(spec.PortName) {
+	if strings.TrimSpace(in.Outputs[in.Asset.Name+".hostname"]) != strings.TrimSpace(spec.Hostname) ||
+		strings.TrimSpace(in.Outputs[in.Asset.Name+".target"]) != strings.TrimSpace(spec.Target) ||
+		strings.TrimSpace(in.Outputs[in.Asset.Name+".portName"]) != strings.TrimSpace(spec.PortName) {
 		return changedDrift(in.Asset.Name, "Traefik route metadata differs"), nil
 	}
 	return inSyncDrift(in.Asset.Name, "Traefik route metadata is in sync"), nil
@@ -625,14 +697,14 @@ func (d *LoadBalancerDriver) Diff(ctx context.Context, in registry.AssetInput) (
 	}
 	serviceType := resolvedKubernetesServiceType(spec.ServiceType, payload.ServiceType, "LoadBalancer")
 	hash := hashWithPayload(loadBalancerHash(in, spec), payload)
-	deployment, ok, err := d.backend.GetDeployment(namespace(in), workloadName(in, "lb"))
+	deployment, ok, err := d.backend.GetDeployment(ctx, namespace(in), workloadName(in, "lb"))
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
 	if !ok || deployment.Hash != hash {
 		return changedDrift(in.Asset.Name, "kubernetes load balancer deployment differs"), nil
 	}
-	service, ok, err := d.backend.GetService(namespace(in), serviceName(in, "lb"))
+	service, ok, err := d.backend.GetService(ctx, namespace(in), serviceName(in, "lb"))
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -683,14 +755,14 @@ func (d *LoadBalancerDriver) Apply(ctx context.Context, in registry.AssetInput) 
 	applyWorkloadPayload(&deployment, payload)
 	deployment.Container.Env = driverutil.ApplyLBOtelEnv(deployment.Container.Env, in)
 	markDeploymentReady(&deployment)
-	if err := d.backend.UpsertDeployment(deployment); err != nil {
+	if err := d.backend.UpsertDeployment(ctx, deployment); err != nil {
 		return registry.AssetResult{}, err
 	}
 	ports := toListenerServicePorts(spec.Listeners)
 	if len(payload.ServicePorts) > 0 {
 		ports = append([]ServicePort(nil), payload.ServicePorts...)
 	}
-	if err := d.backend.UpsertService(Service{
+	if err := d.backend.UpsertService(ctx, Service{
 		Namespace:   namespace(in),
 		Name:        serviceName(in, "lb"),
 		Hash:        hash,
@@ -713,10 +785,10 @@ func (d *LoadBalancerDriver) Destroy(ctx context.Context, in registry.AssetInput
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := d.backend.DeleteDeployment(namespace(in), workloadName(in, "lb")); err != nil {
+	if err := d.backend.DeleteDeployment(ctx, namespace(in), workloadName(in, "lb")); err != nil {
 		return err
 	}
-	return d.backend.DeleteService(namespace(in), serviceName(in, "lb"))
+	return d.backend.DeleteService(ctx, namespace(in), serviceName(in, "lb"))
 }
 
 func (d *ObjectStoreDriver) Check(ctx context.Context, in registry.AssetInput) error {
@@ -796,14 +868,14 @@ func (d *ObjectStoreDriver) Apply(ctx context.Context, in registry.AssetInput) (
 	}
 	applyWorkloadPayload(&deployment, payload)
 	markDeploymentReady(&deployment)
-	if err := d.backend.UpsertDeployment(deployment); err != nil {
+	if err := d.backend.UpsertDeployment(ctx, deployment); err != nil {
 		return registry.AssetResult{}, err
 	}
 	servicePorts := container.Ports
 	if len(payload.ServicePorts) > 0 {
 		servicePorts = append([]ServicePort(nil), payload.ServicePorts...)
 	}
-	if err := d.backend.UpsertService(Service{
+	if err := d.backend.UpsertService(ctx, Service{
 		Namespace: namespace(in),
 		Name:      serviceName(in, "obj"),
 		Hash:      hash,
@@ -832,10 +904,10 @@ func (d *ObjectStoreDriver) Destroy(ctx context.Context, in registry.AssetInput)
 	if spec.Endpoint != "" {
 		return nil
 	}
-	if err := d.backend.DeleteDeployment(namespace(in), workloadName(in, "obj")); err != nil {
+	if err := d.backend.DeleteDeployment(ctx, namespace(in), workloadName(in, "obj")); err != nil {
 		return err
 	}
-	return d.backend.DeleteService(namespace(in), serviceName(in, "obj"))
+	return d.backend.DeleteService(ctx, namespace(in), serviceName(in, "obj"))
 }
 
 func (d *SQLDatabaseDriver) Check(ctx context.Context, in registry.AssetInput) error {
@@ -885,14 +957,14 @@ func (d *SQLDatabaseDriver) Apply(ctx context.Context, in registry.AssetInput) (
 	}
 	applyWorkloadPayload(&deployment, payload)
 	markDeploymentReady(&deployment)
-	if err := d.backend.UpsertDeployment(deployment); err != nil {
+	if err := d.backend.UpsertDeployment(ctx, deployment); err != nil {
 		return registry.AssetResult{}, err
 	}
 	servicePorts := container.Ports
 	if len(payload.ServicePorts) > 0 {
 		servicePorts = append([]ServicePort(nil), payload.ServicePorts...)
 	}
-	if err := d.backend.UpsertService(Service{
+	if err := d.backend.UpsertService(ctx, Service{
 		Namespace: namespace(in),
 		Name:      serviceName(in, "db"),
 		Hash:      hash,
@@ -916,10 +988,10 @@ func (d *SQLDatabaseDriver) Destroy(ctx context.Context, in registry.AssetInput)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := d.backend.DeleteDeployment(namespace(in), workloadName(in, "db")); err != nil {
+	if err := d.backend.DeleteDeployment(ctx, namespace(in), workloadName(in, "db")); err != nil {
 		return err
 	}
-	return d.backend.DeleteService(namespace(in), serviceName(in, "db"))
+	return d.backend.DeleteService(ctx, namespace(in), serviceName(in, "db"))
 }
 
 func (d *ObservabilityDriver) Check(ctx context.Context, in registry.AssetInput) error {
@@ -1006,14 +1078,14 @@ func (d *ObservabilityDriver) Apply(ctx context.Context, in registry.AssetInput)
 	}
 	applyWorkloadPayload(&deployment, payload)
 	markDeploymentReady(&deployment)
-	if err := d.backend.UpsertDeployment(deployment); err != nil {
+	if err := d.backend.UpsertDeployment(ctx, deployment); err != nil {
 		return registry.AssetResult{}, err
 	}
 	servicePorts := container.Ports
 	if len(payload.ServicePorts) > 0 {
 		servicePorts = append([]ServicePort(nil), payload.ServicePorts...)
 	}
-	if err := d.backend.UpsertService(Service{
+	if err := d.backend.UpsertService(ctx, Service{
 		Namespace: namespace(in),
 		Name:      serviceName(in, "obs"),
 		Hash:      hash,
@@ -1038,10 +1110,10 @@ func (d *ObservabilityDriver) Destroy(ctx context.Context, in registry.AssetInpu
 	if spec, err := decodeObservability(in); err == nil && observabilityEnvOnly(spec) {
 		return nil
 	}
-	if err := d.backend.DeleteDeployment(namespace(in), workloadName(in, "obs")); err != nil {
+	if err := d.backend.DeleteDeployment(ctx, namespace(in), workloadName(in, "obs")); err != nil {
 		return err
 	}
-	return d.backend.DeleteService(namespace(in), serviceName(in, "obs"))
+	return d.backend.DeleteService(ctx, namespace(in), serviceName(in, "obs"))
 }
 
 func (d *K8sResourceDriver) Check(ctx context.Context, in registry.AssetInput) error {
@@ -1069,15 +1141,8 @@ func (d *K8sResourceDriver) Diff(ctx context.Context, in registry.AssetInput) (t
 	if in.Store == nil {
 		return changedDrift(in.Asset.Name, "kubernetes manifest outputs pending"), nil
 	}
-	state, err := orchestratorcommon.LoadIntentState(ctx, in.Store, in.PartitionName, in.IntentName)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return changedDrift(in.Asset.Name, "kubernetes manifest outputs pending"), nil
-		}
-		return taskdomain.DriftReport{}, err
-	}
 	hash := hashWithPayload(driverutil.AssetHash(in), string(manifest))
-	if strings.TrimSpace(state.Outputs[in.Asset.Name+".manifestHash"]) != hash {
+	if strings.TrimSpace(in.Outputs[in.Asset.Name+".manifestHash"]) != hash {
 		return changedDrift(in.Asset.Name, "kubernetes manifest differs"), nil
 	}
 	return inSyncDrift(in.Asset.Name, "kubernetes manifest is in sync"), nil
@@ -1098,7 +1163,7 @@ func (d *K8sResourceDriver) Apply(ctx context.Context, in registry.AssetInput) (
 	if !ok {
 		return registry.AssetResult{}, fmt.Errorf("asset %s: payload.k8s is required", in.Asset.Name)
 	}
-	if err := d.backend.ApplyManifest(spec.Namespace, manifest); err != nil {
+	if err := d.backend.ApplyManifest(ctx, spec.Namespace, manifest); err != nil {
 		return registry.AssetResult{}, fmt.Errorf("apply kubernetes manifest: %w", err)
 	}
 	hash := hashWithPayload(driverutil.AssetHash(in), string(manifest))
@@ -1156,7 +1221,7 @@ func (d *baseDriver) checkReferences(ctx context.Context, in registry.AssetInput
 		}
 		switch asset.Type {
 		case "Config":
-			if _, _, err := d.backend.GetConfigMap(namespace(in), configMapName(in, dep)); err != nil {
+			if _, _, err := d.backend.GetConfigMap(ctx, namespace(in), configMapName(in, dep)); err != nil {
 				return err
 			}
 		case "Volume":
@@ -1168,7 +1233,7 @@ func (d *baseDriver) checkReferences(ctx context.Context, in registry.AssetInput
 			if driverutil.BoolValue(spec.Ephemeral) {
 				continue
 			}
-			if _, _, err := d.backend.GetClaim(namespace(in), claimName(in, dep)); err != nil {
+			if _, _, err := d.backend.GetClaim(ctx, namespace(in), volumeClaimName(in, spec, dep)); err != nil {
 				return err
 			}
 		case "ImageBuild":
@@ -1213,22 +1278,8 @@ func (d *baseDriver) checkImageBuildExists(ctx context.Context, in registry.Asse
 	return nil
 }
 
-func resolveImageBuildRef(ctx context.Context, in registry.AssetInput, assetName string) (string, error) {
-	if in.Store == nil {
-		return "", nil
-	}
-	raw, err := in.Store.ReadFile(ctx, paths.IntentState(in.PartitionName, in.IntentName))
-	if err != nil {
-		return "", nil
-	}
-	var state statedomain.IntentState
-	if err := json.Unmarshal(raw, &state); err != nil {
-		return "", err
-	}
-	if state.Outputs == nil {
-		return "", nil
-	}
-	return strings.TrimSpace(state.Outputs[assetName+".imageRef"]), nil
+func resolveImageBuildRef(_ context.Context, in registry.AssetInput, assetName string) (string, error) {
+	return strings.TrimSpace(in.Outputs[assetName+".imageRef"]), nil
 }
 
 func (d *baseDriver) observeApplyReadiness(ctx context.Context, in registry.AssetInput) (*taskdomain.ApplyReadiness, error) {
@@ -1255,7 +1306,7 @@ func (d *baseDriver) observeComputeHealth(ctx context.Context, in registry.Asset
 		deploymentName = computeDeploymentName(in, spec)
 		serviceLookupName = computeServiceName(in, spec)
 	}
-	deployment, ok, err := d.backend.GetDeployment(namespace(in), deploymentName)
+	deployment, ok, err := d.backend.GetDeployment(ctx, namespace(in), deploymentName)
 	if err != nil {
 		return nil, err
 	}
@@ -1271,7 +1322,7 @@ func (d *baseDriver) observeComputeHealth(ctx context.Context, in registry.Asset
 		if deployment.PodFailureMessage != "" {
 			summary += ". " + deployment.PodFailureMessage
 		}
-		if events, _ := d.backend.GetPodEvents(deployment.Namespace, deployment.PodFailurePodName); len(events) > 0 {
+		if events, _ := d.backend.GetPodEvents(ctx, deployment.Namespace, deployment.PodFailurePodName); len(events) > 0 {
 			summary += "\n" + strings.Join(events, "\n")
 		}
 		return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: summary}, nil
@@ -1282,7 +1333,7 @@ func (d *baseDriver) observeComputeHealth(ctx context.Context, in registry.Asset
 	if !expectService {
 		return &taskdomain.HealthObservation{Status: taskdomain.HealthHealthy, Summary: "kubernetes workload is ready"}, nil
 	}
-	service, ok, err := d.backend.GetService(namespace(in), serviceLookupName)
+	service, ok, err := d.backend.GetService(ctx, namespace(in), serviceLookupName)
 	if err != nil {
 		return nil, err
 	}
@@ -1308,7 +1359,7 @@ func (d *baseDriver) observeServiceBackedHealth(ctx context.Context, in registry
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	deployment, ok, err := d.backend.GetDeployment(namespace(in), deploymentName)
+	deployment, ok, err := d.backend.GetDeployment(ctx, namespace(in), deploymentName)
 	if err != nil {
 		return nil, err
 	}
@@ -1324,7 +1375,7 @@ func (d *baseDriver) observeServiceBackedHealth(ctx context.Context, in registry
 		if deployment.PodFailureMessage != "" {
 			summary += ". " + deployment.PodFailureMessage
 		}
-		if events, _ := d.backend.GetPodEvents(deployment.Namespace, deployment.PodFailurePodName); len(events) > 0 {
+		if events, _ := d.backend.GetPodEvents(ctx, deployment.Namespace, deployment.PodFailurePodName); len(events) > 0 {
 			summary += "\n" + strings.Join(events, "\n")
 		}
 		return &taskdomain.HealthObservation{Status: taskdomain.HealthUnhealthy, Summary: summary}, nil
@@ -1332,7 +1383,7 @@ func (d *baseDriver) observeServiceBackedHealth(ctx context.Context, in registry
 	if deployment.ReadyReplicas < deployment.Replicas {
 		return &taskdomain.HealthObservation{Status: taskdomain.HealthDegraded, Summary: fmt.Sprintf("kubernetes deployment %s is not ready", deploymentName)}, nil
 	}
-	service, ok, err := d.backend.GetService(namespace(in), svcName)
+	service, ok, err := d.backend.GetService(ctx, namespace(in), svcName)
 	if err != nil {
 		return nil, err
 	}
@@ -1349,14 +1400,14 @@ func (d *baseDriver) diffServiceBackedDeployment(ctx context.Context, in registr
 	if err := ctx.Err(); err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	deployment, ok, err := d.backend.GetDeployment(namespace(in), deploymentName)
+	deployment, ok, err := d.backend.GetDeployment(ctx, namespace(in), deploymentName)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
 	if !ok || deployment.Hash != hash {
 		return changedDrift(in.Asset.Name, "kubernetes deployment differs"), nil
 	}
-	service, ok, err := d.backend.GetService(namespace(in), svcName)
+	service, ok, err := d.backend.GetService(ctx, namespace(in), svcName)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -1487,12 +1538,15 @@ func observabilityEnvOnly(spec *assetdefs.ObservabilitySpec) bool {
 }
 
 func computeHash(in registry.AssetInput, spec *assetdefs.ComputeSpec) string {
-	refs := make([]string, 0, len(spec.VolumeMounts)+len(spec.ConfigMounts)+len(spec.Networks))
+	refs := make([]string, 0, len(spec.VolumeMounts)+len(spec.ConfigMounts)+len(spec.SecretMounts)+len(spec.Networks))
 	for _, mount := range spec.VolumeMounts {
 		refs = append(refs, mount.Volume)
 	}
 	for _, mount := range spec.ConfigMounts {
 		refs = append(refs, mount.Config)
+	}
+	for _, mount := range spec.SecretMounts {
+		refs = append(refs, mount.Secret+"|"+mount.Path+"|"+mount.File)
 	}
 	refs = append(refs, spec.Networks...)
 	return driverutil.CompositeHash(in, refs...)
@@ -1525,15 +1579,8 @@ func externalObjectStoreDiff(ctx context.Context, in registry.AssetInput, endpoi
 	if in.Store == nil {
 		return changedDrift(in.Asset.Name, "external object store reference pending"), nil
 	}
-	state, err := orchestratorcommon.LoadIntentState(ctx, in.Store, in.PartitionName, in.IntentName)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return changedDrift(in.Asset.Name, "external object store reference pending"), nil
-		}
-		return taskdomain.DriftReport{}, err
-	}
 	want := strings.TrimSpace(endpoint)
-	got := strings.TrimSpace(state.Outputs[in.Asset.Name+".endpoint"])
+	got := strings.TrimSpace(in.Outputs[in.Asset.Name+".endpoint"])
 	if got != want {
 		return changedDrift(in.Asset.Name, "external object store endpoint differs"), nil
 	}
@@ -1589,7 +1636,7 @@ func buildComputeContainer(ctx context.Context, in registry.AssetInput, resolver
 			vm.Ephemeral = true
 		} else {
 			vm.SourceKind = "PersistentVolumeClaim"
-			vm.SourceName = claimName(in, mount.Volume)
+			vm.SourceName = volumeClaimName(in, volume, mount.Volume)
 		}
 		container.VolumeMounts = append(container.VolumeMounts, vm)
 	}
@@ -1608,6 +1655,35 @@ func buildComputeContainer(ctx context.Context, in registry.AssetInput, resolver
 			cm.SubPath = fileName
 		}
 		container.VolumeMounts = append(container.VolumeMounts, cm)
+	}
+	for _, mount := range spec.SecretMounts {
+		_, typed, err := driverutil.DecodeNamedAsset(in, mount.Secret)
+		if err != nil {
+			return Container{}, err
+		}
+		secretSpec, ok := typed.(*assetdefs.SecretSpec)
+		if !ok {
+			return Container{}, fmt.Errorf("secret mount %q is not a Secret asset", mount.Secret)
+		}
+		key := strings.TrimSpace(secretSpec.Key)
+		if key == "" {
+			key = "value"
+		}
+		file := strings.TrimSpace(mount.File)
+		if file != "" && file != key {
+			return Container{}, fmt.Errorf("secret mount %q file %q does not match Secret key %q", mount.Secret, file, key)
+		}
+		sourceName := strings.TrimSpace(secretSpec.ExistingSecret)
+		if sourceName == "" {
+			sourceName = secretObjectName(in, mount.Secret)
+		}
+		container.VolumeMounts = append(container.VolumeMounts, VolumeMount{
+			SourceKind: "Secret",
+			SourceName: sourceName,
+			MountPath:  mount.Path,
+			SubPath:    file,
+			ReadOnly:   true,
+		})
 	}
 	for _, mount := range spec.HostBindMounts {
 		container.VolumeMounts = append(container.VolumeMounts, VolumeMount{
@@ -1771,7 +1847,7 @@ func volumeMountFromRef(in registry.AssetInput, assetName, path string) VolumeMo
 	if driverutil.BoolValue(volume.Ephemeral) {
 		return VolumeMount{SourceKind: "EmptyDir", SourceName: assetName, MountPath: path, Ephemeral: true}
 	}
-	return VolumeMount{SourceKind: "PersistentVolumeClaim", SourceName: claimName(in, assetName), MountPath: path}
+	return VolumeMount{SourceKind: "PersistentVolumeClaim", SourceName: volumeClaimName(in, volume, assetName), MountPath: path}
 }
 
 func sqlDatabaseImagePortEnv(spec *assetdefs.SQLDatabaseSpec) (string, int, map[string]string) {
@@ -1923,8 +1999,25 @@ func claimName(in registry.AssetInput, assetName string) string {
 	return driverutil.ResourceName("k8s-pvc", in.Target, in.PartitionName, in.IntentName, assetName)
 }
 
+// volumeClaimName resolves the PVC a Volume asset refers to. Observed volumes
+// keep their upstream name (ExistingID, else the asset name) and are never
+// renamed by Guardian; managed volumes use the namespaced claim name.
+func volumeClaimName(in registry.AssetInput, spec *assetdefs.VolumeSpec, assetName string) string {
+	if spec != nil && spec.ObserveExisting {
+		if explicit := strings.TrimSpace(spec.ExistingID); explicit != "" {
+			return explicit
+		}
+		return assetName
+	}
+	return claimName(in, assetName)
+}
+
 func configMapName(in registry.AssetInput, assetName string) string {
 	return driverutil.ResourceName("k8s-cm", in.Target, in.PartitionName, in.IntentName, assetName)
+}
+
+func secretObjectName(in registry.AssetInput, assetName string) string {
+	return driverutil.ResourceName("k8s-secret", in.Target, in.PartitionName, in.IntentName, assetName)
 }
 
 func namespace(in registry.AssetInput) string {

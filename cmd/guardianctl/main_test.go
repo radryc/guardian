@@ -894,7 +894,34 @@ func TestPartitionListDiscoveryForbiddenIncludesKubernetesHelp(t *testing.T) {
 	}
 }
 
-func TestPartitionListFallsBackToLocalDogfoodDefaults(t *testing.T) {
+func TestPartitionListRequiresTokenBeforeLocalFallback(t *testing.T) {
+	ctx := context.Background()
+	resetGuardianAutoStoreHooks(t)
+	clearGuardianConnectionEnv(t)
+
+	guardianDiscoveryURL = "http://127.0.0.1:1"
+	guardianDiscoveryHTTPClient = &http.Client{Timeout: 10 * time.Millisecond}
+
+	opened := false
+	guardianStoreOpener = func(ctx context.Context, storeDir, monofsRouter, monofsToken, monofsPrincipalID string, monofsUseExternalAddresses bool) (guardianapi.Store, interface{ Close() error }, error) {
+		opened = true
+		return memory.New(), nil, nil
+	}
+
+	var buf bytes.Buffer
+	printer := &output.Printer{Format: cliformat.FormatText, Writer: &buf}
+	reg := registerCommands(newAutoStore(autoStoreRequest{monofsPrincipalID: "guardianctl"}), printer)
+
+	err := reg.Run(ctx, []string{"partition", "list"})
+	if err == nil || !strings.Contains(err.Error(), "no MonoFS token configured") {
+		t.Fatalf("Run(partition list) error = %v, want missing-token error", err)
+	}
+	if opened {
+		t.Fatal("store must not open without a configured token")
+	}
+}
+
+func TestPartitionListFallsBackToLocalDogfoodDefaultsWithAllowDevToken(t *testing.T) {
 	ctx := context.Background()
 	resetGuardianAutoStoreHooks(t)
 	clearGuardianConnectionEnv(t)
@@ -926,7 +953,7 @@ spec:
 
 	var buf bytes.Buffer
 	printer := &output.Printer{Format: cliformat.FormatText, Writer: &buf}
-	reg := registerCommands(newAutoStore(autoStoreRequest{monofsPrincipalID: "guardianctl"}), printer)
+	reg := registerCommands(newAutoStore(autoStoreRequest{monofsPrincipalID: "guardianctl", allowDevToken: true}), printer)
 
 	if err := reg.Run(ctx, []string{"partition", "list"}); err != nil {
 		t.Fatalf("Run(partition list) error = %v", err)

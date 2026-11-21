@@ -15,9 +15,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/radryc/guardian/internal/clock"
 	intentdomain "github.com/radryc/guardian/internal/domain/intent"
 	statedomain "github.com/radryc/guardian/internal/domain/state"
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
+	"github.com/radryc/guardian/internal/orchestrator/common"
 	"github.com/radryc/guardian/internal/paths"
 	"github.com/radryc/guardian/internal/pusher/registry"
 	"github.com/radryc/guardian/internal/telemetry"
@@ -65,6 +67,8 @@ type Runtime struct {
 	ShardIndex int
 	ShardCount int
 	CanHandle  func(*taskdomain.Task) bool
+	// Clock overrides time.Now for tests; nil uses the system clock.
+	Clock clock.Clock
 
 	retryMu          sync.Mutex
 	nextClaimAttempt map[string]time.Time
@@ -75,6 +79,10 @@ type Runtime struct {
 	observedRetry      atomic.Int64
 	observedDiscovered atomic.Int64
 	activeClaims       atomic.Int64
+}
+
+func (r *Runtime) now() time.Time {
+	return clock.Or(r.Clock).Now().UTC()
 }
 
 func (r *Runtime) Run(ctx context.Context) error {
@@ -172,7 +180,7 @@ func (r *Runtime) tryClaimTaskWithLease(ctx context.Context, taskID string) (*ta
 	claim := taskdomain.ClaimFile{
 		TaskID:       taskID,
 		WorkerID:     r.WorkerID,
-		ClaimedAt:    time.Now().UTC(),
+		ClaimedAt:    r.now().UTC(),
 		LeaseSeconds: int((5 * time.Minute).Seconds()),
 	}
 	claimContent, err := json.MarshalIndent(claim, "", "  ")
@@ -230,7 +238,7 @@ func (r *Runtime) startClaimHeartbeat(ctx context.Context, pusher string, claim 
 			case <-hbCtx.Done():
 				return
 			case <-ticker.C:
-				claim.ClaimedAt = time.Now().UTC()
+				claim.ClaimedAt = r.now().UTC()
 				content, err := json.MarshalIndent(claim, "", "  ")
 				if err != nil {
 					continue
@@ -284,7 +292,7 @@ func (r *Runtime) taskReadyToClaim(ctx context.Context, pusher, taskID string) (
 	if err := json.Unmarshal(raw, &claim); err != nil {
 		return false, fmt.Errorf("decode claim %s: %w", taskID, err)
 	}
-	if !claimExpired(claim, time.Now().UTC()) {
+	if !claimExpired(claim, r.now().UTC()) {
 		return false, nil
 	}
 	info, err := r.Store.Stat(ctx, claimPath)
@@ -357,7 +365,7 @@ func (r *Runtime) writeResult(ctx context.Context, result *taskdomain.TaskResult
 }
 
 func (r *Runtime) processPending(ctx context.Context) error {
-	started := time.Now()
+	started := r.now()
 	defer func() {
 		runtimeInstruments().pollDuration.Record(ctx, time.Since(started).Seconds(), metricapi.WithAttributes(r.runtimeObservableAttributes()...))
 	}()
@@ -367,7 +375,7 @@ func (r *Runtime) processPending(ctx context.Context) error {
 	}
 	pusher := strings.TrimPrefix(strings.TrimPrefix(r.QueuePath, paths.QueueRoot()), "/")
 	activeTaskIDs := make(map[string]struct{}, len(entries))
-	scanAt := time.Now()
+	scanAt := r.now()
 	pending := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir || !strings.HasSuffix(entry.Name, ".json") || strings.HasPrefix(entry.Name, ".") {
@@ -703,11 +711,18 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 	instruments := runtimeInstruments()
 	instruments.taskCounter.Add(ctx, 1, metricapi.WithAttributes(attrs...))
 	instruments.inFlight.Add(ctx, 1, metricapi.WithAttributes(attrs...))
-	ctx, span := otel.Tracer(runtimeScope).Start(ctx, "guardian.pusher.task.execute", trace.WithAttributes(attrs...))
+	// Every task gets its own trace even if the run-loop context was derived
+	// from a long-lived span (for example an auto-instrumented streaming call
+	// held in goroutine-local storage). Without this, a leaked span merges
+	// every task executed by the process into one ever-growing trace.
+	ctx, span := otel.Tracer(runtimeScope).Start(ctx, "guardian.pusher.task.execute",
+		trace.WithNewRoot(),
+		trace.WithAttributes(attrs...),
+	)
 	span.AddEvent("guardian.task.input", trace.WithAttributes(
 		attribute.String("guardian.task.input_json", runtimeTaskTraceJSON(t, r.WorkerID)),
 	))
-	startedAt := time.Now()
+	startedAt := r.now()
 	telemetry.EmitInfo(ctx, runtimeScope, fmt.Sprintf("executing %s task %s for %s/%s", strings.ToLower(string(t.Op)), t.TaskID, t.Partition, t.Intent))
 	defer func() {
 		instruments.duration.Record(ctx, time.Since(startedAt).Seconds(), metricapi.WithAttributes(attrs...))
@@ -723,7 +738,7 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 		Partition:  t.Partition,
 		Intent:     t.Intent,
 		Pusher:     t.TargetPusher,
-		FinishedAt: time.Now().UTC(),
+		FinishedAt: r.now().UTC(),
 	}
 	result.Logs = append(result.Logs, logEntry("info", "", "starting "+string(t.Op)+" task"))
 
@@ -736,12 +751,21 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 		result.Status = taskdomain.ResultFailed
 		result.Error = &msg
 		result.Logs = append(result.Logs, logEntry("error", "", msg))
-		result.FinishedAt = time.Now().UTC()
+		result.FinishedAt = r.now().UTC()
 		annotateRuntimeTaskResultSpan(span, result)
 		return result
 	}
 
 	assets := t.Assets
+	priorOutputs := t.PriorOutputs
+	if priorOutputs == nil {
+		// Tasks queued by an older control plane (or built directly by tests)
+		// carry no snapshot. Take one read at task start so the whole task sees a
+		// consistent view, instead of letting each driver re-read live state.
+		if state, err := common.LoadIntentState(ctx, r.Store, t.Partition, t.Intent); err == nil {
+			priorOutputs = state.Outputs
+		}
+	}
 	if t.IntentType == intentdomain.TypeObserved && t.Op == taskdomain.OpApply {
 		return fail(fmt.Errorf("observed intent %s/%s must not receive APPLY tasks", t.Partition, t.Intent))
 	}
@@ -806,6 +830,7 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 			Asset:         asset,
 			Assets:        assetIndex,
 			AssetVersions: t.AssetVersions,
+			Outputs:       priorOutputs,
 			Target:        t.Target,
 			Store:         r.Store,
 			WorkerID:      r.WorkerID,
@@ -907,7 +932,7 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 		if len(assetObservations) > 0 {
 			result.AssetObservations = assetObservations
 		}
-		result.FinishedAt = time.Now().UTC()
+		result.FinishedAt = r.now().UTC()
 		annotateRuntimeTaskResultSpan(span, result)
 		span.SetStatus(codes.Ok, "dependency blocked")
 		telemetry.EmitWarn(ctx, runtimeScope, fmt.Sprintf("stopped %s task %s for %s/%s: dependency %s not ready", strings.ToLower(string(t.Op)), t.TaskID, t.Partition, t.Intent, dependencyBlock.dependencyName))
@@ -933,7 +958,7 @@ func (r *Runtime) executeTask(ctx context.Context, t *taskdomain.Task) *taskdoma
 		result.Outputs = outputs
 	}
 	result.Logs = append(result.Logs, logEntry("info", "", "task completed"))
-	result.FinishedAt = time.Now().UTC()
+	result.FinishedAt = r.now().UTC()
 	annotateRuntimeTaskResultSpan(span, result)
 	span.SetStatus(codes.Ok, "")
 	telemetry.EmitInfo(ctx, runtimeScope, fmt.Sprintf("completed %s task %s for %s/%s", strings.ToLower(string(t.Op)), t.TaskID, t.Partition, t.Intent))

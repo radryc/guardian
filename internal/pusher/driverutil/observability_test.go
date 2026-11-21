@@ -168,8 +168,8 @@ func TestApplyOtelEnvPreservesExplicitValues(t *testing.T) {
 	if got := attrs["service.alias"]; got != "custom-service" {
 		t.Fatalf("service.alias = %q", got)
 	}
-	if got := attrs["guardian.asset"]; got != "explicit" {
-		t.Fatalf("explicit guardian.asset = %q", got)
+	if got := attrs["guardian.asset"]; got != "query" {
+		t.Fatalf("guardian.asset = %q, want the authoritative asset", got)
 	}
 	if got := attrs["guardian.partition"]; got != "doctor" {
 		t.Fatalf("guardian.partition = %q", got)
@@ -185,5 +185,31 @@ func TestApplyOtelEnvPreservesExplicitValues(t *testing.T) {
 	}
 	if got := attrs["guardian.service.full_name"]; got != "doctor.query.query" {
 		t.Fatalf("guardian.service.full_name = %q", got)
+	}
+}
+
+func TestApplyOtelEnvOverwritesSpoofedIdentity(t *testing.T) {
+	env := ApplyOtelEnvWithServiceName(map[string]string{
+		"OTEL_RESOURCE_ATTRIBUTES": "guardian.partition=spoofed,guardian.intent=spoofed,custom.keep=yes",
+	}, lbAssetInput("api"), "kubernetes", "")
+	attrs := parseOtelResourceAttrs(env["OTEL_RESOURCE_ATTRIBUTES"])
+	if attrs["guardian.partition"] != "doctor" {
+		t.Fatalf("guardian.partition = %q, want doctor", attrs["guardian.partition"])
+	}
+	if attrs["guardian.intent"] != "ingest" {
+		t.Fatalf("guardian.intent = %q, want ingest", attrs["guardian.intent"])
+	}
+	if attrs["custom.keep"] != "yes" {
+		t.Fatalf("custom attribute was dropped: %#v", attrs)
+	}
+}
+
+func TestApplyLBOtelEnvOverwritesSpoofedIdentity(t *testing.T) {
+	env := ApplyLBOtelEnv(map[string]string{
+		"OTEL_RESOURCE_ATTRIBUTES": "guardian.partition=spoofed",
+	}, lbAssetInput("lb-edge"))
+	attrs := parseOtelResourceAttrs(env["OTEL_RESOURCE_ATTRIBUTES"])
+	if attrs["guardian.partition"] != "doctor" {
+		t.Fatalf("guardian.partition = %q, want doctor", attrs["guardian.partition"])
 	}
 }

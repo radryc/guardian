@@ -15,13 +15,13 @@ import (
 
 	"github.com/radryc/guardian/internal/awsobserve"
 	"github.com/radryc/guardian/internal/cdktemplate"
+	"github.com/radryc/guardian/internal/clock"
 	"github.com/radryc/guardian/internal/compiler/manifest"
 	historydomain "github.com/radryc/guardian/internal/domain/history"
 	intentdomain "github.com/radryc/guardian/internal/domain/intent"
 	statedomain "github.com/radryc/guardian/internal/domain/state"
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
 	"github.com/radryc/guardian/internal/orchestrator/common"
-	"github.com/radryc/guardian/internal/orchestrator/dispatcher"
 	"github.com/radryc/guardian/internal/paths"
 	"github.com/radryc/guardian/pkg/guardianapi"
 	"gopkg.in/yaml.v3"
@@ -45,18 +45,31 @@ type Endpoint struct {
 // diffs the observed CloudFormation state against the desired CDK app in
 // MonoFS and persists snapshots plus intent state. It never queues tasks and
 // never applies anything.
+// StateWriter is the subset of the control-plane dispatcher the collector
+// needs. Keeping it consumer-side means observed collection can be tested with
+// a two-method fake instead of a fully wired dispatcher.
+type StateWriter interface {
+	UpdateIntentState(ctx context.Context, partition, intent string, mutate func(*statedomain.IntentState) error) (*statedomain.IntentState, error)
+	WriteEvent(ctx context.Context, event *historydomain.EventRecord) error
+}
+
 type Collector struct {
 	Store       guardianapi.Store
-	Dispatcher  *dispatcher.Dispatcher
+	Dispatcher  StateWriter
 	Endpoints   map[string]Endpoint
 	Resolver    EndpointResolver
 	Interval    time.Duration
 	Timeout     time.Duration
 	MaxEvents   int
 	DetectDrift bool
+	Clock       clock.Clock
 }
 
 // Run polls until the context is cancelled.
+func (c *Collector) now() time.Time {
+	return clock.Or(c.Clock).Now().UTC()
+}
+
 func (c *Collector) Run(ctx context.Context) error {
 	if c.Store == nil || c.Dispatcher == nil {
 		return fmt.Errorf("observed collector requires a store and dispatcher")
@@ -272,7 +285,7 @@ func (c *Collector) collectIntent(ctx context.Context, partition string, intent 
 	if len(errorMessages) == 0 {
 		state.Resources = statedomain.CloneResourceObservations(mergedResources)
 	}
-	observedAt := time.Now().UTC()
+	observedAt := c.now()
 	state.Timestamps.LastDiffAt = observedAt
 	state.Timestamps.LastObservedAt = observedAt
 
@@ -339,7 +352,7 @@ func (c *Collector) observeAsset(ctx context.Context, partition string, intent *
 	if stackName == "" {
 		stackName = asset.Name
 	}
-	now := time.Now().UTC()
+	now := c.now()
 	snapshot := Snapshot{
 		APIVersion: "guardian/v1alpha1",
 		Kind:       "ObservedStackSnapshot",
@@ -705,7 +718,7 @@ func (c *Collector) persistSnapshot(ctx context.Context, partition, intent, asse
 }
 
 func (c *Collector) persistEvents(ctx context.Context, partition, intent string, endpoint Endpoint, account, region, stackName string) {
-	events, err := endpoint.Client.Events(ctx, account, region, stackName, time.Now().UTC().Add(-defaultEventHorizon), 50)
+	events, err := endpoint.Client.Events(ctx, account, region, stackName, c.now().Add(-defaultEventHorizon), 50)
 	if err != nil || len(events) == 0 {
 		return
 	}

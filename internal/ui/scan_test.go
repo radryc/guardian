@@ -19,7 +19,7 @@ import (
 func newScanTestServer(t *testing.T) (*Server, *httptest.Server, *memory.Store) {
 	t.Helper()
 	store := memory.New()
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:       store,
 		PrincipalID: "test-ui",
 		Pushers:     []string{"aws-123456789012"},
@@ -97,7 +97,7 @@ func TestScanCreateRejectsUnknownPusherAndMissingAccount(t *testing.T) {
 func newScanTestServerWithPushers(t *testing.T, pushers []string) (*httptest.Server, *memory.Store, *Server) {
 	t.Helper()
 	store := memory.New()
-	srv, err := New(Options{Store: store, PrincipalID: "test-ui", Pushers: pushers})
+	srv, err := New(Options{AllowUnpolicedMutations: true, Store: store, PrincipalID: "test-ui", Pushers: pushers})
 	if err != nil {
 		t.Fatalf("create server: %v", err)
 	}

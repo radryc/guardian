@@ -3,6 +3,7 @@ package awsdriver
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	assetdefs "github.com/radryc/guardian/internal/domain/assets"
@@ -62,7 +63,7 @@ func (d *ComputeDriver) Diff(ctx context.Context, in registry.AssetInput) (taskd
 	svcName := computeServiceName(spec, in)
 	cluster := computeCluster(spec, in)
 
-	svc, ok, err := d.backend.GetService(ctx, cluster, svcName)
+	svc, ok, err := d.serviceBackend().GetService(ctx, cluster, svcName)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -201,13 +202,13 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 	tags := awsTags(in, hash)
 
 	if !computeAdopted(spec) {
-		_ = d.backend.UpsertLogGroup(ctx, LogGroup{
+		_ = d.logBackend().UpsertLogGroup(ctx, LogGroup{
 			Name: logGroup,
 			Hash: hash,
 			Tags: tags,
 		})
 		if len(sidecars) > 0 {
-			_ = d.backend.UpsertLogGroup(ctx, LogGroup{
+			_ = d.logBackend().UpsertLogGroup(ctx, LogGroup{
 				Name: observabilityLogGroup(in),
 				Hash: hash,
 				Tags: tags,
@@ -243,7 +244,7 @@ func (d *ComputeDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 		},
 	}
 
-	if err := d.backend.UpsertService(ctx, svc); err != nil {
+	if err := d.serviceBackend().UpsertService(ctx, svc); err != nil {
 		return registry.AssetResult{}, fmt.Errorf("upsert ECS service: %w", err)
 	}
 
@@ -262,7 +263,7 @@ func (d *ComputeDriver) Destroy(ctx context.Context, in registry.AssetInput) err
 	if err != nil {
 		return err
 	}
-	return d.backend.DeleteService(ctx, computeCluster(spec, in), computeServiceName(spec, in))
+	return d.serviceBackend().DeleteService(ctx, computeCluster(spec, in), computeServiceName(spec, in))
 }
 
 func decodeCompute(in registry.AssetInput) (*assetdefs.ComputeSpec, error) {
@@ -284,7 +285,64 @@ func resolveComputeSecrets(in registry.AssetInput, spec *assetdefs.ComputeSpec) 
 			secrets[mount.Config] = awsSSMParameterName(in, mount.Config)
 		}
 	}
+	// ECS has no secret-file volume. The Secret asset is resolved to its
+	// Secrets Manager reference and injected as a task secret, with the
+	// environment variable derived from the mounted file (or the Secret key).
+	for _, mount := range spec.SecretMounts {
+		_, typed, err := driverutil.DecodeNamedAsset(in, mount.Secret)
+		if err != nil {
+			continue
+		}
+		secretSpec, ok := typed.(*assetdefs.SecretSpec)
+		if !ok {
+			continue
+		}
+		key := strings.TrimSpace(secretSpec.Key)
+		if key == "" {
+			key = "value"
+		}
+		file := strings.TrimSpace(mount.File)
+		if file == "" {
+			file = key
+		}
+		name := secretMountEnvName(file)
+		if name == "" {
+			continue
+		}
+		secrets[name] = secretMountValueFrom(in, mount.Secret, secretSpec)
+	}
 	return secrets
+}
+
+func secretMountEnvName(raw string) string {
+	raw = filepath.Base(strings.TrimSpace(raw))
+	var b strings.Builder
+	for _, r := range strings.ToUpper(raw) {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	name := strings.Trim(b.String(), "_")
+	if name == "" {
+		return ""
+	}
+	if name[0] >= '0' && name[0] <= '9' {
+		name = "SECRET_" + name
+	}
+	return name
+}
+
+func secretMountValueFrom(in registry.AssetInput, assetName string, spec *assetdefs.SecretSpec) string {
+	if adopted := strings.TrimSpace(spec.ExistingSecret); adopted != "" {
+		return adopted
+	}
+	if arn := strings.TrimSpace(in.Outputs[assetName+".arn"]); arn != "" {
+		return arn
+	}
+	return awsSecretName(in, assetName)
 }
 
 func hasCapability(caps []string, target string) bool {

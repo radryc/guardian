@@ -162,8 +162,11 @@ type ComplianceConfig struct {
 	// ObjectLockMode is "GOVERNANCE" or "COMPLIANCE".
 	ObjectLockMode string `yaml:"objectLockMode"`
 	// ObjectLockRetainUntil is an RFC3339 timestamp. It is required when
-	// ObjectLockMode is set.
+	// ObjectLockMode is set and ObjectLockRetainDuration is empty.
 	ObjectLockRetainUntil string `yaml:"objectLockRetainUntil"`
+	// ObjectLockRetainDuration is a Go duration such as "24h" or "8760h"
+	// computed dynamically per uploaded record.
+	ObjectLockRetainDuration string `yaml:"objectLockRetainDuration"`
 	// MaxRetries is the number of retries after the first upload attempt.
 	MaxRetries int `yaml:"maxRetries"`
 	// RetryBaseDelay is a Go duration such as "200ms".

@@ -54,6 +54,9 @@ func main() {
 	flag.DurationVar(&unclaimedTaskRetryDelay, "unclaimed-task-retry-delay", 15*time.Second, "minimum delay before retrying a task that could not be claimed; 0 disables backoff")
 	flag.DurationVar(&taskTimeout, "task-timeout", 0, "maximum duration for a single task before it is cancelled; 0 disables (keep below GUARDIAN_STALE_TASK_AFTER)")
 	flag.Parse()
+	if monofsToken == "" {
+		monofsToken = strings.TrimSpace(os.Getenv("GUARDIAN_MONOFS_TOKEN"))
+	}
 
 	if pusherName == "" || cluster == "" || (storeDir == "" && monofsRouter == "") || (storeDir != "" && monofsRouter != "") {
 		flag.Usage()
@@ -136,7 +139,9 @@ func main() {
 		log.Fatalf("parse docker add hosts: %v", err)
 	}
 	reg := registry.New()
-	dockerdriver.Register(reg, dockerBackend, secrets.NewStoreResolver(store), dockerdriver.WithDefaultExtraHosts(defaultExtraHosts))
+	if err := dockerdriver.Register(reg, dockerBackend, secrets.NewStoreResolver(store), dockerdriver.WithDefaultExtraHosts(defaultExtraHosts)); err != nil {
+		log.Fatalf("register docker drivers: %v", err)
+	}
 	runtime := &runtimepkg.Runtime{
 		QueuePath:               paths.QueueDir(pusherName),
 		WorkerID:                workerID,

@@ -3,6 +3,7 @@ package monofs
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -33,6 +34,10 @@ type statMonoFSClient interface {
 
 type watcherClient interface {
 	Watch(ctx context.Context, prefixes []string) (<-chan guardianapi.ChangeEvent, error)
+}
+
+type repoRevisionClient interface {
+	RepoCommit(ctx context.Context, displayPath string) (string, error)
 }
 
 type Adapter struct {
@@ -71,11 +76,43 @@ func (a *Adapter) ReadFileVersioned(ctx context.Context, logicalPath string) ([]
 }
 
 func (a *Adapter) ReadFile(ctx context.Context, logicalPath string) ([]byte, error) {
+	// Guardian-managed paths have an authoritative version record. Read them
+	// through the router's consistent path (content+version) instead of a raw
+	// node read: a node can briefly answer NotFound while a just-committed
+	// write is still being applied, and the router serves the committed bytes
+	// (including its recent-content cache) for that version.
+	if isGuardianManagedPath(logicalPath) {
+		if client, ok := a.client.(versionedMonoFSClient); ok {
+			content, _, found, err := client.ReadPathVersioned(ctx, a.token, logicalPath)
+			if err != nil {
+				return nil, err
+			}
+			if !found {
+				return nil, os.ErrNotExist
+			}
+			return content, nil
+		}
+	}
 	mapped, err := mapLogicalToPhysicalChecked(logicalPath)
 	if err != nil {
 		return nil, err
 	}
 	return a.client.ReadFile(ctx, mapped)
+}
+
+// isGuardianManagedPath reports whether the logical path lives in a namespace
+// backed by Guardian version records. Repo display paths (/.repos/...) are
+// plain MonoFS content and keep using the raw read.
+func isGuardianManagedPath(logicalPath string) bool {
+	for _, prefix := range []string{
+		"/partitions", "/.queues", "/.archive", "/.scans",
+		"/.registry", "/.access", "/.templates",
+	} {
+		if logicalPath == prefix || strings.HasPrefix(logicalPath, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Adapter) ListDir(ctx context.Context, logicalDir string) ([]guardianapi.DirEntry, error) {
@@ -84,6 +121,16 @@ func (a *Adapter) ListDir(ctx context.Context, logicalDir string) ([]guardianapi
 		return nil, err
 	}
 	return a.client.ListDir(ctx, mapped)
+}
+
+// RepoCommit returns the commit currently projected for a repository display
+// path. It is used by the image build driver to tag builds from MonoFS sources.
+func (a *Adapter) RepoCommit(ctx context.Context, displayPath string) (string, error) {
+	client, ok := a.client.(repoRevisionClient)
+	if !ok {
+		return "", fmt.Errorf("monofs adapter does not expose repository revisions")
+	}
+	return client.RepoCommit(ctx, displayPath)
 }
 
 func (a *Adapter) ListDirPage(ctx context.Context, logicalDir string, opts guardianapi.DirListOptions) (guardianapi.DirListPage, error) {
@@ -143,43 +190,6 @@ func (a *Adapter) Stat(ctx context.Context, logicalPath string) (guardianapi.Fil
 		info.ModTime = time.Now().UTC()
 	}
 	return info, nil
-}
-
-// ReadFileWithInfo reads a file's content and fetches its latest version metadata
-// in a single pass without downloading the file a second time for Stat().
-func (a *Adapter) ReadFileWithInfo(ctx context.Context, logicalPath string) ([]byte, guardianapi.FileInfo, error) {
-	content, err := a.ReadFile(ctx, logicalPath)
-	if err != nil {
-		return nil, guardianapi.FileInfo{}, err
-	}
-	info := guardianapi.FileInfo{
-		Path: logicalPath,
-		Size: int64(len(content)),
-	}
-	if sc, ok := a.client.(statMonoFSClient); ok {
-		ver, found, verErr := sc.LatestVersion(ctx, a.token, logicalPath)
-		if verErr != nil {
-			return nil, guardianapi.FileInfo{}, verErr
-		}
-		if found {
-			info.VersionID = ver.VersionID
-			info.ModTime = ver.CommittedAt
-		} else {
-			info.ModTime = time.Now().UTC()
-		}
-		return content, info, nil
-	}
-	versions, err := a.ListVersions(ctx, logicalPath)
-	if err != nil {
-		return nil, guardianapi.FileInfo{}, err
-	}
-	if len(versions) > 0 {
-		info.VersionID = versions[0].VersionID
-		info.ModTime = versions[0].CommittedAt
-	} else {
-		info.ModTime = time.Now().UTC()
-	}
-	return content, info, nil
 }
 
 func (a *Adapter) Watch(ctx context.Context, prefixes []string) (<-chan guardianapi.ChangeEvent, error) {
@@ -337,6 +347,9 @@ func mapLogicalToPhysicalChecked(logicalPath string) (string, error) {
 	// Repo display paths (ingested repositories) are reachable read-only under
 	// /.repos/<display-path>/... so the repo importer can read
 	// guardian/partitions/** straight from MonoFS.
+	if logicalPath == "/.repos" {
+		return "", nil
+	}
 	if strings.HasPrefix(logicalPath, "/.repos/") {
 		trimmed := strings.TrimPrefix(logicalPath, "/.repos/")
 		if trimmed == "" || strings.Contains(trimmed, "..") {
@@ -392,5 +405,7 @@ func mapPhysicalToLogicalChecked(physicalPath string) (string, error) {
 	}
 	return "", fmt.Errorf("unsupported monofs physical path: %s", physicalPath)
 }
+
+var _ guardianapi.Store = (*Adapter)(nil)
 
 var _ guardianapi.Store = (*Adapter)(nil)

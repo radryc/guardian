@@ -12,10 +12,10 @@ import (
 	"path"
 	"time"
 
+	"github.com/radryc/guardian/internal/clock"
 	historydomain "github.com/radryc/guardian/internal/domain/history"
 	"github.com/radryc/guardian/internal/notify"
 	"github.com/radryc/guardian/internal/orchestrator/common"
-	"github.com/radryc/guardian/internal/orchestrator/dispatcher"
 	"github.com/radryc/guardian/internal/paths"
 	"github.com/radryc/guardian/pkg/guardianapi"
 )
@@ -38,10 +38,17 @@ type Rule struct {
 	Channels    []string
 }
 
+// EventWriter is the subset of the control-plane dispatcher the evaluator
+// needs; a one-method interface keeps alerting free of the dispatcher's
+// concrete lifecycle.
+type EventWriter interface {
+	WriteEvent(ctx context.Context, event *historydomain.EventRecord) error
+}
+
 // Evaluator watches partition status and emits failure/recovery notifications.
 type Evaluator struct {
 	Store          guardianapi.Store
-	Dispatcher     *dispatcher.Dispatcher
+	Dispatcher     EventWriter
 	Notifiers      map[string]notify.Notifier
 	Channels       []string
 	Rules          []Rule
@@ -49,6 +56,7 @@ type Evaluator struct {
 	FailThreshold  int
 	Cooldown       time.Duration
 	RepeatInterval time.Duration
+	Clock          clock.Clock
 }
 
 type notificationState struct {
@@ -136,7 +144,7 @@ func (e *Evaluator) evaluatePartition(ctx context.Context, partition string) err
 	if err != nil {
 		return err
 	}
-	now := time.Now().UTC()
+	now := clock.Or(e.Clock).Now().UTC()
 	severity, alerting := classify(partState.Status)
 
 	if alerting {
@@ -264,7 +272,7 @@ func (e *Evaluator) dispatch(ctx context.Context, partition string, alert notify
 			continue
 		}
 		delivery.LastKey = alert.IdempotencyKey
-		delivery.LastSuccessAt = time.Now().UTC()
+		delivery.LastSuccessAt = clock.Or(e.Clock).Now().UTC()
 		delivery.Failures = 0
 		delivery.LastError = ""
 		state.Channels[channel] = delivery

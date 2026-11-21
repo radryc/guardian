@@ -232,6 +232,15 @@ func (c *Client) QueryMetric(ctx context.Context, q MetricQuery) ([]MetricSeries
 		aligner = "ALIGN_MEAN"
 	}
 	params.Set("aggregation.perSeriesAligner", aligner)
+	// Cloud Monitoring rejects timeSeries queries whose alignment period is
+	// zero or below 10s. Doctor does not send one, so default to one minute
+	// (60 points over a one-hour window) unless the caller asks for something
+	// else.
+	alignmentPeriod := q.AlignmentPeriod
+	if alignmentPeriod < 10*time.Second {
+		alignmentPeriod = time.Minute
+	}
+	params.Set("aggregation.alignmentPeriod", fmt.Sprintf("%ds", int64(alignmentPeriod.Seconds())))
 	params.Set("aggregation.crossSeriesReducer", "REDUCE_SUM")
 	params.Add("aggregation.groupByFields", "resource.type")
 	params.Add("aggregation.groupByFields", "resource.labels.location")
@@ -372,6 +381,8 @@ func (c *Client) QueryLogs(ctx context.Context, q LogQuery) ([]LogRecord, error)
 			Text      string            `json:"textPayload"`
 			JSON      map[string]any    `json:"jsonPayload"`
 			Labels    map[string]string `json:"labels"`
+			Trace     string            `json:"trace"`
+			SpanID    string            `json:"spanId"`
 			Resource  struct {
 				Type   string            `json:"type"`
 				Labels map[string]string `json:"labels"`
@@ -391,6 +402,19 @@ func (c *Client) QueryLogs(ctx context.Context, q LogQuery) ([]LogRecord, error)
 		}
 		for key, value := range entry.Labels {
 			fields[key] = value
+		}
+		// Cloud Logging stores the canonical trace on the entry itself. Keep it
+		// alongside the jsonPayload fields so consumers can link logs to traces
+		// even when the application did not log a trace ID.
+		if trace := strings.TrimSpace(entry.Trace); trace != "" {
+			if _, exists := fields["trace"]; !exists {
+				fields["trace"] = trace
+			}
+		}
+		if spanID := strings.TrimSpace(entry.SpanID); spanID != "" {
+			if _, exists := fields["spanId"]; !exists {
+				fields["spanId"] = spanID
+			}
 		}
 		message := entry.Text
 		if message == "" {

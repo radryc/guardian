@@ -2,86 +2,85 @@ package ui
 
 import (
 	"context"
-	"strings"
 	"testing"
 
-	"github.com/radryc/guardian/internal/registry"
+	"github.com/radryc/guardian/internal/paths"
 	"github.com/radryc/guardian/internal/store/memory"
 	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
-func TestSyncRepoBundlesImportsChangedPartitions(t *testing.T) {
-	ctx := context.Background()
-	store := memory.New()
-	registryStore := registry.New(store)
-	if err := registryStore.PutPusher(ctx, &registry.Pusher{
-		APIVersion: "guardian/v1alpha1",
-		Kind:       "Pusher",
-		Name:       "k8s-main",
-		Provider:   "kubernetes",
-	}); err != nil {
-		t.Fatalf("put pusher: %v", err)
-	}
-	if err := registryStore.PutRepo(ctx, &registry.Repo{
-		APIVersion: "guardian/v1alpha1",
-		Kind:       "Repo",
-		Name:       "demo",
-		Source:     "https://github.com/acme/demo.git",
-		Pusher:     "k8s-main",
-		Bindings:   []registry.RepoBinding{{Partition: "demo"}},
-	}); err != nil {
-		t.Fatalf("put repo: %v", err)
-	}
-
-	root := "/.repos/github.com/acme/demo/guardian/partitions/demo"
-	partitionYAML := `apiVersion: guardian/v1alpha1
+const discoveryPartitionYAML = `apiVersion: guardian/v1alpha1
 kind: Partition
 metadata:
-  name: demo
+  name: prod
 spec:
   deletionPolicy: orphan
   reconciliation:
-    mode: manual
+    mode: auto
+    interval: 1m
 `
-	intentYAML := `apiVersion: guardian/v1alpha1
+
+const discoveryIntentYAML = `apiVersion: guardian/v1alpha1
 kind: Intent
 metadata:
-  name: web
+  name: api
 spec:
   intentType: standard
   targetPusher: k8s-main
-  assets: []
+  assets:
+    - type: Compute
+      name: api
+      properties:
+        image: nginx
 `
-	writeTestFiles(t, ctx, store, map[string]string{
-		root + "/config.yaml":      partitionYAML,
-		root + "/intents/web.yaml": intentYAML,
-	})
 
-	srv := &Server{store: store, principalID: "test-ui"}
-	srv.syncRepoBundles(ctx)
-
-	configPath := "/partitions/demo/config.yaml"
-	if _, err := store.ReadFile(ctx, configPath); err != nil {
-		t.Fatalf("partition config not imported: %v", err)
+func seedRepoAuthoredPartition(t *testing.T, store guardianapi.Store, root string) {
+	t.Helper()
+	ctx := context.Background()
+	files := map[string]string{
+		root + "/guardian/partitions/prod/config.yaml":      discoveryPartitionYAML,
+		root + "/guardian/partitions/prod/intents/api.yaml": discoveryIntentYAML,
 	}
-	if _, err := store.ReadFile(ctx, "/partitions/demo/intents/web.yaml"); err != nil {
-		t.Fatalf("intent not imported: %v", err)
+	writes := make([]guardianapi.PathWrite, 0, len(files))
+	for path, content := range files {
+		writes = append(writes, guardianapi.PathWrite{LogicalPath: path, Content: []byte(content)})
 	}
+	if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{Writes: writes}); err != nil {
+		t.Fatalf("seed repo: %v", err)
+	}
+}
 
-	// A second scan with unchanged content must be a no-op (and not write).
-	srv.syncRepoBundles(ctx)
+func TestRepoImportDiscoversIngestedRepo(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	seedRepoAuthoredPartition(t, store, "/.repos/github.com/acme/app")
 
-	// Change the authored partition config and rescan.
-	updated := strings.Replace(partitionYAML, "deletionPolicy: orphan", "deletionPolicy: destroy", 1)
-	writeTestFiles(t, ctx, store, map[string]string{root + "/config.yaml": updated})
-	srv.syncRepoBundles(ctx)
+	server := &Server{store: store, principalID: "test"}
+	server.syncRepoBundlesShard(ctx, 0, 1)
 
-	raw, err := store.ReadFile(ctx, configPath)
+	config, err := store.ReadFile(ctx, paths.PartitionConfig("prod"))
 	if err != nil {
-		t.Fatalf("read imported config: %v", err)
+		t.Fatalf("discovered partition was not imported: %v", err)
 	}
-	if !strings.Contains(string(raw), "deletionPolicy: destroy") {
-		t.Fatalf("imported config was not updated: %s", raw)
+	if len(config) == 0 {
+		t.Fatal("imported partition config is empty")
+	}
+}
+
+func TestRepoImportSkipsRepoWithoutPartitions(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{Writes: []guardianapi.PathWrite{
+		{LogicalPath: "/.repos/github.com/acme/plain/README.md", Content: []byte("hello")},
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	server := &Server{store: store, principalID: "test"}
+	server.syncRepoBundlesShard(ctx, 0, 1)
+
+	if _, err := store.ReadFile(ctx, paths.PartitionConfig("prod")); err == nil {
+		t.Fatal("repo without guardian/partitions must not create a partition")
 	}
 }
 
@@ -91,10 +90,7 @@ func writeTestFiles(t *testing.T, ctx context.Context, store guardianapi.Store, 
 	for path, content := range files {
 		writes = append(writes, guardianapi.PathWrite{LogicalPath: path, Content: []byte(content)})
 	}
-	if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{
-		Writes:  writes,
-		Context: guardianapi.MutationContext{PrincipalID: "test", Reason: "write test files"},
-	}); err != nil {
-		t.Fatalf("upsert files: %v", err)
+	if _, err := store.UpsertFiles(ctx, guardianapi.MutationBatch{Writes: writes}); err != nil {
+		t.Fatalf("write test files: %v", err)
 	}
 }

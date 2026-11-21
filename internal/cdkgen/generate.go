@@ -638,12 +638,51 @@ func generatorProps(in Input, asset assetdomain.Spec) map[string]any {
 			}
 			configParams[name] = ssmParameterName(account, region, in.Partition, in.Intent, name)
 		}
+		secretRefs := map[string]map[string]string{}
+		for _, mount := range mapSlice(asset.Properties["secretMounts"]) {
+			assetName := strings.TrimSpace(str(mount["secret"]))
+			if assetName == "" {
+				continue
+			}
+			ref := ""
+			key := ""
+			for _, candidate := range in.Assets {
+				if candidate.Name != assetName {
+					continue
+				}
+				if adopted := strings.TrimSpace(str(candidate.Properties["existingSecret"])); adopted != "" {
+					ref = adopted
+				}
+				if value := strings.TrimSpace(str(candidate.Properties["key"])); value != "" {
+					key = value
+				}
+				break
+			}
+			if key == "" {
+				key = "value"
+			}
+			if file := strings.TrimSpace(str(mount["file"])); file != "" {
+				key = file
+			}
+			if ref == "" {
+				ref = "/guardian/" + resourceName(
+					fmt.Sprintf("aws-secret-%s-%s", account, region),
+					in.Partition, in.Intent, assetName,
+				)
+			}
+			envName := cdkSecretEnvName(key, "")
+			if envName == "" {
+				continue
+			}
+			secretRefs[envName] = map[string]string{"name": ref}
+		}
 		return map[string]any{
 			"cluster":      cluster,
 			"serviceName":  base("svc"),
 			"taskFamily":   base("task"),
 			"logGroup":     fmt.Sprintf("guardian/%s/%s/%s/%s", account, region, in.Partition, in.Intent),
 			"configParams": configParams,
+			"secretRefs":   secretRefs,
 		}
 	case assetdomain.TypeVolume:
 		return map[string]any{"fileSystemName": base("efs")}
@@ -905,3 +944,33 @@ const app = new cdk.App();
 buildStack(app);
 app.synth();
 `
+
+// cdkSecretEnvName derives the ECS environment variable name for a secret
+// mount. It mirrors the runtime AWS driver: key wins, otherwise the basename
+// of the mount path is used.
+func cdkSecretEnvName(key, path string) string {
+	raw := strings.TrimSpace(key)
+	if raw == "" {
+		raw = strings.TrimSpace(path)
+		if idx := strings.LastIndex(raw, "/"); idx >= 0 {
+			raw = raw[idx+1:]
+		}
+	}
+	var b strings.Builder
+	for _, r := range strings.ToUpper(raw) {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	name := strings.Trim(b.String(), "_")
+	if name == "" {
+		return ""
+	}
+	if name[0] >= '0' && name[0] <= '9' {
+		name = "SECRET_" + name
+	}
+	return name
+}

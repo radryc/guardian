@@ -42,7 +42,7 @@ func (d *NetworkDriver) Diff(ctx context.Context, in registry.AssetInput) (taskd
 		return taskdomain.DriftReport{}, err
 	}
 	hash := networkPolicyHash(in, spec)
-	policy, ok, err := d.backend.GetNetworkPolicy(namespace(in), networkPolicyName(in))
+	policy, ok, err := d.backend.GetNetworkPolicy(ctx, namespace(in), networkPolicyName(in))
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -70,7 +70,7 @@ func (d *NetworkDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 		AllowCluster: strings.EqualFold(strings.TrimSpace(spec.Scope), "cluster"),
 		Internal:     spec.Internal,
 	}
-	if err := d.backend.UpsertNetworkPolicy(policy); err != nil {
+	if err := d.backend.UpsertNetworkPolicy(ctx, policy); err != nil {
 		return registry.AssetResult{}, err
 	}
 	return registry.AssetResult{Outputs: map[string]string{
@@ -83,7 +83,7 @@ func (d *NetworkDriver) Destroy(ctx context.Context, in registry.AssetInput) err
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return d.backend.DeleteNetworkPolicy(namespace(in), networkPolicyName(in))
+	return d.backend.DeleteNetworkPolicy(ctx, namespace(in), networkPolicyName(in))
 }
 
 func decodeNetwork(in registry.AssetInput) (*assetdefs.NetworkSpec, error) {

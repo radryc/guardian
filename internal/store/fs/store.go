@@ -416,3 +416,5 @@ func checkExpected(current, expected string) error {
 }
 
 var _ guardianapi.Store = (*Store)(nil)
+
+var _ guardianapi.Store = (*Store)(nil)

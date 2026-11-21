@@ -2,6 +2,7 @@ package observed
 
 import (
 	"context"
+	"github.com/radryc/guardian/internal/clock"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,7 @@ type RegistryResolver struct {
 	Static   map[string]Endpoint
 	Registry *registry.Store
 	TTL      time.Duration
+	Clock    clock.Clock
 
 	mu          sync.Mutex
 	cached      map[string]Endpoint
@@ -131,7 +133,7 @@ func (r *RegistryResolver) refresh() {
 	}
 	r.mu.Lock()
 	r.cached = endpoints
-	r.fetchedAt = time.Now()
+	r.fetchedAt = clock.Or(r.Clock).Now()
 	r.mu.Unlock()
 }
 

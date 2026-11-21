@@ -274,32 +274,22 @@ func listArchivedIntentNames(ctx context.Context, store guardianapi.ReadStore, p
 }
 
 func listArchivePartitionEntries(ctx context.Context, store guardianapi.ReadStore, logicalDir string) ([]guardianapi.DirEntry, error) {
-	if paged, ok := store.(guardianapi.PagedDirLister); ok {
-		out := make([]guardianapi.DirEntry, 0)
-		offset := 0
-		for {
-			page, err := paged.ListDirPage(ctx, logicalDir, guardianapi.DirListOptions{Offset: offset, Limit: archiveScanPageSize})
-			if err != nil {
-				if isArchiveNotFound(err) {
-					return nil, nil
-				}
-				return nil, err
+	out := make([]guardianapi.DirEntry, 0)
+	offset := 0
+	for {
+		page, err := store.ListDirPage(ctx, logicalDir, guardianapi.DirListOptions{Offset: offset, Limit: archiveScanPageSize})
+		if err != nil {
+			if isArchiveNotFound(err) {
+				return nil, nil
 			}
-			out = append(out, page.Entries...)
-			if !page.HasMore {
-				return out, nil
-			}
-			offset = page.NextOffset
+			return nil, err
 		}
-	}
-	entries, err := store.ListDir(ctx, logicalDir)
-	if err != nil {
-		if isArchiveNotFound(err) {
-			return nil, nil
+		out = append(out, page.Entries...)
+		if !page.HasMore {
+			return out, nil
 		}
-		return nil, err
+		offset = page.NextOffset
 	}
-	return entries, nil
 }
 
 func summarizeRollout(newIntent bool, selfHealing bool, rollback bool, rollbackTo string, rollbackReason string, assets []RolloutAsset) string {
@@ -431,7 +421,14 @@ func sortedStringSetKeys(assetMaps ...any) []string {
 			}
 		case nil:
 		default:
-			panic(fmt.Sprintf("unsupported map type %T", value))
+			// Future callers may pass a different map type; enumerate string
+			// keys generically instead of panicking inside a query path.
+			rv := reflect.ValueOf(value)
+			if rv.Kind() == reflect.Map && rv.Type().Key().Kind() == reflect.String {
+				for _, key := range rv.MapKeys() {
+					set[key.String()] = struct{}{}
+				}
+			}
 		}
 	}
 	keys := make([]string, 0, len(set))

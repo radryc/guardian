@@ -61,7 +61,7 @@ func (d *LoadBalancerDriver) Diff(ctx context.Context, in registry.AssetInput) (
 	hash := driverutil.CompositeHash(in)
 	lbName := loadBalancerTarget(spec, in)
 
-	lb, ok, err := d.backend.GetLoadBalancer(ctx, lbName)
+	lb, ok, err := d.loadBalancerBackend().GetLoadBalancer(ctx, lbName)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -113,12 +113,12 @@ func (d *LoadBalancerDriver) Apply(ctx context.Context, in registry.AssetInput) 
 		}
 		listenerPorts = append(listenerPorts, port)
 	}
-	sgID, err := d.backend.EnsureLoadBalancerSecurityGroup(ctx, lbName+"-sg", scheme, listenerPorts)
+	sgID, err := d.loadBalancerBackend().EnsureLoadBalancerSecurityGroup(ctx, lbName+"-sg", scheme, listenerPorts)
 	if err != nil {
 		return registry.AssetResult{}, fmt.Errorf("ensure load balancer security group: %w", err)
 	}
 
-	lbARN, err := d.backend.UpsertLoadBalancer(ctx, LoadBalancer{
+	lbARN, err := d.loadBalancerBackend().UpsertLoadBalancer(ctx, LoadBalancer{
 		Name:           lbName,
 		Hash:           hash,
 		Tags:           tags,
@@ -146,7 +146,7 @@ func (d *LoadBalancerDriver) Apply(ctx context.Context, in registry.AssetInput) 
 		}
 
 		tgName := awsTargetGroupName(in, fmt.Sprintf("-%d", i))
-		tgARN, tgErr := d.backend.UpsertTargetGroup(ctx, TargetGroup{
+		tgARN, tgErr := d.loadBalancerBackend().UpsertTargetGroup(ctx, TargetGroup{
 			Name:       tgName,
 			Hash:       hash,
 			Tags:       tags,
@@ -159,7 +159,7 @@ func (d *LoadBalancerDriver) Apply(ctx context.Context, in registry.AssetInput) 
 		}
 		outputs[fmt.Sprintf("tg_%d_arn", i)] = tgARN
 
-		_, lErr := d.backend.UpsertListener(ctx, Listener{
+		_, lErr := d.loadBalancerBackend().UpsertListener(ctx, Listener{
 			LoadBalancerARN:  lbARN,
 			Port:             port,
 			Protocol:         proto,
@@ -176,7 +176,7 @@ func (d *LoadBalancerDriver) Apply(ctx context.Context, in registry.AssetInput) 
 		}
 	}
 
-	lb, _, _ := d.backend.GetLoadBalancer(ctx, lbName)
+	lb, _, _ := d.loadBalancerBackend().GetLoadBalancer(ctx, lbName)
 	if lb.DNSName != "" {
 		outputs["dns_name"] = lb.DNSName
 	}
@@ -207,7 +207,7 @@ func (d *LoadBalancerDriver) attachTargets(ctx context.Context, in registry.Asse
 				containerPort = *cspec.Ports[0].Port
 			}
 		}
-		if err := d.backend.AttachServiceToTargetGroup(ctx, computeCluster(cspec, targetIn), computeServiceName(cspec, targetIn), asset.Name, tgARN, containerPort, sgID); err != nil {
+		if err := d.serviceBackend().AttachServiceToTargetGroup(ctx, computeCluster(cspec, targetIn), computeServiceName(cspec, targetIn), asset.Name, tgARN, containerPort, sgID); err != nil {
 			return fmt.Errorf("attach target %s: %w", targetName, err)
 		}
 	}
@@ -225,11 +225,11 @@ func (d *LoadBalancerDriver) Destroy(ctx context.Context, in registry.AssetInput
 	if loadBalancerAdopted(spec) {
 		return nil
 	}
-	lb, ok, err := d.backend.GetLoadBalancer(ctx, loadBalancerTarget(spec, in))
+	lb, ok, err := d.loadBalancerBackend().GetLoadBalancer(ctx, loadBalancerTarget(spec, in))
 	if err != nil || !ok {
 		return err
 	}
-	return d.backend.DeleteLoadBalancer(ctx, lb.ARN)
+	return d.loadBalancerBackend().DeleteLoadBalancer(ctx, lb.ARN)
 }
 
 func decodeLoadBalancer(in registry.AssetInput) (*assetdefs.LoadBalancerSpec, error) {

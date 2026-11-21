@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/radryc/guardian/internal/bootstrap"
 	"github.com/radryc/guardian/internal/cli/command"
@@ -32,7 +33,15 @@ func releaseCommand(printer *output.Printer) *command.Command {
 		Description: "Release a partition: [build images →] bump versions → push to Guardian → optional reconcile/wait",
 		Flags:       flags,
 		Run: func(ctx context.Context, args []string) error {
-			storeArgs := storeFlags(*monofsRouter, *monofsToken)
+			// Propagate the token through the environment instead of argv so
+			// child commands and the "+ guardianctl ..." trace do not disclose
+			// it. Child processes inherit this environment.
+			if token := strings.TrimSpace(*monofsToken); token != "" {
+				if err := os.Setenv("GUARDIAN_MONOFS_TOKEN", token); err != nil {
+					return fmt.Errorf("set GUARDIAN_MONOFS_TOKEN: %w", err)
+				}
+			}
+			storeArgs := storeFlags(*monofsRouter)
 			if *allFlag {
 				return releaseAll(ctx, printer, *build, *bump, *includeSecrets, *waitFlag, *reconcile, *dryRun, *registry, storeArgs)
 			}
@@ -188,13 +197,13 @@ func partitionNameFromDir(dir string) string {
 	return filepath.Base(dir)
 }
 
-func storeFlags(router, token string) []string {
+// storeFlags builds connection flags for child guardianctl commands. The token
+// is deliberately excluded: it travels via GUARDIAN_MONOFS_TOKEN so it never
+// appears in argv, process listings, or the printed command trace.
+func storeFlags(router string) []string {
 	var args []string
 	if router != "" {
 		args = append(args, "--monofs-router", router)
-	}
-	if token != "" {
-		args = append(args, "--monofs-token", token)
 	}
 	return args
 }

@@ -20,22 +20,38 @@ type Definition interface {
 	Validate(spec any, ctx ValidationContext) error
 }
 
-var definitions = map[string]Definition{}
+// Definitions is an isolated set of asset definitions. Production uses Default();
+// tests that register extra definitions should build their own set instead of
+// mutating process-wide state.
+type Definitions struct {
+	definitions map[string]Definition
+}
 
-func Register(def Definition) {
+func NewDefinitions(defs ...Definition) *Definitions {
+	catalog := &Definitions{definitions: map[string]Definition{}}
+	for _, def := range defs {
+		catalog.Register(def)
+	}
+	return catalog
+}
+
+func (c *Definitions) Register(def Definition) {
 	if def == nil {
 		panic("assets.Register: nil Definition")
 	}
-	definitions[def.Type()] = def
+	if c.definitions == nil {
+		c.definitions = map[string]Definition{}
+	}
+	c.definitions[def.Type()] = def
 }
 
-func DefinitionFor(assetType string) (Definition, bool) {
-	def, ok := definitions[assetType]
+func (c *Definitions) DefinitionFor(assetType string) (Definition, bool) {
+	def, ok := c.definitions[assetType]
 	return def, ok
 }
 
-func Decode(spec assetdomain.Spec) (any, Definition, error) {
-	def, ok := DefinitionFor(spec.Type)
+func (c *Definitions) Decode(spec assetdomain.Spec) (any, Definition, error) {
+	def, ok := c.DefinitionFor(spec.Type)
 	if !ok {
 		return nil, nil, fmt.Errorf("unsupported asset type %q", spec.Type)
 	}
@@ -54,10 +70,30 @@ func Decode(spec assetdomain.Spec) (any, Definition, error) {
 	return target, def, nil
 }
 
-func Validate(spec assetdomain.Spec, ctx ValidationContext) error {
-	typed, def, err := Decode(spec)
+func (c *Definitions) Validate(spec assetdomain.Spec, ctx ValidationContext) error {
+	typed, def, err := c.Decode(spec)
 	if err != nil {
 		return err
 	}
 	return def.Validate(typed, ctx)
+}
+
+var defaultCatalog = NewDefinitions()
+
+// Default returns the process-wide definitions populated by the asset definition
+// packages' init functions.
+func Default() *Definitions { return defaultCatalog }
+
+func Register(def Definition) { defaultCatalog.Register(def) }
+
+func DefinitionFor(assetType string) (Definition, bool) {
+	return defaultCatalog.DefinitionFor(assetType)
+}
+
+func Decode(spec assetdomain.Spec) (any, Definition, error) {
+	return defaultCatalog.Decode(spec)
+}
+
+func Validate(spec assetdomain.Spec, ctx ValidationContext) error {
+	return defaultCatalog.Validate(spec, ctx)
 }

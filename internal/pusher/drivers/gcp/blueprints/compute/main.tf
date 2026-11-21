@@ -68,6 +68,15 @@ variable "subnet" {
   default = ""
 }
 
+variable "secret_mounts" {
+  type = list(object({
+    secret     = string
+    mount_path = string
+    item_path  = string
+  }))
+  default = []
+}
+
 variable "hash" {
   type    = string
   default = ""
@@ -114,6 +123,20 @@ resource "google_cloud_run_v2_service" "this" {
       }
     }
 
+    dynamic "volumes" {
+      for_each = { for idx, mount in var.secret_mounts : tostring(idx) => mount }
+      content {
+        name = "secret-${volumes.key}"
+        secret {
+          secret = volumes.value.secret
+          items {
+            version = "latest"
+            path    = volumes.value.item_path
+          }
+        }
+      }
+    }
+
     containers {
       image   = var.image
       args    = var.args
@@ -121,6 +144,14 @@ resource "google_cloud_run_v2_service" "this" {
 
       ports {
         container_port = var.port
+      }
+
+      dynamic "volume_mounts" {
+        for_each = { for idx, mount in var.secret_mounts : tostring(idx) => mount }
+        content {
+          name       = "secret-${volume_mounts.key}"
+          mount_path = volume_mounts.value.mount_path
+        }
       }
 
       dynamic "env" {

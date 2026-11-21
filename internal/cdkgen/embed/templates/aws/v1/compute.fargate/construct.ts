@@ -9,6 +9,7 @@ import {
   buildEnvironment,
   buildHealthCheck,
   buildPortMappings,
+  buildSecretRefs,
   buildSecrets,
   constructId,
   exportOutput,
@@ -82,13 +83,26 @@ export function computeFargate(stack: cdk.Stack, name: string, call: AssetCall):
     resources: ['*'],
   }));
 
+  const secretRefs = generated.secretRefs && typeof generated.secretRefs === 'object'
+    ? Object.keys(generated.secretRefs)
+    : [];
+  if (secretRefs.length > 0) {
+    executionRole.addToPrincipalPolicy(new iam.PolicyStatement({
+      actions: ['secretsmanager:GetSecretValue'],
+      resources: ['*'],
+    }));
+  }
+
   const containerName = name;
   const container = taskDefinition.addContainer(`Container${id}`, {
     containerName,
     image: ecs.ContainerImage.fromRegistry(String(props.image)),
     command: stringList(props.command),
     environment: buildEnvironment(props.env, call.partition, call.intent, name, call.account, call.region),
-    secrets: buildSecrets(stack, name, generated.configParams),
+    secrets: {
+      ...buildSecrets(stack, name, generated.configParams),
+      ...buildSecretRefs(stack, name, generated.secretRefs),
+    },
     portMappings: buildPortMappings(props.ports),
     healthCheck: buildHealthCheck(props.healthCheck),
     logging: ecs.LogDrivers.awsLogs({ logGroup, streamPrefix: name }),

@@ -18,8 +18,9 @@ without long-lived service-account keys.
 
 ### 1. Deployment engine: bundled OpenTofu (MPL-2.0)
 
-- `tofu` is vendored into `Dockerfile.pusher-gcp`, version-pinned and checksum
-  verified.
+- `tofu` is downloaded into the `Dockerfile.pusher-gcp` image build,
+  version-pinned (`TOFU_VERSION`) and checksum verified (`TOFU_SHA256`); the
+  Makefile supplies both by default.
 - Terraform state lives in a per-project GCS bucket with object versioning and
   CMEK. Each asset owns its own state object at
   `guardian/<partition>/<intent>/<asset>/default.tfstate`; sharing one state
@@ -28,8 +29,8 @@ without long-lived service-account keys.
   (`gcp_kms` key provider, `aes_gcm` method), so secrets in state are protected
   even if bucket IAM is misconfigured.
 - Blueprints are embedded in the binary (`embed.FS`) and copied into a
-  per-intent workspace at synth time. A standalone `gcp/` repo mirrors them for
-  demos; CI diffs the two.
+  per-asset workspace under the intent directory at synth time. A standalone
+  `gcp/` repo mirrors them for demos; CI diffs the two.
 
 Phase 0 verified on project `strata-gcp-dev`, region `europe-west1`:
 

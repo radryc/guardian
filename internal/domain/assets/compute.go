@@ -30,6 +30,24 @@ type ConfigMountSpec struct {
 	ReadOnly bool   `json:"readOnly,omitempty" yaml:"readOnly,omitempty"`
 }
 
+// SecretMountSpec mounts a Secret asset into the workload.
+//
+//	secret: Secret asset name in the same intent.
+//	path:   absolute destination. With file set, the single key is mounted at
+//	        this path; without file, the secret is mounted as a directory.
+//	file:   optional key from the Secret asset to mount as one file.
+//
+// The asset is provider-agnostic. Drivers resolve the Secret asset to the
+// native resource underneath (Kubernetes Secret, GCP Secret Manager, AWS
+// Secrets Manager); ECS has no secret-file volume and injects the value as an
+// environment variable instead.
+type SecretMountSpec struct {
+	Secret   string `json:"secret" yaml:"secret"`
+	Path     string `json:"path" yaml:"path"`
+	File     string `json:"file,omitempty" yaml:"file,omitempty"`
+	ReadOnly bool   `json:"readOnly,omitempty" yaml:"readOnly,omitempty"`
+}
+
 type ResourceClass struct {
 	CPU    string `json:"cpu,omitempty" yaml:"cpu,omitempty"`
 	Memory string `json:"memory,omitempty" yaml:"memory,omitempty"`
@@ -81,6 +99,7 @@ type ComputeSpec struct {
 	Ports                  []PortSpec             `json:"ports,omitempty" yaml:"ports,omitempty"`
 	VolumeMounts           []VolumeMountSpec      `json:"volumeMounts,omitempty" yaml:"volumeMounts,omitempty"`
 	ConfigMounts           []ConfigMountSpec      `json:"configMounts,omitempty" yaml:"configMounts,omitempty"`
+	SecretMounts           []SecretMountSpec      `json:"secretMounts,omitempty" yaml:"secretMounts,omitempty"`
 	HostBindMounts         []HostBindMountSpec    `json:"hostBindMounts,omitempty" yaml:"hostBindMounts,omitempty"`
 	ExtendedResources      *ExtendedResourcesSpec `json:"extendedResources,omitempty" yaml:"extendedResources,omitempty"`
 	HostUsers              *bool                  `json:"hostUsers,omitempty" yaml:"hostUsers,omitempty"`
@@ -166,6 +185,19 @@ func (computeDefinition) Validate(spec any, ctx ValidationContext) error {
 		if file := strings.TrimSpace(mount.File); file != "" {
 			if file != mount.File || strings.ContainsAny(file, `/\`) || file == "." || file == ".." {
 				return fmt.Errorf("configMounts[%d].file must be a base filename", idx)
+			}
+		}
+	}
+	for idx, mount := range typed.SecretMounts {
+		if err := validateAssetRef(ctx, mount.Secret, assetdomain.TypeSecret, fmt.Sprintf("secretMounts[%d].secret", idx)); err != nil {
+			return err
+		}
+		if err := requireAbsolutePath(mount.Path, fmt.Sprintf("secretMounts[%d].path", idx)); err != nil {
+			return err
+		}
+		if file := strings.TrimSpace(mount.File); file != "" {
+			if file != mount.File || strings.ContainsAny(file, `/\`) || file == "." || file == ".." {
+				return fmt.Errorf("secretMounts[%d].file must be a base filename", idx)
 			}
 		}
 	}

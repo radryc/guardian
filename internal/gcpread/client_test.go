@@ -23,6 +23,9 @@ func testClient(t *testing.T) (*Client, *httptest.Server) {
 		if got := r.URL.Query().Get("filter"); !strings.Contains(got, `metric.type = "run.googleapis.com/request_count"`) {
 			t.Errorf("filter = %q", got)
 		}
+		if got := r.URL.Query().Get("aggregation.alignmentPeriod"); got != "60s" {
+			t.Errorf("alignmentPeriod = %q, want 60s", got)
+		}
 		_, _ = w.Write([]byte(`{"timeSeries":[{
 			"metric":{"type":"run.googleapis.com/request_count","labels":{"response_code":"200"}},
 			"resource":{"type":"cloud_run_revision","labels":{"location":"europe-west1"}},
@@ -117,6 +120,50 @@ func TestQueryMetric(t *testing.T) {
 	}
 	if series[0].Points[0].Value != 3 || series[0].Points[1].Value != 4.5 {
 		t.Errorf("points = %+v", series[0].Points)
+	}
+}
+
+func TestQueryMetricAlignmentPeriod(t *testing.T) {
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Query().Get("aggregation.alignmentPeriod")
+		_, _ = w.Write([]byte(`{"timeSeries":[]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := New(Config{
+		Project:           "demo",
+		DefaultRegion:     "europe-west1",
+		HTTPClient:        server.Client(),
+		MonitoringBaseURL: server.URL,
+		LoggingBaseURL:    server.URL,
+		TraceBaseURL:      server.URL,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := client.QueryMetric(context.Background(), MetricQuery{
+		Namespace:       "run.googleapis.com",
+		MetricName:      "request_count",
+		AlignmentPeriod: 30 * time.Second,
+		From:            time.Now().Add(-time.Hour),
+		To:              time.Now(),
+	}); err != nil {
+		t.Fatalf("QueryMetric: %v", err)
+	}
+	if got != "30s" {
+		t.Fatalf("alignmentPeriod = %q, want 30s", got)
+	}
+}
+
+func TestParseAlignmentPeriod(t *testing.T) {
+	for _, raw := range []string{"", "60s", "30"} {
+		if _, err := parseAlignmentPeriod(raw); err != nil {
+			t.Errorf("parseAlignmentPeriod(%q): %v", raw, err)
+		}
+	}
+	if _, err := parseAlignmentPeriod("not-a-duration"); err == nil {
+		t.Fatal("expected an error")
 	}
 }
 

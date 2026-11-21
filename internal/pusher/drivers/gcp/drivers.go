@@ -1,6 +1,8 @@
 package gcpdriver
 
 import (
+	"errors"
+
 	assetdomain "github.com/radryc/guardian/internal/domain/asset"
 	probepkg "github.com/radryc/guardian/internal/pusher/drivers/probe"
 	"github.com/radryc/guardian/internal/pusher/registry"
@@ -13,9 +15,12 @@ type baseDriver struct {
 }
 
 // Register installs the GCP asset drivers.
-func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resolver) {
-	if reg == nil || backend == nil {
-		return
+func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resolver) error {
+	if reg == nil {
+		return errors.New("gcpdriver: registry is required")
+	}
+	if backend == nil {
+		return errors.New("gcpdriver: backend is required")
 	}
 	if resolver == nil {
 		resolver = secrets.NoopResolver{}
@@ -34,4 +39,5 @@ func Register(reg *registry.Registry, backend BackendAPI, resolver secrets.Resol
 	// deployment driver. Register the no-op driver so intents can mix Probe
 	// assets with GCP resources.
 	reg.Register(probepkg.New())
+	return nil
 }

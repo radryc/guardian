@@ -10,12 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
 	historydomain "github.com/radryc/guardian/internal/domain/history"
 	statedomain "github.com/radryc/guardian/internal/domain/state"
 	targetdomain "github.com/radryc/guardian/internal/domain/target"
 	taskdomain "github.com/radryc/guardian/internal/domain/task"
+	"github.com/radryc/guardian/internal/metrics"
 	"github.com/radryc/guardian/internal/orchestrator/common"
 	"github.com/radryc/guardian/internal/paths"
 	"github.com/radryc/guardian/internal/store/memory"
@@ -484,13 +483,15 @@ func TestSeedRuntimeMetricsHydratesCacheAndGauges(t *testing.T) {
 		t.Fatalf("SeedRuntimeMetrics() error = %v", err)
 	}
 
-	if got, want := len(dispatch.runtimeCache), 2; got != want {
+	if got, want := dispatch.runtimeCache.len(), 2; got != want {
 		t.Fatalf("runtime cache size = %d, want %d", got, want)
 	}
-	if got, want := dispatch.runtimeCache["alpha"].PartitionState.Status, "Healthy"; got != want {
+	alpha, _ := dispatch.runtimeCache.get("alpha")
+	beta, _ := dispatch.runtimeCache.get("beta")
+	if got, want := alpha.PartitionState.Status, "Healthy"; got != want {
 		t.Fatalf("alpha partition status = %q, want %q", got, want)
 	}
-	if got, want := dispatch.runtimeCache["beta"].PartitionState.Status, "Attention"; got != want {
+	if got, want := beta.PartitionState.Status, "Attention"; got != want {
 		t.Fatalf("beta partition status = %q, want %q", got, want)
 	}
 	if got, want := gatherGaugeValue(t, "guardian_dispatcher_partition_status_current", map[string]string{"status": "Healthy"}), 1.0; got != want {
@@ -539,44 +540,19 @@ func seedRaw(t *testing.T, ctx context.Context, store guardianapi.WriteStore, lo
 
 func gatherGaugeValue(t *testing.T, metricName string, labels map[string]string) float64 {
 	t.Helper()
-	metricFamilies, err := prometheus.DefaultGatherer.Gather()
-	if err != nil {
-		t.Fatalf("Gather() error = %v", err)
-	}
-	for _, family := range metricFamilies {
-		if family.GetName() != metricName {
-			continue
-		}
-		for _, metric := range family.GetMetric() {
-			if !metricHasLabels(metric.GetLabel(), labels) {
-				continue
-			}
-			if metric.Gauge == nil {
-				return 0
-			}
-			return metric.GetGauge().GetValue()
-		}
-	}
-	return 0
-}
-
-func metricHasLabels(metricLabels []*dto.LabelPair, labels map[string]string) bool {
-	if len(labels) == 0 {
-		return len(metricLabels) == 0
-	}
-	for key, want := range labels {
-		matched := false
-		for _, pair := range metricLabels {
-			if pair.GetName() == key && pair.GetValue() == want {
-				matched = true
+	for _, sample := range metrics.Snapshot(metricName) {
+		matched := true
+		for key, want := range labels {
+			if sample.Labels[key] != want {
+				matched = false
 				break
 			}
 		}
-		if !matched {
-			return false
+		if matched {
+			return sample.Value
 		}
 	}
-	return true
+	return 0
 }
 
 func TestQueueTaskWritesAuditCopy(t *testing.T) {

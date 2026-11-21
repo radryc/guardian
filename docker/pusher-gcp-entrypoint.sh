@@ -26,7 +26,14 @@ fi
 : "${GUARDIAN_GCP_PROJECT:=${project}}"
 : "${GUARDIAN_GCP_REGION:=${region}}"
 : "${GUARDIAN_MONOFS_ROUTER:=${monofs_router:-localhost:9090}}"
-: "${GUARDIAN_MONOFS_TOKEN:=guardian-dev-token}"
+if [ -z "${GUARDIAN_MONOFS_TOKEN:-}" ]; then
+  if [ "${GUARDIAN_ALLOW_DEV_TOKEN:-false}" = "true" ]; then
+    GUARDIAN_MONOFS_TOKEN="guardian-dev-token"
+  else
+    echo "GUARDIAN_MONOFS_TOKEN is required; set GUARDIAN_ALLOW_DEV_TOKEN=true only for isolated local development" >&2
+    exit 1
+  fi
+fi
 : "${GUARDIAN_MONOFS_USE_EXTERNAL_ADDRESSES:=true}"
 : "${GUARDIAN_GCP_STATE_BUCKET:=${state_bucket}}"
 : "${GUARDIAN_GCP_KMS_KEY:=${kms_key}}"
@@ -68,7 +75,6 @@ fi
 if [ -n "$GUARDIAN_MONOFS_ROUTER" ]; then
   set -- "$@" \
     --monofs-router "$GUARDIAN_MONOFS_ROUTER" \
-    --monofs-token "$GUARDIAN_MONOFS_TOKEN" \
     --monofs-use-external-addresses="$GUARDIAN_MONOFS_USE_EXTERNAL_ADDRESSES"
 fi
 

@@ -31,7 +31,14 @@ fi
 : "${GUARDIAN_ACCOUNT:=${account}}"
 : "${GUARDIAN_REGION:=${region}}"
 : "${GUARDIAN_MONOFS_ROUTER:=${monofs_router:-localhost:9090}}"
-: "${GUARDIAN_MONOFS_TOKEN:=guardian-dev-token}"
+if [ -z "${GUARDIAN_MONOFS_TOKEN:-}" ]; then
+  if [ "${GUARDIAN_ALLOW_DEV_TOKEN:-false}" = "true" ]; then
+    GUARDIAN_MONOFS_TOKEN="guardian-dev-token"
+  else
+    echo "GUARDIAN_MONOFS_TOKEN is required; set GUARDIAN_ALLOW_DEV_TOKEN=true only for isolated local development" >&2
+    exit 1
+  fi
+fi
 : "${GUARDIAN_MONOFS_USE_EXTERNAL_ADDRESSES:=true}"
 : "${GUARDIAN_CDK_BINARY:=${cdk_binary:-cdk}}"
 : "${GUARDIAN_AWS_STATE_DIR:=${aws_state_dir:-/var/lib/guardian/pusher-aws}}"
@@ -70,7 +77,6 @@ if [ "$GUARDIAN_OBSERVED_ONLY" = "true" ]; then
 else
   set -- "$@" \
     --monofs-router "$GUARDIAN_MONOFS_ROUTER" \
-    --monofs-token "$GUARDIAN_MONOFS_TOKEN" \
     --monofs-use-external-addresses="$GUARDIAN_MONOFS_USE_EXTERNAL_ADDRESSES" \
     --cdk-binary "$GUARDIAN_CDK_BINARY" \
     --bootstrap-stack-name "$GUARDIAN_BOOTSTRAP_STACK_NAME" \

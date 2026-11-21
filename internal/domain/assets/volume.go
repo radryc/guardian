@@ -11,7 +11,12 @@ type VolumeSpec struct {
 	Class      string `json:"class,omitempty" yaml:"class,omitempty"`
 	AccessMode string `json:"accessMode,omitempty" yaml:"accessMode,omitempty"`
 	Ephemeral  *bool  `json:"ephemeral,omitempty" yaml:"ephemeral,omitempty"`
-	ExistingID string `json:"existingID,omitempty" yaml:"existingID,omitempty"`
+	// ObserveExisting adopts a volume that already exists outside Guardian
+	// instead of creating and managing one. Drivers that support it resolve
+	// the live volume from ExistingID (falling back to the asset name) and
+	// only verify that it exists; they never modify or delete it.
+	ObserveExisting bool   `json:"observeExisting,omitempty" yaml:"observeExisting,omitempty"`
+	ExistingID      string `json:"existingID,omitempty" yaml:"existingID,omitempty"`
 }
 
 type volumeDefinition struct{}
@@ -31,8 +36,11 @@ func (volumeDefinition) Validate(spec any, _ ValidationContext) error {
 	}
 	switch typed.AccessMode {
 	case "", "ReadWriteOnce", "ReadWriteMany", "ReadOnlyMany":
-		return nil
 	default:
 		return fmt.Errorf("property accessMode has unsupported value %q", typed.AccessMode)
 	}
+	if typed.ObserveExisting && typed.Ephemeral != nil && *typed.Ephemeral {
+		return fmt.Errorf("property ephemeral cannot be combined with observeExisting")
+	}
+	return nil
 }

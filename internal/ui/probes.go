@@ -42,6 +42,7 @@ func (s *Server) handleProbes(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, result)
 	}
+	out = s.filterProbes(r.Context(), out)
 	probes.SortResults(out)
 	writeJSONWithETag(w, r, http.StatusOK, map[string]any{"probes": out})
 }
@@ -62,7 +63,7 @@ func (s *Server) handleProbeRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, result := range all {
-		if result.ProbeID == probeID {
+		if result.ProbeID == probeID && s.canSeePartition(r.Context(), result.Partition) {
 			writeJSONWithETag(w, r, http.StatusOK, result)
 			return
 		}

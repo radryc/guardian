@@ -239,19 +239,19 @@ func packageManagerCommand(workspaceDir, preferred string) (string, []string, er
 	switch manager {
 	case "npm":
 		if fileExists(filepath.Join(workspaceDir, "package-lock.json")) || fileExists(filepath.Join(workspaceDir, "npm-shrinkwrap.json")) {
-			return "npm", []string{"ci"}, nil
+			return "npm", []string{"ci", "--ignore-scripts"}, nil
 		}
-		return "npm", []string{"install"}, nil
+		return "npm", []string{"install", "--ignore-scripts"}, nil
 	case "pnpm":
 		if fileExists(filepath.Join(workspaceDir, "pnpm-lock.yaml")) {
-			return "pnpm", []string{"install", "--frozen-lockfile"}, nil
+			return "pnpm", []string{"install", "--frozen-lockfile", "--ignore-scripts"}, nil
 		}
-		return "pnpm", []string{"install"}, nil
+		return "pnpm", []string{"install", "--ignore-scripts"}, nil
 	case "yarn":
 		if fileExists(filepath.Join(workspaceDir, "yarn.lock")) {
-			return "yarn", []string{"install", "--frozen-lockfile"}, nil
+			return "yarn", []string{"install", "--frozen-lockfile", "--ignore-scripts"}, nil
 		}
-		return "yarn", []string{"install"}, nil
+		return "yarn", []string{"install", "--ignore-scripts"}, nil
 	default:
 		return "", nil, fmt.Errorf("unsupported package manager %q", manager)
 	}

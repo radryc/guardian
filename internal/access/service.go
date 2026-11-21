@@ -37,6 +37,11 @@ type Options struct {
 	RawPath string
 	// Enforce turns filtering on. When false the service only observes.
 	Enforce bool
+	// AllowUnpoliced controls whether mutations are permitted while no
+	// enforcing policy is loaded (feature disabled, observe-only, or a load
+	// failure). It defaults to false so deployments fail closed instead of
+	// silently allowing every mutation. Local/bootstrap installs must opt in.
+	AllowUnpoliced bool
 	// Interval is the refresh period; <=0 falls back to DefaultInterval.
 	Interval time.Duration
 	// Logf receives refresh/observe messages; nil discards them.
@@ -46,16 +51,19 @@ type Options struct {
 // Service keeps the latest successfully compiled policy and the catalog it was
 // compiled against. It is safe for concurrent use.
 type Service struct {
-	store    guardianapi.ReadStore
-	rawPath  string
-	enforce  bool
-	interval time.Duration
-	logf     func(string, ...any)
+	store          guardianapi.ReadStore
+	rawPath        string
+	enforce        bool
+	allowUnpoliced bool
+	interval       time.Duration
+	logf           func(string, ...any)
 
 	mu            sync.RWMutex
 	policy        *policy.Policy
 	rawDigest     string
 	catalogDigest string
+	partDigest    string
+	routingDigest string
 	lastErr       error
 }
 
@@ -71,17 +79,24 @@ func NewService(opts Options) *Service {
 		logf = func(string, ...any) {}
 	}
 	return &Service{
-		store:    opts.Store,
-		rawPath:  strings.TrimSpace(opts.RawPath),
-		enforce:  opts.Enforce,
-		interval: interval,
-		logf:     logf,
+		store:          opts.Store,
+		rawPath:        strings.TrimSpace(opts.RawPath),
+		enforce:        opts.Enforce,
+		allowUnpoliced: opts.AllowUnpoliced,
+		interval:       interval,
+		logf:           logf,
 	}
 }
 
 // Enabled reports whether a raw policy path is configured.
 func (s *Service) Enabled() bool {
 	return s != nil && s.rawPath != ""
+}
+
+// Enforcing reports whether decisions are actually applied. When false the
+// service is either disabled or in observe-only mode.
+func (s *Service) Enforcing() bool {
+	return s != nil && s.rawPath != "" && s.enforce
 }
 
 // Ready reports whether a policy has been compiled and loaded successfully.
@@ -155,11 +170,22 @@ func (s *Service) Refresh(ctx context.Context) error {
 	if err != nil {
 		return s.fail(err)
 	}
+	partitionPolicies, partitionProblems := LoadPartitionPolicies(ctx, s.store, catalog)
+	for _, problem := range partitionProblems {
+		s.logf("access policy: %s", problem)
+	}
+	routingPolicies, routingProblems := LoadRoutingPolicies(ctx, s.store, RoutingDir(s.rawPath))
+	for _, problem := range routingProblems {
+		s.logf("access policy: %s", problem)
+	}
 	rawDigest := digestBytes(raw)
 	catalogDigest := catalogDigest(catalog)
+	partDigest := PartitionPoliciesDigest(partitionPolicies)
+	routingDigest := RoutingPoliciesDigest(routingPolicies)
 
 	s.mu.RLock()
-	unchanged := s.policy != nil && rawDigest == s.rawDigest && catalogDigest == s.catalogDigest
+	unchanged := s.policy != nil && rawDigest == s.rawDigest && catalogDigest == s.catalogDigest &&
+		partDigest == s.partDigest && routingDigest == s.routingDigest
 	s.mu.RUnlock()
 	if unchanged {
 		s.setLastError(nil)
@@ -176,14 +202,13 @@ func (s *Service) Refresh(ctx context.Context) error {
 	for _, warning := range warnings {
 		s.logf("access policy: %s", warning)
 	}
-	bundle, issues, err := policy.Compile(file, catalog, time.Now())
+	compiled, issues, err := CompileWithRouting(file, catalog, partitionPolicies, routingPolicies, time.Now())
 	for _, issue := range issues {
 		s.logf("access policy: %s: %s", issue.Severity, issue.Message)
 	}
 	if err != nil {
 		return s.fail(err)
 	}
-	compiled := policy.New(*bundle)
 
 	s.mu.Lock()
 	oldVersion := ""
@@ -193,6 +218,8 @@ func (s *Service) Refresh(ctx context.Context) error {
 	s.policy = compiled
 	s.rawDigest = rawDigest
 	s.catalogDigest = catalogDigest
+	s.partDigest = partDigest
+	s.routingDigest = routingDigest
 	s.lastErr = nil
 	s.mu.Unlock()
 
@@ -233,11 +260,15 @@ func (s *Service) IsAdmin(ctx context.Context) bool {
 }
 
 // CanModify reports whether the request identity may modify the partition
-// (maintainer/admin role). It is permissive when the feature is disabled or in
-// observe mode; the existing control-plane authz Guard still applies.
+// (maintainer/admin role). It fails closed while no enforcing policy is loaded
+// (feature disabled, observe-only, or a load failure) unless the deployment
+// explicitly opted into unpoliced mutations.
 func (s *Service) CanModify(ctx context.Context, partition string) bool {
-	if s == nil || !s.Enabled() || !s.enforce {
-		return true
+	if s == nil {
+		return false
+	}
+	if !s.Enforcing() {
+		return s.allowUnpoliced
 	}
 	p := s.current()
 	if p == nil {
@@ -248,6 +279,64 @@ func (s *Service) CanModify(ctx context.Context, partition string) bool {
 		return true
 	}
 	return p.Role(id, partition).Allows(coreauthz.ActionModify)
+}
+
+// CanModifyAny reports whether the identity holds the maintainer/admin role on
+// at least one partition. It is used for shared metadata that is not yet bound
+// to a specific partition, such as creating an empty virtual set. Membership
+// changes are still checked per partition by CanModify.
+func (s *Service) CanModifyAny(ctx context.Context) bool {
+	if s == nil {
+		return false
+	}
+	if !s.Enforcing() {
+		return s.allowUnpoliced
+	}
+	p := s.current()
+	if p == nil {
+		return false
+	}
+	id := identityFromContext(ctx)
+	if p.IsAdmin(id) {
+		return true
+	}
+	names, all := p.VisiblePartitions(id)
+	if all {
+		return p.Role(id, "*").Allows(coreauthz.ActionModify)
+	}
+	for _, name := range names {
+		if p.Role(id, name).Allows(coreauthz.ActionModify) {
+			return true
+		}
+	}
+	return false
+}
+
+// AuthorizeModify is the error-returning form used by the reconciler. It
+// distinguishes "policy not loaded" from "insufficient role" so an operator
+// can tell a broken deployment from a real denial.
+func (s *Service) AuthorizeModify(ctx context.Context, partition string) error {
+	if s == nil {
+		return fmt.Errorf("access policy: no policy service configured; mutations require an enforcing policy")
+	}
+	if !s.Enforcing() {
+		if s.allowUnpoliced {
+			return nil
+		}
+		return fmt.Errorf("access policy: no enforcing policy is loaded; mutations are disabled (set --allow-unpoliced-mutations for local/bootstrap installs)")
+	}
+	p := s.current()
+	if p == nil {
+		return fmt.Errorf("access policy: enforcement is on but no policy is loaded")
+	}
+	id := identityFromContext(ctx)
+	if id.IsAnonymous() {
+		return fmt.Errorf("access policy: authentication is required to modify partition %q", partition)
+	}
+	if !s.CanModify(ctx, partition) {
+		return fmt.Errorf("access policy: principal %q lacks the maintainer/admin role on partition %q", principalLabel(id), partition)
+	}
+	return nil
 }
 
 // Explain describes the grants matching a subject, mirroring the /api/access/

@@ -53,12 +53,19 @@ func (s *Server) handlePushers(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		regStore := registry.New(s.store)
 		q := r.URL.Query()
+		pa, err := s.pusherAccessFor(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 		if q.Get("summary_only") == "1" || q.Get("summary_only") == "true" {
-			summary, err := regStore.SummarizePushers(r.Context())
+			all, err := regStore.ListPushers(r.Context())
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return
 			}
+			all = s.filterPushers(r.Context(), all, pa)
+			summary := registry.ComputePusherFleetSummary(all, time.Now().UTC())
 			writeJSON(w, http.StatusOK, summary)
 			return
 		}
@@ -87,6 +94,7 @@ func (s *Server) handlePushers(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		all = s.filterPushers(r.Context(), all, pa)
 		page := registry.FilterAndPaginatePushers(all, opts, time.Now().UTC())
 		resp := pusherListResponse{
 			Pushers:    page.Pushers,
@@ -119,12 +127,18 @@ func (s *Server) handlePushers(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePusherRoute(w http.ResponseWriter, r *http.Request) {
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/pushers/"), "/")
 	if rest == "summary" && r.Method == http.MethodGet {
-		summary, err := registry.New(s.store).SummarizePushers(r.Context())
+		pa, err := s.pusherAccessFor(r.Context())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, summary)
+		all, err := registry.New(s.store).ListPushers(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		all = s.filterPushers(r.Context(), all, pa)
+		writeJSON(w, http.StatusOK, registry.ComputePusherFleetSummary(all, time.Now().UTC()))
 		return
 	}
 	name := rest
@@ -143,6 +157,15 @@ func (s *Server) handlePusherRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
+		pa, err := s.pusherAccessFor(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !pa.allows(name) {
+			writeError(w, http.StatusNotFound, fmt.Errorf("pusher %q not found", name))
+			return
+		}
 		pusher, err := registry.New(s.store).GetPusher(r.Context(), name)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -151,6 +174,9 @@ func (s *Server) handlePusherRoute(w http.ResponseWriter, r *http.Request) {
 			}
 			writeError(w, http.StatusInternalServerError, err)
 			return
+		}
+		if !s.mayViewPusherTokens(r.Context()) {
+			pusher.Token = ""
 		}
 		writeJSON(w, http.StatusOK, pusher)
 	case http.MethodDelete:
@@ -176,6 +202,7 @@ func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
 			repos = append(repos, nativeRepo())
 			sort.Slice(repos, func(i, j int) bool { return repos[i].Name < repos[j].Name })
 		}
+		repos = s.filterRepos(r.Context(), repos)
 		writeJSON(w, http.StatusOK, repoListResponse{Repos: repos})
 	case http.MethodPost:
 		var repo registry.Repo
@@ -211,17 +238,22 @@ func (s *Server) handleRepoRoute(w http.ResponseWriter, r *http.Request) {
 		repo, err := registryStore.GetRepo(r.Context(), name)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) && name == registry.NativeRepoName {
-				writeJSON(w, http.StatusOK, nativeRepo())
-				return
-			}
-			if errors.Is(err, os.ErrNotExist) {
+				native := nativeRepo()
+				repo = &native
+			} else if errors.Is(err, os.ErrNotExist) {
 				writeError(w, http.StatusNotFound, fmt.Errorf("repo %q not found", name))
 				return
+			} else {
+				writeError(w, http.StatusInternalServerError, err)
+				return
 			}
-			writeError(w, http.StatusInternalServerError, err)
+		}
+		filtered := s.filterRepos(r.Context(), []registry.Repo{*repo})
+		if len(filtered) == 0 {
+			writeError(w, http.StatusNotFound, fmt.Errorf("repo %q not found", name))
 			return
 		}
-		writeJSON(w, http.StatusOK, repo)
+		writeJSON(w, http.StatusOK, filtered[0])
 	case action == "" && r.Method == http.MethodDelete:
 		if name == registry.NativeRepoName {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("native source is built in and cannot be removed"))

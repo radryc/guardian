@@ -9,9 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -22,7 +22,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/radryc/guardian/internal/access"
 	"github.com/radryc/guardian/internal/buildinfo"
 	historydomain "github.com/radryc/guardian/internal/domain/history"
@@ -54,6 +53,9 @@ type Options struct {
 	FlowEvaluator      FlowStateEvaluator
 	ClientConfig       ClientConfig
 	ClientConfigToken  string
+	// ClientConfigIncludeToken includes MonoFS.Token in /api/client-config
+	// responses. Disabled by default so credentials are not leaked.
+	ClientConfigIncludeToken bool
 	// DisableAutoDeployOnIngest turns off the reconcile that normally follows a
 	// successful repo ingest. Auto-deploy is on unless this is set.
 	DisableAutoDeployOnIngest bool
@@ -61,8 +63,13 @@ type Options struct {
 	// prepares repo associations. Optional.
 	Unmanaged UnmanagedService
 	// Access is the repo-managed access policy service. Nil (or disabled)
-	// keeps every read visible.
+	// keeps every read visible, but mutations are denied unless
+	// AllowUnpolicedMutations is set.
 	Access *access.Service
+	// AllowUnpolicedMutations permits mutating UI/API requests while no
+	// enforcing access policy is loaded. It defaults to false (fail closed) and
+	// must be opted into by local/bootstrap installs.
+	AllowUnpolicedMutations bool
 	// AccessPolicyToken authenticates /api/access/policy pollers. When empty
 	// the endpoint is open to loopback callers only.
 	AccessPolicyToken string
@@ -93,32 +100,34 @@ type MonoFSClientConfig struct {
 }
 
 type Server struct {
-	store                  guardianapi.Store
-	dispatcher             *dispatcher.Dispatcher
-	principalID            string
-	pushers                []string
-	staleTaskAfter         time.Duration
-	enableFlowTopology     bool
-	flowEvaluator          FlowStateEvaluator
-	partitionData          *partitionDataCache
-	rolloutCache           *rolloutCache
-	projectionCache        *uiProjectionCache
-	partitionLoadMu        sync.Mutex
-	partitionLoads         map[string]*partitionLoad
-	clientConfig           ClientConfig
-	clientConfigToken      string
-	autoDeployOnIngest     bool
-	repoImportMu           sync.Mutex
-	unmanaged              UnmanagedService
-	access                 *access.Service
-	accessPolicyToken      string
-	requireAuthentication  bool
-	allowLoopbackAnonymous bool
-	trustedOrigins         []string
-	enableHSTS             bool
-	index                  *template.Template
-	static                 http.Handler
-	mux                    http.Handler
+	store                    guardianapi.Store
+	dispatcher               *dispatcher.Dispatcher
+	principalID              string
+	pushers                  []string
+	staleTaskAfter           time.Duration
+	enableFlowTopology       bool
+	flowEvaluator            FlowStateEvaluator
+	partitionData            *partitionDataCache
+	rolloutCache             *rolloutCache
+	projectionCache          *uiProjectionCache
+	partitionLoadMu          sync.Mutex
+	partitionLoads           map[string]*partitionLoad
+	clientConfig             ClientConfig
+	clientConfigToken        string
+	clientConfigIncludeToken bool
+	autoDeployOnIngest       bool
+	repoImportMu             sync.Mutex
+	unmanaged                UnmanagedService
+	access                   *access.Service
+	allowUnpolicedMutations  bool
+	accessPolicyToken        string
+	requireAuthentication    bool
+	allowLoopbackAnonymous   bool
+	trustedOrigins           []string
+	enableHSTS               bool
+	index                    *template.Template
+	static                   http.Handler
+	mux                      http.Handler
 }
 
 const defaultUIDataCacheTTL = 3 * time.Second
@@ -310,28 +319,30 @@ func New(opts Options) (*Server, error) {
 		dataCacheTTL = defaultUIDataCacheTTL
 	}
 	s := &Server{
-		store:                  opts.Store,
-		dispatcher:             opts.Dispatcher,
-		principalID:            strings.TrimSpace(opts.PrincipalID),
-		pushers:                pushers,
-		staleTaskAfter:         staleTaskAfter,
-		enableFlowTopology:     opts.EnableFlowTopology,
-		flowEvaluator:          opts.FlowEvaluator,
-		partitionData:          newPartitionDataCache(dataCacheTTL),
-		rolloutCache:           newRolloutCache(defaultRolloutTTL),
-		projectionCache:        newUIProjectionCache(opts.Store, dataCacheTTL),
-		clientConfig:           opts.ClientConfig,
-		clientConfigToken:      strings.TrimSpace(opts.ClientConfigToken),
-		autoDeployOnIngest:     !opts.DisableAutoDeployOnIngest,
-		unmanaged:              opts.Unmanaged,
-		access:                 opts.Access,
-		accessPolicyToken:      strings.TrimSpace(opts.AccessPolicyToken),
-		requireAuthentication:  opts.RequireAuthentication,
-		allowLoopbackAnonymous: opts.AllowLoopbackAnonymous,
-		trustedOrigins:         append([]string(nil), opts.TrustedOrigins...),
-		enableHSTS:             opts.EnableHSTS,
-		index:                  index,
-		static:                 http.StripPrefix("/static/", http.FileServer(http.FS(staticRoot))),
+		store:                    opts.Store,
+		dispatcher:               opts.Dispatcher,
+		principalID:              strings.TrimSpace(opts.PrincipalID),
+		pushers:                  pushers,
+		staleTaskAfter:           staleTaskAfter,
+		enableFlowTopology:       opts.EnableFlowTopology,
+		flowEvaluator:            opts.FlowEvaluator,
+		partitionData:            newPartitionDataCache(dataCacheTTL),
+		rolloutCache:             newRolloutCache(defaultRolloutTTL),
+		projectionCache:          newUIProjectionCache(opts.Store, dataCacheTTL),
+		clientConfig:             opts.ClientConfig,
+		clientConfigToken:        strings.TrimSpace(opts.ClientConfigToken),
+		clientConfigIncludeToken: opts.ClientConfigIncludeToken,
+		autoDeployOnIngest:       !opts.DisableAutoDeployOnIngest,
+		unmanaged:                opts.Unmanaged,
+		access:                   opts.Access,
+		allowUnpolicedMutations:  opts.AllowUnpolicedMutations,
+		accessPolicyToken:        strings.TrimSpace(opts.AccessPolicyToken),
+		requireAuthentication:    opts.RequireAuthentication,
+		allowLoopbackAnonymous:   opts.AllowLoopbackAnonymous,
+		trustedOrigins:           append([]string(nil), opts.TrustedOrigins...),
+		enableHSTS:               opts.EnableHSTS,
+		index:                    index,
+		static:                   http.StripPrefix("/static/", http.FileServer(http.FS(staticRoot))),
 	}
 	if s.flowEvaluator == nil {
 		s.flowEvaluator = defaultFlowStateEvaluator()
@@ -360,15 +371,26 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // authorizeMutation applies the repo-managed access policy to every mutating
 // UI/API request. Partition-scoped mutations require the maintainer/admin role
-// on that partition; other registry/scan/set mutations require admin. The
-// check is a no-op when the access policy is disabled (the default), and it is
-// permissive in observe mode, mirroring read filtering.
+// on that partition; set membership is scoped to the partitions being added or
+// removed; creating a set requires the maintainer/admin role on at least one
+// partition; other registry/scan/set-metadata mutations require admin. The
+// check is fail-closed: while no enforcing access policy is loaded, mutations
+// are denied unless the deployment explicitly opted into unpoliced mutations.
+// Reads (GET/HEAD/OPTIONS) are never blocked by this guard.
 func (s *Server) authorizeMutation(r *http.Request) bool {
-	if s == nil || s.access == nil || !s.access.Enabled() {
-		return true
+	if s == nil {
+		return false
 	}
 	switch r.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+	if !s.access.Enforcing() {
+		if !s.allowUnpolicedMutations {
+			return false
+		}
+		// Explicitly opted in: preserve the historical permissive behaviour
+		// for disabled/observe-only deployments.
 		return true
 	}
 	if !strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/api/m2m/") ||
@@ -380,10 +402,79 @@ func (s *Server) authorizeMutation(r *http.Request) bool {
 	if strings.HasPrefix(r.URL.Path, "/api/repos/") && strings.HasSuffix(r.URL.Path, "/notify") {
 		return s.requestCanReadAccessPolicy(r)
 	}
+	// Creating an empty set is allowed for principals who can modify at least
+	// one partition; membership is still checked partition-by-partition below.
+	if r.URL.Path == "/api/sets" && r.Method == http.MethodPost {
+		return s.access.CanModifyAny(r.Context())
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/sets/") {
+		return s.authorizeSetMutation(r)
+	}
 	if name, ok := partitionFromAPIPath(r.URL.Path); ok {
 		return s.access.CanModify(r.Context(), name)
 	}
 	return s.access.IsAdmin(r.Context())
+}
+
+// maxSetMutationBytes caps the set-membership request body the authorization
+// guard will inspect. It mirrors the handler's own limit.
+const maxSetMutationBytes = 1 << 20
+
+// authorizeSetMutation scopes virtual-set membership changes to the partitions
+// they name. Sets are metadata only, but adding or removing a partition still
+// affects the navigation entry for that partition, so the caller must hold the
+// maintainer/admin role on every partition the request touches. Set creation is
+// handled by authorizeMutation (maintainer/admin on at least one partition);
+// rename/move/delete remains a platform-wide admin operation because it changes
+// shared navigation for partitions the caller may not manage.
+func (s *Server) authorizeSetMutation(r *http.Request) bool {
+	if setAPIAction(r.URL.Path) != "partitions" || r.Method != http.MethodPost {
+		return s.access.IsAdmin(r.Context())
+	}
+	if r.Body == nil {
+		return s.access.IsAdmin(r.Context())
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxSetMutationBytes+1))
+	if err != nil {
+		return false
+	}
+	if len(body) > maxSetMutationBytes {
+		return false
+	}
+	// The handler decodes the same body, so restore it before returning.
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	var req setPartitionsRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		// A malformed body cannot mutate anything; let the handler emit 400.
+		return true
+	}
+	for _, partition := range append(append([]string(nil), req.Add...), req.Remove...) {
+		partition = strings.TrimSpace(partition)
+		if partition == "" {
+			continue
+		}
+		if !s.access.CanModify(r.Context(), partition) {
+			return false
+		}
+	}
+	return true
+}
+
+// setAPIAction returns the action segment of /api/sets/{id}/{action} (empty
+// when the path has no action).
+func setAPIAction(path string) string {
+	const prefix = "/api/sets/"
+	if !strings.HasPrefix(path, prefix) {
+		return ""
+	}
+	rest := strings.Trim(strings.TrimPrefix(path, prefix), "/")
+	if rest == "" {
+		return ""
+	}
+	if idx := strings.Index(rest, "/"); idx >= 0 {
+		return rest[idx+1:]
+	}
+	return ""
 }
 
 func partitionFromAPIPath(path string) (string, bool) {
@@ -407,7 +498,6 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("/static/", s.static)
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/health", s.handleHealth)
-	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/api/v1/status/buildinfo", s.handleBuildInfo)
 	mux.HandleFunc("/api/client-config", s.handleClientConfig)
 	mux.HandleFunc("/api/me", s.handleMe)
@@ -545,7 +635,11 @@ func (s *Server) handleClientConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Errorf("client config unavailable"))
 		return
 	}
-	writeJSON(w, http.StatusOK, s.clientConfig)
+	monofsCfg := *s.clientConfig.MonoFS
+	if !s.clientConfigIncludeToken {
+		monofsCfg.Token = ""
+	}
+	writeJSON(w, http.StatusOK, ClientConfig{MonoFS: &monofsCfg})
 }
 
 // handleAccessPolicy serves the compiled access policy bundle to MonoFS and
@@ -1354,12 +1448,17 @@ func writeMethodNotAllowed(w http.ResponseWriter, allowed ...string) {
 }
 
 func requestIsLoopback(r *http.Request) bool {
-	host := strings.TrimSpace(r.RemoteAddr)
-	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
-		host = parsedHost
+	if r == nil || hasForwardingHeaders(r) {
+		return false
 	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return isLoopbackRemote(r.RemoteAddr)
+}
+
+func hasForwardingHeaders(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return len(r.Header.Values("X-Forwarded-For")) > 0 || len(r.Header.Values("Forwarded")) > 0
 }
 
 func requestCanReadClientConfig(r *http.Request, expectedToken string) bool {

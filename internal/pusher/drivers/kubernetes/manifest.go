@@ -274,6 +274,8 @@ func containerVolumes(deployment Deployment) ([]map[string]any, []map[string]any
 		switch mount.SourceKind {
 		case "ConfigMap":
 			volume["configMap"] = map[string]any{"name": mount.SourceName}
+		case "Secret":
+			volume["secret"] = map[string]any{"secretName": mount.SourceName}
 		case "PersistentVolumeClaim":
 			volume["persistentVolumeClaim"] = map[string]any{"claimName": mount.SourceName}
 		case "HostPath":

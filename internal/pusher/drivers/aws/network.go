@@ -34,11 +34,11 @@ func (d *NetworkDriver) Diff(ctx context.Context, in registry.AssetInput) (taskd
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	vpcID := loadSavedOutput(ctx, in, in.Asset.Name+".vpcId")
+	vpcID := in.Outputs[in.Asset.Name+".vpcId"]
 	if vpcID == "" {
 		return changedDrift(in.Asset.Name, "VPC not yet created"), nil
 	}
-	vpc, ok, err := d.backend.GetVPC(ctx, vpcID)
+	vpc, ok, err := d.vpcBackend().GetVPC(ctx, vpcID)
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -62,7 +62,7 @@ func (d *NetworkDriver) Apply(ctx context.Context, in registry.AssetInput) (regi
 		cidr = defaultVPCCIDR
 	}
 	name := awsVPCName(in)
-	vpcID, err := d.backend.UpsertVPC(ctx, VPC{
+	vpcID, err := d.vpcBackend().UpsertVPC(ctx, VPC{
 		Name:      name,
 		Hash:      hash,
 		Tags:      awsTags(in, hash),
@@ -79,11 +79,11 @@ func (d *NetworkDriver) Destroy(ctx context.Context, in registry.AssetInput) err
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	vpcID := loadSavedOutput(ctx, in, in.Asset.Name+".vpcId")
+	vpcID := in.Outputs[in.Asset.Name+".vpcId"]
 	if vpcID == "" {
 		return nil
 	}
-	return d.backend.DeleteVPC(ctx, vpcID)
+	return d.vpcBackend().DeleteVPC(ctx, vpcID)
 }
 
 func decodeNetwork(in registry.AssetInput) (*assetdefs.NetworkSpec, error) {

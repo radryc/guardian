@@ -48,6 +48,95 @@ func TestCreateNestedSetsAndMembership(t *testing.T) {
 	}
 }
 
+func TestRemovePartitionsClearsPrimary(t *testing.T) {
+	ctx := context.Background()
+	store := New(memory.New())
+	core, err := store.Create(ctx, &Set{Name: "Core"})
+	if err != nil {
+		t.Fatalf("create Core: %v", err)
+	}
+	other, err := store.Create(ctx, &Set{Name: "Other"})
+	if err != nil {
+		t.Fatalf("create Other: %v", err)
+	}
+	if _, err := store.AddPartitions(ctx, core.ID, []string{"p1", "p2"}, nil, true); err != nil {
+		t.Fatalf("add to Core: %v", err)
+	}
+	if _, err := store.AddPartitions(ctx, other.ID, []string{"p1", "p2"}, nil, false); err != nil {
+		t.Fatalf("add to Other: %v", err)
+	}
+
+	updated, err := store.RemovePartitions(ctx, core.ID, []string{"p1"})
+	if err != nil {
+		t.Fatalf("RemovePartitions: %v", err)
+	}
+	if containsString(updated.Partitions, "p1") {
+		t.Fatalf("partitions = %v, p1 should be gone", updated.Partitions)
+	}
+	if !containsString(updated.Partitions, "p2") {
+		t.Fatalf("partitions = %v, p2 should remain", updated.Partitions)
+	}
+	if primary, err := store.PrimarySet(ctx, "p1"); err != nil || primary != "" {
+		t.Fatalf("primary p1 = %q, err = %v, want cleared", primary, err)
+	}
+	if primary, err := store.PrimarySet(ctx, "p2"); err != nil || primary != core.ID {
+		t.Fatalf("primary p2 = %q, err = %v, want %q", primary, err, core.ID)
+	}
+
+	// Removing a partition from a non-primary set must not clear the record.
+	if _, err := store.RemovePartitions(ctx, other.ID, []string{"p2"}); err != nil {
+		t.Fatalf("remove from Other: %v", err)
+	}
+	if primary, err := store.PrimarySet(ctx, "p2"); err != nil || primary != core.ID {
+		t.Fatalf("primary p2 after Other removal = %q, err = %v, want %q", primary, err, core.ID)
+	}
+
+	// Removal is idempotent for partitions that are not members.
+	if _, err := store.RemovePartitions(ctx, core.ID, []string{"missing"}); err != nil {
+		t.Fatalf("RemovePartitions missing: %v", err)
+	}
+	if _, err := store.RemovePartitions(ctx, core.ID, []string{"p1"}); err != nil {
+		t.Fatalf("RemovePartitions repeat: %v", err)
+	}
+
+	// The removal is sticky: config-driven membership must not re-add p1.
+	if err := store.SyncPartitionConfig(ctx, "p1", []string{"Core"}, ""); err != nil {
+		t.Fatalf("sync p1: %v", err)
+	}
+	got, err := store.Get(ctx, core.ID)
+	if err != nil {
+		t.Fatalf("get Core: %v", err)
+	}
+	if containsString(got.Partitions, "p1") {
+		t.Fatalf("p1 was re-added despite exclusion: %v", got.Partitions)
+	}
+	if !containsString(got.ExcludedPartitions, "p1") {
+		t.Fatalf("exclusions = %v, want p1", got.ExcludedPartitions)
+	}
+
+	// Manually assigning it again clears the exclusion.
+	if _, err := store.AddPartitions(ctx, core.ID, []string{"p1"}, nil, false); err != nil {
+		t.Fatalf("re-add p1: %v", err)
+	}
+	got, _ = store.Get(ctx, core.ID)
+	if !containsString(got.Partitions, "p1") || containsString(got.ExcludedPartitions, "p1") {
+		t.Fatalf("after re-add partitions=%v exclusions=%v", got.Partitions, got.ExcludedPartitions)
+	}
+
+	// Unassigning a non-member also records an exclusion so a later config
+	// sync cannot introduce it.
+	if _, err := store.RemovePartitions(ctx, core.ID, []string{"p3"}); err != nil {
+		t.Fatalf("unassign non-member: %v", err)
+	}
+	if err := store.SyncPartitionConfig(ctx, "p3", []string{"Core"}, ""); err != nil {
+		t.Fatalf("sync p3: %v", err)
+	}
+	got, _ = store.Get(ctx, core.ID)
+	if containsString(got.Partitions, "p3") {
+		t.Fatalf("p3 was re-added despite exclusion: %v", got.Partitions)
+	}
+}
+
 func TestFindByName(t *testing.T) {
 	ctx := context.Background()
 	store := New(memory.New())

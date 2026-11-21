@@ -2,11 +2,13 @@ package dispatcher
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +16,15 @@ import (
 	"github.com/radryc/guardian/internal/paths"
 	"github.com/radryc/guardian/internal/store/memory"
 )
+
+// TestMain keeps the existing archive tests on the explicitly-allowed unkeyed
+// chain; tests for keyed/refused hashing set the environment themselves.
+func TestMain(m *testing.M) {
+	if os.Getenv("GUARDIAN_ARCHIVE_HMAC_KEY") == "" && os.Getenv("GUARDIAN_ALLOW_UNKEYED_ARCHIVE") == "" {
+		_ = os.Setenv("GUARDIAN_ALLOW_UNKEYED_ARCHIVE", "true")
+	}
+	os.Exit(m.Run())
+}
 
 func archiveTask(id string) *taskdomain.Task {
 	return &taskdomain.Task{
@@ -88,6 +99,62 @@ func TestTaskArchiveChainVerifies(t *testing.T) {
 			t.Fatalf("prev hash for %s = %q, want %q", entry.TaskID, entry.PrevSHA256, prev)
 		}
 		prev = entry.SHA256
+	}
+}
+
+func TestTaskArchiveChainUsesHMACWhenKeyed(t *testing.T) {
+	const key = "archive-test-key"
+	t.Setenv("GUARDIAN_ARCHIVE_HMAC_KEY", key)
+	t.Setenv("GUARDIAN_ALLOW_UNKEYED_ARCHIVE", "false")
+
+	ctx := context.Background()
+	store := memory.New()
+	d := NewDispatcher(store, "test")
+	for _, id := range []string{"task_0001", "task_0002"} {
+		if err := d.QueueTask(ctx, archiveTask(id)); err != nil {
+			t.Fatalf("QueueTask(%s): %v", id, err)
+		}
+	}
+
+	raw, err := store.ReadFile(ctx, paths.TaskArchiveChain("demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chain taskArchiveChain
+	if err := json.Unmarshal(raw, &chain); err != nil {
+		t.Fatal(err)
+	}
+	prev := ""
+	for _, entry := range chain.Entries {
+		content, err := store.ReadFile(ctx, paths.TaskSpec("demo", entry.TaskID))
+		if err != nil {
+			t.Fatalf("read %s: %v", entry.TaskID, err)
+		}
+		mac := hmac.New(sha256.New, []byte(key))
+		_, _ = mac.Write([]byte(prev))
+		_, _ = mac.Write(content)
+		if got := hex.EncodeToString(mac.Sum(nil)); got != entry.SHA256 {
+			t.Fatalf("HMAC mismatch for %s: got %s want %s", entry.TaskID, entry.SHA256, got)
+		}
+		if entry.PrevSHA256 != prev {
+			t.Fatalf("prev hash for %s = %q, want %q", entry.TaskID, entry.PrevSHA256, prev)
+		}
+		prev = entry.SHA256
+	}
+}
+
+func TestTaskArchiveChainRequiresKeyByDefault(t *testing.T) {
+	t.Setenv("GUARDIAN_ARCHIVE_HMAC_KEY", "")
+	t.Setenv("GUARDIAN_ALLOW_UNKEYED_ARCHIVE", "")
+
+	store := memory.New()
+	d := NewDispatcher(store, "test")
+	err := d.QueueTask(context.Background(), archiveTask("task_0001"))
+	if err == nil || !strings.Contains(err.Error(), "GUARDIAN_ARCHIVE_HMAC_KEY") {
+		t.Fatalf("QueueTask() error = %v, want missing-key error", err)
+	}
+	if _, readErr := store.ReadFile(context.Background(), paths.TaskArchiveChain("demo")); !errors.Is(readErr, os.ErrNotExist) {
+		t.Fatalf("archive chain must not be written without a key: %v", readErr)
 	}
 }
 

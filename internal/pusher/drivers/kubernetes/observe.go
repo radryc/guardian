@@ -74,7 +74,7 @@ func (c *ClientBackend) ListManagedResources(ctx context.Context) ([]k8sobserve.
 func (b *CLIBackend) ListManagedResources(ctx context.Context) ([]k8sobserve.Resource, error) {
 	kinds := "deployments,services,configmaps,persistentvolumeclaims,networkpolicies,secrets,serviceaccounts,ingresses"
 	args := append(b.baseArgs(), "get", kinds, "-A", "-l", "guardian.managed=true", "-o", "json")
-	raw, err := b.run(args...)
+	raw, err := b.run(ctx, args...)
 	if err != nil {
 		return nil, err
 	}

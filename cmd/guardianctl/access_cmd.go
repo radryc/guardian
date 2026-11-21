@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -293,6 +294,7 @@ func accessPublishCommand(store guardianapi.Store, printer *output.Printer) *com
 	flags := flag.NewFlagSet("access publish", flag.ContinueOnError)
 	file := flags.String("file", "", "raw ACL file to publish, required")
 	env := flags.String("env", "dev", "environment name (store path /.access/envs/<env>.yaml)")
+	routingDir := flags.String("routing-dir", "", "partition shard/placement definitions (default: <file dir>/routing when present)")
 	return &command.Command{Description: "Publish a raw ACL into the store and compile it", Flags: flags, Run: func(ctx context.Context, _ []string) error {
 		if strings.TrimSpace(*file) == "" {
 			return fmt.Errorf("--file is required")
@@ -354,23 +356,57 @@ func accessPublishCommand(store guardianapi.Store, printer *output.Printer) *com
 		if err != nil {
 			return fmt.Errorf("load partition catalog: %w", err)
 		}
-		bundle, issues, err := policy.Compile(parsed, catalog, time.Now())
+		partitionPolicies, partitionProblems := access.LoadPartitionPolicies(ctx, store, catalog)
+		for _, problem := range partitionProblems {
+			printer.PrintText("warning: %s\n", problem)
+		}
+		localRouting := access.ReadRoutingDir(*routingDir)
+		if strings.TrimSpace(*routingDir) == "" {
+			// Auto-detect the platform routing definitions next to the ACL so
+			// a normal publish carries the shard topology with the policy.
+			candidate := filepath.Join(filepath.Dir(*file), "routing")
+			if info, statErr := os.Stat(candidate); statErr == nil && info.IsDir() {
+				localRouting = access.ReadRoutingDir(candidate)
+			}
+		}
+		for _, problem := range localRouting.Problems {
+			printer.PrintText("warning: %s\n", problem)
+		}
+		compiledPolicy, issues, err := access.CompileWithRouting(parsed, catalog, partitionPolicies, localRouting.Policies, time.Now())
 		printIssues(printer, issues)
 		if err != nil {
 			return err
 		}
-		compiled, err := policy.MarshalBundle(*bundle)
+		compiled, err := policy.MarshalPolicy(compiledPolicy)
 		if err != nil {
 			return err
 		}
 
-		pathWrites := make([]guardianapi.PathWrite, 0, len(writes)+1)
+		routingStoreDir := access.RoutingDir(paths.AccessPolicyPath(envName))
+		pathWrites := make([]guardianapi.PathWrite, 0, len(writes)+1+len(localRouting.Partitions)+1)
 		for _, w := range writes {
 			data, err := os.ReadFile(w.local)
 			if err != nil {
 				return err
 			}
 			pathWrites = append(pathWrites, guardianapi.PathWrite{LogicalPath: w.store, Content: data})
+		}
+		if len(localRouting.Defaults) > 0 {
+			pathWrites = append(pathWrites, guardianapi.PathWrite{
+				LogicalPath: access.RoutingDefaultsPath(routingStoreDir),
+				Content:     localRouting.Defaults,
+			})
+		}
+		routingNames := make([]string, 0, len(localRouting.Partitions))
+		for name := range localRouting.Partitions {
+			routingNames = append(routingNames, name)
+		}
+		sort.Strings(routingNames)
+		for _, name := range routingNames {
+			pathWrites = append(pathWrites, guardianapi.PathWrite{
+				LogicalPath: access.RoutingPartitionPath(routingStoreDir, name),
+				Content:     localRouting.Partitions[name],
+			})
 		}
 		pathWrites = append(pathWrites, guardianapi.PathWrite{
 			LogicalPath: paths.AccessCompiledPath(),
@@ -386,7 +422,7 @@ func accessPublishCommand(store guardianapi.Store, printer *output.Printer) *com
 			return err
 		}
 		printer.PrintText("published env=%s raw=%s compiled=%s version=%s\n",
-			envName, paths.AccessPolicyPath(envName), paths.AccessCompiledPath(), bundle.Version)
+			envName, paths.AccessPolicyPath(envName), paths.AccessCompiledPath(), compiledPolicy.Version())
 		return nil
 	}}
 }

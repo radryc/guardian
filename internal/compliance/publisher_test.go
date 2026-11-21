@@ -134,3 +134,126 @@ func TestS3PublisherPublishAfterCloseIsDropped(t *testing.T) {
 		t.Fatalf("calls = %d, want 0", fake.calls)
 	}
 }
+
+func TestS3PublisherDynamicObjectLockRetention(t *testing.T) {
+	fake := &fakePutter{}
+	t0 := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	retention := 24 * time.Hour
+	pub := newS3Publisher(fake, Config{
+		S3Bucket:                 "bucket",
+		ObjectLockMode:           "COMPLIANCE",
+		ObjectLockRetainDuration: retention,
+		// Static timestamp in the past should be ignored when duration is set.
+		ObjectLockRetainUntil: t0.Add(-time.Hour),
+	})
+	var mu sync.Mutex
+	current := t0
+	pub.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return current
+	}
+
+	in1 := pub.input(uploadRequest{key: "a.json", content: []byte("{}"), contentType: "application/json"})
+	mu.Lock()
+	current = t0.Add(2 * time.Hour)
+	mu.Unlock()
+	in2 := pub.input(uploadRequest{key: "b.json", content: []byte("{}"), contentType: "application/json"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := pub.Close(ctx); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	if in1.ObjectLockRetainUntilDate == nil || !in1.ObjectLockRetainUntilDate.Equal(t0.Add(retention)) {
+		t.Fatalf("first retain until = %v, want %v", in1.ObjectLockRetainUntilDate, t0.Add(retention))
+	}
+	wantSecond := t0.Add(2*time.Hour + retention)
+	if in2.ObjectLockRetainUntilDate == nil || !in2.ObjectLockRetainUntilDate.Equal(wantSecond) {
+		t.Fatalf("second retain until = %v, want %v", in2.ObjectLockRetainUntilDate, wantSecond)
+	}
+	if string(in1.ObjectLockMode) != "COMPLIANCE" || string(in2.ObjectLockMode) != "COMPLIANCE" {
+		t.Fatalf("unexpected object lock modes: %q, %q", in1.ObjectLockMode, in2.ObjectLockMode)
+	}
+}
+
+func TestS3PublisherFailClosedReturnsError(t *testing.T) {
+	wantErr := errors.New("s3 unavailable")
+	fake := &fakePutter{failures: 100, err: wantErr}
+	var captured error
+	pub := newS3Publisher(fake, Config{
+		S3Bucket:       "bucket",
+		MaxRetries:     1,
+		RetryBaseDelay: time.Millisecond,
+		FailClosed:     true,
+		OnError:        func(err error) { captured = err },
+	})
+
+	// SyncPublish returns the terminal error directly to the caller.
+	if err := pub.SyncPublish(context.Background(), "/archive/state.json", []byte("{}"), "application/json"); !errors.Is(err, wantErr) {
+		t.Fatalf("SyncPublish() error = %v, want %v", err, wantErr)
+	}
+	if !errors.Is(captured, wantErr) {
+		t.Fatalf("OnError captured = %v, want %v", captured, wantErr)
+	}
+
+	// Publish in FailClosed mode runs synchronously before returning.
+	captured = nil
+	pub.Publish("/archive/state2.json", []byte("{}"), "application/json")
+	if !errors.Is(captured, wantErr) {
+		t.Fatalf("OnError after synchronous Publish = %v, want %v", captured, wantErr)
+	}
+
+	fake.mu.Lock()
+	calls := fake.calls
+	fake.mu.Unlock()
+	if calls != 4 {
+		t.Fatalf("calls = %d, want 4 (2 attempts per publish)", calls)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := pub.Close(ctx); !errors.Is(err, wantErr) {
+		t.Fatalf("Close() error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestS3PublisherStatsCounters(t *testing.T) {
+	// 2 transient failures -> 1st publish succeeds on 3rd attempt;
+	// then 10 failures -> 2nd publish fails after exhausting retries.
+	fake := &fakePutter{failures: 2}
+	pub := newS3Publisher(fake, Config{
+		S3Bucket:       "bucket",
+		MaxRetries:     2,
+		RetryBaseDelay: time.Millisecond,
+		FailClosed:     true,
+	})
+
+	if err := pub.SyncPublish(context.Background(), "/archive/ok.json", []byte("{}"), "application/json"); err != nil {
+		t.Fatalf("first SyncPublish() error = %v", err)
+	}
+	published, failed := pub.Stats()
+	if published != 1 || failed != 0 {
+		t.Fatalf("after success Stats() = (%d, %d), want (1, 0)", published, failed)
+	}
+
+	fake.mu.Lock()
+	fake.failures = 10
+	fake.err = errors.New("terminal failure")
+	fake.mu.Unlock()
+
+	if err := pub.SyncPublish(context.Background(), "/archive/fail.json", []byte("{}"), "application/json"); err == nil {
+		t.Fatal("second SyncPublish() = nil, want error")
+	}
+	published, failed = pub.Stats()
+	if published != 1 || failed != 1 {
+		t.Fatalf("after failure Stats() = (%d, %d), want (1, 1)", published, failed)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := pub.Close(ctx); err == nil {
+		t.Fatal("Close() = nil, want terminal failure")
+	}
+}

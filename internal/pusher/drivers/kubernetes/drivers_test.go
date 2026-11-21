@@ -14,6 +14,7 @@ import (
 	runtimepkg "github.com/radryc/guardian/internal/pusher/runtime"
 	"github.com/radryc/guardian/internal/pusher/secrets"
 	"github.com/radryc/guardian/internal/store/memory"
+	"github.com/radryc/guardian/internal/versioning/digest"
 	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
@@ -46,7 +47,9 @@ func TestKubernetesDriversApplyDiffDestroy(t *testing.T) {
 				{Type: "Config", Name: "app-config", Properties: map[string]any{"content": "key: value", "format": "yaml"}},
 				{Type: "Config", Name: "dir-config", Properties: map[string]any{"content": "feature: enabled", "format": "yaml"}},
 				{Type: "Volume", Name: "data", Properties: map[string]any{"size": "10Gi", "accessMode": "ReadWriteOnce"}},
-				{Type: "Compute", Name: "app", DependsOn: []string{"data", "app-config", "dir-config"}, Properties: map[string]any{
+				{Type: "Secret", Name: "tls-cert", Properties: map[string]any{"value": "cert-pem", "key": "tls.crt"}},
+				{Type: "Secret", Name: "tls-key", Properties: map[string]any{"value": "key-pem", "key": "tls.key"}},
+				{Type: "Compute", Name: "app", DependsOn: []string{"data", "app-config", "dir-config", "tls-cert", "tls-key"}, Properties: map[string]any{
 					"image":    "demo:v1",
 					"replicas": 2,
 					"ports":    []any{map[string]any{"containerPort": 8080, "servicePort": 80}},
@@ -62,6 +65,10 @@ func TestKubernetesDriversApplyDiffDestroy(t *testing.T) {
 					},
 					"hostBindMounts": []any{
 						map[string]any{"source": "/dev/fuse", "target": "/dev/fuse"},
+					},
+					"secretMounts": []any{
+						map[string]any{"secret": "tls-cert", "path": "/var/run/secrets/strata-tls", "readOnly": true},
+						map[string]any{"secret": "tls-key", "path": "/etc/app/tls.key", "file": "tls.key", "readOnly": true},
 					},
 				}},
 				{Type: "LoadBalancer", Name: "edge", DependsOn: []string{"app"}, Properties: map[string]any{
@@ -127,7 +134,7 @@ func TestKubernetesDriversApplyDiffDestroy(t *testing.T) {
 	if apply.Outputs["external-blob.endpoint"] != "http://host.docker.internal:19000" {
 		t.Fatalf("unexpected external object store output: %v", apply.Outputs)
 	}
-	deployment, ok, err := backend.GetDeployment("platform", "k8s-compute-main-platform-demo-stack-app")
+	deployment, ok, err := backend.GetDeployment(ctx, "platform", "k8s-compute-main-platform-demo-stack-app")
 	if err != nil {
 		t.Fatalf("get deployment: %v", err)
 	}
@@ -160,21 +167,37 @@ func TestKubernetesDriversApplyDiffDestroy(t *testing.T) {
 	if !hostBindMountFound {
 		t.Fatalf("expected host bind mount to be preserved, got %+v", deployment.Container.VolumeMounts)
 	}
-	if _, ok, err := backend.GetDeployment("platform", "k8s-compute-main-platform-demo-stack-app"); err != nil {
+	secretDirFound := false
+	secretFileFound := false
+	for _, mount := range deployment.Container.VolumeMounts {
+		if mount.SourceKind != "Secret" {
+			continue
+		}
+		switch mount.MountPath {
+		case "/var/run/secrets/strata-tls":
+			secretDirFound = mount.SourceName != "" && mount.SubPath == ""
+		case "/etc/app/tls.key":
+			secretFileFound = mount.SourceName != "" && mount.SubPath == "tls.key"
+		}
+	}
+	if !secretDirFound || !secretFileFound {
+		t.Fatalf("expected secret directory and file mounts, got %+v", deployment.Container.VolumeMounts)
+	}
+	if _, ok, err := backend.GetDeployment(ctx, "platform", "k8s-compute-main-platform-demo-stack-app"); err != nil {
 		t.Fatalf("get deployment: %v", err)
 	} else if !ok {
 		t.Fatalf("expected compute deployment")
-	} else if deployment, ok, err := backend.GetDeployment("platform", "k8s-compute-main-platform-demo-stack-app"); err != nil {
+	} else if deployment, ok, err := backend.GetDeployment(ctx, "platform", "k8s-compute-main-platform-demo-stack-app"); err != nil {
 		t.Fatalf("get deployment env: %v", err)
 	} else if !ok || deployment.Container.Env["MONOFS_ENCRYPTION_KEY"] != "test-encryption-key" {
 		t.Fatalf("expected resolved secret env, got %+v", deployment.Container.Env)
 	}
-	if _, ok, err := backend.GetService("platform", "k8s-svc-lb-main-platform-demo-stack-edge"); err != nil {
+	if _, ok, err := backend.GetService(ctx, "platform", "k8s-svc-lb-main-platform-demo-stack-edge"); err != nil {
 		t.Fatalf("get service: %v", err)
 	} else if !ok {
 		t.Fatalf("expected load balancer service")
 	}
-	if obs, ok, err := backend.GetDeployment("platform", "k8s-obs-main-platform-demo-stack-otel"); err != nil {
+	if obs, ok, err := backend.GetDeployment(ctx, "platform", "k8s-obs-main-platform-demo-stack-otel"); err != nil {
 		t.Fatalf("get observability deployment: %v", err)
 	} else if !ok {
 		t.Fatalf("expected observability deployment")
@@ -197,6 +220,8 @@ func TestKubernetesDriversApplyDiffDestroy(t *testing.T) {
 		Intent:     "stack",
 		Outputs: map[string]string{
 			"external-blob.endpoint": "http://host.docker.internal:19000",
+			"tls-cert.valueHash":     digest.ContentHash([]byte("cert-pem")),
+			"tls-key.valueHash":      digest.ContentHash([]byte("key-pem")),
 		},
 	}))
 
@@ -209,7 +234,7 @@ func TestKubernetesDriversApplyDiffDestroy(t *testing.T) {
 	if destroy.Status != taskdomain.ResultSucceeded {
 		t.Fatalf("destroy status = %q", destroy.Status)
 	}
-	if _, ok, err := backend.GetDeployment("platform", "k8s-compute-main-platform-demo-stack-app"); err != nil {
+	if _, ok, err := backend.GetDeployment(ctx, "platform", "k8s-compute-main-platform-demo-stack-app"); err != nil {
 		t.Fatalf("get deployment after destroy: %v", err)
 	} else if ok {
 		t.Fatalf("expected compute deployment removed")
@@ -252,6 +277,177 @@ func TestKubernetesSecretAssetDiffWhenOutputsMissing(t *testing.T) {
 	}
 }
 
+func TestKubernetesVolumeDefaultedStorageClassIsInSync(t *testing.T) {
+	ctx := context.Background()
+	backend := NewBackend()
+	driver := &VolumeDriver{baseDriver{backend: backend}}
+	in := registry.AssetInput{
+		PartitionName: "agent",
+		IntentName:    "agent",
+		Target:        targetdomain.Placement{Cluster: "k8s-main", Namespace: "agent"},
+		Asset: taskdomain.AbstractAsset{
+			Type: "Volume",
+			Name: "lagent-data",
+			Properties: map[string]any{
+				"size":       "5Gi",
+				"accessMode": "ReadWriteOnce",
+			},
+		},
+	}
+
+	result, err := driver.Apply(ctx, in)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	name := result.Outputs["name"]
+	if name == "" {
+		t.Fatalf("apply did not return a claim name: %+v", result.Outputs)
+	}
+
+	// The API server defaults spec.storageClassName when the intent does not
+	// pin a class. That must not be reported as drift.
+	claim, ok, err := backend.GetClaim(ctx, "agent", name)
+	if err != nil || !ok {
+		t.Fatalf("get claim: ok=%v err=%v", ok, err)
+	}
+	claim.StorageClass = "standard"
+	if err := backend.UpsertClaim(ctx, claim); err != nil {
+		t.Fatalf("seed defaulted claim: %v", err)
+	}
+
+	drift, err := driver.Diff(ctx, in)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if drift.Status != "InSync" {
+		t.Fatalf("drift = %+v, want InSync for a defaulted storage class", drift)
+	}
+}
+
+func TestKubernetesVolumeObserveExisting(t *testing.T) {
+	ctx := context.Background()
+	backend := NewBackend()
+	driver := &VolumeDriver{baseDriver{backend: backend}}
+	in := registry.AssetInput{
+		PartitionName: "monofs",
+		IntentName:    "monofs-storage",
+		Target:        targetdomain.Placement{Cluster: "k8s-main", Namespace: "monofs"},
+		Asset: taskdomain.AbstractAsset{
+			Type: "Volume",
+			Name: "node-a-data",
+			Properties: map[string]any{
+				"observeExisting": true,
+				"size":            "100Gi",
+				"accessMode":      "ReadWriteOnce",
+			},
+		},
+	}
+
+	// The claim was created outside Guardian (bootstrap), so it carries no
+	// guardian hash label and does not use Guardian's namespaced claim name.
+	if err := backend.UpsertClaim(ctx, PersistentVolumeClaim{
+		Namespace:    "monofs",
+		Name:         "node-a-data",
+		Size:         "100Gi",
+		AccessMode:   "ReadWriteOnce",
+		StorageClass: "standard",
+	}); err != nil {
+		t.Fatalf("seed claim: %v", err)
+	}
+
+	drift, err := driver.Diff(ctx, in)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if drift.Status != "InSync" {
+		t.Fatalf("drift = %+v, want InSync", drift)
+	}
+
+	result, err := driver.Apply(ctx, in)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if result.Outputs["name"] != "node-a-data" {
+		t.Fatalf("outputs = %+v, want name node-a-data", result.Outputs)
+	}
+	claim, ok, err := backend.GetClaim(ctx, "monofs", "node-a-data")
+	if err != nil || !ok {
+		t.Fatalf("get claim: ok=%v err=%v", ok, err)
+	}
+	if claim.Hash != "" {
+		t.Fatalf("apply must not annotate an observed claim, got hash %q", claim.Hash)
+	}
+
+	if err := driver.Destroy(ctx, in); err != nil {
+		t.Fatalf("destroy: %v", err)
+	}
+	if _, ok, err := backend.GetClaim(ctx, "monofs", "node-a-data"); err != nil || !ok {
+		t.Fatalf("destroy must keep an observed claim: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestKubernetesVolumeObserveExistingMissing(t *testing.T) {
+	ctx := context.Background()
+	backend := NewBackend()
+	driver := &VolumeDriver{baseDriver{backend: backend}}
+	in := registry.AssetInput{
+		PartitionName: "monofs",
+		IntentName:    "monofs-storage",
+		Target:        targetdomain.Placement{Cluster: "k8s-main", Namespace: "monofs"},
+		Asset: taskdomain.AbstractAsset{
+			Type:       "Volume",
+			Name:       "node-a-data",
+			Properties: map[string]any{"observeExisting": true},
+		},
+	}
+
+	drift, err := driver.Diff(ctx, in)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if drift.Status != "Changed" {
+		t.Fatalf("drift = %+v, want Changed", drift)
+	}
+	if _, err := driver.Apply(ctx, in); err == nil {
+		t.Fatalf("apply must fail when the observed claim is missing")
+	}
+}
+
+func TestKubernetesVolumeObserveExistingExplicitID(t *testing.T) {
+	ctx := context.Background()
+	backend := NewBackend()
+	driver := &VolumeDriver{baseDriver{backend: backend}}
+	in := registry.AssetInput{
+		PartitionName: "monofs",
+		IntentName:    "monofs-storage",
+		Target:        targetdomain.Placement{Cluster: "k8s-main", Namespace: "monofs"},
+		Asset: taskdomain.AbstractAsset{
+			Type: "Volume",
+			Name: "node-a-data",
+			Properties: map[string]any{
+				"observeExisting": true,
+				"existingID":      "legacy-node-a-data",
+			},
+		},
+	}
+	if err := backend.UpsertClaim(ctx, PersistentVolumeClaim{
+		Namespace:  "monofs",
+		Name:       "legacy-node-a-data",
+		Size:       "5Gi",
+		AccessMode: "ReadWriteOnce",
+	}); err != nil {
+		t.Fatalf("seed claim: %v", err)
+	}
+
+	drift, err := driver.Diff(ctx, in)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+	if drift.Status != "InSync" {
+		t.Fatalf("drift = %+v, want InSync", drift)
+	}
+}
+
 func mustJSON(t *testing.T, value any) []byte {
 	t.Helper()
 	content, err := json.Marshal(value)
@@ -275,7 +471,7 @@ func TestKubernetesComputeObserveExistingDiffInSync(t *testing.T) {
 		CanHandle: func(t *taskdomain.Task) bool { return t.Target.Cluster == "k8s-main" },
 	}
 
-	if err := backend.UpsertDeployment(Deployment{
+	if err := backend.UpsertDeployment(ctx, Deployment{
 		Namespace: "monofs",
 		Name:      "node-a",
 		Hash:      "bootstrap-hash",
@@ -425,7 +621,7 @@ capabilities:
 	if apply.Outputs["app.address"] != "k8s-svc-compute-main-platform-demo-stack-app.platform.svc.cluster.local:9090" {
 		t.Fatalf("unexpected address output: %v", apply.Outputs)
 	}
-	deployment, ok, err := backend.GetDeployment("platform", "k8s-compute-main-platform-demo-stack-app")
+	deployment, ok, err := backend.GetDeployment(ctx, "platform", "k8s-compute-main-platform-demo-stack-app")
 	if err != nil {
 		t.Fatalf("get deployment: %v", err)
 	}
@@ -447,7 +643,7 @@ capabilities:
 	if deployment.Container.StartupProbe == nil || deployment.Container.StartupProbe.FailureThreshold != 30 {
 		t.Fatalf("expected startup probe override, got %+v", deployment.Container.StartupProbe)
 	}
-	service, ok, err := backend.GetService("platform", "k8s-svc-compute-main-platform-demo-stack-app")
+	service, ok, err := backend.GetService(ctx, "platform", "k8s-svc-compute-main-platform-demo-stack-app")
 	if err != nil {
 		t.Fatalf("get service: %v", err)
 	}
@@ -508,6 +704,38 @@ func TestCLIBackendContainerVolumesRendersHostPathMounts(t *testing.T) {
 	}
 	if len(mounts) != 1 || mounts[0]["mountPath"] != "/dev/fuse" {
 		t.Fatalf("expected hostPath mount at /dev/fuse, got %+v", mounts)
+	}
+}
+
+func TestCLIBackendContainerVolumesRendersSecretMounts(t *testing.T) {
+	deployment := Deployment{
+		Name: "tls",
+		Container: Container{
+			VolumeMounts: []VolumeMount{
+				{SourceKind: "Secret", SourceName: "strata-tls-router", MountPath: "/var/run/secrets/strata-tls", ReadOnly: true},
+				{SourceKind: "Secret", SourceName: "strata-tls-router-key", MountPath: "/etc/tls/tls.key", SubPath: "tls.key", ReadOnly: true},
+			},
+		},
+	}
+
+	volumes, mounts := containerVolumes(deployment)
+	if len(volumes) != 2 {
+		t.Fatalf("expected two volumes, got %+v", volumes)
+	}
+	for idx, want := range []string{"strata-tls-router", "strata-tls-router-key"} {
+		secret, ok := volumes[idx]["secret"].(map[string]any)
+		if !ok || secret["secretName"] != want {
+			t.Fatalf("volume %d = %+v, want secretName %q", idx, volumes[idx], want)
+		}
+	}
+	if len(mounts) != 2 {
+		t.Fatalf("expected two mounts, got %+v", mounts)
+	}
+	if mounts[0]["mountPath"] != "/var/run/secrets/strata-tls" || mounts[0]["readOnly"] != true {
+		t.Fatalf("unexpected directory mount: %+v", mounts[0])
+	}
+	if mounts[1]["subPath"] != "tls.key" || mounts[1]["mountPath"] != "/etc/tls/tls.key" {
+		t.Fatalf("unexpected file mount: %+v", mounts[1])
 	}
 }
 
@@ -641,7 +869,7 @@ func TestKubernetesLoadBalancerServiceTypeFromSpec(t *testing.T) {
 	if apply.Status != taskdomain.ResultSucceeded {
 		t.Fatalf("apply status = %q", apply.Status)
 	}
-	service, ok, err := backend.GetService("platform", "k8s-svc-lb-main-platform-demo-stack-edge")
+	service, ok, err := backend.GetService(ctx, "platform", "k8s-svc-lb-main-platform-demo-stack-edge")
 	if err != nil {
 		t.Fatalf("get service: %v", err)
 	}
@@ -717,7 +945,7 @@ func TestKubernetesDiffIgnoresUnreadyReplicas(t *testing.T) {
 		t.Fatalf("apply status = %q", apply.Status)
 	}
 
-	deployment, ok, err := backend.GetDeployment("platform", "k8s-compute-main-platform-demo-stack-app")
+	deployment, ok, err := backend.GetDeployment(ctx, "platform", "k8s-compute-main-platform-demo-stack-app")
 	if err != nil {
 		t.Fatalf("get deployment: %v", err)
 	}
@@ -726,7 +954,7 @@ func TestKubernetesDiffIgnoresUnreadyReplicas(t *testing.T) {
 	}
 	deployment.ReadyReplicas = 0
 	deployment.AvailableReplicas = 0
-	if err := backend.UpsertDeployment(deployment); err != nil {
+	if err := backend.UpsertDeployment(ctx, deployment); err != nil {
 		t.Fatalf("update deployment readiness: %v", err)
 	}
 
@@ -768,7 +996,7 @@ func TestKubernetesComputeCheckAllowsRolloutOverCrashLoop(t *testing.T) {
 		t.Fatalf("apply: %v", err)
 	}
 	deploymentName := applied.Outputs["id"]
-	deployment, ok, err := backend.GetDeployment("platform", deploymentName)
+	deployment, ok, err := backend.GetDeployment(ctx, "platform", deploymentName)
 	if err != nil || !ok {
 		t.Fatalf("get deployment (ok=%v): %v", ok, err)
 	}
@@ -776,13 +1004,13 @@ func TestKubernetesComputeCheckAllowsRolloutOverCrashLoop(t *testing.T) {
 	deployment.PodFailureReason = "CrashLoopBackOff"
 	deployment.PodFailureMessage = "back-off restarting failed container"
 	deployment.PodFailurePodName = "app-abc"
-	if err := backend.UpsertDeployment(deployment); err != nil {
+	if err := backend.UpsertDeployment(ctx, deployment); err != nil {
 		t.Fatalf("upsert deployment: %v", err)
 	}
 
 	// cloneDeployment must round-trip the crash-loop detail (regression: the
 	// message and pod name used to be dropped).
-	roundTrip, _, err := backend.GetDeployment("platform", deploymentName)
+	roundTrip, _, err := backend.GetDeployment(ctx, "platform", deploymentName)
 	if err != nil {
 		t.Fatalf("get deployment: %v", err)
 	}
@@ -866,14 +1094,14 @@ func TestConfigRawPayloadMountsWithoutInlineStub(t *testing.T) {
 		IntentName:    "stack",
 		Target:        targetdomain.Placement{Cluster: "main", Namespace: "platform"},
 	}
-	cm, ok, err := backend.GetConfigMap("platform", configMapName(in, "prometheus-config"))
+	cm, ok, err := backend.GetConfigMap(ctx, "platform", configMapName(in, "prometheus-config"))
 	if err != nil || !ok {
 		t.Fatalf("get configmap: ok=%v err=%v", ok, err)
 	}
 	if got, want := cm.Data["prometheus.yml"], "global:\n  scrape_interval: 15s\n"; got != want {
 		t.Fatalf("configmap content = %q, want %q", got, want)
 	}
-	deployment, ok, err := backend.GetDeployment("platform", "k8s-compute-main-platform-demo-stack-prom")
+	deployment, ok, err := backend.GetDeployment(ctx, "platform", "k8s-compute-main-platform-demo-stack-prom")
 	if err != nil || !ok {
 		t.Fatalf("get deployment: ok=%v err=%v", ok, err)
 	}
@@ -913,7 +1141,7 @@ func TestConfigBinaryPayloadUsesBinaryData(t *testing.T) {
 	if _, err := driver.Apply(ctx, input); err != nil {
 		t.Fatalf("Apply() error = %v", err)
 	}
-	cm, ok, err := backend.GetConfigMap("platform", configMapName(input, "blob"))
+	cm, ok, err := backend.GetConfigMap(ctx, "platform", configMapName(input, "blob"))
 	if err != nil || !ok {
 		t.Fatalf("get configmap: ok=%v err=%v", ok, err)
 	}

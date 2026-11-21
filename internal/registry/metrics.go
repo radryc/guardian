@@ -4,41 +4,36 @@ import (
 	"context"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/radryc/guardian/internal/metrics"
 	"github.com/radryc/guardian/pkg/guardianapi"
 )
 
 const maxPerPusherMetricSeries = 1000
 
 var (
-	pusherInfo = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "guardian",
-		Subsystem: "registry",
-		Name:      "pusher_info",
-		Help:      "Registered pusher metadata; value is always 1 (emitted when fleet <= 1000 pushers).",
-	}, []string{"guardian_pusher", "guardian_provider", "guardian_cluster", "guardian_account", "guardian_region", "version", "status"})
+	pusherInfo = metrics.NewGauge(
+		"guardian_registry_pusher_info",
+		"Registered pusher metadata; value is always 1 (emitted when fleet <= 1000 pushers).",
+		"guardian_pusher", "guardian_provider", "guardian_cluster", "guardian_account", "guardian_region", "version", "status",
+	)
 
-	pusherHeartbeatAge = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "guardian",
-		Subsystem: "registry",
-		Name:      "pusher_heartbeat_age_seconds",
-		Help:      "Seconds since the last pusher heartbeat (emitted when fleet <= 1000 pushers).",
-	}, []string{"guardian_pusher", "guardian_cluster"})
+	pusherHeartbeatAge = metrics.NewGauge(
+		"guardian_registry_pusher_heartbeat_age_seconds",
+		"Seconds since the last pusher heartbeat (emitted when fleet <= 1000 pushers).",
+		"guardian_pusher", "guardian_cluster",
+	)
 
-	pushersTotalByDimension = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "guardian",
-		Subsystem: "registry",
-		Name:      "pushers",
-		Help:      "Total registered pushers grouped by provider, region, status, and version (bounded cardinality for 50K+ fleets).",
-	}, []string{"guardian_provider", "guardian_region", "status", "version"})
+	pushersTotalByDimension = metrics.NewGauge(
+		"guardian_registry_pushers",
+		"Total registered pushers grouped by provider, region, status, and version (bounded cardinality for 50K+ fleets).",
+		"guardian_provider", "guardian_region", "status", "version",
+	)
 
-	pusherMaxHeartbeatAgeByRegion = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "guardian",
-		Subsystem: "registry",
-		Name:      "pusher_max_heartbeat_age_seconds",
-		Help:      "Maximum seconds since the last pusher heartbeat per provider and region.",
-	}, []string{"guardian_provider", "guardian_region"})
+	pusherMaxHeartbeatAgeByRegion = metrics.NewGauge(
+		"guardian_registry_pusher_max_heartbeat_age_seconds",
+		"Maximum seconds since the last pusher heartbeat per provider and region.",
+		"guardian_provider", "guardian_region",
+	)
 )
 
 // StartMetrics periodically exports registered pusher metadata.

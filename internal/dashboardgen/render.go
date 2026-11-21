@@ -101,7 +101,7 @@ func Render(info Info) ([]byte, error) {
 		"schemaVersion": 39,
 		"version":       1,
 		"refresh":       "30s",
-		"time":          map[string]any{"from": "now-1h", "to": "now"},
+		"time":          map[string]any{"from": "now-5m", "to": "now"},
 		"editable":      true,
 		"templating": map[string]any{"list": []any{
 			map[string]any{

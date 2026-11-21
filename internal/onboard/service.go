@@ -284,8 +284,12 @@ func (s *Service) materialize(
 		delete(files, "config.yaml")
 	}
 	for rel, content := range files {
+		logicalPath, err := paths.PartitionPathChecked(descriptor.Partition, rel)
+		if err != nil {
+			return result, nil, fmt.Errorf("onboarding descriptor %q: %w", descriptor.Partition, err)
+		}
 		writes = append(writes, guardianapi.PathWrite{
-			LogicalPath: paths.PartitionPath(descriptor.Partition, rel),
+			LogicalPath: logicalPath,
 			Content:     content,
 		})
 	}

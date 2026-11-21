@@ -212,10 +212,15 @@ pusher-k8s-image-build:
 pusher-gcp-build: $(GUARDIAN_BIN_DIR)
 	go build -o "$(GUARDIAN_GCP_PUSHER_BINARY)" ./cmd/guardian-pusher-gcp
 
+# Dockerfile.pusher-gcp verifies the OpenTofu download. Override TOFU_VERSION
+# and TOFU_SHA256 together (tofu_<version>_linux_amd64.zip).
+TOFU_VERSION ?= 1.9.1
+TOFU_SHA256 ?= 19eda43eaa45bef3e21d87c58f31a6df73e8534ea30e78619a463bdfdb889cd2
+
 pusher-gcp-image-build:
 	@if [ ! -d "$(MONOFS_DIR)" ]; then echo "MonoFS repo not found at $(MONOFS_DIR)"; exit 1; fi
 	@if [ ! -d "$(KVS_DIR)" ]; then echo "KVS repo not found at $(KVS_DIR)"; exit 1; fi
-	DOCKER_BUILDKIT=1 docker build --build-context monofs=$(abspath $(MONOFS_DIR)) --build-context kvs=$(KVS_DIR) -f Dockerfile.pusher-gcp -t $(GUARDIAN_GCP_PUSHER_IMAGE) .
+	DOCKER_BUILDKIT=1 docker build --build-context monofs=$(abspath $(MONOFS_DIR)) --build-context kvs=$(KVS_DIR) --build-arg TOFU_VERSION=$(TOFU_VERSION) --build-arg TOFU_SHA256=$(TOFU_SHA256) -f Dockerfile.pusher-gcp -t $(GUARDIAN_GCP_PUSHER_IMAGE) .
 
 
 pusher-k8s-up: pusher-k8s-build

@@ -13,7 +13,7 @@ import (
 
 func TestM2MPusherDetailRequiresInternalToken(t *testing.T) {
 	store := memory.New()
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:             store,
 		PrincipalID:       "test-ui",
 		AccessPolicyToken: "internal-token",
@@ -45,18 +45,41 @@ func TestM2MPusherDetailRequiresInternalToken(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
 	}
-	var pusher registry.Pusher
+	var pusher m2mPusher
 	if err := json.Unmarshal(rec.Body.Bytes(), &pusher); err != nil {
 		t.Fatalf("decode pusher: %v", err)
 	}
-	if pusher.Name != "aws-test" || pusher.Token != "pusher-token" {
-		t.Fatalf("pusher = %#v", pusher)
+	if pusher.Name != "aws-test" || pusher.Token != "" || !pusher.HasToken {
+		t.Fatalf("pusher = %#v, want redacted token with HasToken=true", pusher)
+	}
+
+	if err := registry.New(store).PutPusher(context.Background(), &registry.Pusher{
+		Name:           "aws-no-token",
+		Account:        "123456789012",
+		Region:         "us-east-1",
+		ObservedAPIURL: "http://pusher2:19090",
+	}); err != nil {
+		t.Fatalf("PutPusher(no-token) error = %v", err)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/m2m/pushers/aws-no-token", nil)
+	req.Header.Set("X-Guardian-Internal-Token", "internal-token")
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var noToken m2mPusher
+	if err := json.Unmarshal(rec.Body.Bytes(), &noToken); err != nil {
+		t.Fatalf("decode pusher without token: %v", err)
+	}
+	if noToken.Token != "" || noToken.HasToken {
+		t.Fatalf("pusher without token = %#v, want Token=\"\" and HasToken=false", noToken)
 	}
 }
 
 func TestM2MPusherListPaginates(t *testing.T) {
 	store := memory.New()
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:             store,
 		PrincipalID:       "test-ui",
 		AccessPolicyToken: "internal-token",
@@ -82,17 +105,22 @@ func TestM2MPusherListPaginates(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
 	}
-	var page pusherListResponse
+	var page m2mPusherListResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
 		t.Fatalf("decode page: %v", err)
 	}
 	if len(page.Pushers) != 2 || page.Total != 3 || !page.HasMore {
 		t.Fatalf("page = %#v", page)
 	}
+	for _, p := range page.Pushers {
+		if p.Token != "" || !p.HasToken {
+			t.Fatalf("listed pusher %q leaked token or missing HasToken: %#v", p.Name, p)
+		}
+	}
 }
 
 func TestM2MOverviewRequiresInternalToken(t *testing.T) {
-	srv, err := New(Options{
+	srv, err := New(Options{AllowUnpolicedMutations: true,
 		Store:             memory.New(),
 		PrincipalID:       "test-ui",
 		AccessPolicyToken: "internal-token",
@@ -112,5 +140,73 @@ func TestM2MOverviewRequiresInternalToken(t *testing.T) {
 	srv.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("authorized status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestM2MPushersRevealTokensForFederationController(t *testing.T) {
+	store := memory.New()
+	srv, err := New(Options{AllowUnpolicedMutations: true,
+		Store:             store,
+		PrincipalID:       "test-ui",
+		AccessPolicyToken: "internal-token",
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := registry.New(store).PutPusher(context.Background(), &registry.Pusher{
+		Name:           "aws-test",
+		Account:        "123456789012",
+		Region:         "us-east-1",
+		ObservedAPIURL: "http://pusher:19090",
+		Token:          "pusher-token",
+	}); err != nil {
+		t.Fatalf("PutPusher() error = %v", err)
+	}
+
+	decode := func(rec *httptest.ResponseRecorder) []m2mPusher {
+		t.Helper()
+		var page struct {
+			Pushers []m2mPusher `json:"pushers"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+			t.Fatalf("decode pushers: %v", err)
+		}
+		if len(page.Pushers) == 0 {
+			t.Fatal("no pushers returned")
+		}
+		return page.Pushers
+	}
+	do := func(path string, headers map[string]string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		for key, value := range headers {
+			req.Header.Set(key, value)
+		}
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, body=%s", path, rec.Code, rec.Body.String())
+		}
+		return rec
+	}
+
+	// Generic machine listing stays redacted: the controller must opt in.
+	pushers := decode(do("/api/m2m/pushers", map[string]string{"X-Guardian-Internal-Token": "internal-token"}))
+	if pushers[0].Token != "" {
+		t.Fatalf("token leaked without includeTokens=1: %#v", pushers[0])
+	}
+
+	// The federation controller opts in and receives the credential.
+	pushers = decode(do("/api/m2m/pushers?includeTokens=1", map[string]string{"X-Guardian-Internal-Token": "internal-token"}))
+	if pushers[0].Token != "pusher-token" {
+		t.Fatalf("token = %q, want pusher-token", pushers[0].Token)
+	}
+
+	// The includeTokens flag alone is not enough; the caller must authenticate.
+	req := httptest.NewRequest(http.MethodGet, "/api/m2m/pushers?includeTokens=1", nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("unauthenticated includeTokens request status = %d", rec.Code)
 	}
 }

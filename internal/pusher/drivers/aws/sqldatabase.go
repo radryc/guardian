@@ -41,7 +41,7 @@ func (d *SQLDatabaseDriver) Diff(ctx context.Context, in registry.AssetInput) (t
 	if _, err := auroraEngine(spec.Engine); err != nil {
 		return taskdomain.DriftReport{}, err
 	}
-	cluster, ok, err := d.backend.GetDBCluster(ctx, awsDBClusterName(in))
+	cluster, ok, err := d.databaseBackend().GetDBCluster(ctx, awsDBClusterName(in))
 	if err != nil {
 		return taskdomain.DriftReport{}, err
 	}
@@ -81,7 +81,7 @@ func (d *SQLDatabaseDriver) Apply(ctx context.Context, in registry.AssetInput) (
 		Port:           auroraPort(engine, spec.Port),
 		SubnetGroup:    awsDBSubnetGroupName(in),
 	}
-	cluster, err := d.backend.UpsertDBCluster(ctx, desired)
+	cluster, err := d.databaseBackend().UpsertDBCluster(ctx, desired)
 	if err != nil {
 		return registry.AssetResult{}, fmt.Errorf("upsert aurora cluster: %w", err)
 	}
@@ -116,10 +116,10 @@ func (d *SQLDatabaseDriver) Destroy(ctx context.Context, in registry.AssetInput)
 	}
 	name := awsDBClusterName(in)
 	arn := ""
-	if cluster, ok, err := d.backend.GetDBCluster(ctx, name); err == nil && ok {
+	if cluster, ok, err := d.databaseBackend().GetDBCluster(ctx, name); err == nil && ok {
 		arn = cluster.ARN
 	}
-	return d.backend.DeleteDBCluster(ctx, arn, name)
+	return d.databaseBackend().DeleteDBCluster(ctx, arn, name)
 }
 
 func decodeAuroraSpec(in registry.AssetInput) (*assetdefs.SQLDatabaseSpec, error) {

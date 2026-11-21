@@ -62,6 +62,7 @@ type autoStoreRequest struct {
 	monofsUseExternalAddressesSet bool
 	guardianURL                   string
 	guardianDiscoveryToken        string
+	allowDevToken                 bool
 }
 
 type resolvedStoreConfig struct {
@@ -102,6 +103,7 @@ func main() {
 	monofsToken := rootFlags.String("monofs-token", "", "MonoFS guardian token")
 	monofsPrincipalID := rootFlags.String("monofs-principal-id", "guardianctl", "MonoFS guardian principal ID")
 	monofsUseExternalAddresses := rootFlags.Bool("monofs-use-external-addresses", false, "prefer MonoFS external addresses when refreshing cluster info")
+	allowDevToken := rootFlags.Bool("allow-dev-token", false, "fall back to the well-known local development MonoFS token when no token is configured (isolated local development only)")
 	guardianURL := rootFlags.String("guardian-url", firstNonEmptyEnv("GUARDIAN_URL", "GUARDIAN_API_URL"), "Guardian UI/API base URL used to auto-discover MonoFS access for local port-forwards, load balancers, or ingress")
 	guardianDiscoveryToken := rootFlags.String("guardian-discovery-token", firstNonEmptyEnv("GUARDIAN_DISCOVERY_TOKEN", "GUARDIAN_CLIENT_DISCOVERY_TOKEN"), "token for authenticated Guardian discovery when the UI is exposed beyond loopback")
 	formatFlag := rootFlags.String("format", string(cliformat.FormatText), "output format: text|json")
@@ -126,6 +128,7 @@ func main() {
 		monofsUseExternalAddressesSet: flagWasProvided(rootFlags, "monofs-use-external-addresses"),
 		guardianURL:                   *guardianURL,
 		guardianDiscoveryToken:        *guardianDiscoveryToken,
+		allowDevToken:                 *allowDevToken,
 	})
 	if store != nil {
 		defer func() {
@@ -202,6 +205,15 @@ func resolveStoreConfig(ctx context.Context, req autoStoreRequest) (resolvedStor
 	if resolved.monofsPrincipalID == "" {
 		resolved.monofsPrincipalID = "guardianctl"
 	}
+	// Explicit flags win over environment/discovery defaults. Assign them
+	// before the "token is required" check below, otherwise --monofs-token is
+	// rejected even though it was provided on the command line.
+	if v := strings.TrimSpace(req.monofsRouter); v != "" {
+		resolved.monofsRouter = v
+	}
+	if v := strings.TrimSpace(req.monofsToken); v != "" {
+		resolved.monofsToken = v
+	}
 	if strings.TrimSpace(req.storeDir) != "" && strings.TrimSpace(req.monofsRouter) != "" {
 		return resolvedStoreConfig{}, fmt.Errorf("provide at most one of --store-dir or --monofs-router")
 	}
@@ -271,6 +283,9 @@ func resolveStoreConfig(ctx context.Context, req autoStoreRequest) (resolvedStor
 		resolved.monofsRouter = defaultLocalMonoFSRouter
 	}
 	if resolved.monofsToken == "" {
+		if !req.allowDevToken {
+			return resolvedStoreConfig{}, fmt.Errorf("no MonoFS token configured: set GUARDIAN_MONOFS_TOKEN or --monofs-token (pass --allow-dev-token only for isolated local development)")
+		}
 		resolved.monofsToken = defaultLocalMonoFSToken
 	}
 	if !envUseExternalSet {
@@ -345,8 +360,11 @@ func configureRootUsage(flags *flag.FlagSet) {
 		fmt.Fprintln(out, "Connection modes:")
 		fmt.Fprintln(out, "  --store-dir DIR")
 		fmt.Fprintln(out, "      Use a filesystem-backed Guardian store directly.")
-		fmt.Fprintln(out, "  --monofs-router HOST:PORT --monofs-token TOKEN")
-		fmt.Fprintln(out, "      Connect to MonoFS directly over gRPC.")
+		fmt.Fprintln(out, "  --monofs-router HOST:PORT [--monofs-token TOKEN | GUARDIAN_MONOFS_TOKEN]")
+		fmt.Fprintln(out, "      Connect to MonoFS directly over gRPC. Prefer the environment variable")
+		fmt.Fprintln(out, "      so the token does not appear in process listings.")
+		fmt.Fprintln(out, "      --allow-dev-token enables the legacy guardian-dev-token fallback for")
+		fmt.Fprintln(out, "      isolated local development when no token is configured.")
 		fmt.Fprintln(out, "  --guardian-url URL [--guardian-discovery-token TOKEN]")
 		fmt.Fprintln(out, "      Ask Guardian UI/API for MonoFS client settings, then connect to MonoFS.")
 		fmt.Fprintln(out, "      Env aliases: GUARDIAN_URL or GUARDIAN_API_URL, and GUARDIAN_DISCOVERY_TOKEN or GUARDIAN_CLIENT_DISCOVERY_TOKEN.")
@@ -480,6 +498,22 @@ func (l *lazyStore) Stat(ctx context.Context, logicalPath string) (guardianapi.F
 		return guardianapi.FileInfo{}, err
 	}
 	return store.Stat(ctx, logicalPath)
+}
+
+func (l *lazyStore) ReadFileVersioned(ctx context.Context, logicalPath string) ([]byte, guardianapi.FileVersion, bool, error) {
+	store, err := l.resolve(ctx)
+	if err != nil {
+		return nil, guardianapi.FileVersion{}, false, err
+	}
+	return store.ReadFileVersioned(ctx, logicalPath)
+}
+
+func (l *lazyStore) ListDirPage(ctx context.Context, logicalDir string, opts guardianapi.DirListOptions) (guardianapi.DirListPage, error) {
+	store, err := l.resolve(ctx)
+	if err != nil {
+		return guardianapi.DirListPage{}, err
+	}
+	return store.ListDirPage(ctx, logicalDir, opts)
 }
 
 func (l *lazyStore) Watch(ctx context.Context, prefixes []string) (<-chan guardianapi.ChangeEvent, error) {
@@ -635,6 +669,7 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 	reg.Register("sets", "move", storeCommand(setsMoveCommand(store, printer)))
 	reg.Register("sets", "delete", storeCommand(setsDeleteCommand(store, printer)))
 	reg.Register("sets", "assign", storeCommand(setsAssignCommand(store, printer)))
+	reg.Register("sets", "unassign", storeCommand(setsUnassignCommand(store, printer)))
 	reg.Register("sets", "ensure", storeCommand(setsEnsureCommand(store, printer)))
 	reg.Register("partition", "assignments", storeCommand(partitionAssignmentsCommand(store, printer)))
 	reg.Register("pusher", "add", storeCommand(pusherAddCommand(store, printer)))
@@ -660,6 +695,7 @@ func registerCommands(store guardianapi.Store, printer *output.Printer) *command
 	reg.Register("access", "who-can", accessWhoCanCommand(printer))
 	reg.Register("access", "publish", storeCommand(accessPublishCommand(store, printer)))
 	reg.Register("notify", "test", notifyTestCommand(printer))
+	reg.Register("audit", "verify", auditVerifyCommand(printer))
 	reg.Register("partition", "validate-local", partitionValidateLocalCommand(printer))
 	reg.Register("partition", "reconcile", storeCommand(partitionReconcileCommand(store, printer)))
 	reg.Register("partition", "tag", partitionTagCommand(printer))

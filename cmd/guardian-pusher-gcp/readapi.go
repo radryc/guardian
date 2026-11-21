@@ -3,18 +3,17 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/radryc/guardian/internal/gcpobserve"
 	"github.com/radryc/guardian/internal/gcpread"
+	"github.com/radryc/guardian/internal/tlsxutil"
 )
 
 type readAPIConfig struct {
@@ -25,11 +24,27 @@ type readAPIConfig struct {
 	TLSCert        string
 	TLSKey         string
 	TLSClientCA    string
+	TLSEnabled     bool
 	AllowPlaintext bool
 	Pusher         string
 	Project        string
 	Region         string
 	StateBucket    string
+}
+
+func validateReadAPIConfig(cfg readAPIConfig) error {
+	loopback := isLoopbackListen(cfg.Address)
+	hasToken := strings.TrimSpace(cfg.Token) != "" || strings.TrimSpace(cfg.TokenFile) != ""
+	if !loopback && !hasToken {
+		return fmt.Errorf("GCP read API is listening on %s without a bearer token; configure --read-token or --read-token-file", cfg.Address)
+	}
+	if (strings.TrimSpace(cfg.TLSCert) == "") != (strings.TrimSpace(cfg.TLSKey) == "") {
+		return fmt.Errorf("GCP read API TLS requires both --read-tls-cert and --read-tls-key")
+	}
+	if !loopback && !cfg.TLSEnabled && strings.TrimSpace(cfg.TLSCert) == "" && !cfg.AllowPlaintext {
+		return fmt.Errorf("GCP read API is listening on %s without TLS; configure --read-tls-cert/--read-tls-key, STRATA_TLS_* or pass --read-allow-plaintext for a trusted network", cfg.Address)
+	}
+	return nil
 }
 
 // startReadAPI starts the GCP read API in the background. Errors are logged and
@@ -38,19 +53,18 @@ func startReadAPI(ctx context.Context, cfg readAPIConfig) (*http.Server, error) 
 	if strings.TrimSpace(cfg.Address) == "" {
 		return nil, nil
 	}
-	loopback := isLoopbackListen(cfg.Address)
-	hasToken := strings.TrimSpace(cfg.Token) != "" || strings.TrimSpace(cfg.TokenFile) != ""
-	if !loopback && !hasToken {
-		return nil, fmt.Errorf("GCP read API is listening on %s without a bearer token; configure --read-token or --read-token-file", cfg.Address)
+	tlsCfg, tlsEnabled, err := tlsxutil.ServerTLSConfigHTTP(tlsxutil.LegacyServer{
+		CertFile:          cfg.TLSCert,
+		KeyFile:           cfg.TLSKey,
+		CAFile:            cfg.TLSClientCA,
+		RequireClientCert: strings.TrimSpace(cfg.TLSClientCA) != "",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("configure GCP read API TLS: %w", err)
 	}
-	if (strings.TrimSpace(cfg.TLSCert) == "") != (strings.TrimSpace(cfg.TLSKey) == "") {
-		return nil, fmt.Errorf("GCP read API TLS requires both --read-tls-cert and --read-tls-key")
-	}
-	// A bearer token is enough to expose the read API on a non-loopback
-	// address (the token is checked on every request). TLS is required only
-	// when the endpoint is unauthenticated.
-	if !loopback && strings.TrimSpace(cfg.TLSCert) == "" && !cfg.AllowPlaintext && !hasToken {
-		return nil, fmt.Errorf("GCP read API is listening on %s without TLS or a bearer token; configure --read-tls-cert/--read-tls-key, --read-token, or pass --read-allow-plaintext", cfg.Address)
+	cfg.TLSEnabled = tlsEnabled
+	if err := validateReadAPIConfig(cfg); err != nil {
+		return nil, err
 	}
 
 	reader, err := gcpread.New(gcpread.Config{
@@ -67,15 +81,13 @@ func startReadAPI(ctx context.Context, cfg readAPIConfig) (*http.Server, error) 
 		WithPromQL(reader.PromQL()).
 		WithIdentity(cfg.Pusher, cfg.Project, cfg.Region).
 		WithScopes(splitCSV(cfg.Scopes)...).
-		WithObserved(observer)
+		WithObserved(observer).
+		WithRateLimit(50, 100).
+		WithMaxRequestBodyBytes(1 << 20)
 	if strings.TrimSpace(cfg.TokenFile) != "" {
 		handler.WithTokenFile(cfg.TokenFile)
 	}
 
-	tlsCfg, err := readTLSConfig(cfg.TLSCert, cfg.TLSKey, cfg.TLSClientCA)
-	if err != nil {
-		return nil, fmt.Errorf("configure GCP read API TLS: %w", err)
-	}
 	server := &http.Server{
 		Addr:              cfg.Address,
 		Handler:           handler,
@@ -91,13 +103,18 @@ func startReadAPI(ctx context.Context, cfg readAPIConfig) (*http.Server, error) 
 	}()
 	go func() {
 		log.Printf("GCP read API listening on %s (tls=%t)", cfg.Address, tlsCfg != nil)
-		var serveErr error
-		if tlsCfg != nil {
-			serveErr = server.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey)
-		} else {
-			serveErr = server.ListenAndServe()
+		if tlsCfg == nil {
+			if serveErr := server.ListenAndServe(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+				log.Printf("GCP read API stopped: %v", serveErr)
+			}
+			return
 		}
-		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		listener, listenErr := net.Listen("tcp", cfg.Address)
+		if listenErr != nil {
+			log.Printf("GCP read API stopped: %v", listenErr)
+			return
+		}
+		if serveErr := server.Serve(tls.NewListener(listener, tlsCfg)); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			log.Printf("GCP read API stopped: %v", serveErr)
 		}
 	}()
@@ -117,6 +134,18 @@ func isLoopbackListen(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// readAPIUsesTLS reports whether the read API will terminate TLS, accounting
+// for both the legacy flags and the shared STRATA_TLS_* contract.
+func readAPIUsesTLS(certFile, keyFile, clientCAFile string) bool {
+	_, enabled, err := tlsxutil.ServerConfig(tlsxutil.LegacyServer{
+		CertFile:          certFile,
+		KeyFile:           keyFile,
+		CAFile:            clientCAFile,
+		RequireClientCert: strings.TrimSpace(clientCAFile) != "",
+	})
+	return err == nil && enabled
+}
+
 func splitCSV(value string) []string {
 	parts := strings.Split(value, ",")
 	out := make([]string, 0, len(parts))
@@ -126,29 +155,6 @@ func splitCSV(value string) []string {
 		}
 	}
 	return out
-}
-
-func readTLSConfig(certFile, keyFile, clientCAFile string) (*tls.Config, error) {
-	if strings.TrimSpace(certFile) == "" && strings.TrimSpace(keyFile) == "" {
-		return nil, nil
-	}
-	if _, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
-		return nil, fmt.Errorf("load certificate: %w", err)
-	}
-	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
-	if strings.TrimSpace(clientCAFile) != "" {
-		content, err := os.ReadFile(clientCAFile)
-		if err != nil {
-			return nil, fmt.Errorf("read client CA: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(content) {
-			return nil, fmt.Errorf("parse client CA bundle")
-		}
-		cfg.ClientCAs = pool
-		cfg.ClientAuth = tls.RequireAndVerifyClientCert
-	}
-	return cfg, nil
 }
 
 func refreshObserved(ctx context.Context, observer *gcpobserve.Service, project, region string) {
