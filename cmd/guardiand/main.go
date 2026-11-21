@@ -523,7 +523,7 @@ func main() {
 				// Machine pollers (MonoFS router, Doctor) authenticate with the
 				// internal token, not an OIDC session. Let the access-policy
 				// handler enforce that instead of the browser login wall.
-				ExemptPaths: []string{"/api/m2m", "/api/access/policy"},
+				ExemptPaths: []string{"/api/m2m", "/api/access/policy", "/health"},
 			}
 			if publicAuthURL != "" {
 				waCfg.Endpoints.AuthURL = publicAuthURL
