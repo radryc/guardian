@@ -28,6 +28,7 @@ func displayCommands(store guardianapi.Store, printer *output.Printer) []display
 		{"display", "bind", displayBindCommand(svc, printer, subject)},
 		{"display", "show", displayShowCommand(svc, printer, subject)},
 		{"display", "use", displayUseCommand(svc, printer, subject)},
+		{"display", "preview", displayPreviewCommand(svc, printer, subject)},
 	}
 }
 
@@ -57,6 +58,7 @@ func displayCreateCommand(svc *displaypkg.Service, printer *output.Printer, subj
 	id := flags.String("id", "", "profile id")
 	name := flags.String("name", "", "display name")
 	scope := flags.String("scope", "personal", "personal|team|global")
+	includeCanonical := flags.Bool("include-canonical", false, "add canonical_* keys alongside display keys")
 	var keys stringListFlag
 	flags.Var(&keys, "key", "canonical=display key (repeatable)")
 	var readers stringListFlag
@@ -65,7 +67,7 @@ func displayCreateCommand(svc *displaypkg.Service, printer *output.Printer, subj
 		if strings.TrimSpace(*id) == "" {
 			return fmt.Errorf("--id is required")
 		}
-		profile := display.Profile{ID: *id, Name: *name, Scope: *scope, Keys: map[string]string{}, Readers: readers}
+		profile := display.Profile{ID: *id, Name: *name, Scope: *scope, Keys: map[string]string{}, Readers: readers, IncludeCanonical: *includeCanonical}
 		for _, pair := range keys {
 			canonical, value, ok := strings.Cut(pair, "=")
 			if !ok {
@@ -146,6 +148,27 @@ func displayUseCommand(svc *displaypkg.Service, printer *output.Printer, subject
 			return err
 		}
 		printer.PrintText("default display profile: %s\n", *profileID)
+		return nil
+	}}
+}
+
+func displayPreviewCommand(svc *displaypkg.Service, printer *output.Printer, subject string) *command.Command {
+	flags := flag.NewFlagSet("display preview", flag.ContinueOnError)
+	flags.SetOutput(ioDiscard{})
+	profileID := flags.String("profile", "", "profile id")
+	surface := flags.String("surface", "", "surface override: sql, metrics, logs, traces")
+	return &command.Command{Description: "Preview a profile against a sample response", Flags: flags, Run: func(ctx context.Context, _ []string) error {
+		profile, err := svc.Get(ctx, subject, *profileID, false)
+		if err != nil {
+			return err
+		}
+		compiled := &display.CompiledProfile{ID: profile.ID, Keys: profile.Keys, Surfaces: profile.Surfaces, IncludeCanonical: profile.IncludeCanonical}
+		sample := []byte(`{"partition":"payments-prod","intent":"clickhouse-cluster","asset":"analytics-storage","labels":{"guardian_partition":"payments-prod","guardian_intent":"clickhouse-cluster"}}`)
+		mapped, err := display.MapJSON(sample, compiled, *surface)
+		if err != nil {
+			return err
+		}
+		printer.PrintText("%s\n", mapped)
 		return nil
 	}}
 }
