@@ -21,7 +21,7 @@ func sampleEvents(t *testing.T, count int) []EventRecord {
 	for i := 0; i < count; i++ {
 		raw[i] = EventRecord{
 			EventID:   "evt-" + string(rune('a'+i)),
-			Sequence:  int64(i + 1),
+			Sequence:  uint64(i + 1),
 			Timestamp: base.Add(time.Duration(i) * time.Minute),
 			Actor:     "alice@example.com",
 			Action:    "partition.push",

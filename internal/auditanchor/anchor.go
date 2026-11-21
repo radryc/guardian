@@ -32,19 +32,23 @@ var emptySHA256 = func() string {
 	return hex.EncodeToString(sum[:])
 }()
 
-// EventRecord represents a single audit event stored in a WAL JSONL file.
+// EventRecord represents a single audit event stored in a WAL JSONL file or
+// the ClickHouse audit.events table. RawJSON is the exact canonical bytes that
+// were hashed (without the hash and raw_json fields).
 type EventRecord struct {
-	EventID   string            `json:"eventID,omitempty"`
-	Sequence  int64             `json:"sequence,omitempty"`
+	EventID   string            `json:"event_id,omitempty"`
+	WriterID  string            `json:"writer_id,omitempty"`
+	Sequence  uint64            `json:"seq"`
 	Timestamp time.Time         `json:"timestamp"`
-	Actor     string            `json:"actor,omitempty"`
+	Actor     string            `json:"actor_subject,omitempty"`
 	Action    string            `json:"action"`
 	Resource  string            `json:"resource,omitempty"`
 	Partition string            `json:"partition,omitempty"`
-	Outcome   string            `json:"outcome,omitempty"`
+	Outcome   string            `json:"decision,omitempty"`
 	Details   map[string]string `json:"details,omitempty"`
-	PrevHash  string            `json:"prevHash,omitempty"`
-	EventHash string            `json:"eventHash,omitempty"`
+	PrevHash  string            `json:"prev_hash,omitempty"`
+	EventHash string            `json:"hash,omitempty"`
+	RawJSON   string            `json:"raw_json,omitempty"`
 }
 
 // Manifest is the daily tamper-evident anchor summary for a batch of WAL events.
@@ -58,35 +62,54 @@ type Manifest struct {
 	CreatedAt        time.Time `json:"createdAt"`
 }
 
-// ComputeEventHash computes the deterministic SHA-256 hex digest of an EventRecord
-// excluding EventHash itself.
+// ComputeEventHash computes the deterministic SHA-256 hex digest of an
+// EventRecord. When RawJSON is present it hashes the exact canonical bytes
+// (prev_hash || raw_json); otherwise it marshals a canonical event without the
+// hash and raw_json fields.
 func ComputeEventHash(ev EventRecord) (string, error) {
-	ev.EventHash = ""
-	if !ev.Timestamp.IsZero() {
-		ev.Timestamp = ev.Timestamp.UTC()
+	canonical := ev.RawJSON
+	if canonical == "" {
+		ev.EventHash = ""
+		ev.RawJSON = ""
+		if !ev.Timestamp.IsZero() {
+			ev.Timestamp = ev.Timestamp.UTC()
+		}
+		payload, err := json.Marshal(ev)
+		if err != nil {
+			return "", fmt.Errorf("marshal event for hashing: %w", err)
+		}
+		canonical = string(payload)
 	}
-	payload, err := json.Marshal(ev)
-	if err != nil {
-		return "", fmt.Errorf("marshal event for hashing: %w", err)
-	}
-	sum := sha256.Sum256(payload)
+	sum := sha256.Sum256([]byte(ev.PrevHash + canonical))
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// ChainEvents populates PrevHash and EventHash across a slice of EventRecords,
-// starting from initialPrevHash for the first event.
+// ChainEvents populates PrevHash, Seq, EventHash, and RawJSON across a slice of
+// EventRecords, starting from initialPrevHash for the first event.
 func ChainEvents(events []EventRecord, initialPrevHash string) ([]EventRecord, error) {
 	out := make([]EventRecord, len(events))
 	prev := strings.ToLower(strings.TrimSpace(initialPrevHash))
 	for i, ev := range events {
 		ev.PrevHash = prev
-		h, err := ComputeEventHash(ev)
-		if err != nil {
-			return nil, fmt.Errorf("event %d: %w", i, err)
+		ev.Sequence = uint64(i)
+		canonical := ev.RawJSON
+		if canonical == "" {
+			ev.EventHash = ""
+			ev.RawJSON = ""
+			if !ev.Timestamp.IsZero() {
+				ev.Timestamp = ev.Timestamp.UTC()
+			}
+			payload, err := json.Marshal(ev)
+			if err != nil {
+				return nil, fmt.Errorf("event %d: %w", i, err)
+			}
+			canonical = string(payload)
+			ev.RawJSON = canonical
 		}
-		ev.EventHash = h
+		sum := sha256.Sum256([]byte(ev.PrevHash + canonical))
+		ev.EventHash = hex.EncodeToString(sum[:])
 		out[i] = ev
-		prev = h
+		prev = ev.EventHash
 	}
 	return out, nil
 }
@@ -236,6 +259,9 @@ func verifyAndCollectEventHashes(events []EventRecord, strictChain bool) ([]stri
 	hashes := make([]string, len(events))
 	var prevHash string
 	for i, ev := range events {
+		if err := verifyRawJSONFields(ev); err != nil {
+			return nil, fmt.Errorf("event %d: %w", i, err)
+		}
 		recomputed, err := ComputeEventHash(ev)
 		if err != nil {
 			return nil, fmt.Errorf("event %d: %w", i, err)
@@ -255,6 +281,39 @@ func verifyAndCollectEventHashes(events []EventRecord, strictChain bool) ([]stri
 		prevHash = recomputed
 	}
 	return hashes, nil
+}
+
+// verifyRawJSONFields catches an edit to an indexed column that did not also
+// rewrite raw_json (or vice versa). Only the string fields the anchor indexes
+// are compared; the hash chain authenticates raw_json itself.
+func verifyRawJSONFields(ev EventRecord) error {
+	if strings.TrimSpace(ev.RawJSON) == "" {
+		return nil
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(ev.RawJSON), &raw); err != nil {
+		return fmt.Errorf("decode raw_json: %w", err)
+	}
+	checks := []struct {
+		key   string
+		value string
+	}{
+		{"event_id", ev.EventID},
+		{"writer_id", ev.WriterID},
+		{"actor_subject", ev.Actor},
+		{"action", ev.Action},
+		{"resource", ev.Resource},
+		{"partition", ev.Partition},
+		{"decision", ev.Outcome},
+		{"prev_hash", ev.PrevHash},
+	}
+	for _, check := range checks {
+		rawValue, _ := raw[check.key].(string)
+		if rawValue != check.value {
+			return fmt.Errorf("%s does not match raw_json: got %q, want %q", check.key, check.value, rawValue)
+		}
+	}
+	return nil
 }
 
 type putObjectAPI interface {

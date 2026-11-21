@@ -1,4 +1,4 @@
-FROM golang:1.26.10 AS build
+FROM golang:1.26.11 AS build
 
 ARG BUILD_VERSION=dev
 ARG BUILD_COMMIT=unknown
@@ -33,6 +33,10 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOFLAGS=-trimpath otelc go build \
 	-ldflags "-s -w -X github.com/radryc/guardian/internal/buildinfo.Version=${BUILD_VERSION} -X github.com/radryc/guardian/internal/buildinfo.Commit=${BUILD_COMMIT} -X github.com/radryc/guardian/internal/buildinfo.BuildTime=${BUILD_TIME}" \
 	-o /out/guardiand ./cmd/guardiand
 
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOFLAGS=-trimpath go build \
+	-ldflags "-s -w -X github.com/radryc/guardian/internal/buildinfo.Version=${BUILD_VERSION} -X github.com/radryc/guardian/internal/buildinfo.Commit=${BUILD_COMMIT} -X github.com/radryc/guardian/internal/buildinfo.BuildTime=${BUILD_TIME}" \
+	-o /out/audit-anchor ./cmd/audit-anchor
+
 FROM alpine:3.21
 
 ARG BUILD_VERSION=dev
@@ -55,6 +59,7 @@ LABEL org.opencontainers.image.revision=${BUILD_COMMIT}
 LABEL org.opencontainers.image.created=${BUILD_TIME}
 
 COPY --from=build /out/guardiand /usr/local/bin/guardiand
+COPY --from=build /out/audit-anchor /usr/local/bin/audit-anchor
 COPY docker/entrypoint.sh /usr/local/bin/guardian-entrypoint
 
 RUN chmod +x /usr/local/bin/guardian-entrypoint
