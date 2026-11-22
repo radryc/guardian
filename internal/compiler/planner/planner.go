@@ -12,6 +12,7 @@ import (
 	"github.com/radryc/guardian/internal/compiler/manifest"
 	"github.com/radryc/guardian/internal/compiler/resolver"
 	"github.com/radryc/guardian/internal/compiler/validator"
+	"github.com/radryc/guardian/internal/compiler/values"
 	assetdomain "github.com/radryc/guardian/internal/domain/asset"
 	intentdomain "github.com/radryc/guardian/internal/domain/intent"
 	partitiondomain "github.com/radryc/guardian/internal/domain/partition"
@@ -62,6 +63,9 @@ func Compile(ctx context.Context, input CompileInput) (*CompiledPartition, error
 	if input.PartitionName != "" && part.Metadata.Name != input.PartitionName {
 		return nil, fmt.Errorf("partition name mismatch: expected %q got %q", input.PartitionName, part.Metadata.Name)
 	}
+	if err := resolvePartition(part); err != nil {
+		return nil, fmt.Errorf("partition values: %w", err)
+	}
 	if err := validator.ValidatePartition(part); err != nil {
 		return nil, err
 	}
@@ -91,6 +95,9 @@ func Compile(ctx context.Context, input CompileInput) (*CompiledPartition, error
 		}
 		if key != "" && parsed.Metadata.Name != key {
 			return nil, fmt.Errorf("intent map key %q does not match metadata.name %q", key, parsed.Metadata.Name)
+		}
+		if err := ApplyValues(part.Spec.Values, parsed); err != nil {
+			return nil, fmt.Errorf("intent %s values: %w", parsed.Metadata.Name, err)
 		}
 		if err := validator.ValidateIntent(parsed, names, nil); err != nil {
 			return nil, fmt.Errorf("intent %s invalid: %w", parsed.Metadata.Name, err)
@@ -166,6 +173,135 @@ func Compile(ctx context.Context, input CompileInput) (*CompiledPartition, error
 	result.IntentOrder = order
 	result.PartitionRevision = revisions.PartitionRevision(input.ConfigVersionID, result.IntentVersions)
 	return result, nil
+}
+
+func resolvePartition(part *partitiondomain.Partition) error {
+	if part == nil || len(part.Spec.Values) == 0 {
+		return nil
+	}
+	vals := part.Spec.Values
+	strings := []*string{
+		&part.Spec.DeletionPolicy,
+		&part.Spec.Reconciliation.Mode,
+		&part.Spec.Reconciliation.Interval,
+		&part.Spec.PrimarySet,
+		&part.Spec.Defaults.TargetPusher,
+		&part.Spec.Defaults.Target.Cluster,
+		&part.Spec.Defaults.Target.Namespace,
+		&part.Spec.Defaults.Observability.AutoInstrument,
+		&part.Spec.Defaults.Observability.ServiceName,
+		&part.Spec.Defaults.Observability.OTLPEndpoint,
+		&part.Spec.Defaults.Observability.CloudWatch,
+		&part.Spec.Defaults.Observability.Instrumentation,
+		&part.Spec.Defaults.Probes.Interval,
+		&part.Spec.Defaults.Probes.Timeout,
+	}
+	for _, field := range strings {
+		resolved, err := values.ResolveString(*field, vals)
+		if err != nil {
+			return err
+		}
+		*field = resolved
+	}
+	var err error
+	if part.Metadata.Labels, err = values.ResolveStringMap(part.Metadata.Labels, vals); err != nil {
+		return err
+	}
+	if part.Spec.Labels, err = values.ResolveStringMap(part.Spec.Labels, vals); err != nil {
+		return err
+	}
+	if part.Spec.Sets, err = values.ResolveStringSlice(part.Spec.Sets, vals); err != nil {
+		return err
+	}
+	if part.Spec.Defaults.Probes.HTTPPaths, err = values.ResolveStringSlice(part.Spec.Defaults.Probes.HTTPPaths, vals); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ApplyValues resolves partition, intent, and asset values on a parsed intent
+// using the precedence partition -> intent -> asset.
+func ApplyValues(partitionValues map[string]any, intent *intentdomain.Intent) error {
+	if intent == nil {
+		return nil
+	}
+	intentValues := values.Merge(partitionValues, intent.Spec.Values)
+	if err := resolveIntent(&intent.Spec, intentValues); err != nil {
+		return err
+	}
+	for i := range intent.Spec.Assets {
+		assetValues := values.Merge(intentValues, intent.Spec.Assets[i].Values)
+		if err := resolveAsset(&intent.Spec.Assets[i], assetValues); err != nil {
+			return fmt.Errorf("asset %s: %w", intent.Spec.Assets[i].Name, err)
+		}
+	}
+	return nil
+}
+
+func resolveIntent(spec *intentdomain.IntentSpec, vals map[string]any) error {
+	if spec == nil || len(vals) == 0 {
+		return nil
+	}
+	strings := []*string{
+		&spec.IntentType,
+		&spec.Implementation,
+		&spec.TargetPusher,
+		&spec.Target.Cluster,
+		&spec.Target.Namespace,
+	}
+	for _, field := range strings {
+		resolved, err := values.ResolveString(*field, vals)
+		if err != nil {
+			return err
+		}
+		*field = resolved
+	}
+	var err error
+	if spec.Joins, err = values.ResolveStringSlice(spec.Joins, vals); err != nil {
+		return err
+	}
+	for i := range spec.Hints {
+		for _, field := range []*string{&spec.Hints[i].Path, &spec.Hints[i].Title, &spec.Hints[i].Description} {
+			resolved, err := values.ResolveString(*field, vals)
+			if err != nil {
+				return err
+			}
+			*field = resolved
+		}
+	}
+	return nil
+}
+
+func resolveAsset(asset *assetdomain.Spec, vals map[string]any) error {
+	if asset == nil || len(vals) == 0 {
+		return nil
+	}
+	var err error
+	if asset.Properties, err = values.ResolveMap(asset.Properties, vals); err != nil {
+		return err
+	}
+	if asset.Payload, err = values.ResolveStringMap(asset.Payload, vals); err != nil {
+		return err
+	}
+	if asset.DependsOn, err = values.ResolveStringSlice(asset.DependsOn, vals); err != nil {
+		return err
+	}
+	if asset.FlowMetricGroups, err = values.ResolveStringSlice(asset.FlowMetricGroups, vals); err != nil {
+		return err
+	}
+	for i := range asset.Hints {
+		for _, field := range []*string{&asset.Hints[i].Path, &asset.Hints[i].Title, &asset.Hints[i].Description} {
+			resolved, err := values.ResolveString(*field, vals)
+			if err != nil {
+				return err
+			}
+			*field = resolved
+		}
+	}
+	if asset.Version, err = values.ResolveString(asset.Version, vals); err != nil {
+		return err
+	}
+	return nil
 }
 
 func defaultObservabilityAsset(defaults partitiondomain.ObservabilityDefaults, intent *intentdomain.Intent) (assetdomain.Spec, bool) {

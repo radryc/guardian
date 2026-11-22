@@ -36,6 +36,10 @@ type Spec struct {
 	// Quota is the partition resource envelope. Profile names refer to
 	// quota_profiles in the repo-managed access policy.
 	Quota *policy.Quota `yaml:"quota,omitempty" json:"quota,omitempty"`
+	// Values are partition-scoped substitutions available to every intent and
+	// asset. Placeholders use ${value.NAME}; intent and asset values override
+	// these entries.
+	Values map[string]any `yaml:"values,omitempty" json:"values,omitempty"`
 }
 
 // IsEnabled reports whether Guardian should act on this partition. The zero

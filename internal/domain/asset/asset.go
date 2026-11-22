@@ -16,6 +16,8 @@ type Spec struct {
 	Payload          map[string]string `yaml:"payload,omitempty" json:"payload,omitempty"`
 	Properties       map[string]any    `yaml:"properties,omitempty" json:"properties,omitempty"`
 	Skip             bool              `yaml:"skip,omitempty" json:"skip,omitempty"`
+	// Values override partition and intent values for this asset's properties.
+	Values map[string]any `yaml:"values,omitempty" json:"values,omitempty"`
 }
 
 type State struct {

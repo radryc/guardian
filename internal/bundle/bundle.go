@@ -92,6 +92,9 @@ func Load(dir string, opts Options) (*Bundle, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := resolveIntentFileValues(partitionManifest.Spec.Values, intentFiles); err != nil {
+		return nil, fmt.Errorf("resolve intent values: %w", err)
+	}
 	if opts.ResolveIntentRefs != nil {
 		if err := opts.ResolveIntentRefs(dir, intentFiles); err != nil {
 			return nil, fmt.Errorf("resolve intent image refs: %w", err)
