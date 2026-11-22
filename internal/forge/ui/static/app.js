@@ -252,6 +252,133 @@ function valuesText(value) {
   return JSON.stringify(value, null, 2);
 }
 
+const VALUES_EXAMPLE = JSON.stringify(
+  {
+    environment: "staging",
+    imageTag: "v1.4.2",
+    replicas: 3,
+  },
+  null,
+  2,
+);
+
+function parseValuesObject(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return {};
+  const parsed = JSON.parse(text);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Overrides must be a JSON object, for example { \"imageTag\": \"v1.4.2\" }.");
+  }
+  return parsed;
+}
+
+function valueType(value) {
+  if (Array.isArray(value)) return "list";
+  if (value === null) return "null";
+  return typeof value;
+}
+
+function valuesTableHtml(values) {
+  const keys = Object.keys(values || {});
+  if (!keys.length) return `<p class="muted small">No overrides defined.</p>`;
+  return `<table class="table values-table">
+    <thead><tr><th>Variable</th><th>Value</th><th>Type</th><th>Use as</th><th></th></tr></thead>
+    <tbody>${keys
+      .sort()
+      .map((key) => {
+        const value = values[key];
+        const shown = typeof value === "object" ? JSON.stringify(value) : String(value);
+        return `<tr><td class="mono">${escapeHtml(key)}</td><td class="mono small">${escapeHtml(shown)}</td>
+          <td class="small">${escapeHtml(valueType(value))}</td><td class="mono small">\${value.${escapeHtml(key)}}</td>
+          <td><button type="button" class="ghost small" data-action="values-remove" data-key="${escapeHtml(key)}">Remove</button></td></tr>`;
+      })
+      .join("")}</tbody></table>`;
+}
+
+function valuesPreviewHtml(raw) {
+  try {
+    return valuesTableHtml(parseValuesObject(raw));
+  } catch (error) {
+    return `<p class="bad small">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+function mergeValues(...maps) {
+  const out = {};
+  for (const map of maps) {
+    for (const [key, value] of Object.entries(map || {})) {
+      const nested = value && typeof value === "object" && !Array.isArray(value);
+      if (nested && out[key] && typeof out[key] === "object" && !Array.isArray(out[key])) {
+        out[key] = mergeValues(out[key], value);
+      } else {
+        out[key] = value;
+      }
+    }
+  }
+  return out;
+}
+
+function intentValuesFor(intentName) {
+  return (state.detail?.intents || []).find((intent) => intent.name === intentName)?.values || {};
+}
+
+function assetValuesFor(intentName, assetName) {
+  return (assetsForIntent(intentName) || []).find((asset) => asset.name === assetName)?.values || {};
+}
+
+function effectiveValueRows(intentName, assetName) {
+  const partition = state.detail?.values || {};
+  const intent = intentValuesFor(intentName);
+  const asset = assetValuesFor(intentName, assetName);
+  const effective = mergeValues(partition, intent, asset);
+  return Object.keys(effective)
+    .sort()
+    .map((key) => {
+      let from = "partition";
+      if (Object.prototype.hasOwnProperty.call(asset, key)) from = "asset";
+      else if (Object.prototype.hasOwnProperty.call(intent, key)) from = "intent";
+      return { key, value: effective[key], from };
+    });
+}
+
+function effectiveValuesHtml(intentName, assetName) {
+  const rows = effectiveValueRows(intentName, assetName);
+  if (!rows.length) return `<p class="muted small">No effective overrides.</p>`;
+  return `<table class="table values-table">
+    <thead><tr><th>Variable</th><th>Effective value</th><th>From</th></tr></thead>
+    <tbody>${rows
+      .map((row) => {
+        const shown = typeof row.value === "object" ? JSON.stringify(row.value) : String(row.value);
+        return `<tr><td class="mono">${escapeHtml(row.key)}</td><td class="mono small">${escapeHtml(shown)}</td>
+          <td class="small">${escapeHtml(row.from)}</td></tr>`;
+      })
+      .join("")}</tbody></table>`;
+}
+
+function updateValuesPreview(form) {
+  if (!form) return;
+  const textarea = form.querySelector("[data-values-input]");
+  const preview = form.querySelector("[data-values-preview]");
+  if (textarea && preview) preview.innerHTML = valuesPreviewHtml(textarea.value);
+  const effective = form.querySelector("[data-effective-values]");
+  if (effective) {
+    const intent = form.querySelector("[data-values-intent]")?.value || "";
+    const asset = form.querySelector("[data-values-asset]")?.value || "";
+    effective.innerHTML = effectiveValuesHtml(intent, asset);
+  }
+}
+
+function syncAssetValueForm(form, resetValues) {
+  if (!form) return;
+  const intent = form.querySelector("[data-values-intent]")?.value || "";
+  const assetSelect = form.querySelector("[data-values-asset]");
+  if (resetValues && assetSelect) assetSelect.innerHTML = assetOptions(intent);
+  const asset = assetSelect?.value || "";
+  const textarea = form.querySelector("[data-values-input]");
+  if (resetValues && textarea) textarea.value = valuesText(assetValuesFor(intent, asset));
+  updateValuesPreview(form);
+}
+
 function quotaDebugText(profile, enforcement) {
   return JSON.stringify(
     {
@@ -284,7 +411,7 @@ function forgeQuotaChanged(control) {
   const form = control && control.closest ? control.closest("form") : null;
   const checked = form ? form.querySelector("[data-quota-profile]:checked") : null;
   const profile = checked ? checked.value : "";
-  const enforcement = form ? form.querySelector("[data-quota-enforcement]")?.value || "" : "";
+  const enforcement = form ? form.querySelector("[data-quota-enforcement]:checked")?.value || "" : "";
   const preview = form ? form.querySelector("[data-quota-preview]") : null;
   const status = form ? form.querySelector("[data-quota-status]") : null;
   const debug = form ? form.querySelector("[data-quota-debug]") : null;
@@ -325,10 +452,11 @@ function viewPartition() {
           <span class="field-label">Profile</span>
           ${quotaChoices(profile)}
         </div>
-        <label>Enforcement<select name="enforcement" data-quota-enforcement onchange="forgeQuotaChanged(this)">
-          <option value="observe" ${enforcement === "observe" ? "selected" : ""}>observe</option>
-          <option value="enforce" ${enforcement === "enforce" ? "selected" : ""}>enforce</option>
-        </select></label>
+        <div class="profile-choices">
+          <span class="field-label">Enforcement</span>
+          <label class="choice"><input type="radio" name="enforcement" value="observe" data-quota-enforcement ${enforcement === "observe" ? "checked" : ""} onchange="forgeQuotaChanged(this)" /> <span>observe — allow traffic, log violations</span></label>
+          <label class="choice"><input type="radio" name="enforcement" value="enforce" data-quota-enforcement ${enforcement === "enforce" ? "checked" : ""} onchange="forgeQuotaChanged(this)" /> <span>enforce — reject requests over the limit</span></label>
+        </div>
         <pre class="yaml" data-quota-preview>${escapeHtml(quotaPreviewText(profile))}</pre>
         <p class="muted small" data-quota-status>${profile ? `Current profile: ${escapeHtml(profile)}` : "No profile selected."}</p>
         <details class="debug">
@@ -341,13 +469,17 @@ function viewPartition() {
         </div>
       </form>
       <form class="panel form" data-form="values">
-        <h2>Partition values</h2>
-        <p class="muted small">Define <code>${"${value.NAME}"}</code> placeholders for this partition.
-        Intent values override these; asset values override both.</p>
-        <label>Values JSON<textarea name="values" rows="8" spellcheck="false" placeholder='{"imageTag":"v1"}'>${escapeHtml(valuesText(state.detail.values))}</textarea></label>
+        <h2>Partition value overrides</h2>
+        <p class="muted small">Named values for every intent and asset in this partition.
+        Define a key here, then reference it as <code>${"${value.imageTag}"}</code> in any field, for example
+        <code>image: ghcr.io/acme/api:${"${value.imageTag}"}</code>.
+        Intent overrides win over these; asset overrides win over both.</p>
+        <label>Overrides (JSON object)<textarea name="values" rows="8" spellcheck="false" data-values-input placeholder='{"environment":"staging","imageTag":"v1.4.2","replicas":3}'>${escapeHtml(valuesText(state.detail.values))}</textarea></label>
+        <div data-values-preview>${valuesPreviewHtml(valuesText(state.detail.values))}</div>
         <div class="row">
-          <button type="submit">Save values</button>
-          <button type="button" class="ghost" data-action="clear-partition-values" ${state.detail.values ? "" : "disabled"}>Clear</button>
+          <button type="submit">Save partition overrides</button>
+          <button type="button" class="ghost" data-action="values-example">Insert example</button>
+          <button type="button" class="ghost" data-action="clear-partition-values" ${state.detail.values ? "" : "disabled"}>Remove all partition overrides</button>
         </div>
       </form>
     </div>
@@ -357,10 +489,14 @@ function viewPartition() {
           <h2>Intent ${escapeHtml(intent.name)}</h2>
           <pre class="yaml">${escapeHtml(intent.yaml)}</pre>
           <form class="form" data-form="values" data-intent="${escapeHtml(intent.name)}">
-            <label>Intent values JSON<textarea name="values" rows="5" spellcheck="false" placeholder='{"replicas":3}'>${escapeHtml(valuesText(intent.values))}</textarea></label>
+            <h3>Intent value overrides</h3>
+            <p class="muted small">Applied to this intent and all of its assets. A key here replaces the partition override with the same name.</p>
+            <label>Overrides (JSON object)<textarea name="values" rows="5" spellcheck="false" data-values-input placeholder='{"replicas":3}'>${escapeHtml(valuesText(intent.values))}</textarea></label>
+            <div data-values-preview>${valuesPreviewHtml(valuesText(intent.values))}</div>
             <div class="row">
-              <button type="submit">Save intent values</button>
-              <button type="button" class="ghost" data-action="clear-intent-values" data-intent="${escapeHtml(intent.name)}" ${intent.values ? "" : "disabled"}>Clear</button>
+              <button type="submit">Save intent overrides</button>
+              <button type="button" class="ghost" data-action="values-example">Insert example</button>
+              <button type="button" class="ghost" data-action="clear-intent-values" data-intent="${escapeHtml(intent.name)}" ${intent.values ? "" : "disabled"}>Remove all intent overrides</button>
             </div>
           </form>
         </div>`,
@@ -525,6 +661,7 @@ function viewAssets() {
   const selectedType = types.includes(state.assetType) ? state.assetType : types[0] || "Compute";
   const firstIntent = (state.detail.intents || [])[0]?.name || "";
   const firstAssets = assetsForIntent(firstIntent);
+  const firstAsset = firstAssets[0]?.name || "";
   return `${hasIntents
       ? ""
       : `<div class="panel">
@@ -577,11 +714,18 @@ function viewAssets() {
         <button type="submit" ${hasIntents ? "" : "disabled"}>Attach reference</button>
       </form>
       <form class="panel form" data-form="values" data-level="asset">
-        <h2>Asset values</h2>
-        <label>Intent<select name="intent">${intentOptions()}</select></label>
-        <label>Asset name<input name="asset" required placeholder="api" /></label>
-        <label>Values JSON<textarea name="values" rows="5" spellcheck="false" placeholder='{"replicas":5}'></textarea></label>
-        <button type="submit" ${hasIntents ? "" : "disabled"}>Save asset values</button>
+        <h2>Asset value overrides</h2>
+        <p class="muted small">Applied only to the selected asset. A key here replaces the intent and partition override with the same name.</p>
+        <label>Intent<select name="intent" data-values-intent>${intentOptions()}</select></label>
+        <label>Asset<select name="asset" data-values-asset>${assetOptions(firstIntent)}</select></label>
+        <label>Overrides (JSON object)<textarea name="values" rows="5" spellcheck="false" data-values-input placeholder='{"replicas":5}'>${escapeHtml(valuesText(assetValuesFor(firstIntent, firstAsset)))}</textarea></label>
+        <div data-values-preview>${valuesPreviewHtml(valuesText(assetValuesFor(firstIntent, firstAsset)))}</div>
+        <h3>Effective overrides (saved)</h3>
+        <div data-effective-values>${effectiveValuesHtml(firstIntent, firstAsset)}</div>
+        <div class="row">
+          <button type="submit" ${hasIntents && firstAsset ? "" : "disabled"}>Save asset overrides</button>
+          <button type="button" class="ghost" data-action="clear-asset-values" ${Object.keys(assetValuesFor(firstIntent, firstAsset)).length ? "" : "disabled"}>Remove all asset overrides</button>
+        </div>
       </form>
       <form class="panel form" data-form="connect">
         <h2>Connect assets</h2>
@@ -708,6 +852,11 @@ async function refreshAll() {
   render();
 }
 
+document.addEventListener("input", (event) => {
+  const input = event.target.closest("[data-values-input]");
+  if (input) updateValuesPreview(input.closest("form"));
+});
+
 document.addEventListener("change", (event) => {
   const select = event.target.closest("[data-asset-type]");
   if (select) {
@@ -717,6 +866,16 @@ document.addEventListener("change", (event) => {
     if (fields) fields.innerHTML = renderAssetFields(select.value);
     const title = form?.querySelector("[data-asset-title]");
     if (title) title.textContent = `Add ${select.value}`;
+    return;
+  }
+  const valuesIntent = event.target.closest("[data-values-intent]");
+  if (valuesIntent) {
+    syncAssetValueForm(valuesIntent.closest("form"), true);
+    return;
+  }
+  const valuesAsset = event.target.closest("[data-values-asset]");
+  if (valuesAsset) {
+    syncAssetValueForm(valuesAsset.closest("form"), false);
     return;
   }
   const connectSelect = event.target.closest("[data-connect-intent]");
@@ -751,7 +910,30 @@ document.addEventListener("click", async (event) => {
       } else if (action === "reload-profiles") {
         await loadCatalog();
         render();
+      } else if (action === "values-remove") {
+        const form = button.closest("form");
+        const input = form?.querySelector("[data-values-input]");
+        const key = button.dataset.key || "";
+        if (input && key) {
+          try {
+            const values = parseValuesObject(input.value);
+            delete values[key];
+            input.value = valuesText(values);
+            updateValuesPreview(form);
+            toast(`removed ${key} (click Save to apply)`, "info");
+          } catch (error) {
+            toast(error.message, "bad");
+          }
+        }
+      } else if (action === "values-example") {
+        const form = button.closest("form");
+        const input = form?.querySelector("[data-values-input]");
+        if (input) {
+          input.value = VALUES_EXAMPLE;
+          updateValuesPreview(form);
+        }
       } else if (action === "clear-partition-values") {
+        if (!window.confirm("Remove all partition overrides?")) return;
         await api("/api/values", {
           method: "POST",
           body: JSON.stringify({ partition: state.selected, clear: true }),
@@ -759,7 +941,21 @@ document.addEventListener("click", async (event) => {
         toast("partition values cleared", "good");
         await loadDetail(state.selected);
         render();
+      } else if (action === "clear-asset-values") {
+        const form = button.closest("form");
+        const intent = form?.querySelector("[data-values-intent]")?.value || "";
+        const asset = form?.querySelector("[data-values-asset]")?.value || "";
+        if (!intent || !asset) return;
+        if (!window.confirm(`Remove all overrides for asset ${asset}?`)) return;
+        await api("/api/values", {
+          method: "POST",
+          body: JSON.stringify({ partition: state.selected, intent, asset, clear: true }),
+        });
+        toast("asset overrides removed", "good");
+        await loadDetail(state.selected);
+        render();
       } else if (action === "clear-intent-values") {
+        if (!window.confirm("Remove all intent overrides?")) return;
         await api("/api/values", {
           method: "POST",
           body: JSON.stringify({ partition: state.selected, intent: button.dataset.intent, clear: true }),
@@ -867,15 +1063,10 @@ document.addEventListener("submit", async (event) => {
     } else if (kind === "values") {
       const raw = String(data.values || "").trim();
       let vals = {};
-      if (raw) {
-        try {
-          vals = JSON.parse(raw);
-        } catch (error) {
-          throw new Error(`values: ${error.message}`);
-        }
-      }
-      if (vals === null || typeof vals !== "object" || Array.isArray(vals)) {
-        throw new Error("values must be a JSON object");
+      try {
+        vals = parseValuesObject(raw);
+      } catch (error) {
+        throw new Error(`overrides: ${error.message}`);
       }
       const intent = form.dataset.intent || String(data.intent || "");
       const asset = String(data.asset || "");
@@ -889,7 +1080,7 @@ document.addEventListener("submit", async (event) => {
           clear: raw === "",
         }),
       });
-      toast(raw === "" ? "values cleared" : "values saved", "good");
+      toast(raw === "" ? "overrides cleared" : "overrides saved", "good");
       await loadDetail(state.selected);
       render();
     } else if (kind === "quota") {
