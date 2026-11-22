@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/radryc/guardian/internal/cli/command"
@@ -14,6 +15,7 @@ import (
 	"github.com/radryc/guardian/internal/forge/author"
 	"github.com/radryc/guardian/internal/forge/repoinit"
 	"github.com/radryc/guardian/internal/forge/workspace"
+	"gopkg.in/yaml.v3"
 )
 
 func partitionNewCommand() *command.Command {
@@ -90,6 +92,8 @@ func assetAddCommand() *command.Command {
 	intent := flags.String("intent", "", "intent name")
 	assetType := flags.String("type", "Compute", "asset type")
 	name := flags.String("name", "", "asset name")
+	propertiesJSON := flags.String("properties", "", "asset properties as a JSON or YAML object")
+	propertiesFile := flags.String("properties-file", "", "path to a JSON or YAML file with asset properties")
 	image := flags.String("image", "", "container image (Compute)")
 	replicas := flags.Int("replicas", 0, "replica count (Compute)")
 	port := flags.Int("port", 0, "container port (Compute)")
@@ -104,19 +108,40 @@ func assetAddCommand() *command.Command {
 			return fmt.Errorf("--name is required")
 		}
 		properties := map[string]any{}
+		if *propertiesFile != "" && *propertiesJSON != "" {
+			return fmt.Errorf("pass either --properties or --properties-file, not both")
+		}
+		if *propertiesFile != "" {
+			data, err := os.ReadFile(*propertiesFile)
+			if err != nil {
+				return err
+			}
+			if err := yaml.Unmarshal(data, &properties); err != nil {
+				return fmt.Errorf("parse %s: %w", *propertiesFile, err)
+			}
+		}
+		if *propertiesJSON != "" {
+			if err := yaml.Unmarshal([]byte(*propertiesJSON), &properties); err != nil {
+				return fmt.Errorf("parse --properties: %w", err)
+			}
+		}
 		switch *assetType {
 		case "Compute":
-			if strings.TrimSpace(*image) == "" {
-				return fmt.Errorf("--image is required for a Compute asset")
+			if *image != "" {
+				properties["image"] = *image
 			}
-			properties["image"] = *image
+			if imageValue, _ := properties["image"].(string); strings.TrimSpace(imageValue) == "" {
+				return fmt.Errorf("--image (or properties.image) is required for a Compute asset")
+			}
 			if *replicas > 0 {
 				properties["replicas"] = *replicas
 			}
 			if *port > 0 {
-				properties["ports"] = []map[string]any{{
-					"name": "http", "containerPort": *port, "protocol": "TCP",
-				}}
+				if _, ok := properties["ports"]; !ok {
+					properties["ports"] = []map[string]any{{
+						"name": "http", "containerPort": *port, "protocol": "TCP",
+					}}
+				}
 			}
 		case "Config":
 			if *content != "" {
@@ -172,10 +197,21 @@ func probeAddCommand() *command.Command {
 	name := flags.String("name", "", "probe asset name (default <target>-probe)")
 	target := flags.String("asset", "", "target asset to probe")
 	url := flags.String("url", "", "explicit URL to probe")
+	address := flags.String("address", "", "explicit host:port or hostname")
+	probeType := flags.String("type", "http", "probe type: http|https|tcp|grpc|dns|tls")
 	path := flags.String("path", "", "HTTP path")
+	method := flags.String("method", "", "HTTP method")
 	port := flags.Int("port", 0, "port")
 	interval := flags.String("interval", "30s", "probe interval")
-	return &command.Command{Description: "Add a Probe asset", Flags: flags, Run: func(ctx context.Context, _ []string) error {
+	timeout := flags.String("timeout", "", "per-step timeout, for example 3s")
+	retries := flags.Int("retries", -1, "retries before reporting down")
+	headers := flags.String("headers", "", "request headers as a JSON object")
+	expectStatus := flags.String("expect-status", "", "comma-separated accepted HTTP status codes")
+	steps := flags.String("steps", "", "ordered synthetic journey steps as JSON")
+	stepsFile := flags.String("steps-file", "", "path to a JSON or YAML journey steps list")
+	propertiesJSON := flags.String("properties", "", "additional probe properties as a JSON or YAML object")
+	insecure := flags.Bool("insecure-skip-verify", false, "disable TLS certificate verification")
+	return &command.Command{Description: "Add a Probe asset, including a multi-step journey", Flags: flags, Run: func(ctx context.Context, _ []string) error {
 		dir, err := resolvePartitionDir(ctx, *root, *partition)
 		if err != nil {
 			return err
@@ -191,20 +227,85 @@ func probeAddCommand() *command.Command {
 			}
 			probeName = base + "-probe"
 		}
-		properties := map[string]any{"type": "http"}
+		properties := map[string]any{}
+		if *propertiesJSON != "" {
+			if err := yaml.Unmarshal([]byte(*propertiesJSON), &properties); err != nil {
+				return fmt.Errorf("parse --properties: %w", err)
+			}
+		}
+		properties["type"] = *probeType
 		if *url != "" {
 			properties["url"] = *url
 		} else {
 			properties["target"] = *target
 		}
+		if *address != "" {
+			properties["address"] = *address
+		}
 		if *path != "" {
 			properties["path"] = *path
+		}
+		if *method != "" {
+			properties["method"] = *method
 		}
 		if *port > 0 {
 			properties["port"] = *port
 		}
 		if *interval != "" {
 			properties["interval"] = *interval
+		}
+		if *timeout != "" {
+			properties["timeout"] = *timeout
+		}
+		if *retries >= 0 {
+			properties["retries"] = *retries
+		}
+		if *insecure {
+			properties["insecureSkipVerify"] = true
+		}
+		if *headers != "" {
+			var parsed map[string]any
+			if err := yaml.Unmarshal([]byte(*headers), &parsed); err != nil {
+				return fmt.Errorf("parse --headers: %w", err)
+			}
+			properties["headers"] = parsed
+		}
+		if *expectStatus != "" {
+			statuses := []int{}
+			for _, item := range strings.Split(*expectStatus, ",") {
+				item = strings.TrimSpace(item)
+				if item == "" {
+					continue
+				}
+				status, err := strconv.Atoi(item)
+				if err != nil {
+					return fmt.Errorf("invalid --expect-status %q", item)
+				}
+				statuses = append(statuses, status)
+			}
+			if len(statuses) > 0 {
+				properties["expectStatus"] = statuses
+			}
+		}
+		if *steps != "" && *stepsFile != "" {
+			return fmt.Errorf("pass either --steps or --steps-file, not both")
+		}
+		var journeySteps any
+		if *stepsFile != "" {
+			data, err := os.ReadFile(*stepsFile)
+			if err != nil {
+				return err
+			}
+			if err := yaml.Unmarshal(data, &journeySteps); err != nil {
+				return fmt.Errorf("parse %s: %w", *stepsFile, err)
+			}
+		} else if *steps != "" {
+			if err := yaml.Unmarshal([]byte(*steps), &journeySteps); err != nil {
+				return fmt.Errorf("parse --steps: %w", err)
+			}
+		}
+		if journeySteps != nil {
+			properties["steps"] = journeySteps
 		}
 		assetPath, err := author.AddProbe(dir, *intent, assetdomain.Spec{
 			Type: "Probe", Name: probeName, Properties: properties,

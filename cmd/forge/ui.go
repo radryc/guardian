@@ -36,6 +36,8 @@ func uiCommand() *command.Command {
 	routerAddr := flags.String("monofs-router", firstEnv("MONOFS_ROUTER", "127.0.0.1:9090"), "MonoFS router gRPC address")
 	monofsToken := flags.String("monofs-token", os.Getenv("MONOFS_TOKEN"), "MonoFS token")
 	principal := flags.String("monofs-principal-id", "forge", "MonoFS principal id")
+	proxyAuthHeader := flags.String("proxy-auth-header", firstEnv("FORGE_PROXY_AUTH_HEADER", ""), "trust this identity header from a loopback reverse proxy (SSO)")
+	allowedOrigins := flags.String("allowed-origins", firstEnv("FORGE_ALLOWED_ORIGINS", ""), "comma-separated browser origins allowed to POST through the proxy")
 
 	return &command.Command{
 		Description: "Open the local Forge workbench in a browser",
@@ -128,6 +130,7 @@ func uiCommand() *command.Command {
 
 			server, err := api.New(api.Options{
 				Root: *root, Token: sessionToken, Submit: submit, DisplayKeys: displayKeys,
+				ProxyAuthHeader: *proxyAuthHeader, AllowedOrigins: splitCSV(*allowedOrigins),
 			})
 			if err != nil {
 				return err
@@ -138,6 +141,9 @@ func uiCommand() *command.Command {
 			}
 			url := fmt.Sprintf("http://%s/?token=%s", addr, sessionToken)
 			fmt.Printf("Forge UI listening on %s\n", url)
+			if strings.TrimSpace(*proxyAuthHeader) != "" {
+				fmt.Printf("proxy SSO: trusting %s from loopback requests\n", strings.TrimSpace(*proxyAuthHeader))
+			}
 			if !strings.HasPrefix(addr, "127.0.0.1") && !strings.HasPrefix(addr, "[::1]") {
 				fmt.Fprintln(os.Stderr, "warning: the UI is not bound to loopback; the session token is the only access control")
 			}

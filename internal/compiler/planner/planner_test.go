@@ -163,6 +163,110 @@ spec:
 
 // TestCompileIntentCycle verifies that mutually-joined intents produce a cycle
 // error rather than a silent bad ordering.
+func TestCompileResolvesValuePrecedence(t *testing.T) {
+	config := []byte(`
+apiVersion: guardian/v1alpha1
+kind: Partition
+metadata:
+  name: demo
+spec:
+  values:
+    cluster: local
+    imageTag: v1
+    replicas: 1
+  deletionPolicy: orphan
+  reconciliation:
+    mode: auto
+    interval: 30s
+`)
+	intents := map[string][]byte{
+		"api": []byte(`
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: api
+spec:
+  targetPusher: local
+  target:
+    cluster: ${value.cluster}
+  values:
+    replicas: 3
+  assets:
+    - type: Compute
+      name: app
+      values:
+        replicas: 5
+      properties:
+        image: ghcr.io/acme/api:${value.imageTag}
+        replicas: ${value.replicas}
+        env:
+          TAG: ${value.imageTag}
+`),
+	}
+	compiled, err := Compile(context.Background(), CompileInput{
+		PartitionName:    "demo",
+		ConfigContent:    config,
+		IntentContents:   intents,
+		IntentVersionIDs: map[string]string{"api": "v-api"},
+		ConfigVersionID:  "v-config",
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	intent := compiled.Intents["api"]
+	if intent.Spec.Spec.Target.Cluster != "local" {
+		t.Fatalf("cluster = %q", intent.Spec.Spec.Target.Cluster)
+	}
+	asset := intent.Spec.Spec.Assets[0]
+	if asset.Properties["image"] != "ghcr.io/acme/api:v1" {
+		t.Fatalf("image = %v", asset.Properties["image"])
+	}
+	if replicas, ok := asset.Properties["replicas"].(int); !ok || replicas != 5 {
+		t.Fatalf("replicas = %#v", asset.Properties["replicas"])
+	}
+	env, _ := asset.Properties["env"].(map[string]any)
+	if env["TAG"] != "v1" {
+		t.Fatalf("env = %#v", env)
+	}
+}
+
+func TestCompileRejectsUnknownValue(t *testing.T) {
+	config := []byte(`
+apiVersion: guardian/v1alpha1
+kind: Partition
+metadata:
+  name: demo
+spec:
+  deletionPolicy: orphan
+  reconciliation: {mode: auto, interval: 30s}
+`)
+	intents := map[string][]byte{
+		"api": []byte(`
+apiVersion: guardian/v1alpha1
+kind: Intent
+metadata:
+  name: api
+spec:
+  targetPusher: local
+  assets:
+    - type: Compute
+      name: app
+      properties:
+        image: repo:${value.missing}
+`),
+	}
+	_, err := Compile(context.Background(), CompileInput{
+		PartitionName:    "demo",
+		ConfigContent:    config,
+		IntentContents:   intents,
+		IntentVersionIDs: map[string]string{"api": "v-api"},
+		ConfigVersionID:  "v-config",
+	})
+	if err == nil {
+		t.Fatal("expected unknown value error")
+	}
+}
+
 func TestCompileIntentCycle(t *testing.T) {
 	cfg := []byte(`
 apiVersion: guardian/v1alpha1

@@ -44,4 +44,6 @@ type IntentSpec struct {
 	Locked         bool                   `yaml:"locked" json:"locked"`
 	Hints          []assetdomain.Hint     `yaml:"hints,omitempty" json:"hints,omitempty"`
 	Assets         []AssetSpec            `yaml:"assets" json:"assets"`
+	// Values override partition values for this intent and its assets.
+	Values map[string]any `yaml:"values,omitempty" json:"values,omitempty"`
 }
