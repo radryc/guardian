@@ -43,6 +43,16 @@ func main() {
 		err = runGroup(ctx, "partition", map[string]*command.Command{"new": partitionNewCommand()}, os.Args[2:])
 	case "intent":
 		err = runGroup(ctx, "intent", map[string]*command.Command{"new": intentNewCommand()}, os.Args[2:])
+	case "quota":
+		err = runGroup(ctx, "quota", map[string]*command.Command{
+			"profiles": quotaProfilesCommand(), "show": quotaShowCommand(), "set": quotaSetCommand(),
+		}, os.Args[2:])
+	case "access":
+		err = runGroup(ctx, "access", map[string]*command.Command{
+			"show": accessShowCommand(), "set": accessSetCommand(), "template": accessTemplateCommand(),
+		}, os.Args[2:])
+	case "values":
+		err = runGroup(ctx, "values", map[string]*command.Command{"show": valuesShowCommand(), "set": valuesSetCommand()}, os.Args[2:])
 	case "asset":
 		err = runGroup(ctx, "asset", map[string]*command.Command{"add": assetAddCommand(), "connect": assetConnectCommand()}, os.Args[2:])
 	case "probe":
@@ -118,9 +128,17 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  forge discover [--root PATH] [--out FILE] [--format text|json]")
 	fmt.Fprintln(os.Stderr, "  forge partition new --name NAME")
 	fmt.Fprintln(os.Stderr, "  forge intent new --partition P --name I --pusher PUSHER [--cluster C] [--namespace N]")
-	fmt.Fprintln(os.Stderr, "  forge asset add --partition P --intent I --type T --name N [--image IMG]")
+	fmt.Fprintln(os.Stderr, "  forge quota profiles")
+	fmt.Fprintln(os.Stderr, "  forge quota show --partition P")
+	fmt.Fprintln(os.Stderr, "  forge quota set --partition P [--file F | --json J | --profile NAME] [--clear]")
+	fmt.Fprintln(os.Stderr, "  forge access show --partition P")
+	fmt.Fprintln(os.Stderr, "  forge access set --partition P --file F")
+	fmt.Fprintln(os.Stderr, "  forge access template --partition P")
+	fmt.Fprintln(os.Stderr, "  forge values show --partition P [--intent I] [--asset A]")
+	fmt.Fprintln(os.Stderr, "  forge values set --partition P [--intent I] [--asset A] --file F [--clear]")
+	fmt.Fprintln(os.Stderr, "  forge asset add --partition P --intent I --type T --name N [--image IMG] [--properties JSON]")
 	fmt.Fprintln(os.Stderr, "  forge asset connect --partition P --intent I --from A --to B")
-	fmt.Fprintln(os.Stderr, "  forge probe add --partition P --intent I --asset A --path /healthz")
+	fmt.Fprintln(os.Stderr, "  forge probe add --partition P --intent I --asset A [--type T] [--steps JSON]")
 	fmt.Fprintln(os.Stderr, "  forge secret ref --partition P --intent I --asset A --env KEY --ref REF")
 	fmt.Fprintln(os.Stderr, "  forge alert suggest --partition P [--write]")
 	fmt.Fprintln(os.Stderr, "  forge repo init --name NAME [--source URL] [--partition P]\n  forge repo adopt --partition P [--out DIR]")

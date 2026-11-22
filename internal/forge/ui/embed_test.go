@@ -13,8 +13,12 @@ func TestEmbeddedUI(t *testing.T) {
 		want string
 	}{
 		{"/", "Forge"},
+		{"/", "themeButton"},
+		{"/", "themeMenu"},
 		{"/app.js", "function api"},
+		{"/app.js", "initTheme"},
 		{"/app.css", "--accent"},
+		{"/app.css", `:root[data-theme="light"]`},
 	}
 	for _, tc := range cases {
 		recorder := httptest.NewRecorder()

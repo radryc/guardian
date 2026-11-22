@@ -160,6 +160,20 @@ button.ghost { background: transparent; border-color: var(--border); color: var(
 .form input:focus, .form select:focus, .form textarea:focus {
   outline: none; border-color: #2f5a86;
 }
+.profile-choices { display: flex; flex-direction: column; gap: 6px; }
+.profile-choices .field-label { color: var(--muted); font-size: 12px; }
+.choice {
+  display: flex; align-items: center; gap: 8px; padding: 7px 9px;
+  border: 1px solid var(--border); border-radius: 8px; cursor: pointer; font-size: 12px;
+}
+.choice:hover { border-color: #2f5a86; }
+.choice:has(input:checked) { border-color: var(--accent); background: rgba(94, 234, 212, 0.08); }
+.choice input { accent-color: var(--accent); }
+.debug summary { color: var(--muted); cursor: pointer; font-size: 11px; }
+.debug pre {
+  margin: 6px 0 0; padding: 8px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--panel-2); font-family: var(--mono); font-size: 11px; overflow: auto; max-height: 220px;
+}
 .row { display: flex; gap: 10px; }
 .row > * { flex: 1; }
 
@@ -192,6 +206,100 @@ a { color: var(--accent-2); }
 .toast.good { border-color: #1f6a52; }
 .toast.bad { border-color: #7a2f42; }
 .toast.warn { border-color: #7a6326; }
+
+.topbar-actions { display: flex; align-items: center; gap: 10px; position: relative; }
+.theme-control { position: relative; }
+.theme-button {
+  width: 38px; height: 38px; padding: 0; display: grid; place-items: center;
+  background: var(--panel); border-color: var(--border); color: var(--muted);
+}
+.theme-button:hover { color: var(--text); }
+.theme-button svg { width: 18px; height: 18px; }
+.theme-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
+  min-width: 150px; padding: 6px; display: flex; flex-direction: column; gap: 2px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35);
+}
+.theme-menu button {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 8px 10px; border: 0; border-radius: 7px; background: transparent;
+  color: var(--text); font-weight: 500; text-align: left;
+}
+.theme-menu button:hover { background: var(--panel-2); }
+.theme-menu .check { opacity: 0; color: var(--accent); font-weight: 700; }
+.theme-menu button.active .check { opacity: 1; }
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f7fc;
+  --panel: #ffffff;
+  --panel-2: #eef2f8;
+  --border: #d6deea;
+  --text: #172033;
+  --muted: #5b6b82;
+  --accent: #0f766e;
+  --accent-2: #2563eb;
+  --good: #047857;
+  --warn: #b45309;
+  --bad: #be123c;
+}
+
+:root[data-theme="light"] body {
+  background: radial-gradient(1200px 800px at 80% -10%, #e4edff 0%, var(--bg) 55%);
+}
+:root[data-theme="light"] .sidebar {
+  background: linear-gradient(180deg, #ffffff, #eef2f8);
+}
+:root[data-theme="light"] .nav button:hover,
+:root[data-theme="light"] .partition:hover {
+  background: #e6eef9;
+}
+:root[data-theme="light"] .nav button.active {
+  background: #e2ecfb;
+  border-color: #bcd2f0;
+}
+:root[data-theme="light"] .partition.selected {
+  background: #dcf5f0;
+  border-color: #99d9cf;
+}
+:root[data-theme="light"] .badge {
+  background: #dcf5f0;
+  border-color: #99d9cf;
+}
+:root[data-theme="light"] button {
+  border-color: #b8cbe4;
+  background: linear-gradient(180deg, #ffffff, #e8f0fa);
+  color: var(--text);
+}
+:root[data-theme="light"] button:hover { border-color: #7ea6d4; }
+:root[data-theme="light"] button.ghost { background: transparent; }
+:root[data-theme="light"] .panel {
+  background: linear-gradient(180deg, #ffffff, #f7f9fd);
+}
+:root[data-theme="light"] .form input,
+:root[data-theme="light"] .form select,
+:root[data-theme="light"] .form textarea {
+  background: #ffffff;
+}
+:root[data-theme="light"] .form input:focus,
+:root[data-theme="light"] .form select:focus,
+:root[data-theme="light"] .form textarea:focus {
+  border-color: #7ea6d4;
+}
+:root[data-theme="light"] .yaml {
+  background: #f8fafc;
+}
+:root[data-theme="light"] .table td { border-bottom-color: #e6ecf4; }
+:root[data-theme="light"] .toast {
+  background: #ffffff;
+  border-color: #c3d3e8;
+  box-shadow: 0 12px 40px rgba(22, 32, 50, 0.15);
+}
+:root[data-theme="light"] .theme-menu {
+  box-shadow: 0 14px 40px rgba(22, 32, 50, 0.15);
+}
+:root[data-theme="light"] .brand-mark { color: #ffffff; }
 
 @media (max-width: 980px) {
   .shell { grid-template-columns: 1fr; }

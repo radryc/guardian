@@ -10,6 +10,7 @@ is a proposal. Merging at the forge is what leads to deployment.
 - Design: [`../design/forge.md`](../design/forge.md)
 - Enforcement model: [`enforcement.md`](enforcement.md)
 - Diagnostic codes: [`codes.md`](codes.md)
+- Reverse-proxy SSO: [`sso.md`](sso.md)
 
 ## Build
 
@@ -38,10 +39,23 @@ forge intent new --root . --partition checkout --name api \
   --pusher k8s-main --cluster k8s-main --namespace checkout
 forge asset add --root . --partition checkout --intent api \
   --type Compute --name api --image ghcr.io/acme/api:1 --port 8080
+forge asset add --root . --partition checkout --intent api \
+  --type Compute --name api \
+  --properties '{"image":"ghcr.io/acme/api:1","env":{"LOG_LEVEL":"info"},"resources":{"requests":{"cpu":"100m","memory":"128Mi"}}}'
 forge probe add --root . --partition checkout --intent api \
   --asset api --path /healthz
+forge probe add --root . --partition checkout --intent api \
+  --name checkout-journey --asset api --type http \
+  --steps '[{"name":"read","method":"GET","path":"/healthz"},{"name":"update","method":"PUT","path":"/items/${id}","expectStatus":[200]}]'
 forge secret ref --root . --partition checkout --intent api \
   --asset api --env DATABASE_URL --ref monofs-secret://checkout/db
+forge quota set --root . --partition checkout --profile medium --enforcement enforce
+forge quota profiles --root .   # small, small-plus, medium, medium-plus, large, xlarge + custom
+forge values set --root . --partition checkout --json '{"imageTag":"v1"}'
+forge values set --root . --partition checkout --intent api --json '{"replicas":3}'
+forge values set --root . --partition checkout --intent api --asset api --json '{"replicas":5}'
+forge access template --partition checkout > access.yaml
+forge access set --root . --partition checkout --file access.yaml
 forge alert suggest --root . --partition checkout --write
 
 # 4. Verify and preview.
@@ -69,8 +83,11 @@ forge ui --root .
 | `forge discover` | Scan for Dockerfiles, compose services, Kubernetes workloads, and runtime files; write `.forge/profile.json` |
 | `forge partition new` | Create `partitions/<name>/config.yaml` and register the partition binding in `.guardian/config.yaml` (use `--no-bind` to skip) |
 | `forge intent new` | Create an intent |
-| `forge asset add` / `connect` | Append an asset or a `dependsOn` edge |
-| `forge probe add` | Add a Probe targeting an existing asset |
+| `forge asset add` / `connect` | Append an asset or a `dependsOn` edge. `dependsOn` must reference an asset in the same intent; use intent `joins` for cross-intent ordering. `--properties` / `--properties-file` accept the full catalog property set for any asset type |
+| `forge probe add` | Add a Probe or a multi-step synthetic journey (`--type`, `--steps` / `--steps-file`, `--headers`, `--expect-status`) |
+| `forge quota profiles` / `show` / `set` | List predefined profiles, show the current quota, or select a profile for `spec.quota` |
+| `forge values show` / `set` | Read or write `${value.NAME}` values at partition, intent, or asset level |
+| `forge access show` / `set` / `template` | Author the partition-scoped `access.yaml`; validation enforces that grants stay inside the partition |
 | `forge secret ref` | Point a sensitive env var at a secret reference (never a value) |
 | `forge alert suggest` | Generate a starter alert group with canonical metric labels |
 | `forge validate` | Layered offline validation with stable `FGE` codes |
@@ -93,6 +110,8 @@ forge ui --root .
 | `MONOFS_TOKEN` | Same |
 | `MONOFS_GITHUB_TOKEN` / `GITHUB_TOKEN` | `doctor` branch-protection check |
 | `MONOFS_GITLAB_BASE_URL` | MonoFS-side PR detection for self-hosted GitLab |
+| `FORGE_PROXY_AUTH_HEADER` | `ui`: identity header trusted from a loopback reverse proxy |
+| `FORGE_ALLOWED_ORIGINS` | `ui`: comma-separated public origins allowed to POST through the proxy |
 
 ## Safety
 
@@ -110,6 +129,10 @@ forge ui --root .
   can also publish from a MonoFS mount.
 - Writes are atomic and LF-only. Untouched files are never reformatted.
 - The UI binds loopback with a one-time session token.
+- For shared access, terminate SSO at a reverse proxy and pass its identity
+  header to Forge; see [`sso.md`](sso.md).
+- The top-bar theme menu offers **System**, **Light**, and **Dark**; the choice
+  is stored in `localStorage` and System follows the OS preference.
 
 
 ## Create a partition from an empty repository
@@ -123,6 +146,66 @@ forge ui --root .
   `--partition` to add a binding later.
 - `forge ui` has a **+ New partition** action that calls the same API
   (`POST /api/partition`).
+
+## Value replacement
+
+Manifests can use placeholders anywhere a string is accepted:
+
+```yaml
+# partitions/checkout/config.yaml
+spec:
+  values:
+    imageTag: v1
+    replicas: 2
+
+# partitions/checkout/intents/api.yaml
+spec:
+  values:
+    replicas: 3
+  assets:
+    - type: Compute
+      name: api
+      values:
+        replicas: 5
+      properties:
+        image: ghcr.io/acme/api:${value.imageTag}
+        replicas: ${value.replicas}
+```
+
+- Precedence: partition values, then intent values, then asset values.
+- Use `${value.NAME}`; nested maps use dot paths such as `${value.resources.cpu}`.
+- An exact reference keeps the value's type, so `${value.replicas}` becomes a number.
+- Other placeholders such as `${intent.core.outputs.tag}` and `${capture}` are left untouched.
+- Guardian resolves values during compile/reconcile, so deployments use the concrete values while the repository keeps the template.
+- An undefined value fails compilation with the missing key and the available keys.
+
+## Authoring from the workbench
+
+The UI and CLI call the same Go functions, so they produce identical manifests.
+
+- **Assets** — the Add asset form is generated from `/api/catalog`: every
+  catalog field for the selected type, including Compute resources, env, ports,
+  and mounts, and Probe journey `steps`. JSON controls accept a JSON object or
+  array; list controls accept comma-separated values or a JSON array.
+- **Quota** — the Partition tab has a profile dropdown (built-in size classes
+  plus custom `quota_profiles` from `access/base.yaml`, `access/envs/*.yaml`, or
+  `.forge/quota-profiles.yaml`), an enforcement selector, and a read-only limits
+  preview. Free-form profile names and inline limits are rejected.
+- **Access** — the Access tab edits `partitions/<name>/access.yaml`. Saving
+  validates with Guardian's repo-import rules, so cross-partition grants,
+  selectors, quotas, deny rules, and platform-owned sections are rejected.
+
+## Create an intent from the workbench
+
+Assets attach to an intent, so the Assets tab includes a **Create intent** form
+that calls `POST /api/intent` and writes the same manifest as
+`forge intent new`:
+
+- Name, target pusher, and optional cluster/namespace.
+- The pusher is required, matching the CLI.
+- The form appears above the asset, probe, secret, and dependency forms; those
+  forms stay disabled until the partition has at least one intent.
+- Creating an intent refreshes the picker immediately — no restart is needed.
 
 The binding is what makes Guardian import the new partition. Without it,
 `forge validate` and `forge submit` can succeed while Guardian never sees the

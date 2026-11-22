@@ -3,10 +3,12 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,10 +17,13 @@ import (
 	"github.com/radryc/guardian/internal/domain/assets"
 	"github.com/radryc/guardian/internal/forge/author"
 	"github.com/radryc/guardian/internal/forge/publish"
+	"github.com/radryc/guardian/internal/forge/quota"
 	"github.com/radryc/guardian/internal/forge/repoinit"
 	"github.com/radryc/guardian/internal/forge/ui"
 	"github.com/radryc/guardian/internal/forge/validate"
 	"github.com/radryc/guardian/internal/forge/workspace"
+	"github.com/radryc/guardian/internal/repoconfig"
+	policy "github.com/radryc/monofs/pkg/authz/policy"
 	"gopkg.in/yaml.v3"
 )
 
@@ -28,15 +33,24 @@ type Options struct {
 	Token       string
 	Submit      func(ctx context.Context, req publish.Request) (publish.Result, error)
 	DisplayKeys map[string]string
+	// ProxyAuthHeader is an identity header set by a trusted loopback reverse
+	// proxy (for example X-Forwarded-User). When present on a loopback request,
+	// it authenticates the request without the session token.
+	ProxyAuthHeader string
+	// AllowedOrigins lists browser origins allowed to send mutation requests
+	// through the proxy, for example https://forge.example.com.
+	AllowedOrigins []string
 }
 
 // Server is the loopback API server.
 type Server struct {
-	root        string
-	token       string
-	submit      func(ctx context.Context, req publish.Request) (publish.Result, error)
-	displayKeys map[string]string
-	handler     http.Handler
+	root            string
+	token           string
+	submit          func(ctx context.Context, req publish.Request) (publish.Result, error)
+	displayKeys     map[string]string
+	proxyAuthHeader string
+	allowedOrigins  []string
+	handler         http.Handler
 }
 
 // New builds a server bound to one repository root.
@@ -46,16 +60,22 @@ func New(opts Options) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{
-		root:        root,
-		token:       opts.Token,
-		submit:      opts.Submit,
-		displayKeys: opts.DisplayKeys,
+		root:            root,
+		token:           opts.Token,
+		submit:          opts.Submit,
+		displayKeys:     opts.DisplayKeys,
+		proxyAuthHeader: strings.TrimSpace(opts.ProxyAuthHeader),
+		allowedOrigins:  opts.AllowedOrigins,
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/", ui.Handler())
 	mux.HandleFunc("/api/overview", s.handleOverview)
 	mux.HandleFunc("/api/catalog", s.handleCatalog)
 	mux.HandleFunc("/api/partition", s.handlePartition)
+	mux.HandleFunc("/api/intent", s.handleIntent)
+	mux.HandleFunc("/api/quota", s.handleQuota)
+	mux.HandleFunc("/api/access", s.handleAccess)
+	mux.HandleFunc("/api/values", s.handleValues)
 	mux.HandleFunc("/api/validate", s.handleValidate)
 	mux.HandleFunc("/api/asset", s.handleAsset)
 	mux.HandleFunc("/api/asset/connect", s.handleConnect)
@@ -97,19 +117,61 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if r.Header.Get("X-Forge-Token") != s.token && r.URL.Query().Get("token") != s.token {
+		if !s.authenticated(r) {
 			writeError(w, http.StatusUnauthorized, fmt.Errorf("invalid forge token"))
 			return
 		}
 		if r.Method != http.MethodGet {
 			origin := r.Header.Get("Origin")
-			if origin != "" && !strings.Contains(origin, "127.0.0.1") && !strings.Contains(origin, "localhost") {
+			if origin != "" && !s.originAllowed(origin) {
 				writeError(w, http.StatusForbidden, fmt.Errorf("cross-origin request rejected"))
 				return
 			}
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) authenticated(r *http.Request) bool {
+	if s.token != "" {
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Forge-Token")), []byte(s.token)) == 1 {
+			return true
+		}
+		if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), []byte(s.token)) == 1 {
+			return true
+		}
+	}
+	if s.proxyAuthHeader != "" && isLoopbackRemote(r.RemoteAddr) {
+		return strings.TrimSpace(r.Header.Get(s.proxyAuthHeader)) != ""
+	}
+	return false
+}
+
+func (s *Server) originAllowed(origin string) bool {
+	origin = strings.TrimRight(strings.TrimSpace(origin), "/")
+	if parsed, err := url.Parse(origin); err == nil {
+		if ip := net.ParseIP(parsed.Hostname()); ip != nil && ip.IsLoopback() {
+			return true
+		}
+		if strings.EqualFold(parsed.Hostname(), "localhost") {
+			return true
+		}
+	}
+	for _, allowed := range s.allowedOrigins {
+		if strings.EqualFold(strings.TrimRight(strings.TrimSpace(allowed), "/"), origin) {
+			return true
+		}
+	}
+	return false
+}
+
+func isLoopbackRemote(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +198,10 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCatalog(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"assetTypes": assets.Catalog()})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"assetTypes":    assets.Catalog(),
+		"quotaProfiles": quota.Catalog(s.root),
+	})
 }
 
 func (s *Server) handlePartition(w http.ResponseWriter, r *http.Request) {
@@ -173,10 +238,12 @@ func (s *Server) handlePartition(w http.ResponseWriter, r *http.Request) {
 			data, _ := os.ReadFile(path)
 			var parsed struct {
 				Spec struct {
+					Values map[string]any `yaml:"values"`
 					Assets []struct {
-						Type      string   `yaml:"type"`
-						Name      string   `yaml:"name"`
-						DependsOn []string `yaml:"dependsOn"`
+						Type      string         `yaml:"type"`
+						Name      string         `yaml:"name"`
+						DependsOn []string       `yaml:"dependsOn"`
+						Values    map[string]any `yaml:"values"`
 					} `yaml:"assets"`
 				} `yaml:"spec"`
 			}
@@ -184,13 +251,14 @@ func (s *Server) handlePartition(w http.ResponseWriter, r *http.Request) {
 			assets := make([]map[string]any, 0, len(parsed.Spec.Assets))
 			for _, asset := range parsed.Spec.Assets {
 				assets = append(assets, map[string]any{
-					"type": asset.Type, "name": asset.Name, "dependsOn": asset.DependsOn,
+					"type": asset.Type, "name": asset.Name, "dependsOn": asset.DependsOn, "values": asset.Values,
 				})
 			}
 			intents = append(intents, map[string]any{
 				"name":   strings.TrimSuffix(entry.Name(), ".yaml"),
 				"path":   path,
 				"yaml":   string(data),
+				"values": parsed.Spec.Values,
 				"assets": assets,
 			})
 		}
@@ -209,6 +277,25 @@ func (s *Server) handlePartition(w http.ResponseWriter, r *http.Request) {
 	}
 	detail["intents"] = intents
 	detail["alerts"] = alerts
+	detail["quotaProfiles"] = quota.Catalog(s.root)
+
+	var manifest struct {
+		Spec struct {
+			Quota  any            `yaml:"quota"`
+			Values map[string]any `yaml:"values"`
+		} `yaml:"spec"`
+	}
+	_ = yaml.Unmarshal(config, &manifest)
+	detail["quota"] = manifest.Spec.Quota
+	detail["values"] = manifest.Spec.Values
+
+	accessData, accessExists, _ := author.ReadPartitionAccess(ref.Dir)
+	detail["accessExists"] = accessExists
+	if accessExists {
+		detail["access"] = string(accessData)
+	} else {
+		detail["access"] = author.PartitionAccessTemplate(ref.Name)
+	}
 	writeJSON(w, http.StatusOK, detail)
 }
 
@@ -251,6 +338,178 @@ func (s *Server) createPartition(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type intentBody struct {
+	Partition string `json:"partition"`
+	Name      string `json:"name"`
+	Pusher    string `json:"pusher"`
+	Cluster   string `json:"cluster"`
+	Namespace string `json:"namespace"`
+	Force     bool   `json:"force"`
+}
+
+// handleIntent creates a new intent under a partition. It mirrors
+// `forge intent new` so the workbench and CLI author the same manifests.
+func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+	var body intentBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("name is required"))
+		return
+	}
+	ref, err := s.findPartition(body.Partition)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	path, err := author.CreateIntent(author.IntentOptions{
+		PartitionDir: ref.Dir,
+		Name:         name,
+		Pusher:       strings.TrimSpace(body.Pusher),
+		Cluster:      strings.TrimSpace(body.Cluster),
+		Namespace:    strings.TrimSpace(body.Namespace),
+		Force:        body.Force,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"name": name, "path": path})
+}
+
+type quotaBody struct {
+	Partition string        `json:"partition"`
+	Quota     *policy.Quota `json:"quota"`
+	Clear     bool          `json:"clear"`
+}
+
+// handleQuota sets or clears spec.quota on a partition manifest.
+func (s *Server) handleQuota(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+	var body quotaBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	ref, err := s.findPartition(body.Partition)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if body.Quota == nil && !body.Clear {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("quota object or clear=true is required"))
+		return
+	}
+	if body.Quota != nil {
+		if err := quota.Validate(s.root, body.Quota); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	var quota any
+	if body.Quota != nil {
+		quota = body.Quota
+	}
+	path, err := author.SetQuota(ref.Dir, quota)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"path": path, "quota": body.Quota, "cleared": body.Clear || body.Quota == nil,
+	})
+}
+
+type accessBody struct {
+	Partition string `json:"partition"`
+	YAML      string `json:"yaml"`
+}
+
+// handleAccess writes the partition-scoped access.yaml. The file is validated
+// with Guardian's repo-import rules before it is kept.
+func (s *Server) handleAccess(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+	var body accessBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	ref, err := s.findPartition(body.Partition)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if strings.TrimSpace(body.YAML) == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("yaml is required"))
+		return
+	}
+	path, err := author.SavePartitionAccess(ref.Dir, ref.Name, s.partitionDisplayPath(), []byte(body.YAML))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": path})
+}
+
+type valuesBody struct {
+	Partition string         `json:"partition"`
+	Intent    string         `json:"intent"`
+	Asset     string         `json:"asset"`
+	Values    map[string]any `json:"values"`
+	Clear     bool           `json:"clear"`
+}
+
+// handleValues writes a partition, intent, or asset values map.
+func (s *Server) handleValues(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+	var body valuesBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	ref, err := s.findPartition(body.Partition)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	vals := body.Values
+	if body.Clear || len(vals) == 0 {
+		vals = nil
+	}
+	path, err := author.SetValues(ref.Dir, strings.TrimSpace(body.Intent), strings.TrimSpace(body.Asset), vals)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": path, "cleared": vals == nil})
+}
+
+// partitionDisplayPath resolves the repository display path used to validate
+// monofs scopes in a partition access policy.
+func (s *Server) partitionDisplayPath() string {
+	cfg, _, _, err := repoconfig.Load(s.root)
+	if err != nil || cfg == nil {
+		return ""
+	}
+	return publish.DisplayPathFromURL(cfg.Repo.Source)
+}
+
 func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeMethodNotAllowed(w, http.MethodPost)
@@ -261,13 +520,14 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 }
 
 type assetBody struct {
-	Partition string `json:"partition"`
-	Intent    string `json:"intent"`
-	Type      string `json:"type"`
-	Name      string `json:"name"`
-	Image     string `json:"image"`
-	Replicas  int    `json:"replicas"`
-	Port      int    `json:"port"`
+	Partition  string         `json:"partition"`
+	Intent     string         `json:"intent"`
+	Type       string         `json:"type"`
+	Name       string         `json:"name"`
+	Image      string         `json:"image"`
+	Replicas   int            `json:"replicas"`
+	Port       int            `json:"port"`
+	Properties map[string]any `json:"properties"`
 }
 
 func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
@@ -285,19 +545,28 @@ func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err)
 		return
 	}
-	properties := map[string]any{}
+	properties := body.Properties
+	if properties == nil {
+		properties = map[string]any{}
+	}
 	switch body.Type {
 	case "Compute":
-		if body.Image == "" {
+		image, _ := properties["image"].(string)
+		if image == "" && body.Image != "" {
+			image = body.Image
+			properties["image"] = image
+		}
+		if strings.TrimSpace(image) == "" {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("image is required for a Compute asset"))
 			return
 		}
-		properties["image"] = body.Image
 		if body.Replicas > 0 {
 			properties["replicas"] = body.Replicas
 		}
 		if body.Port > 0 {
-			properties["ports"] = []map[string]any{{"name": "http", "containerPort": body.Port, "protocol": "TCP"}}
+			if _, ok := properties["ports"]; !ok {
+				properties["ports"] = []map[string]any{{"name": "http", "containerPort": body.Port, "protocol": "TCP"}}
+			}
 		}
 	case "Secret":
 		if body.Image != "" {
@@ -569,6 +838,7 @@ func (s *Server) findPartition(name string) (workspace.PartitionRef, error) {
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
 }

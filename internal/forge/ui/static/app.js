@@ -1,5 +1,8 @@
 const token = new URLSearchParams(location.search).get("token") || "";
 
+const UI_BUILD = "2026-11-22-quota-debug-1";
+console.info(`[forge] UI build ${UI_BUILD}`);
+
 const state = {
   tab: "overview",
   overview: null,
@@ -7,12 +10,100 @@ const state = {
   selected: "",
   detail: null,
   catalog: [],
+  quotaProfiles: [],
   status: [],
   submitResult: null,
+  assetType: "",
   busy: false,
 };
 
 const $ = (id) => document.getElementById(id);
+
+const THEME_KEY = "forge.theme";
+
+const THEME_ICONS = {
+  system: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>',
+  light:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+  dark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
+};
+
+function storedTheme() {
+  try {
+    return localStorage.getItem(THEME_KEY) || "system";
+  } catch {
+    return "system";
+  }
+}
+
+function systemPrefersLight() {
+  return Boolean(window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches);
+}
+
+function applyTheme(choice) {
+  const selected = ["system", "light", "dark"].includes(choice) ? choice : "system";
+  const dark = selected === "dark" || (selected === "system" && !systemPrefersLight());
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+
+  const button = $("themeButton");
+  if (button) {
+    button.innerHTML = THEME_ICONS[selected];
+    button.title = `Theme: ${selected}`;
+    button.setAttribute("aria-label", `Theme: ${selected}`);
+  }
+  document.querySelectorAll("[data-theme-choice]").forEach((item) => {
+    const active = item.dataset.themeChoice === selected;
+    item.classList.toggle("active", active);
+    item.setAttribute("aria-checked", active ? "true" : "false");
+  });
+}
+
+function initTheme() {
+  applyTheme(storedTheme());
+  const button = $("themeButton");
+  const menu = $("themeMenu");
+  const control = $("themeControl");
+  const closeMenu = () => {
+    menu?.classList.add("hidden");
+    button?.setAttribute("aria-expanded", "false");
+  };
+  const openMenu = () => {
+    menu?.classList.remove("hidden");
+    button?.setAttribute("aria-expanded", "true");
+  };
+
+  button?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (menu?.classList.contains("hidden")) openMenu();
+    else closeMenu();
+  });
+  menu?.querySelectorAll("[data-theme-choice]").forEach((item) => {
+    item.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const choice = item.dataset.themeChoice;
+      try {
+        localStorage.setItem(THEME_KEY, choice);
+      } catch {}
+      applyTheme(choice);
+      closeMenu();
+    });
+  });
+  document.addEventListener("click", (event) => {
+    if (control && !control.contains(event.target)) closeMenu();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeMenu();
+  });
+
+  if (window.matchMedia) {
+    const query = window.matchMedia("(prefers-color-scheme: light)");
+    const followSystem = () => {
+      if (storedTheme() === "system") applyTheme("system");
+    };
+    if (query.addEventListener) query.addEventListener("change", followSystem);
+    else if (query.addListener) query.addListener(followSystem);
+  }
+}
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -35,7 +126,7 @@ function labelWithCanonical(key) {
 async function api(path, options = {}) {
   const headers = { "X-Forge-Token": token, ...(options.headers || {}) };
   if (options.body) headers["Content-Type"] = "application/json";
-  const response = await fetch(path, { ...options, headers });
+  const response = await fetch(path, { ...options, headers, cache: "no-store" });
   let data = {};
   try {
     data = await response.json();
@@ -122,6 +213,7 @@ function render() {
     overview: ["Overview", "Repository readiness"],
     partition: ["Partition", state.selected ? `partitions/${state.selected}` : "select a partition"],
     assets: ["Assets", "add and connect typed assets"],
+    access: ["Access", "partition-scoped access policy"],
     alerts: ["Alerts", "starter rule groups using canonical labels"],
     validate: ["Validate", "offline checks before a proposal"],
     submit: ["Submit", "opens a reviewed PR/MR through MonoFS"],
@@ -134,6 +226,7 @@ function render() {
   if (state.tab === "overview") content.innerHTML = viewOverview();
   else if (state.tab === "partition") content.innerHTML = viewPartition();
   else if (state.tab === "assets") content.innerHTML = viewAssets();
+  else if (state.tab === "access") content.innerHTML = viewAccess();
   else if (state.tab === "alerts") content.innerHTML = viewAlerts();
   else if (state.tab === "validate") content.innerHTML = viewValidate();
   else if (state.tab === "submit") content.innerHTML = viewSubmit();
@@ -154,19 +247,122 @@ function viewOverview() {
     </div>`;
 }
 
+function valuesText(value) {
+  if (!value || !Object.keys(value).length) return "";
+  return JSON.stringify(value, null, 2);
+}
+
+function quotaDebugText(profile, enforcement) {
+  return JSON.stringify(
+    {
+      ui: UI_BUILD,
+      profiles: (state.quotaProfiles || []).map((item) => item.name),
+      selected: profile,
+      enforcement,
+    },
+    null,
+    2,
+  );
+}
+
+function quotaChoices(selected) {
+  return (state.quotaProfiles || [])
+    .map(
+      (profile) =>
+        `<label class="choice"><input type="radio" name="profile" value="${escapeHtml(profile.name)}" data-quota-profile ${profile.name === selected ? "checked" : ""} required onchange="forgeQuotaChanged(this)" /> <span>${escapeHtml(profile.name)}${profile.builtin ? "" : " (custom)"}</span></label>`,
+    )
+    .join("");
+}
+
+function quotaPreviewText(name) {
+  const profile = (state.quotaProfiles || []).find((item) => item.name === name);
+  if (!profile) return "Select a predefined profile to preview its limits.";
+  return JSON.stringify(profile.quota, null, 2);
+}
+
+function forgeQuotaChanged(control) {
+  const form = control && control.closest ? control.closest("form") : null;
+  const checked = form ? form.querySelector("[data-quota-profile]:checked") : null;
+  const profile = checked ? checked.value : "";
+  const enforcement = form ? form.querySelector("[data-quota-enforcement]")?.value || "" : "";
+  const preview = form ? form.querySelector("[data-quota-preview]") : null;
+  const status = form ? form.querySelector("[data-quota-status]") : null;
+  const debug = form ? form.querySelector("[data-quota-debug]") : null;
+  if (preview) preview.textContent = quotaPreviewText(profile);
+  if (status) {
+    status.textContent = profile ? `${profile} selected — click Save quota to apply.` : "No profile selected.";
+  }
+  if (debug) {
+    debug.textContent = quotaDebugText(profile, enforcement);
+  }
+  console.info("[forge] quota selection", { profile, enforcement, profiles: (state.quotaProfiles || []).map((item) => item.name) });
+}
+window.forgeQuotaChanged = forgeQuotaChanged;
+
 function viewPartition() {
   if (!state.detail) return `<p class="muted">Select a partition.</p>`;
   const intents = state.detail.intents || [];
   const alerts = state.detail.alerts || [];
-  return `<div class="panel">
-      <h2>Partition config</h2>
-      <pre class="yaml">${escapeHtml(state.detail.config)}</pre>
+  const currentQuota = state.detail.quota || {};
+  const profile = currentQuota.profile || "";
+  const enforcement = currentQuota.enforcement || "observe";
+  const hasInline = Boolean(currentQuota.ingest || currentQuota.query || currentQuota.rules || currentQuota.storage);
+  const profileKnown = !profile || (state.quotaProfiles || []).some((item) => item.name === profile);
+  return `<div class="grid two">
+      <div class="panel">
+        <h2>Partition config</h2>
+        <pre class="yaml">${escapeHtml(state.detail.config)}</pre>
+      </div>
+      <form class="panel form" data-form="quota">
+        <h2>Resource quota</h2>
+        <p class="muted small">Choose a predefined profile. Built-in size classes come from the
+        platform; custom profiles come from <code>quota_profiles</code> in the repository access policy.</p>
+        ${state.quotaProfiles.length ? "" : `<p class="bad small">No quota profiles loaded. Restart <code>forge ui</code> with the rebuilt binary, then
+        <button type="button" class="ghost" data-action="reload-profiles">reload profiles</button>.</p>`}
+        ${hasInline ? `<p class="bad small">This partition currently uses inline quota limits. Saving a profile replaces them.</p>` : ""}
+        ${profile && !profileKnown ? `<p class="bad small">Current profile <code>${escapeHtml(profile)}</code> is not available here. Choose a predefined profile to replace it.</p>` : ""}
+        <div class="profile-choices">
+          <span class="field-label">Profile</span>
+          ${quotaChoices(profile)}
+        </div>
+        <label>Enforcement<select name="enforcement" data-quota-enforcement onchange="forgeQuotaChanged(this)">
+          <option value="observe" ${enforcement === "observe" ? "selected" : ""}>observe</option>
+          <option value="enforce" ${enforcement === "enforce" ? "selected" : ""}>enforce</option>
+        </select></label>
+        <pre class="yaml" data-quota-preview>${escapeHtml(quotaPreviewText(profile))}</pre>
+        <p class="muted small" data-quota-status>${profile ? `Current profile: ${escapeHtml(profile)}` : "No profile selected."}</p>
+        <details class="debug">
+          <summary>Debug</summary>
+          <pre data-quota-debug>${escapeHtml(quotaDebugText(profile, enforcement))}</pre>
+        </details>
+        <div class="row">
+          <button type="submit">Save quota</button>
+          <button type="button" class="ghost" data-action="clear-quota" ${state.detail.quota ? "" : "disabled"}>Clear</button>
+        </div>
+      </form>
+      <form class="panel form" data-form="values">
+        <h2>Partition values</h2>
+        <p class="muted small">Define <code>${"${value.NAME}"}</code> placeholders for this partition.
+        Intent values override these; asset values override both.</p>
+        <label>Values JSON<textarea name="values" rows="8" spellcheck="false" placeholder='{"imageTag":"v1"}'>${escapeHtml(valuesText(state.detail.values))}</textarea></label>
+        <div class="row">
+          <button type="submit">Save values</button>
+          <button type="button" class="ghost" data-action="clear-partition-values" ${state.detail.values ? "" : "disabled"}>Clear</button>
+        </div>
+      </form>
     </div>
     ${intents
       .map(
         (intent) => `<div class="panel">
           <h2>Intent ${escapeHtml(intent.name)}</h2>
           <pre class="yaml">${escapeHtml(intent.yaml)}</pre>
+          <form class="form" data-form="values" data-intent="${escapeHtml(intent.name)}">
+            <label>Intent values JSON<textarea name="values" rows="5" spellcheck="false" placeholder='{"replicas":3}'>${escapeHtml(valuesText(intent.values))}</textarea></label>
+            <div class="row">
+              <button type="submit">Save intent values</button>
+              <button type="button" class="ghost" data-action="clear-intent-values" data-intent="${escapeHtml(intent.name)}" ${intent.values ? "" : "disabled"}>Clear</button>
+            </div>
+          </form>
         </div>`,
       )
       .join("")}
@@ -177,8 +373,26 @@ function viewPartition() {
       : ""}`;
 }
 
+function viewAccess() {
+  if (!state.detail) return `<p class="muted">Select a partition.</p>`;
+  const suffix = state.detail.accessExists
+    ? `Loaded from <code>partitions/${escapeHtml(state.selected)}/access.yaml</code>.`
+    : `No <code>access.yaml</code> yet — this starter template is shown. Saving creates the file.`;
+  return `<form class="panel form" data-form="access">
+      <h2>Partition access policy</h2>
+      <p class="muted small">${suffix} Grants may only name <strong>${escapeHtml(state.selected)}</strong>.
+      Platform-owned sections (defaults, selectors, quotas, clients, deny rules) are rejected on save.</p>
+      <label>access.yaml<textarea name="yaml" rows="20" spellcheck="false">${escapeHtml(state.detail.access || "")}</textarea></label>
+      <button type="submit">Save access.yaml</button>
+    </form>`;
+}
+
 function intentOptions() {
-  return (state.detail?.intents || [])
+  const intents = state.detail?.intents || [];
+  if (!intents.length) {
+    return `<option value="" disabled selected>No intents yet — create one first</option>`;
+  }
+  return intents
     .map((intent) => `<option value="${escapeHtml(intent.name)}">${escapeHtml(intent.name)}</option>`)
     .join("");
 }
@@ -193,11 +407,132 @@ function assetRows() {
   return rows;
 }
 
+function assetsForIntent(name) {
+  return (state.detail?.intents || []).find((intent) => intent.name === name)?.assets || [];
+}
+
+function assetOptions(intentName, selected = "") {
+  return assetsForIntent(intentName)
+    .map(
+      (asset) =>
+        `<option value="${escapeHtml(asset.name)}" ${asset.name === selected ? "selected" : ""}>${escapeHtml(asset.name)} (${escapeHtml(asset.type)})</option>`,
+    )
+    .join("");
+}
+
+function catalogTemplate(type) {
+  return (state.catalog || []).find((item) => item.type === type);
+}
+
+function templateValue(template, path) {
+  return path.split(".").reduce((value, key) => (value == null ? undefined : value[key]), template);
+}
+
+function listText(value) {
+  if (!Array.isArray(value)) return value == null ? "" : String(value);
+  return value.map((item) => (typeof item === "object" ? JSON.stringify(item) : String(item))).join(", ");
+}
+
+function renderAssetFields(type) {
+  const template = catalogTemplate(type);
+  const fields = template?.fields || [];
+  if (!fields.length) {
+    return `<p class="muted small">No catalog fields are available for this type.</p>`;
+  }
+  return `<div class="grid two">${fields
+    .map((field) => {
+      const value = templateValue(template.template, field.path);
+      const control = field.control || "text";
+      const path = escapeHtml(field.path);
+      const title = escapeHtml(field.title || field.path);
+      const placeholder = escapeHtml(field.placeholder || "");
+      if (control === "boolean") {
+        return `<label class="check"><input type="checkbox" data-prop="${path}" data-control="boolean" ${value ? "checked" : ""} /> ${title}</label>`;
+      }
+      let input;
+      if (control === "select") {
+        const options = (field.options || [])
+          .map((option) => {
+            const opt = String(option);
+            return `<option value="${escapeHtml(opt)}" ${value === opt ? "selected" : ""}>${escapeHtml(opt)}</option>`;
+          })
+          .join("");
+        input = `<select data-prop="${path}" data-control="select"><option value="">(default)</option>${options}</select>`;
+      } else if (control === "json") {
+        const raw = value === undefined ? "" : JSON.stringify(value, null, 2);
+        input = `<textarea rows="4" spellcheck="false" data-prop="${path}" data-control="json" placeholder="JSON">${escapeHtml(raw)}</textarea>`;
+      } else if (control === "textarea") {
+        input = `<textarea rows="4" spellcheck="false" data-prop="${path}" data-control="text" placeholder="${placeholder}">${escapeHtml(value ?? "")}</textarea>`;
+      } else if (control === "number") {
+        input = `<input type="number" data-prop="${path}" data-control="number" value="${escapeHtml(value ?? "")}" placeholder="${placeholder}" />`;
+      } else if (control === "list" || control === "asset-refs") {
+        input = `<input data-prop="${path}" data-control="list" value="${escapeHtml(listText(value))}" placeholder="comma-separated or JSON array" />`;
+      } else {
+        input = `<input data-prop="${path}" data-control="text" value="${escapeHtml(value ?? "")}" placeholder="${placeholder}" />`;
+      }
+      return `<label>${title}${input}</label>`;
+    })
+    .join("")}</div>`;
+}
+
+function formProperties(form) {
+  const properties = {};
+  for (const element of form.querySelectorAll("[data-prop]")) {
+    const path = element.dataset.prop;
+    const control = element.dataset.control;
+    if (control === "boolean") {
+      if (element.checked) properties[path] = true;
+      continue;
+    }
+    const raw = element.value;
+    if (!raw.trim()) continue;
+    if (control === "json") {
+      try {
+        properties[path] = JSON.parse(raw);
+      } catch (error) {
+        throw new Error(`${path}: ${error.message}`);
+      }
+    } else if (control === "number") {
+      const value = Number(raw);
+      if (Number.isNaN(value)) throw new Error(`${path}: not a number`);
+      properties[path] = value;
+    } else if (control === "list" || control === "asset-refs") {
+      const trimmed = raw.trim();
+      let items;
+      if (trimmed.startsWith("[")) {
+        try {
+          items = JSON.parse(trimmed);
+        } catch (error) {
+          throw new Error(`${path}: ${error.message}`);
+        }
+      } else {
+        items = trimmed.split(",").map((item) => item.trim()).filter(Boolean);
+        if (items.every((item) => /^-?\d+$/.test(item))) items = items.map(Number);
+      }
+      if (Array.isArray(items) && items.length) properties[path] = items;
+    } else {
+      properties[path] = raw;
+    }
+  }
+  return properties;
+}
+
 function viewAssets() {
   if (!state.detail) return `<p class="muted">Select a partition.</p>`;
   const rows = assetRows();
   const types = (state.catalog || []).map((template) => template.type);
-  return `<div class="panel">
+  const hasIntents = (state.detail.intents || []).length > 0;
+  const selectedType = types.includes(state.assetType) ? state.assetType : types[0] || "Compute";
+  const firstIntent = (state.detail.intents || [])[0]?.name || "";
+  const firstAssets = assetsForIntent(firstIntent);
+  return `${hasIntents
+      ? ""
+      : `<div class="panel">
+      <h2>Create an intent first</h2>
+      <p class="muted">Assets attach to an intent. This partition has none yet, so create one below — it writes
+      <code>partitions/${escapeHtml(state.selected)}/intents/&lt;name&gt;.yaml</code>.</p>
+    </div>`}
+    <div class="panel">
       <h2>${escapeHtml(labelWithCanonical("asset"))}s</h2>
       ${
         rows.length
@@ -213,25 +548,25 @@ function viewAssets() {
       }
     </div>
     <div class="grid two">
-      <form class="panel form" data-form="asset">
-        <h2>Add asset</h2>
-        <label>Intent<select name="intent">${intentOptions()}</select></label>
-        <label>Type<select name="type">${types.map((t) => `<option>${escapeHtml(t)}</option>`).join("")}</select></label>
+      <form class="panel form" data-form="intent">
+        <h2>Create intent</h2>
         <label>Name<input name="name" required pattern="[a-z][a-z0-9-]*" placeholder="api" /></label>
-        <label>Image (Compute)<input name="image" placeholder="ghcr.io/acme/api:1" /></label>
+        <label>Target pusher<input name="pusher" required placeholder="k8s-main" /></label>
         <div class="row">
-          <label>Port<input name="port" type="number" min="1" max="65535" /></label>
-          <label>Replicas<input name="replicas" type="number" min="1" /></label>
+          <label>Cluster<input name="cluster" placeholder="k8s-main" /></label>
+          <label>Namespace<input name="namespace" placeholder="${escapeHtml(state.selected)}" /></label>
         </div>
-        <button type="submit">Add asset</button>
+        <button type="submit">Create intent</button>
       </form>
-      <form class="panel form" data-form="probe">
-        <h2>Add ${escapeHtml(label("asset"))} probe</h2>
+      <form class="panel form" data-form="asset">
+        <h2 data-asset-title>Add ${escapeHtml(selectedType)}</h2>
         <label>Intent<select name="intent">${intentOptions()}</select></label>
-        <label>Target asset<input name="asset" required placeholder="api" /></label>
-        <label>Path<input name="path" placeholder="/healthz" /></label>
-        <label>Port<input name="port" type="number" min="1" max="65535" /></label>
-        <button type="submit">Add probe</button>
+        <label>Type<select name="type" data-asset-type>${types
+          .map((t) => `<option value="${escapeHtml(t)}" ${t === selectedType ? "selected" : ""}>${escapeHtml(t)}</option>`)
+          .join("")}</select></label>
+        <label>Name<input name="name" required pattern="[a-z][a-z0-9-]*" placeholder="api" /></label>
+        <div data-asset-fields>${renderAssetFields(selectedType)}</div>
+        <button type="submit" ${hasIntents ? "" : "disabled"}>Add asset</button>
       </form>
       <form class="panel form" data-form="secret">
         <h2>Secret reference</h2>
@@ -239,14 +574,23 @@ function viewAssets() {
         <label>Compute asset<input name="asset" required placeholder="api" /></label>
         <label>Environment variable<input name="env" required placeholder="DATABASE_URL" /></label>
         <label>Secret ref<input name="ref" required placeholder="monofs-secret://checkout/db" /></label>
-        <button type="submit">Attach reference</button>
+        <button type="submit" ${hasIntents ? "" : "disabled"}>Attach reference</button>
+      </form>
+      <form class="panel form" data-form="values" data-level="asset">
+        <h2>Asset values</h2>
+        <label>Intent<select name="intent">${intentOptions()}</select></label>
+        <label>Asset name<input name="asset" required placeholder="api" /></label>
+        <label>Values JSON<textarea name="values" rows="5" spellcheck="false" placeholder='{"replicas":5}'></textarea></label>
+        <button type="submit" ${hasIntents ? "" : "disabled"}>Save asset values</button>
       </form>
       <form class="panel form" data-form="connect">
         <h2>Connect assets</h2>
-        <label>Intent<select name="intent">${intentOptions()}</select></label>
-        <label>From<input name="from" required placeholder="api" /></label>
-        <label>To<input name="to" required placeholder="settings" /></label>
-        <button type="submit">Add dependsOn</button>
+        <p class="muted small">Assets can only depend on assets in the <strong>same intent</strong>.
+        Use intent <code>joins</code> for cross-intent ordering; cross-partition dependencies are not supported.</p>
+        <label>Intent<select name="intent" data-connect-intent>${intentOptions()}</select></label>
+        <label>From<select name="from" data-connect-from>${assetOptions(firstIntent)}</select></label>
+        <label>To<select name="to" data-connect-to>${assetOptions(firstIntent, firstAssets[1]?.name)}</select></label>
+        <button type="submit" ${hasIntents && firstAssets.length >= 2 ? "" : "disabled"}>Add dependsOn</button>
       </form>
     </div>`;
 }
@@ -333,11 +677,25 @@ async function loadOverview() {
 
 async function loadDetail(name) {
   state.detail = await api(`/api/partition?name=${encodeURIComponent(name)}`);
+  if (Array.isArray(state.detail.quotaProfiles) && state.detail.quotaProfiles.length) {
+    state.quotaProfiles = state.detail.quotaProfiles;
+  }
+  console.info("[forge] partition detail", {
+    partition: name,
+    quota: state.detail.quota,
+    quotaProfiles: (state.quotaProfiles || []).map((item) => item.name),
+    values: state.detail.values,
+  });
 }
 
 async function loadCatalog() {
   const data = await api("/api/catalog");
   state.catalog = data.assetTypes || [];
+  state.quotaProfiles = data.quotaProfiles || [];
+  console.info("[forge] catalog loaded", {
+    assetTypes: state.catalog.length,
+    quotaProfiles: state.quotaProfiles.map((item) => item.name),
+  });
 }
 
 async function loadStatus() {
@@ -350,6 +708,36 @@ async function refreshAll() {
   render();
 }
 
+document.addEventListener("change", (event) => {
+  const select = event.target.closest("[data-asset-type]");
+  if (select) {
+    state.assetType = select.value;
+    const form = select.closest("form");
+    const fields = form?.querySelector("[data-asset-fields]");
+    if (fields) fields.innerHTML = renderAssetFields(select.value);
+    const title = form?.querySelector("[data-asset-title]");
+    if (title) title.textContent = `Add ${select.value}`;
+    return;
+  }
+  const connectSelect = event.target.closest("[data-connect-intent]");
+  if (connectSelect) {
+    const form = connectSelect.closest("form");
+    const intent = connectSelect.value;
+    const assets = assetsForIntent(intent);
+    const from = form?.querySelector("[data-connect-from]");
+    const to = form?.querySelector("[data-connect-to]");
+    if (from) from.innerHTML = assetOptions(intent);
+    if (to) to.innerHTML = assetOptions(intent, assets[1]?.name);
+    const button = form?.querySelector('button[type="submit"]');
+    if (button) button.disabled = assets.length < 2;
+    return;
+  }
+  const quotaInput = event.target.closest("[data-quota-profile], [data-quota-enforcement]");
+  if (quotaInput) {
+    forgeQuotaChanged(quotaInput);
+  }
+});
+
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-action]");
   if (button) {
@@ -358,6 +746,34 @@ document.addEventListener("click", async (event) => {
       if (action === "select") {
         state.selected = button.dataset.name;
         state.submitResult = null;
+        await loadDetail(state.selected);
+        render();
+      } else if (action === "reload-profiles") {
+        await loadCatalog();
+        render();
+      } else if (action === "clear-partition-values") {
+        await api("/api/values", {
+          method: "POST",
+          body: JSON.stringify({ partition: state.selected, clear: true }),
+        });
+        toast("partition values cleared", "good");
+        await loadDetail(state.selected);
+        render();
+      } else if (action === "clear-intent-values") {
+        await api("/api/values", {
+          method: "POST",
+          body: JSON.stringify({ partition: state.selected, intent: button.dataset.intent, clear: true }),
+        });
+        toast("intent values cleared", "good");
+        await loadDetail(state.selected);
+        render();
+      } else if (action === "clear-quota") {
+        if (!window.confirm("Remove spec.quota from this partition?")) return;
+        await api("/api/quota", {
+          method: "POST",
+          body: JSON.stringify({ partition: state.selected, clear: true }),
+        });
+        toast("quota cleared", "good");
         await loadDetail(state.selected);
         render();
       } else if (action === "new-partition") {
@@ -399,6 +815,7 @@ document.addEventListener("click", async (event) => {
         render();
       }
     } catch (error) {
+      console.error("[forge] action failed", error);
       toast(error.message, "bad");
     }
     return;
@@ -418,7 +835,22 @@ document.addEventListener("submit", async (event) => {
   const data = Object.fromEntries(new FormData(form).entries());
   const kind = form.dataset.form;
   try {
-    if (kind === "asset") {
+    if (kind === "intent") {
+      const created = await api("/api/intent", {
+        method: "POST",
+        body: JSON.stringify({
+          partition: state.selected,
+          name: data.name,
+          pusher: data.pusher,
+          cluster: data.cluster,
+          namespace: data.namespace,
+        }),
+      });
+      toast(`created ${created.path}`, "good");
+      await loadDetail(state.selected);
+      render();
+    } else if (kind === "asset") {
+      const properties = formProperties(form);
       await api("/api/asset", {
         method: "POST",
         body: JSON.stringify({
@@ -426,26 +858,60 @@ document.addEventListener("submit", async (event) => {
           intent: data.intent,
           type: data.type,
           name: data.name,
-          image: data.image,
-          port: Number(data.port || 0),
-          replicas: Number(data.replicas || 0),
+          properties,
         }),
       });
       toast("asset added", "good");
       await loadDetail(state.selected);
       render();
-    } else if (kind === "probe") {
-      await api("/api/probe", {
+    } else if (kind === "values") {
+      const raw = String(data.values || "").trim();
+      let vals = {};
+      if (raw) {
+        try {
+          vals = JSON.parse(raw);
+        } catch (error) {
+          throw new Error(`values: ${error.message}`);
+        }
+      }
+      if (vals === null || typeof vals !== "object" || Array.isArray(vals)) {
+        throw new Error("values must be a JSON object");
+      }
+      const intent = form.dataset.intent || String(data.intent || "");
+      const asset = String(data.asset || "");
+      await api("/api/values", {
         method: "POST",
         body: JSON.stringify({
           partition: state.selected,
-          intent: data.intent,
-          asset: data.asset,
-          path: data.path,
-          port: Number(data.port || 0),
+          intent,
+          asset,
+          values: vals,
+          clear: raw === "",
         }),
       });
-      toast("probe added", "good");
+      toast(raw === "" ? "values cleared" : "values saved", "good");
+      await loadDetail(state.selected);
+      render();
+    } else if (kind === "quota") {
+      const profile = String(data.profile || "").trim();
+      if (!profile) throw new Error("choose a predefined quota profile");
+      const quota = { profile };
+      if (data.enforcement) quota.enforcement = data.enforcement;
+      console.info("[forge] quota save", quota);
+      const saved = await api("/api/quota", {
+        method: "POST",
+        body: JSON.stringify({ partition: state.selected, quota }),
+      });
+      console.info("[forge] quota saved", saved);
+      toast(`quota saved: ${profile}`, "good");
+      await loadDetail(state.selected);
+      render();
+    } else if (kind === "access") {
+      await api("/api/access", {
+        method: "POST",
+        body: JSON.stringify({ partition: state.selected, yaml: data.yaml }),
+      });
+      toast("access.yaml saved", "good");
       await loadDetail(state.selected);
       render();
     } else if (kind === "secret") {
@@ -498,8 +964,14 @@ document.addEventListener("submit", async (event) => {
       render();
     }
   } catch (error) {
+    console.error("[forge] request failed", error);
     toast(error.message, "bad");
   }
 });
 
-refreshAll().catch((error) => toast(error.message, "bad"));
+initTheme();
+refreshAll().catch((error) => {
+  console.error("[forge] initial load failed", error);
+  toast(error.message, "bad");
+});
+window.__forge = { version: UI_BUILD, state };
