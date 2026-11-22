@@ -149,7 +149,20 @@ forge ui --root .
 
 ## Value replacement
 
-Manifests can use placeholders anywhere a string is accepted:
+Manifests can use placeholders anywhere a string is accepted. In the UI they are
+called **value overrides**:
+
+- **Partition** tab → **Partition value overrides** applies to every intent and
+  asset in the partition.
+- **Partition** tab → each intent has **Intent value overrides**.
+- **Assets** tab → **Asset value overrides** applies to one selected asset and
+  shows the effective saved value with its source (partition/intent/asset).
+
+Each editor takes a JSON object keyed by variable name. The preview table shows
+the parsed variables and the `${value.KEY}` reference to use, with a **Remove**
+button per variable. The **Remove all … overrides** buttons clear the whole
+scope. For example:
+
 
 ```yaml
 # partitions/checkout/config.yaml
