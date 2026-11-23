@@ -8,8 +8,8 @@ trust boundaries it assumes, and the gaps between those assumptions and a
 production-hardened design. It is written for operators and reviewers; it is
 not a compliance attestation.
 
-The P0+P1 mitigation pass is recorded in
-[Changes applied](internal/changes.md). Residual risk is called out per threat.
+The P0+P1 mitigation pass is reflected in the controls below. Residual risk is
+called out per threat.
 
 ---
 
@@ -58,23 +58,28 @@ flowchart LR
         K[K8s pusher]
         D[Docker pusher]
         A[AWS pusher]
+        G[GCP pusher]
         DB[Docker daemon]
         KAPI[Kubernetes API]
         AWS[AWS APIs]
+        GCP[GCP APIs]
     end
 
     B -->|HTTP, optional OIDC| UI
     CI -->|git push / webhook| MF
     NET -->|HTTP :19090| A
+    NET -->|HTTP :19091| G
     UI --> MF
     CLI -->|gRPC token| MF
     CP --> MF
     K --> MF
     D --> MF
     A --> MF
+    G --> MF
     D --> DB
     K --> KAPI
     A --> AWS
+    G --> GCP
 ```
 
 Trust boundaries:
@@ -129,7 +134,9 @@ metadata and is also used for REST-style version calls.
 
 1. Builds an OIDC verifier only when `--oidc-issuer` and `--oidc-audience` are
    both set (`MONOFS_OIDC_ISSUER`/`AUDIENCE` fallbacks).
-2. If verifier construction fails, logs and falls back to `NoopVerifier`.
+2. If verifier construction fails, `guardiand` exits (`log.Fatalf`) when
+   `GUARDIAN_REQUIRE_UI_AUTH` is true (the default); it only falls back to
+   `NoopVerifier` when the login wall is explicitly disabled.
 3. Wraps the mux with `coreauthz.NewAuthenticator(uiVerifier, nil, false)`.
    The last argument means **observe mode**: unauthenticated requests are still
    allowed through; identity is attached when present.
@@ -142,8 +149,9 @@ Consequences:
 - Default: anonymous reads are allowed; anonymous mutations are rejected.
   Reopening them requires `--allow-loopback-anonymous` (loopback callers) and,
   while no policy is enforcing, `--allow-unpoliced-mutations`.
-- `/api/m2m/*` and `/api/access/policy` are login-exempt and perform their own
-  token checks; `/api/m2m/*` routes enforce `requireM2MAccess`.
+- `/api/m2m/*`, `/api/access/policy`, `/health`, and
+  `/api/display-profiles/bundle` are login-exempt and perform their own token
+  checks; `/api/m2m/*` routes enforce `requireM2MAccess`.
 - `/api/client-config` is not login-exempt, so an active login wall can break
   token-based CLI discovery (the CLI sends a discovery token, not a browser
   session).
@@ -325,7 +333,7 @@ unless the policy says otherwise.
 | Pusher ↔ MonoFS | gRPC | Same |
 | Doctor ↔ AWS pusher | HTTP/HTTPS `:19090` | Scoped bearer token + optional TLS/mTLS; plain HTTP on loopback by default |
 | AWS pusher ↔ AWS | HTTPS | AWS SDK TLS |
-| Webhook | HTTP/HTTPS | HMAC signature; no timestamp/nonce |
+| Webhook | HTTP/HTTPS | `X-Guardian-Signature-V2 = HMAC-SHA256(timestamp + "." + body)` plus `X-Guardian-Timestamp`; legacy body-only signature accepted |
 | `guardiand` ↔ OTLP collector | gRPC | `Insecure` defaults from the endpoint scheme (`https://` → TLS); `GUARDIAN_OTEL_INSECURE` overrides |
 
 ### 6.2 At rest
@@ -356,10 +364,13 @@ unless the policy says otherwise.
   `GUARDIAN_ARCHIVE_HMAC_KEY`; queue files are deleted after processing.
   Unkeyed SHA-256 requires the explicit `GUARDIAN_ALLOW_UNKEYED_ARCHIVE=true`
   escape hatch and archive writes fail closed when neither is configured.
-  S3 Object Lock/WORM anchoring and an externally verified manifest chain are
-  not implemented yet.
-- The UI exposes events and deployments, but there is no tamper-evident audit
-  log and no guaranteed retention.
+- **Anchoring is implemented.** `cmd/audit-anchor` (and `guardianctl audit`)
+  build a Merkle root over the task archive, write it to S3 with Object Lock
+  (`COMPLIANCE`) and SSE-KMS, and verify it offline. `internal/auditanchor`
+  also reads ClickHouse audit events (`clickhouse.go`), and the optional audit
+  WAL can mirror events to ClickHouse/S3.
+- UI requests emit audit records through the request emitter; the UI exposes
+  events and deployments plus the anchored manifest chain.
 
 ---
 
@@ -369,6 +380,8 @@ unless the policy says otherwise.
 |---|---|---|---|
 | Guardian UI/API | `guardian.uiListenAddress`; bootstrap uses `:8090` | OIDC; anonymous mutations rejected by default (`--require-ui-auth`), loopback opt-in available | CSP, security headers, `Origin`/`Referer` checks; static directory listing under `/static/` |
 | AWS read API | `127.0.0.1:19090` (loopback default) | Scoped bearer token (`--awsread-token` / `--awsread-token-file`); empty disables auth on loopback only | Optional TLS/mTLS, per-caller rate limits, body limits, server timeouts; `/v1/aws/observed/diff` disabled by default (`--awsread-enable-diff=false`) |
+| GCP read API | `127.0.0.1:19091` (loopback default) | Scoped bearer token; empty disables auth on loopback only | Optional TLS/mTLS; read-only Monitoring/Logging/Trace surface |
+| Kubernetes read API | `--read-addr` (disabled when empty) | `--read-token`/`--read-token-file`; `--read-disabled` turns it off | TLS via `STRATA_TLS_*`; read-only resource inventory |
 | Pusher metrics/OTLP | exporter-dependent | Usually none | Depends on collector configuration |
 | MonoFS | deployment-specific | Token | Outside Guardian's code |
 
@@ -494,9 +507,10 @@ concrete controls.
 9. **Harden the runtime.** Non-root, read-only rootfs, dropped capabilities, no
    Docker socket for untrusted code, network policies, and a policy engine for
    privileged container properties.
-10. **Make history immutable.** Task specs are now archived under
-    `.state/tasks`; still add retention/signing, S3 SSE/KMS and Object Lock, and
-    an event retention policy.
+10. **Make history immutable.** Task specs are archived under `.state/tasks`
+    with an HMAC chain; `audit-anchor` writes a Merkle root to S3 with Object
+    Lock and SSE-KMS. Keep event retention and offline verification in the
+    operating runbook.
 11. **Coordinate replicas.** Add leases/CAS for reconcile, result processing,
     release writes, alerting, and observed collection.
 12. **Secure the supply chain.** Build reproducibly, pin dependencies, generate

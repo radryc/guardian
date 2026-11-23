@@ -30,6 +30,7 @@ model and trust boundaries.
 | `guardian-pusher-gcp` | GCP driver (OpenTofu + SDK), Cloud Asset Inventory, GCP read API (`:19091`) |
 | `guardian-pusher-local` | In-process reference drivers for dev/dogfood |
 | `guardian-docker` | Inspect/diff guardian-labelled Docker resources |
+| `audit-anchor` | Verify/emit offline audit anchors (Merkle root + S3 Object Lock) |
 
 ## Core concepts
 
@@ -62,8 +63,8 @@ make forge-build
 ./bin/forge ui --root .
 ```
 
-See [docs/design/forge.md](docs/design/forge.md) for the design and
-[docs/forge/README.md](docs/forge/README.md) for the command reference.
+See [docs/forge/README.md](docs/forge/README.md) for the command reference and
+[docs/forge/codes.md](docs/forge/codes.md) for diagnostics.
 
 ### Secret mounts (`compute.secretMounts`)
 
@@ -108,7 +109,7 @@ externally (for example `tlsx install`).
 
 ## Prerequisites
 
-- Go 1.26.10 (see `go.mod`).
+- Go 1.26.11 (see `go.mod`).
 - Sibling checkouts because of replace directives:
 
   ```text
@@ -162,9 +163,10 @@ Where the contract applies:
   `GUARDIAN_UI_TLS_KEY_FILE` still work; set `GUARDIAN_UI_TLS_CA_FILE` (or
   `STRATA_TLS_CA_FILE`) to require and verify client certificates.
 - **Pusher read APIs** (`guardian-pusher-aws`, `-gcp`, `-k8s`): server TLS and
-  optional mTLS. The existing `--awsread-tls-*` / `--read-tls-*` flags are
-  retained; `STRATA_TLS_*` is preferred whenever the mode is not `off`. The
-  advertised observed API URL switches to `https://` when TLS is active.
+  optional mTLS via `STRATA_TLS_*`. AWS retains `--awsread-tls-*` as a legacy
+  fallback; the GCP and Kubernetes pushers have no dedicated TLS flags and use
+  the shared contract directly. The advertised observed API URL switches to
+  `https://` when TLS is active.
 - **MonoFS gRPC clients**: `STRATA_TLS_*` supplies any setting
   `GUARDIAN_MONOFS_TLS_*` does not define. The guardian token is still never
   sent over plaintext unless `GUARDIAN_MONOFS_ALLOW_PLAINTEXT=true` is set
@@ -330,7 +332,8 @@ Logs Insights, X-Ray, CloudWatch PromQL, observed stacks).
 - [Logical flows](docs/logical-flow.md)
 - [Security architecture](docs/security-architecture.md)
 - [Codebase map](docs/codebase-map.md)
-- [GCP pusher ADR](docs/design/gcp-pusher.md)
+- [Forge](docs/forge/README.md) ([codes](docs/forge/codes.md), [enforcement](docs/forge/enforcement.md), [SSO](docs/forge/sso.md))
+- [Docs index](docs/README.md)
 
 ## Troubleshooting
 

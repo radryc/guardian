@@ -20,7 +20,8 @@ MonoFS reports the pipeline outcome as a commit status:
 
 Branch protection must require `monofs/partition-pipeline` and one review
 through `CODEOWNERS`. `forge doctor` verifies both through the GitHub API and
-fails when the gate is not enforced.
+fails when neither is present; a required check without a required review is
+reported as a warning.
 
 Single-maintainer repositories cannot self-approve. The documented mode there is
 **0 required approvals + required check**; `forge doctor` reports which mode is

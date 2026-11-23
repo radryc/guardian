@@ -38,7 +38,7 @@ sequenceDiagram
     CLI->>CLI: validate partition, intents, assets, payloads
     CLI->>S: Upsert config.yaml
     CLI->>S: Upsert intents/*.yaml
-    CLI->>S: Upsert payload files (secrets/** allowed by push)
+    CLI->>S: Upsert payload files<br/>(secrets/** only with --include-secrets)
     CLI->>S: DeletePaths(files removed locally, if --remove-missing)
     CLI->>S: Write .state/events/partition.pushed.json
     alt --force (force reconcile after push)
@@ -678,7 +678,10 @@ flowchart TD
 - State per partition: `notifications.json` (updated with CAS via
   `ExpectedVersionID`).
 - Defaults: 30s poll, 15m cooldown, 6h repeat.
-- Webhook signature is `HMAC-SHA256(body)` with no timestamp or nonce.
+- Webhook requests carry `X-Guardian-Timestamp` and
+  `X-Guardian-Signature-V2 = HMAC-SHA256(timestamp + "." + body)`; receivers
+  should reject stale timestamps. The legacy body-only signature remains for
+  compatibility.
 - Delivery uses per-channel retries and idempotency keys so partial channel
   success does not suppress retry of failed channels.
 
@@ -778,6 +781,9 @@ any other principal. A missing policy under enforcement fails closed.
 5. Server caches: partition detail 3s, rollouts 1m, projections TTL + store
    watch. There is no cross-replica invalidation, so a replica can serve a
    stale detail view after another replica writes.
+6. Display profiles are compiled into a bundle and applied as a display-key
+   mapping middleware on reads; every request also emits an audit record to the
+   configured audit emitter (WAL/ClickHouse/S3 anchor).
 
 The UI performs full-detail aggregation for every partition in the overview.
 At fleet scale this is the dominant read cost.
