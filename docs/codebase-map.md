@@ -818,11 +818,35 @@ served template is `internal/ui/templates/index.html`. Generated outputs
 | `internal/auditanchor/anchor.go`, `anchor_test.go` | Anchored audit manifest hashing/verification and tests; used by `guardianctl audit verify`. |
 | `internal/tlsxutil/tlsxutil.go`, `tlsxutil_test.go` | Bridges the legacy `GUARDIAN_UI_TLS_*`/MonoFS TLS variables to the shared `STRATA_TLS_*` contract. |
 
+## 39. Current subsystems not individually listed
+
+The original inventory predates several subsystems. They are summarized here by
+responsibility; use the package tree for an exhaustive file list.
+
+- **`internal/forge/**` (37 Go files)** — repository discovery, authoring,
+  validation, planning, submission, UI/API, doctor, and display lint for the
+  `forge` workbench.
+- **`internal/display` (2 files)** — display-profile store, effective profile
+  resolution, and bundle generation.
+- **`internal/bundle` (7 files)** — partition bundle loading/validation shared
+  by `guardianctl` and Forge (including `--include-secrets` handling).
+- **`internal/compiler/values`** — partition-scoped `${value.NAME}`
+  substitution used by the planner.
+- **`internal/auditanchor/clickhouse.go`** — ClickHouse audit-event reads for
+  `guardianctl audit`.
+- **`internal/ui/display.go`, `internal/ui/repo_managed.go`** — display-profile
+  API/middleware and repo-managed guard endpoints.
+- **`cmd/audit-anchor`** — offline audit anchor emit/verify.
+- **`cmd/guardianctl/display_cmd.go`, `repo_guard.go`, `partition_bundle.go`** —
+  display, repo-guard, and bundle command groups.
+
 ## 40. Coverage notes
 
-- Every `.go` and `.ts` file under `cmd/`, `internal/`, `pkg/`, and `tools/`
-  is covered above (540 files total, including tests); `vite.config.ts` is a
-  UI build input.
+- The current tree contains 591 Go files and 24 TypeScript files under
+  `cmd/`, `internal/`, `pkg/`, and `tools/` (615 total, including tests).
+  This map describes the major files and groups; it is not an exhaustive
+  one-line entry for every file. Use `go list ./...` or the package tree when
+  you need completeness.
 - `internal/cdkgen/embed/templates/aws/v1/**/policy.yaml` and `catalog.yaml`
   are data assets, not code; they are described in
   [architecture](architecture.md#102-cdk-generation).

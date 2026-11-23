@@ -47,6 +47,7 @@ flowchart LR
         ARCHIVE[/.archive deployment archive/]
         REG[/.registry pushers, repos, sets/]
         ACCESS[/.access policy/]
+        DISPLAY[/.display profiles/]
         OBSERVED[/.observed snapshots/]
     end
 
@@ -104,7 +105,8 @@ Guardian has **no database of its own**. MonoFS is simultaneously:
 - the message bus (`.queues` and `.results`),
 - the deployment archive (`.archive`),
 - the platform registry (`.registry`),
-- the access-policy distribution channel (`.access`).
+- the access-policy distribution channel (`.access`),
+- the display-profile store (`.display`).
 
 Every write is versioned by MonoFS. Guardian uses those version IDs for
 optimistic concurrency in the task-claim protocol and for cache invalidation.
@@ -156,14 +158,16 @@ last-writer-wins when replicas overlap.
 
 | Binary | Source | Role | Listens | Store access |
 |---|---|---|---|---|
-| `guardiand` | `cmd/guardiand` | Control plane: reconciler, watcher, dispatcher, result processor, observed collector, onboarding, alerting, access policy, UI/API | UI/API (`guardian.uiListenAddress`, commonly `:8090`) | MonoFS (writable) or in-memory |
-| `guardianctl` | `cmd/guardianctl` | Operator CLI: partitions, intents, assets, repos, sets, pushers, AWS/GCP setup, images, bootstrap | none | MonoFS (direct), local FS, or discovery via guardian |
+| `guardiand` | `cmd/guardiand` | Control plane: reconciler, watcher, dispatcher, result processor, observed collector, onboarding, alerting, access policy, display profiles, audit, UI/API | UI/API (`guardian.uiListenAddress`, commonly `:8090`) | MonoFS (writable) or in-memory |
+| `guardianctl` | `cmd/guardianctl` | Operator CLI: partitions, intents, assets, repos, sets, pushers, AWS/GCP setup, display, images, bootstrap | none | MonoFS (direct), local FS, or discovery via guardian |
+| `forge` | `cmd/forge` | Repository workbench: discover, author, validate, plan, submit PRs, UI | optional loopback UI | MonoFS for submit/live/UI; offline otherwise |
 | `guardian-pusher-k8s` | `cmd/guardian-pusher-k8s` | Kubernetes task worker and optional observed read API | optional K8s read API (`--read-addr`) | MonoFS or local FS |
 | `guardian-pusher-docker` | `cmd/guardian-pusher-docker` | Docker task worker | none | MonoFS or local FS |
 | `guardian-pusher-aws` | `cmd/guardian-pusher-aws` | AWS task worker, account scanner, observed-state API, CloudFormation event consumer | AWS read API `:19090` by default | MonoFS or local FS; memory in `--observed-only` mode |
 | `guardian-pusher-gcp` | `cmd/guardian-pusher-gcp` | GCP task worker (OpenTofu + SDK), Cloud Asset Inventory observer, GCP read API | GCP read API `:19091` by default | MonoFS or local FS |
 | `guardian-pusher-local` | `cmd/guardian-pusher-local` | In-process reference drivers for dev/dogfood | none | local FS or MonoFS |
 | `guardian-docker` | `cmd/guardian-docker` | Inspect local Docker resources and diff them against desired state | none | read-only FS/MonoFS |
+| `audit-anchor` | `cmd/audit-anchor` | Offline audit-anchor emit/verify (Merkle root, S3 Object Lock) | none | S3 + local archive |
 
 The daemon is a single process with multiple goroutines. There is no
 sidecar/agent split inside `guardiand`; every subsystem shares the same store
@@ -184,10 +188,12 @@ client and root context.
    - in-memory otherwise (useful for tests, not for production).
 5. Construct the dispatcher, compliance publisher, result processor, and
    reconciler.
-6. Build the compiled access-policy service (`internal/access`) and always wire
-   its `AuthorizeModify` check into the reconciler. The service is permissive
-   only when no policy path is configured and `--allow-unpoliced-mutations` is
-   set; enforcement is controlled by `GUARDIAN_ACCESS_ENFORCE`.
+6. Build the compiled access-policy service (`internal/access`), the display
+   profile service (`internal/display`), and the audit emitter, then wire
+   `AuthorizeModify`/display mapping into the reconciler and UI. The access
+   service is permissive only when no policy path is configured and
+   `--allow-unpoliced-mutations` is set; enforcement is controlled by
+   `GUARDIAN_ACCESS_ENFORCE`.
 7. Start the UI/API server, the access-policy refresh loop, and the optional
    repo-import and unmanaged services.
 8. Start the reconciler, observed collector, onboarding controller, alerting
@@ -211,6 +217,7 @@ cmd/                           process wiring; no reusable business logic
 ├── guardiand                  control-plane composition root
 ├── guardianctl                CLI command tree
 ├── guardian-pusher-*          worker composition roots
+├── audit-anchor               offline audit anchor emit/verify
 └── guardian-docker            Docker inspect/diff helper
 
 internal/
@@ -243,7 +250,10 @@ internal/
 ├── observedgen/               cloud assembly -> intents
 ├── historyquery/              release/deployment/rollout queries
 ├── access/                    repo-managed ACL compilation and decisions
-├── auditanchor/               anchored audit manifest verification
+├── display/                   display profiles, effective mapping, bundles
+├── bundle/                    shared partition bundle loader (CLI + Forge)
+├── forge/                     repository workbench: discover, author, validate, submit
+├── auditanchor/               anchored audit manifest verification + ClickHouse reads
 ├── alerting/, notify/         partition failure alerts and webhooks
 ├── compliance/                archive/state mirror to S3
 ├── repoimport/, repoconfig/   repo bundle import and .guardian/config.yaml
@@ -252,6 +262,7 @@ internal/
 ├── clock/, keyedmutex/        injectable clock seam and per-key locking
 ├── metrics/, telemetry/       OTel-backed metrics shim, traces, logs
 ├── config/, paths/, buildinfo/, versioning/, tlsxutil/
+├── cli/, workspacepub/, observability/, dashboardgen/
 └── domain/...
 pkg/guardianapi/               store/API interfaces shared by commands
 ```
@@ -307,6 +318,7 @@ A partition is the ownership and reconciliation unit. It is a YAML document
 | `spec.defaults` | Default pusher/target, observability injection, probe defaults |
 | `spec.labels` / `metadata.labels` | Selection labels used by access policy and UI |
 | `spec.sets` / `spec.primarySet` | Virtual navigation membership |
+| `spec.quota` | Per-partition telemetry/storage/query budget (enforced by Doctor quotas) |
 
 Validation is in `internal/compiler/validator/validator.go`. Notably,
 `defaults.targetPusher`, `defaults.target`, `sets`, and jitter are not fully
@@ -324,6 +336,7 @@ An intent is one deployable unit, stored at
 | `spec.joins` | Other intents that must be healthy first |
 | `spec.targetPusher` | Queue name / pusher that must execute the intent |
 | `spec.target` | Placement: cluster, namespace, region, account |
+| `spec.values` | Intent-scoped values substituted as `${value.NAME}` |
 | `spec.locked` | Prevents destructive/rollout actions (enforced partially; see security doc) |
 | `spec.assets` | Ordered list of asset specs |
 
@@ -340,10 +353,16 @@ payload:
   kubernetes: /partitions/<p>/payloads/kubernetes/api.yaml
   aws: /partitions/<p>/payloads/aws/api.yaml
 properties: {...}           # typed per asset; validated against catalog
+values: {...}               # asset-scoped ${value.NAME} substitutions
 skip: false
 flowMetricGroups: [checkout]
 hints: [...]
 ```
+
+Every partition, intent, and asset may carry `spec.values`/`values`; the
+planner merges partition → intent → asset scopes before resolving
+`${value.NAME}`. Partition-level `spec.quota` is consumed by Doctor quota
+enforcement, not by the reconciler.
 
 The canonical asset types are declared in
 `internal/domain/asset/catalog.go`:
@@ -466,6 +485,10 @@ MonoFS paths (`guardian/` and `guardian-system/`). See
 | `/.scans/<pusher>/.results/<id>.json` | Scan runner | Scan result |
 | `/.access/envs/<env>.yaml` | CI/CLI | Raw ACL |
 | `/.access/compiled/policy.json` | `guardianctl access publish` | Compiled policy bundle served to MonoFS/Doctor |
+| `/.access/partitions/<partition>.yaml` | Repo import/UI | Partition-owned ACL with provenance sidecar |
+| `/.display/profiles/<name>.json` | CLI/UI | Display-profile definitions |
+| `/.display/defaults.json` | CLI/UI | Default display profile selection |
+| `/.display/bundles/<fingerprint>.json` | Display service | Signed/compiled display mapping bundle |
 | `/.templates/aws/**` | Operator | CDK template overlays |
 | `/.repos/<display-path>/**` | Repo publisher | Read-only repo mirror |
 
@@ -477,7 +500,7 @@ should still validate them before constructing paths (see the security
 document).
 
 Guardian-managed namespaces (`/partitions`, `/.queues`, `/.archive`,
-`/.scans`, `/.registry`, `/.access`, `/.templates`) are read through the
+`/.scans`, `/.registry`, `/.access`, `/.display`, `/.templates`) are read through the
 router's versioned content path so a just-committed write is not missed; a
 missing version maps to `os.ErrNotExist`. Repo display paths (`/.repos/**`) are
 plain MonoFS content and keep the raw node read. Every router/node RPC carries
@@ -653,9 +676,10 @@ flowchart LR
    path existence/absolute-path rules, dependency cycle checks.
 4. **Inject defaults** — a synthetic `Observability` asset for eligible
    Compute assets when partition defaults enable observability.
-5. **Resolve outputs** — `${asset.outputs.key}` / `${intent.asset.outputs.key}`
-   references are resolved from current state where possible; unresolved
-   references are deferred.
+5. **Resolve outputs and values** — `${asset.outputs.key}` /
+   `${intent.asset.outputs.key}` references are resolved from current state
+   where possible; `${value.NAME}` is merged from partition → intent → asset
+   scopes via `internal/compiler/values`. Unresolved references are deferred.
 6. **Hash/version** — per-asset version IDs, intent spec hash, partition
    revision (`configVersionID + intent version IDs`).
 7. **Topologically sort** assets and intents; produce `CompiledPartition`.
@@ -887,6 +911,7 @@ It embeds a vanilla TypeScript SPA (no framework) compiled to
 |---|---|
 | Meta | `/`, `/health`, `/api/v1/status/buildinfo`, `/api/catalog`, `/api/me`, `/api/overview` |
 | Client/access | `/api/client-config`, `/api/access/policy`, `/api/access/explain` |
+| Display | `/api/display-profiles`, `/api/display-profiles/effective`, `/api/display-profiles/bundle` |
 | Partitions | `GET/PUT/DELETE /api/partitions/{name}`, `/topology`, `/rollouts`, `/history`, `/validate`, `/reconcile`, `/intents/{i}/activity` |
 | Scans | `/api/scans`, `/api/scans/{id}`, `/api/scans/{id}/bundle` |
 | Pushers | `/api/pushers`, `/api/pushers/{name}`, `/summary`, `/api/m2m/pushers*`. UI responses redact pusher tokens unless the caller is an authenticated admin; M2M responses redact them unless `includeTokens=1` is combined with the internal token |
@@ -908,6 +933,12 @@ the check is a no-op only when the access policy is disabled *and*
 `--allow-unpoliced-mutations` is set. Reads use access-policy filtering.
 Anonymous reads remain possible when neither login nor an access policy is
 configured; anonymous mutations are rejected by default.
+
+Display profiles are compiled into a bundle and applied as a display-key
+mapping middleware, so Doctor/MonoFS identities surface under their partition
+labels. The bundle endpoint is login-exempt and intended for service-token
+consumers; profile mutation goes through the normal admin checks. UI requests
+also emit audit records to the configured audit emitter.
 
 ### 11.2 Frontend
 
@@ -947,8 +978,8 @@ Connection modes:
 3. **Local store directory** — `GUARDIAN_STORE_DIR`, no auth.
 
 Command groups: `auth`, `partition`, `intent`, `asset`, `store`, `filesystem`,
-`aws`, `gcp`, `sets`, `pusher`, `probe`, `observability`, `repo`, `template`,
-`access`, `notify`, `audit`, `dev`, `image`, `release`.
+`aws`, `gcp`, `sets`, `pusher`, `probe`, `observability`, `display`, `repo`,
+`template`, `access`, `notify`, `audit`, `dev`, `image`, `release`.
 
 The CLI writes directly to MonoFS as principal `guardianctl`; it does not go
 through the daemon. This means it bypasses the UI access policy. See the
@@ -1140,6 +1171,3 @@ treats them as first-class work items.
 - Task specs are archived under `.state/tasks`.
 - Repo import prunes owned files via an ownership manifest.
 - The daemon, UI, and CLI share one importer and one image pipeline.
-
-See [Changes applied](internal/changes.md) for file/test references and the
-remaining work.

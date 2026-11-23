@@ -2,11 +2,14 @@
 
 Codes are stable. Messages may improve; the code is the contract. Every
 diagnostic also carries `severity`, `partition`, `file`, `path`, and an optional
-`hint`. JSON output is always canonical; a UI may add a cosmetic
-`displayLabel`.
+`hint`. JSON output is canonical; a UI may add a cosmetic `displayLabel`.
+
+This page lists only codes **currently emitted** by the Forge code. Reserved
+ranges are intentionally broad.
 
 | Range | Domain |
 | --- | --- |
+| `FGE0xxx` | Generic/informational |
 | `FGE1xxx` | Schema and syntax |
 | `FGE2xxx` | Partition and intent semantics |
 | `FGE3xxx` | Cross-reference, graph, and scope |
@@ -16,36 +19,40 @@ diagnostic also carries `severity`, `partition`, `file`, `path`, and an optional
 | `FGE7xxx` | Environment, platform, and pipeline |
 | `FGE8xxx` | Display keys and profiles |
 
-## Codes
+## Emitted codes
 
-| Code | Severity | Meaning |
-| --- | --- | --- |
-| `FGE1000` | error | Generic bundle load failure |
-| `FGE1001` | error | YAML parse failure, annotated with the source line |
-| `FGE2001` | error | Invalid partition/intent/asset name |
-| `FGE2002` | error | Missing or invalid target placement |
-| `FGE2005` | error | Duplicate `metadata.name` across intent files |
-| `FGE3003` | error | Asset payload references a missing file |
-| `FGE3004` | error | Asset type is unknown to the registry |
-| `FGE3010` | warning | Unresolved `${intent...}` output reference |
-| `FGE4000` | error | Partition could not be loaded for policy evaluation |
-| `FGE4001` | error | Guardrail policy violation |
-| `FGE5001` | error | Alert file does not parse |
-| `FGE5002` | error | Alert group `partition` does not match the directory |
-| `FGE5003` | error | Alert group/rule is missing a name or expression |
-| `FGE5004` | warning | Alert rule has no `annotations.summary` |
-| `FGE5005` | warning | Alert file version is not `1` |
-| `FGE5010` | error | Display key used inside a PromQL expression |
-| `FGE6001` | error | Inline secret value where a `secret_ref` is required |
-| `FGE7000` | error | No partition directories discovered |
-| `FGE7001` | warning | Known asset type outside the Forge v1 editing surface |
-| `FGE7010` | error | Base moved; rebase before submitting |
-| `FGE8001` | error | Unknown canonical key in a display binding |
-| `FGE8002` | error | Alias targets a partition not assigned to the repo |
-| `FGE8003` | error | Invalid display key (regex, reserved word, duplicate, empty) |
-| `FGE8004` | error | Display key leaked into a manifest, path, ref, or expression |
-| `FGE8005` | warning | Referenced display profile is unavailable |
-| `FGE8006` | error | Per-surface key invalid for that surface |
+| Code | Severity | Meaning | Source |
+| --- | --- | --- | --- |
+| `FGE0000` | info | Generic diagnostic with no more specific code | `internal/forge/diagnostic` |
+| `FGE1000` | error | Generic bundle load failure | `internal/forge/validate/validate.go` |
+| `FGE1001` | error | YAML parse failure, annotated with the source line | `internal/forge/validate/validate.go` |
+| `FGE2001` | error | Invalid partition/intent/asset name (must match `^[a-z][a-z0-9-]*$`) | `internal/forge/validate/validate.go` |
+| `FGE2002` | error | Missing or invalid `target` placement | `internal/forge/validate/validate.go` |
+| `FGE2005` | error | Duplicate `metadata.name` across intent files | `internal/forge/validate/validate.go` |
+| `FGE3003` | error | Asset payload references a missing file | `internal/forge/validate/validate.go` |
+| `FGE3004` | error | Asset type is unknown to the registry | `internal/forge/validate/validate.go` |
+| `FGE3010` | warning | Intent contains unresolved `${intent...}` output references | `internal/forge/validate/validate.go` |
+| `FGE4000` | error | Partition could not be loaded for policy evaluation | `internal/forge/policy/guardrails.go` |
+| `FGE4001` | error | Guardrail policy violation | `internal/forge/policy/guardrails.go` |
+| `FGE5001` | error | Alert file does not parse | `internal/forge/validate/validate.go` |
+| `FGE5002` | error | Alert group `partition` does not match the directory | `internal/forge/validate/validate.go` |
+| `FGE5003` | error | Alert group/rule is missing a name or expression | `internal/forge/validate/validate.go` |
+| `FGE5004` | warning | Alert rule has no `annotations.summary` | `internal/forge/validate/validate.go` |
+| `FGE5005` | warning | Alert file version is not `1` | `internal/forge/validate/validate.go` |
+| `FGE6001` | error | Inline secret value where a `secret_ref` is required | `internal/forge/policy/guardrails.go` |
+| `FGE7001` | warning | Known asset type outside the Forge v1 editing surface | `internal/forge/validate/validate.go` |
+| `FGE7002` | error | Workspace discovery failed (root is not a repo/partition directory) | `internal/forge/validate/validate.go` |
+| `FGE8003` | error | Invalid display key (regex, reserved word, duplicate, empty) | `internal/forge/display/display.go` |
+
+## Reserved / planned codes
+
+These codes appear in older drafts but are not emitted by the current code.
+Do not rely on them until they appear in the table above:
+
+`FGE5010` (display key in PromQL), `FGE7000` (no partitions discovered),
+`FGE7010` (base moved), `FGE8001` (unknown canonical key), `FGE8002` (alias to
+an unassigned partition), `FGE8004` (display key leaked into a manifest),
+`FGE8005` (display profile unavailable), `FGE8006` (invalid per-surface key).
 
 ## Interpreting results
 

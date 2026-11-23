@@ -7,7 +7,6 @@ submits it as a reviewed PR/MR through MonoFS.
 Forge never writes Guardian or MonoFS partition state. Its only publish action
 is a proposal. Merging at the forge is what leads to deployment.
 
-- Design: [`../design/forge.md`](../design/forge.md)
 - Enforcement model: [`enforcement.md`](enforcement.md)
 - Diagnostic codes: [`codes.md`](codes.md)
 - Reverse-proxy SSO: [`sso.md`](sso.md)
@@ -16,7 +15,7 @@ is a proposal. Merging at the forge is what leads to deployment.
 
 ```bash
 go build -o bin/forge ./cmd/forge      # or: make forge-build
-make forge-cross                       # linux/windows/darwin, amd64/arm64
+make forge-cross                       # linux amd64/arm64, windows amd64, darwin arm64
 ```
 
 The UI is embedded in the binary. No Node, WebView, or FUSE runtime is required
@@ -120,8 +119,9 @@ forge ui --root .
 - `forge submit` has no flag that writes `/partitions` directly.
 - Repo-managed partitions refuse direct `guardianctl partition push` and
   Guardian UI saves unless an audited break-glass override is used.
-- `forge validate` and `plan` are fully offline; only `submit`, `status --live`,
-  and `plan --against live` need MonoFS.
+- `forge validate` and `plan` are fully offline; `submit`, `status --live`,
+  `plan --against live`, `repo adopt`, `pipeline install --apply`, and `ui` need
+  MonoFS (the UI for live data). See the environment table above.
 
 ## Platform notes
 
